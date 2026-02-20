@@ -11,7 +11,9 @@
     "make": "electron-forge make",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
-    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\""
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": {
@@ -43,16 +45,25 @@
     "prettier": "^3.8.1",
     "tailwindcss": "^4.2.0",
     "typescript": "^5.9.3",
-    "vite": "^5.4.21"
+    "vite": "^5.4.21",
+    "vitest": "^4.0.18"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@orama/orama": "^3.1.18",
+    "chokidar": "^5.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "electron-squirrel-startup": "^1.0.1",
+    "gray-matter": "^4.0.3",
     "lucide-react": "^0.575.0",
+    "mdast-util-to-string": "^4.0.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.0",
-    "tailwind-merge": "^3.5.0"
+    "remark-parse": "^11.0.0",
+    "smol-toml": "^1.6.0",
+    "tailwind-merge": "^3.5.0",
+    "unified": "^11.0.5"
   }
 }

@@ -1,16 +1,20 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import SiloCard from '@/components/SiloCard';
 import SiloDetailModal from '@/components/SiloDetailModal';
 import AddSiloModal from '@/components/AddSiloModal';
-import { mockSilos } from '../../shared/mock-data';
 import type { SiloStatus } from '../../shared/types';
 
 export default function SilosView() {
+  const [silos, setSilos] = useState<SiloStatus[]>([]);
   const [selectedSilo, setSelectedSilo] = useState<SiloStatus | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+
+  useEffect(() => {
+    window.electronAPI?.getSilos().then(setSilos);
+  }, []);
 
   function handleCardClick(silo: SiloStatus) {
     setSelectedSilo(silo);
@@ -27,15 +31,21 @@ export default function SilosView() {
         </Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {mockSilos.map((silo) => (
-          <SiloCard
-            key={silo.config.name}
-            silo={silo}
-            onClick={() => handleCardClick(silo)}
-          />
-        ))}
-      </div>
+      {silos.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No silos configured. Add a silo to get started.
+        </p>
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {silos.map((silo) => (
+            <SiloCard
+              key={silo.config.name}
+              silo={silo}
+              onClick={() => handleCardClick(silo)}
+            />
+          ))}
+        </div>
+      )}
 
       <SiloDetailModal
         silo={selectedSilo}

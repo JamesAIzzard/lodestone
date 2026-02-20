@@ -90,3 +90,9 @@ typings/
 
 # Electron-Forge
 out/
+
+# Transformers.js model cache
+.model-cache/
+
+# Development config (contains user-specific paths)
+config.dev.toml

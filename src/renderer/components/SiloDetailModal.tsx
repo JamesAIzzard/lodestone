@@ -10,8 +10,8 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useState, useEffect } from 'react';
 import type { SiloStatus, ActivityEvent } from '../../shared/types';
-import { DEFAULT_MODEL, mockActivityEvents } from '../../shared/mock-data';
 
 function abbreviatePath(p: string): string {
   return p.replace(/^\/home\/[^/]+/, '~');
@@ -23,12 +23,13 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function formatTime(date: Date): string {
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function formatTime(isoString: string | null): string {
+  if (!isoString) return '—';
+  return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function fileName(path: string): string {
-  return path.split('/').pop() ?? path;
+function fileName(p: string): string {
+  return p.split(/[/\\]/).pop() ?? p;
 }
 
 const eventTypeStyles: Record<string, string> = {
@@ -45,15 +46,21 @@ interface SiloDetailModalProps {
 }
 
 export default function SiloDetailModal({ silo, open, onOpenChange }: SiloDetailModalProps) {
+  const [siloEvents, setSiloEvents] = useState<ActivityEvent[]>([]);
+
+  useEffect(() => {
+    if (open && silo) {
+      window.electronAPI?.getActivity(100).then((events) => {
+        setSiloEvents(events.filter((e) => e.siloName === silo.config.name).slice(0, 8));
+      });
+    }
+  }, [open, silo]);
+
   if (!silo) return null;
 
   const { config } = silo;
-  const model = config.modelOverride ?? DEFAULT_MODEL;
+  const model = config.modelOverride ?? 'built-in';
   const isOverride = config.modelOverride !== null;
-
-  const siloEvents: ActivityEvent[] = mockActivityEvents
-    .filter((e) => e.siloName === config.name)
-    .slice(0, 8);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

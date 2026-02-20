@@ -1,27 +1,39 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Loader2, CheckCircle2, XCircle, X, FileCode } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { cn } from '@/lib/utils';
-import { mockServerStatus } from '../../shared/mock-data';
+import type { ServerStatus } from '../../shared/types';
 
 export default function SettingsView() {
-  const [ollamaUrl, setOllamaUrl] = useState(mockServerStatus.ollamaUrl);
+  const [status, setStatus] = useState<ServerStatus | null>(null);
+  const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<'connected' | 'error' | null>(null);
-  const [selectedModel, setSelectedModel] = useState(mockServerStatus.defaultModel);
+  const [testResult, setTestResult] = useState<{ connected: boolean; models: string[] } | null>(null);
+  const [selectedModel, setSelectedModel] = useState('built-in');
   const [extensions, setExtensions] = useState(['.md', '.py']);
   const [extInput, setExtInput] = useState('');
   const [ignorePatterns, setIgnorePatterns] = useState(['.git', '__pycache__', 'node_modules', '.obsidian']);
   const [ignoreInput, setIgnoreInput] = useState('');
 
-  function handleTestConnection() {
+  useEffect(() => {
+    window.electronAPI?.getServerStatus().then((s) => {
+      setStatus(s);
+      setOllamaUrl(s.ollamaUrl);
+      setSelectedModel(s.defaultModel);
+    });
+  }, []);
+
+  async function handleTestConnection() {
     setTesting(true);
     setTestResult(null);
-    setTimeout(() => {
+    try {
+      const result = await window.electronAPI?.testOllamaConnection(ollamaUrl);
+      setTestResult(result ?? { connected: false, models: [] });
+    } catch {
+      setTestResult({ connected: false, models: [] });
+    } finally {
       setTesting(false);
-      setTestResult('connected');
-    }, 1200);
+    }
   }
 
   function addExtension() {
@@ -49,8 +61,17 @@ export default function SettingsView() {
     setIgnorePatterns((prev) => prev.filter((p) => p !== pattern));
   }
 
-  function handleOpenConfig() {
-    window.electronAPI?.openPath('/home/james/.config/lodestone/config.toml');
+  async function handleOpenConfig() {
+    const configPath = await window.electronAPI?.getConfigPath();
+    if (configPath) window.electronAPI?.openPath(configPath);
+  }
+
+  // Build model list: always include built-in, plus any from Ollama test or server status
+  const availableModels = ['built-in (all-MiniLM-L6-v2)'];
+  if (testResult?.connected) {
+    availableModels.push(...testResult.models);
+  } else if (status) {
+    availableModels.push(...status.availableModels.filter((m) => !m.startsWith('built-in')));
   }
 
   return (
@@ -78,22 +99,22 @@ export default function SettingsView() {
             </Button>
           </div>
 
-          {testResult === 'connected' && (
+          {testResult?.connected && (
             <div className="mt-3 flex items-center gap-2 text-sm text-emerald-400">
               <CheckCircle2 className="h-4 w-4" />
-              Connected — {mockServerStatus.availableModels.length} models available
+              Connected — {testResult.models.length} model{testResult.models.length !== 1 && 's'} available
             </div>
           )}
-          {testResult === 'error' && (
+          {testResult && !testResult.connected && (
             <div className="mt-3 flex items-center gap-2 text-sm text-red-400">
               <XCircle className="h-4 w-4" />
               Could not connect to Ollama at {ollamaUrl}
             </div>
           )}
 
-          {testResult === 'connected' && (
+          {testResult?.connected && testResult.models.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {mockServerStatus.availableModels.map((m) => (
+              {testResult.models.map((m) => (
                 <Badge key={m} variant="secondary" className="text-[10px]">
                   {m}
                 </Badge>
@@ -112,7 +133,7 @@ export default function SettingsView() {
             onChange={(e) => setSelectedModel(e.target.value)}
             className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           >
-            {mockServerStatus.availableModels.map((m) => (
+            {availableModels.map((m) => (
               <option key={m} value={m}>
                 {m}
               </option>

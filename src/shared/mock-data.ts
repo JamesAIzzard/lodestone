@@ -7,8 +7,8 @@ import type {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function minutesAgo(m: number): Date {
-  return new Date(Date.now() - m * 60_000);
+function minutesAgo(m: number): string {
+  return new Date(Date.now() - m * 60_000).toISOString();
 }
 
 let nextId = 1;

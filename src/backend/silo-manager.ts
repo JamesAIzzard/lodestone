@@ -1,0 +1,255 @@
+/**
+ * Silo Manager — top-level orchestrator for a single silo.
+ *
+ * Ties together the embedding service, vector database, file watcher,
+ * and configuration for one silo. The Electron main process interacts
+ * with this class for all silo operations.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import type { ResolvedSiloConfig } from './config';
+import { createEmbeddingService, type EmbeddingService } from './embedding';
+import {
+  createSiloDatabase,
+  loadDatabase,
+  persistDatabase,
+  searchSilo,
+  getChunkCount,
+  getIndexedFiles,
+  type SiloDatabase,
+  type SiloSearchResult,
+} from './store';
+import { SiloWatcher, type WatcherEvent } from './watcher';
+import { reconcile, type ReconcileProgressHandler } from './reconcile';
+import type { WatcherState } from '../shared/types';
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+export interface SiloManagerStatus {
+  name: string;
+  indexedFileCount: number;
+  chunkCount: number;
+  lastUpdated: Date | null;
+  databaseSizeBytes: number;
+  watcherState: WatcherState;
+  errorMessage?: string;
+}
+
+// ── SiloManager ──────────────────────────────────────────────────────────────
+
+const PERSIST_INTERVAL_MS = 30_000; // 30 seconds
+const MAX_ACTIVITY_EVENTS = 200;
+
+export class SiloManager {
+  private embeddingService: EmbeddingService | null = null;
+  private db: SiloDatabase | null = null;
+  private watcher: SiloWatcher | null = null;
+  private persistTimer: ReturnType<typeof setInterval> | null = null;
+  private dirty = false;
+  private lastUpdated: Date | null = null;
+  private activityLog: WatcherEvent[] = [];
+  private watcherState: WatcherState = 'idle';
+  private errorMessage?: string;
+
+  constructor(
+    private readonly config: ResolvedSiloConfig,
+    private readonly ollamaUrl: string,
+    private readonly modelCacheDir: string,
+    private readonly userDataDir: string,
+  ) {}
+
+  /** Initialize all subsystems and start watching. */
+  async start(): Promise<void> {
+    // 1. Create embedding service
+    this.embeddingService = createEmbeddingService({
+      model: this.config.model,
+      ollamaUrl: this.ollamaUrl,
+      modelCacheDir: this.modelCacheDir,
+    });
+
+    // 2. Load or create the database
+    const dbPath = this.resolveDbPath();
+    const existing = await loadDatabase(dbPath, this.embeddingService.dimensions);
+    if (existing) {
+      this.db = existing;
+      console.log(`[silo:${this.config.name}] Loaded database from ${dbPath}`);
+    } else {
+      this.db = await createSiloDatabase(this.embeddingService.dimensions);
+      console.log(`[silo:${this.config.name}] Created new database`);
+    }
+
+    // 3. Run startup reconciliation
+    this.watcherState = 'indexing';
+    try {
+      const result = await reconcile(
+        this.config,
+        this.embeddingService,
+        this.db,
+        this.onReconcileProgress,
+      );
+      if (result.filesAdded > 0 || result.filesRemoved > 0 || result.filesUpdated > 0) {
+        this.dirty = true;
+        console.log(
+          `[silo:${this.config.name}] Reconciliation: +${result.filesAdded} -${result.filesRemoved} ~${result.filesUpdated} (${(result.durationMs / 1000).toFixed(1)}s)`,
+        );
+      } else {
+        console.log(`[silo:${this.config.name}] Reconciliation: index up to date`);
+      }
+    } catch (err) {
+      console.error(`[silo:${this.config.name}] Reconciliation failed:`, err);
+    }
+    this.watcherState = 'idle';
+
+    // 4. Create and start the file watcher
+    this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db);
+    this.watcher.on((event) => this.handleWatcherEvent(event));
+    this.watcher.start();
+
+    // 5. Start periodic persistence
+    this.persistTimer = setInterval(() => this.persistIfDirty(), PERSIST_INTERVAL_MS);
+
+    console.log(`[silo:${this.config.name}] Started (watching ${this.config.directories.join(', ')})`);
+  }
+
+  /** Graceful shutdown: stop watcher, persist database, dispose embedding service. */
+  async stop(): Promise<void> {
+    if (this.persistTimer) {
+      clearInterval(this.persistTimer);
+      this.persistTimer = null;
+    }
+
+    if (this.watcher) {
+      await this.watcher.stop();
+      this.watcher = null;
+    }
+
+    // Final persist
+    await this.persistIfDirty();
+
+    if (this.embeddingService) {
+      await this.embeddingService.dispose();
+      this.embeddingService = null;
+    }
+
+    this.db = null;
+    console.log(`[silo:${this.config.name}] Stopped`);
+  }
+
+  // ── Public API ─────────────────────────────────────────────────────────────
+
+  /** Embed a query and search the silo database. */
+  async search(query: string, maxResults: number = 10): Promise<SiloSearchResult[]> {
+    if (!this.embeddingService || !this.db) return [];
+    const queryVector = await this.embeddingService.embed(query);
+    return searchSilo(this.db, queryVector, maxResults);
+  }
+
+  /** Get the current status of this silo. */
+  async getStatus(): Promise<SiloManagerStatus> {
+    const fileCount = this.db ? await getIndexedFiles(this.db) : new Set();
+    const chunks = this.db ? await getChunkCount(this.db) : 0;
+    const dbSize = this.getDatabaseSizeBytes();
+
+    return {
+      name: this.config.name,
+      indexedFileCount: fileCount.size,
+      chunkCount: chunks,
+      lastUpdated: this.lastUpdated,
+      databaseSizeBytes: dbSize,
+      watcherState: this.watcherState,
+      errorMessage: this.errorMessage,
+    };
+  }
+
+  /** Get recent activity events. */
+  getActivityFeed(limit: number = 50): WatcherEvent[] {
+    return this.activityLog.slice(-limit);
+  }
+
+  /** Get the resolved silo config. */
+  getConfig(): ResolvedSiloConfig {
+    return this.config;
+  }
+
+  /** Get the underlying database (for reconciliation). */
+  getDatabase(): SiloDatabase | null {
+    return this.db;
+  }
+
+  /** Get the embedding service (for reconciliation). */
+  getEmbeddingService(): EmbeddingService | null {
+    return this.embeddingService;
+  }
+
+  /** Mark the database as dirty (needs persist). */
+  markDirty(): void {
+    this.dirty = true;
+  }
+
+  /** Force a database persist to disk now. */
+  async persist(): Promise<void> {
+    if (!this.db) return;
+    const dbPath = this.resolveDbPath();
+    await persistDatabase(this.db, dbPath);
+    this.dirty = false;
+  }
+
+  // ── Internal ───────────────────────────────────────────────────────────────
+
+  private onReconcileProgress: ReconcileProgressHandler = (progress) => {
+    if (progress.phase === 'scanning') return;
+    if (progress.total > 0 && progress.current % 10 === 0) {
+      console.log(`[silo:${this.config.name}] Reconcile: ${progress.current}/${progress.total}`);
+    }
+  };
+
+  private handleWatcherEvent(event: WatcherEvent): void {
+    this.activityLog.push(event);
+    if (this.activityLog.length > MAX_ACTIVITY_EVENTS) {
+      this.activityLog = this.activityLog.slice(-MAX_ACTIVITY_EVENTS);
+    }
+
+    this.lastUpdated = event.timestamp;
+    this.dirty = true;
+
+    // Update watcher state
+    if (event.eventType === 'error') {
+      this.watcherState = 'error';
+      this.errorMessage = event.errorMessage;
+    } else if (this.watcher?.isProcessing) {
+      this.watcherState = 'indexing';
+    } else {
+      this.watcherState = 'idle';
+      this.errorMessage = undefined;
+    }
+  }
+
+  private async persistIfDirty(): Promise<void> {
+    if (!this.dirty || !this.db) return;
+    try {
+      await this.persist();
+      console.log(`[silo:${this.config.name}] Database persisted to disk`);
+    } catch (err) {
+      console.error(`[silo:${this.config.name}] Failed to persist database:`, err);
+    }
+  }
+
+  private resolveDbPath(): string {
+    // If db_path is relative, resolve against userDataDir
+    if (path.isAbsolute(this.config.dbPath)) {
+      return this.config.dbPath;
+    }
+    return path.join(this.userDataDir, this.config.dbPath);
+  }
+
+  private getDatabaseSizeBytes(): number {
+    const dbPath = this.resolveDbPath();
+    try {
+      const stat = fs.statSync(dbPath);
+      return stat.size;
+    } catch {
+      return 0;
+    }
+  }
+}

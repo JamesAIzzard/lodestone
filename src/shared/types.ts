@@ -15,7 +15,7 @@ export interface SiloStatus {
   config: SiloConfig;
   indexedFileCount: number;
   chunkCount: number;
-  lastUpdated: Date;
+  lastUpdated: string | null;
   databaseSizeBytes: number;
   watcherState: WatcherState;
   errorMessage?: string;
@@ -36,7 +36,7 @@ export type ActivityEventType = 'indexed' | 'reindexed' | 'deleted' | 'error';
 
 export interface ActivityEvent {
   id: string;
-  timestamp: Date;
+  timestamp: string;
   siloName: string;
   filePath: string;
   eventType: ActivityEventType;

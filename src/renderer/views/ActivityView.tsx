@@ -1,22 +1,21 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AlertCircle, ChevronDown, FileMinus, RefreshCw, FilePlus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
-import { mockSilos, mockActivityEvents } from '../../shared/mock-data';
-import type { ActivityEventType } from '../../shared/types';
+import type { SiloStatus, ActivityEvent, ActivityEventType } from '../../shared/types';
 
-function fileName(path: string): string {
-  return path.split('/').pop() ?? path;
+function fileName(p: string): string {
+  return p.split(/[/\\]/).pop() ?? p;
 }
 
-function dirPath(path: string): string {
-  const parts = path.split('/');
+function dirPath(p: string): string {
+  const parts = p.split(/[/\\]/);
   parts.pop();
-  return parts.join('/').replace(/^\/home\/[^/]+/, '~');
+  return parts.join('/');
 }
 
-function formatTime(date: Date): string {
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+function formatTime(isoString: string): string {
+  return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
 const eventConfig: Record<
@@ -32,11 +31,25 @@ const eventConfig: Record<
 const ALL_EVENT_TYPES: ActivityEventType[] = ['indexed', 'reindexed', 'deleted', 'error'];
 
 export default function ActivityView() {
+  const [silos, setSilos] = useState<SiloStatus[]>([]);
+  const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [siloFilter, setSiloFilter] = useState('all');
   const [activeTypes, setActiveTypes] = useState<Set<ActivityEventType>>(
     new Set(ALL_EVENT_TYPES),
   );
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    window.electronAPI?.getSilos().then(setSilos);
+    window.electronAPI?.getActivity(100).then(setEvents);
+
+    // Subscribe to push updates
+    const unsubscribe = window.electronAPI?.onActivity((event) => {
+      setEvents((prev) => [event, ...prev].slice(0, 200));
+    });
+
+    return () => unsubscribe?.();
+  }, []);
 
   function toggleType(type: ActivityEventType) {
     setActiveTypes((prev) => {
@@ -59,7 +72,7 @@ export default function ActivityView() {
     });
   }
 
-  const filtered = mockActivityEvents.filter((e) => {
+  const filtered = events.filter((e) => {
     if (siloFilter !== 'all' && e.siloName !== siloFilter) return false;
     if (!activeTypes.has(e.eventType)) return false;
     return true;
@@ -77,7 +90,7 @@ export default function ActivityView() {
           className="h-8 rounded-md border border-input bg-background px-3 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         >
           <option value="all">All Silos</option>
-          {mockSilos.map((s) => (
+          {silos.map((s) => (
             <option key={s.config.name} value={s.config.name}>
               {s.config.name}
             </option>
@@ -108,7 +121,7 @@ export default function ActivityView() {
 
       {/* Feed */}
       {filtered.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No matching events.</p>
+        <p className="text-sm text-muted-foreground">No activity events yet.</p>
       ) : (
         <div className="flex flex-col">
           {filtered.map((event) => {
@@ -128,23 +141,19 @@ export default function ActivityView() {
                     !isError && 'cursor-default',
                   )}
                 >
-                  {/* Time */}
                   <span className="w-16 shrink-0 text-xs text-muted-foreground/50 tabular-nums">
                     {formatTime(event.timestamp)}
                   </span>
 
-                  {/* Icon + type */}
                   <span className={cn('flex w-24 shrink-0 items-center gap-1.5 text-xs', config.className)}>
                     <Icon className="h-3.5 w-3.5" />
                     {config.label}
                   </span>
 
-                  {/* Silo */}
                   <Badge variant="secondary" className="shrink-0 text-[10px]">
                     {event.siloName}
                   </Badge>
 
-                  {/* File */}
                   <div className="flex-1 min-w-0">
                     <span className="truncate text-xs text-foreground">
                       {fileName(event.filePath)}
@@ -154,7 +163,6 @@ export default function ActivityView() {
                     </span>
                   </div>
 
-                  {/* Error expand indicator */}
                   {isError && (
                     <ChevronDown
                       className={cn(
@@ -165,7 +173,6 @@ export default function ActivityView() {
                   )}
                 </button>
 
-                {/* Error detail */}
                 {isError && isExpanded && event.errorMessage && (
                   <div className="mx-3 mb-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 text-xs text-red-400">
                     {event.errorMessage}

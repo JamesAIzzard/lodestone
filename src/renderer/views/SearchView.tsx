@@ -1,17 +1,16 @@
-import { useState } from 'react';
-import { Search, FileText, ExternalLink } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Search, FileText, ExternalLink, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { mockSilos, mockSearchResults } from '../../shared/mock-data';
-import type { SearchResult } from '../../shared/types';
+import type { SiloStatus, SearchResult } from '../../shared/types';
 
-function fileName(path: string): string {
-  return path.split('/').pop() ?? path;
+function fileName(p: string): string {
+  return p.split(/[/\\]/).pop() ?? p;
 }
 
-function dirPath(path: string): string {
-  const parts = path.split('/');
+function dirPath(p: string): string {
+  const parts = p.split(/[/\\]/);
   parts.pop();
-  return parts.join('/').replace(/^\/home\/[^/]+/, '~');
+  return parts.join('/');
 }
 
 function scorePercent(score: number): string {
@@ -25,17 +24,26 @@ function handleOpenFile(filePath: string) {
 export default function SearchView() {
   const [query, setQuery] = useState('');
   const [selectedSilo, setSelectedSilo] = useState('all');
+  const [silos, setSilos] = useState<SiloStatus[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
+  const [searching, setSearching] = useState(false);
 
-  function handleSearch() {
-    if (!query.trim()) return;
+  useEffect(() => {
+    window.electronAPI?.getSilos().then(setSilos);
+  }, []);
+
+  async function handleSearch() {
+    if (!query.trim() || searching) return;
     setHasSearched(true);
-    const filtered =
-      selectedSilo === 'all'
-        ? mockSearchResults
-        : mockSearchResults.filter((r) => r.siloName === selectedSilo);
-    setResults(filtered);
+    setSearching(true);
+    try {
+      const silo = selectedSilo === 'all' ? undefined : selectedSilo;
+      const res = await window.electronAPI?.search(query, silo) ?? [];
+      setResults(res);
+    } finally {
+      setSearching(false);
+    }
   }
 
   return (
@@ -50,7 +58,7 @@ export default function SearchView() {
           className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         >
           <option value="all">All Silos</option>
-          {mockSilos.map((s) => (
+          {silos.map((s) => (
             <option key={s.config.name} value={s.config.name}>
               {s.config.name}
             </option>
@@ -72,17 +80,24 @@ export default function SearchView() {
 
       {/* Results */}
       <div className="mt-6">
-        {!hasSearched && (
+        {searching && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Searching...
+          </div>
+        )}
+
+        {!searching && !hasSearched && (
           <p className="text-sm text-muted-foreground">
             Enter a query and press Enter to search.
           </p>
         )}
 
-        {hasSearched && results.length === 0 && (
+        {!searching && hasSearched && results.length === 0 && (
           <p className="text-sm text-muted-foreground">No results found.</p>
         )}
 
-        {results.length > 0 && (
+        {!searching && results.length > 0 && (
           <div className="flex flex-col gap-1">
             <p className="mb-3 text-xs text-muted-foreground">
               {results.length} result{results.length !== 1 && 's'}
@@ -97,10 +112,8 @@ export default function SearchView() {
                   'hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                 )}
               >
-                {/* Icon */}
                 <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
 
-                {/* File info */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="truncate text-sm font-medium text-foreground">
@@ -120,7 +133,6 @@ export default function SearchView() {
                   </div>
                 </div>
 
-                {/* Score */}
                 <div className="flex items-center gap-2 shrink-0">
                   <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
                     <div
@@ -133,7 +145,6 @@ export default function SearchView() {
                   </span>
                 </div>
 
-                {/* Open icon */}
                 <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground/30 opacity-0 transition-opacity group-hover:opacity-100" />
               </button>
             ))}

@@ -1,7 +1,8 @@
+import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { Database, Search, Activity, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { mockServerStatus } from '../../shared/mock-data';
+import type { ServerStatus } from '../../shared/types';
 
 const navItems = [
   { to: '/', label: 'Silos', icon: Database },
@@ -18,7 +19,14 @@ function formatUptime(seconds: number): string {
 }
 
 export default function Sidebar() {
-  const status = mockServerStatus;
+  const [status, setStatus] = useState<ServerStatus | null>(null);
+
+  useEffect(() => {
+    const fetchStatus = () => window.electronAPI?.getServerStatus().then(setStatus);
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 10_000);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <aside className="flex h-full w-56 flex-col border-r border-border bg-background">
@@ -61,21 +69,25 @@ export default function Sidebar() {
               <span
                 className={cn(
                   'inline-block h-2 w-2 rounded-full',
-                  status.ollamaState === 'connected'
+                  status?.ollamaState === 'connected'
                     ? 'bg-emerald-500'
                     : 'bg-red-500',
                 )}
               />
-              {status.ollamaState === 'connected' ? 'Connected' : 'Disconnected'}
+              {status?.ollamaState === 'connected' ? 'Connected' : 'Disconnected'}
             </span>
           </div>
           <div className="flex items-center justify-between">
             <span>Indexed files</span>
-            <span className="text-foreground">{status.totalIndexedFiles.toLocaleString()}</span>
+            <span className="text-foreground">
+              {status?.totalIndexedFiles?.toLocaleString() ?? '—'}
+            </span>
           </div>
           <div className="flex items-center justify-between">
             <span>Uptime</span>
-            <span className="text-foreground">{formatUptime(status.uptimeSeconds)}</span>
+            <span className="text-foreground">
+              {status ? formatUptime(status.uptimeSeconds) : '—'}
+            </span>
           </div>
         </div>
       </div>

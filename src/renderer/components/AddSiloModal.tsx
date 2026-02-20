@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -11,13 +11,11 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { FolderOpen, Plus, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { DEFAULT_MODEL } from '../../shared/mock-data';
 
-const STEPS = ['Name', 'Directories', 'Extensions', 'Model'] as const;
+const STEPS = ['Name', 'Directories', 'Extensions', 'Storage', 'Model'] as const;
 type Step = (typeof STEPS)[number];
 
 const COMMON_EXTENSIONS = ['.md', '.py', '.ts', '.js', '.toml', '.yaml', '.json', '.pdf'];
-const AVAILABLE_MODELS = ['nomic-embed-text', 'all-MiniLM-L6-v2', 'mxbai-embed-large'];
 
 interface AddSiloModalProps {
   open: boolean;
@@ -29,18 +27,39 @@ export default function AddSiloModal({ open, onOpenChange }: AddSiloModalProps) 
   const [name, setName] = useState('');
   const [directories, setDirectories] = useState<string[]>([]);
   const [extensions, setExtensions] = useState<string[]>(['.md', '.py']);
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [dbPath, setDbPath] = useState('');
+  const [model, setModel] = useState('built-in');
+  const [availableModels, setAvailableModels] = useState<string[]>(['built-in (all-MiniLM-L6-v2)']);
 
   const step = STEPS[stepIndex];
   const isFirst = stepIndex === 0;
   const isLast = stepIndex === STEPS.length - 1;
+
+  // Fetch available models on mount
+  useEffect(() => {
+    window.electronAPI?.getServerStatus().then((status) => {
+      if (status.availableModels.length > 0) {
+        setAvailableModels(status.availableModels);
+      }
+      setModel(status.defaultModel);
+    });
+  }, []);
+
+  // Auto-generate db_path when name changes
+  useEffect(() => {
+    if (name.trim()) {
+      const slug = name.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+      setDbPath(`silos/${slug}.db`);
+    }
+  }, [name]);
 
   function reset() {
     setStepIndex(0);
     setName('');
     setDirectories([]);
     setExtensions(['.md', '.py']);
-    setModel(DEFAULT_MODEL);
+    setDbPath('');
+    setModel('built-in');
   }
 
   function handleClose(open: boolean) {
@@ -56,6 +75,8 @@ export default function AddSiloModal({ open, onOpenChange }: AddSiloModalProps) 
         return directories.length > 0;
       case 'Extensions':
         return extensions.length > 0;
+      case 'Storage':
+        return dbPath.trim().length > 0;
       case 'Model':
         return true;
     }
@@ -64,7 +85,7 @@ export default function AddSiloModal({ open, onOpenChange }: AddSiloModalProps) 
   function handleNext() {
     if (isLast) {
       // Would create the silo in later phases
-      alert(`Silo "${name}" created (mock)`);
+      alert(`Silo "${name}" created (mock)\ndb_path: ${dbPath}`);
       handleClose(false);
     } else {
       setStepIndex((i) => i + 1);
@@ -200,13 +221,32 @@ export default function AddSiloModal({ open, onOpenChange }: AddSiloModalProps) 
             </div>
           )}
 
+          {step === 'Storage' && (
+            <div>
+              <label className="mb-2 block text-sm text-muted-foreground">
+                Database file path
+              </label>
+              <input
+                type="text"
+                value={dbPath}
+                onChange={(e) => setDbPath(e.target.value)}
+                placeholder="e.g. silos/my-silo.db"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+                onKeyDown={(e) => e.key === 'Enter' && canAdvance() && handleNext()}
+              />
+              <p className="mt-2 text-xs text-muted-foreground/60">
+                Relative paths are stored inside the app data folder. Use an absolute path to store the database elsewhere.
+              </p>
+            </div>
+          )}
+
           {step === 'Model' && (
             <div>
               <label className="mb-2 block text-sm text-muted-foreground">
-                Embedding model (optional override)
+                Embedding model
               </label>
               <div className="flex flex-col gap-1.5">
-                {AVAILABLE_MODELS.map((m) => (
+                {availableModels.map((m) => (
                   <button
                     key={m}
                     onClick={() => setModel(m)}
@@ -226,7 +266,7 @@ export default function AddSiloModal({ open, onOpenChange }: AddSiloModalProps) 
                       )}
                     />
                     {m}
-                    {m === DEFAULT_MODEL && (
+                    {m.startsWith('built-in') && (
                       <span className="text-[10px] text-muted-foreground">(default)</span>
                     )}
                   </button>

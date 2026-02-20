@@ -18,6 +18,7 @@ function id(): string {
 
 // ── Silos ─────────────────────────────────────────────────────────────────────
 
+export const BUILT_IN_MODEL = 'built-in (all-MiniLM-L6-v2)';
 export const DEFAULT_MODEL = 'nomic-embed-text';
 
 export const mockSilos: SiloStatus[] = [

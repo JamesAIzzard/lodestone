@@ -12,7 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { mockServerStatus, DEFAULT_MODEL } from '../../shared/mock-data';
+import { mockServerStatus, BUILT_IN_MODEL } from '../../shared/mock-data';
 
 const STEPS = ['Ollama', 'Silo', 'Indexing'] as const;
 type Step = (typeof STEPS)[number];
@@ -34,7 +34,7 @@ export default function OnboardingView() {
   const [siloName, setSiloName] = useState('');
   const [directories, setDirectories] = useState<string[]>([]);
   const [extensions, setExtensions] = useState<string[]>(['.md', '.py']);
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [model, setModel] = useState(BUILT_IN_MODEL);
 
   // Step 3 state
   const [indexProgress, setIndexProgress] = useState(0);
@@ -80,7 +80,8 @@ export default function OnboardingView() {
   function canAdvance(): boolean {
     switch (step) {
       case 'Ollama':
-        return ollamaFound === true;
+        // Ollama is optional — user can skip once the check finishes
+        return !ollamaChecking && ollamaFound !== null;
       case 'Silo':
         return siloName.trim().length > 0 && directories.length > 0 && extensions.length > 0;
       case 'Indexing':
@@ -156,13 +157,13 @@ export default function OnboardingView() {
 
         {/* Step content */}
         <div className="rounded-lg border border-border bg-card p-6">
-          {/* ── Step 1: Ollama Check ────────────────── */}
+          {/* ── Step 1: Ollama Detection (Optional) ──── */}
           {step === 'Ollama' && (
             <div>
               <h2 className="text-sm font-medium text-foreground">Ollama Connection</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Lodestone uses Ollama to run embedding models locally.
-                Your data never leaves your machine.
+                Lodestone includes a built-in embedding model — it works out of the box.
+                Connecting Ollama unlocks higher-quality and specialised models.
               </p>
 
               <div className="mt-5 flex flex-col items-center gap-4">
@@ -191,13 +192,13 @@ export default function OnboardingView() {
 
                 {!ollamaChecking && ollamaFound === false && (
                   <div className="w-full">
-                    <div className="flex items-center gap-2 text-sm text-red-400">
+                    <div className="flex items-center gap-2 text-sm text-amber-400">
                       <XCircle className="h-5 w-5" />
-                      Ollama not detected
+                      Ollama not detected — using built-in model
                     </div>
                     <p className="mt-3 text-xs text-muted-foreground">
-                      Ollama is a local tool that runs AI models on your machine.
-                      Install it, then click Re-check.
+                      The built-in model is ready to go. You can optionally install
+                      Ollama later for access to more powerful models.
                     </p>
                     <div className="mt-3 flex gap-2">
                       <Button
@@ -295,9 +296,10 @@ export default function OnboardingView() {
                 onChange={(e) => setModel(e.target.value)}
                 className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               >
-                {mockServerStatus.availableModels.map((m) => (
+                <option value={BUILT_IN_MODEL}>{BUILT_IN_MODEL}</option>
+                {ollamaFound && mockServerStatus.availableModels.map((m) => (
                   <option key={m} value={m}>
-                    {m}
+                    {m} (Ollama)
                   </option>
                 ))}
               </select>
@@ -347,6 +349,11 @@ export default function OnboardingView() {
             {step === 'Indexing' ? (
               <>
                 Go to Dashboard
+                <ArrowRight className="h-4 w-4" />
+              </>
+            ) : step === 'Ollama' && ollamaFound === false ? (
+              <>
+                Continue with Built-in Model
                 <ArrowRight className="h-4 w-4" />
               </>
             ) : (

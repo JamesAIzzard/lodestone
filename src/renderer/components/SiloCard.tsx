@@ -2,7 +2,6 @@ import { FileText, Blocks, FolderOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from './ui/badge';
 import type { SiloStatus, WatcherState } from '../../shared/types';
-import { DEFAULT_MODEL } from '../../shared/mock-data';
 
 function abbreviatePath(p: string): string {
   return p.replace(/^\/home\/[^/]+/, '~');
@@ -26,9 +25,13 @@ interface SiloCardProps {
 }
 
 export default function SiloCard({ silo, onClick }: SiloCardProps) {
-  const { config, indexedFileCount, chunkCount, watcherState } = silo;
+  const { config, indexedFileCount, chunkCount, watcherState, reconcileProgress } = silo;
   const state = stateConfig[watcherState];
-  const hasModelOverride = config.modelOverride !== null && config.modelOverride !== DEFAULT_MODEL;
+  const hasModelOverride = config.modelOverride !== null;
+  const isIndexing = watcherState === 'indexing';
+  const progressPct = reconcileProgress && reconcileProgress.total > 0
+    ? Math.round((reconcileProgress.current / reconcileProgress.total) * 100)
+    : null;
 
   return (
     <button
@@ -40,13 +43,30 @@ export default function SiloCard({ silo, onClick }: SiloCardProps) {
       )}
     >
       {/* Header: name + status */}
-      <div className="flex items-start justify-between">
-        <h3 className="text-sm font-semibold text-foreground">{config.name}</h3>
-        <Badge variant={state.badgeVariant} className="gap-1.5">
+      <div className="flex items-start justify-between gap-2">
+        <h3 className="text-sm font-semibold text-foreground truncate">{config.name}</h3>
+        <Badge variant={state.badgeVariant} className="shrink-0 gap-1.5 whitespace-nowrap">
           <span className={cn('inline-block h-1.5 w-1.5 rounded-full', state.dotClass)} />
-          {state.label}
+          {isIndexing && progressPct !== null
+            ? `Indexing ${progressPct}%`
+            : state.label}
         </Badge>
       </div>
+
+      {/* Progress bar (shown while indexing) */}
+      {isIndexing && reconcileProgress && reconcileProgress.total > 0 && (
+        <div className="flex flex-col gap-1">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full bg-amber-500 transition-[width] duration-300"
+              style={{ width: `${progressPct ?? 0}%` }}
+            />
+          </div>
+          <span className="text-[10px] text-muted-foreground">
+            {reconcileProgress.current.toLocaleString()} / {reconcileProgress.total.toLocaleString()} files
+          </span>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="flex gap-4 text-xs text-muted-foreground">

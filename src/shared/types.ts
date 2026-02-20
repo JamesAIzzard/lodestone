@@ -19,6 +19,11 @@ export interface SiloStatus {
   databaseSizeBytes: number;
   watcherState: WatcherState;
   errorMessage?: string;
+  /** Reconciliation / indexing progress (only present while indexing) */
+  reconcileProgress?: {
+    current: number;
+    total: number;
+  };
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────

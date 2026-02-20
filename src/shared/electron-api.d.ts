@@ -7,6 +7,13 @@ export interface ElectronAPI {
 
   // ── Silos ──────────────────────────────────────────────────────────────────
   getSilos: () => Promise<SiloStatus[]>;
+  createSilo: (opts: {
+    name: string;
+    directories: string[];
+    extensions: string[];
+    dbPath: string;
+    model: string;
+  }) => Promise<{ success: boolean; error?: string }>;
   search: (query: string, siloName?: string) => Promise<SearchResult[]>;
 
   // ── Activity ───────────────────────────────────────────────────────────────

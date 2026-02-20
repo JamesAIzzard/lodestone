@@ -20,9 +20,10 @@ const COMMON_EXTENSIONS = ['.md', '.py', '.ts', '.js', '.toml', '.yaml', '.json'
 interface AddSiloModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCreated?: () => void;
 }
 
-export default function AddSiloModal({ open, onOpenChange }: AddSiloModalProps) {
+export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloModalProps) {
   const [stepIndex, setStepIndex] = useState(0);
   const [name, setName] = useState('');
   const [directories, setDirectories] = useState<string[]>([]);
@@ -30,6 +31,8 @@ export default function AddSiloModal({ open, onOpenChange }: AddSiloModalProps) 
   const [dbPath, setDbPath] = useState('');
   const [model, setModel] = useState('built-in');
   const [availableModels, setAvailableModels] = useState<string[]>(['built-in (all-MiniLM-L6-v2)']);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const step = STEPS[stepIndex];
   const isFirst = stepIndex === 0;
@@ -60,6 +63,8 @@ export default function AddSiloModal({ open, onOpenChange }: AddSiloModalProps) 
     setExtensions(['.md', '.py']);
     setDbPath('');
     setModel('built-in');
+    setError(null);
+    setCreating(false);
   }
 
   function handleClose(open: boolean) {
@@ -82,11 +87,30 @@ export default function AddSiloModal({ open, onOpenChange }: AddSiloModalProps) 
     }
   }
 
-  function handleNext() {
+  async function handleNext() {
     if (isLast) {
-      // Would create the silo in later phases
-      alert(`Silo "${name}" created (mock)\ndb_path: ${dbPath}`);
-      handleClose(false);
+      setCreating(true);
+      setError(null);
+      try {
+        const result = await window.electronAPI?.createSilo({
+          name: name.trim(),
+          directories,
+          extensions,
+          dbPath: dbPath.trim(),
+          model,
+        });
+        if (result && !result.success) {
+          setError(result.error ?? 'Unknown error');
+          setCreating(false);
+          return;
+        }
+        handleClose(false);
+        onCreated?.();
+      } catch (err) {
+        setError(String(err));
+      } finally {
+        setCreating(false);
+      }
     } else {
       setStepIndex((i) => i + 1);
     }
@@ -276,14 +300,20 @@ export default function AddSiloModal({ open, onOpenChange }: AddSiloModalProps) 
           )}
         </div>
 
+        {error && (
+          <p className="text-xs text-red-400">{error}</p>
+        )}
+
         <DialogFooter>
           {!isFirst && (
-            <Button variant="ghost" size="sm" onClick={() => setStepIndex((i) => i - 1)}>
+            <Button variant="ghost" size="sm" onClick={() => setStepIndex((i) => i - 1)} disabled={creating}>
               Back
             </Button>
           )}
-          <Button size="sm" onClick={handleNext} disabled={!canAdvance()}>
-            {isLast ? (
+          <Button size="sm" onClick={handleNext} disabled={!canAdvance() || creating}>
+            {creating ? (
+              'Creating...'
+            ) : isLast ? (
               <>
                 <Plus className="h-3.5 w-3.5" />
                 Create Silo

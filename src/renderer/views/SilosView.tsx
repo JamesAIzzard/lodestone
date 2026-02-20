@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import SiloCard from '@/components/SiloCard';
@@ -11,10 +11,32 @@ export default function SilosView() {
   const [selectedSilo, setSelectedSilo] = useState<SiloStatus | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  function fetchSilos() {
+    window.electronAPI?.getSilos().then(setSilos);
+  }
 
   useEffect(() => {
-    window.electronAPI?.getSilos().then(setSilos);
+    fetchSilos();
   }, []);
+
+  // Poll while any silo is indexing
+  useEffect(() => {
+    const anyIndexing = silos.some((s) => s.watcherState === 'indexing');
+    if (anyIndexing && !pollRef.current) {
+      pollRef.current = setInterval(fetchSilos, 2000);
+    } else if (!anyIndexing && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [silos]);
 
   function handleCardClick(silo: SiloStatus) {
     setSelectedSilo(silo);
@@ -53,7 +75,7 @@ export default function SilosView() {
         onOpenChange={setDetailOpen}
       />
 
-      <AddSiloModal open={addOpen} onOpenChange={setAddOpen} />
+      <AddSiloModal open={addOpen} onOpenChange={setAddOpen} onCreated={fetchSilos} />
     </div>
   );
 }

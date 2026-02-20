@@ -242,6 +242,7 @@ function registerIpcHandlers(): void {
         databaseSizeBytes: status.databaseSizeBytes,
         watcherState: status.watcherState,
         errorMessage: status.errorMessage,
+        reconcileProgress: status.reconcileProgress,
       });
     }
     return statuses;
@@ -333,6 +334,59 @@ function registerIpcHandlers(): void {
   ipcMain.handle('config:path', async (): Promise<string> => {
     return getDefaultConfigPath(getUserDataDir());
   });
+
+  // Create a new silo
+  ipcMain.handle(
+    'silos:create',
+    async (
+      _event,
+      opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string },
+    ): Promise<{ success: boolean; error?: string }> => {
+      if (!config) return { success: false, error: 'Config not loaded' };
+
+      const slug = opts.name.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+      if (slug.length === 0) return { success: false, error: 'Invalid silo name' };
+      if (siloManagers.has(slug)) return { success: false, error: `Silo "${slug}" already exists` };
+      if (opts.directories.length === 0) return { success: false, error: 'At least one directory is required' };
+
+      // Normalize model name — the UI may send display strings like "built-in (all-MiniLM-L6-v2)"
+      const model = opts.model.startsWith('built-in') ? 'built-in' : opts.model;
+
+      // Add to config and persist
+      const siloToml: import('./backend/config').SiloTomlConfig = {
+        directories: opts.directories,
+        db_path: opts.dbPath,
+        extensions: opts.extensions.length > 0 ? opts.extensions : undefined,
+        model: model !== config.embeddings.model ? model : undefined,
+      };
+
+      config.silos[slug] = siloToml;
+      const configPath = getDefaultConfigPath(getUserDataDir());
+      saveConfig(configPath, config);
+      console.log(`[main] Saved new silo "${slug}" to config`);
+
+      // Create the silo manager and register it immediately so the UI can see it
+      const resolved = resolveSiloConfig(slug, siloToml, config);
+      const manager = new SiloManager(
+        resolved,
+        config.embeddings.ollama_url,
+        getModelCacheDir(),
+        getUserDataDir(),
+      );
+
+      siloManagers.set(slug, manager);
+      if (tray) tray.setContextMenu(buildTrayMenu());
+
+      // Start indexing in the background — don't block the UI
+      manager.start().then(() => {
+        console.log(`[main] Silo "${slug}" started and indexed`);
+      }).catch((err) => {
+        console.error(`[main] Failed to start silo "${slug}":`, err);
+      });
+
+      return { success: true };
+    },
+  );
 }
 
 // ── App Lifecycle ────────────────────────────────────────────────────────────

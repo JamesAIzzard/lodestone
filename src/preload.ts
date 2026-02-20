@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Silos
   getSilos: (): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:list'),
+  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string }): Promise<unknown> =>
+    ipcRenderer.invoke('silos:create', opts),
   search: (query: string, siloName?: string): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:search', query, siloName),
 

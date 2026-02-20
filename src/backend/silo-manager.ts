@@ -34,6 +34,7 @@ export interface SiloManagerStatus {
   databaseSizeBytes: number;
   watcherState: WatcherState;
   errorMessage?: string;
+  reconcileProgress?: { current: number; total: number };
 }
 
 // ── SiloManager ──────────────────────────────────────────────────────────────
@@ -51,6 +52,7 @@ export class SiloManager {
   private activityLog: WatcherEvent[] = [];
   private watcherState: WatcherState = 'idle';
   private errorMessage?: string;
+  private reconcileProgress?: { current: number; total: number };
 
   constructor(
     private readonly config: ResolvedSiloConfig,
@@ -99,6 +101,7 @@ export class SiloManager {
     } catch (err) {
       console.error(`[silo:${this.config.name}] Reconciliation failed:`, err);
     }
+    this.reconcileProgress = undefined;
     this.watcherState = 'idle';
 
     // 4. Create and start the file watcher
@@ -159,6 +162,7 @@ export class SiloManager {
       databaseSizeBytes: dbSize,
       watcherState: this.watcherState,
       errorMessage: this.errorMessage,
+      reconcileProgress: this.reconcileProgress,
     };
   }
 
@@ -199,6 +203,11 @@ export class SiloManager {
 
   private onReconcileProgress: ReconcileProgressHandler = (progress) => {
     if (progress.phase === 'scanning') return;
+    if (progress.phase === 'done') {
+      this.reconcileProgress = undefined;
+      return;
+    }
+    this.reconcileProgress = { current: progress.current, total: progress.total };
     if (progress.total > 0 && progress.current % 10 === 0) {
       console.log(`[silo:${this.config.name}] Reconcile: ${progress.current}/${progress.total}`);
     }

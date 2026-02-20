@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 import {
@@ -335,6 +336,52 @@ function registerIpcHandlers(): void {
     return getDefaultConfigPath(getUserDataDir());
   });
 
+  // Delete a silo
+  ipcMain.handle(
+    'silos:delete',
+    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
+      if (!config) return { success: false, error: 'Config not loaded' };
+
+      const manager = siloManagers.get(name);
+      if (!manager) return { success: false, error: `Silo "${name}" not found` };
+
+      // 1. Stop the silo manager (watcher, embedding service, final persist)
+      try {
+        await manager.stop();
+      } catch (err) {
+        console.error(`[main] Error stopping silo "${name}":`, err);
+      }
+      siloManagers.delete(name);
+
+      // 2. Delete the database file from disk
+      const siloToml = config.silos[name];
+      if (siloToml) {
+        const dbPath = path.isAbsolute(siloToml.db_path)
+          ? siloToml.db_path
+          : path.join(getUserDataDir(), siloToml.db_path);
+        try {
+          if (fs.existsSync(dbPath)) {
+            fs.unlinkSync(dbPath);
+            console.log(`[main] Deleted database file: ${dbPath}`);
+          }
+        } catch (err) {
+          console.error(`[main] Failed to delete database file:`, err);
+        }
+      }
+
+      // 3. Remove from config and persist
+      delete config.silos[name];
+      const configPath = getDefaultConfigPath(getUserDataDir());
+      saveConfig(configPath, config);
+      console.log(`[main] Silo "${name}" deleted from config`);
+
+      // 4. Update tray menu
+      if (tray) tray.setContextMenu(buildTrayMenu());
+
+      return { success: true };
+    },
+  );
+
   // Create a new silo
   ipcMain.handle(
     'silos:create',
@@ -391,17 +438,19 @@ function registerIpcHandlers(): void {
 
 // ── App Lifecycle ────────────────────────────────────────────────────────────
 
-app.on('ready', async () => {
+app.on('ready', () => {
   registerIpcHandlers();
   createWindow();
   createTray();
 
-  // Initialize backend asynchronously (don't block window creation)
-  try {
-    await initializeBackend();
-  } catch (err) {
-    console.error('[main] Backend initialization error:', err);
-  }
+  // Defer backend init until the renderer has loaded so that heavy
+  // reconciliation / ONNX embedding work doesn't starve the event loop
+  // and leave the window blank.
+  mainWindow!.webContents.once('did-finish-load', () => {
+    initializeBackend().catch((err) => {
+      console.error('[main] Backend initialization error:', err);
+    });
+  });
 });
 
 app.on('before-quit', () => {

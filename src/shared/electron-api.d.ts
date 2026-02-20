@@ -14,6 +14,7 @@ export interface ElectronAPI {
     dbPath: string;
     model: string;
   }) => Promise<{ success: boolean; error?: string }>;
+  deleteSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   search: (query: string, siloName?: string) => Promise<SearchResult[]>;
 
   // ── Activity ───────────────────────────────────────────────────────────────

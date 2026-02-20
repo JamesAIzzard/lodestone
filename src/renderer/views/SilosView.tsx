@@ -73,6 +73,7 @@ export default function SilosView() {
         silo={selectedSilo}
         open={detailOpen}
         onOpenChange={setDetailOpen}
+        onDeleted={fetchSilos}
       />
 
       <AddSiloModal open={addOpen} onOpenChange={setAddOpen} onCreated={fetchSilos} />

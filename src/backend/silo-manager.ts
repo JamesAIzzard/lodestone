@@ -53,6 +53,8 @@ export class SiloManager {
   private watcherState: WatcherState = 'idle';
   private errorMessage?: string;
   private reconcileProgress?: { current: number; total: number };
+  private lastKnownSizeBytes = 0;
+  private lastPersistedChunkCount = 0;
 
   constructor(
     private readonly config: ResolvedSiloConfig,
@@ -81,7 +83,17 @@ export class SiloManager {
       console.log(`[silo:${this.config.name}] Created new database`);
     }
 
-    // 3. Run startup reconciliation
+    // 3. Seed cached size from existing file on disk (if any)
+    this.lastKnownSizeBytes = this.readFileSizeFromDisk();
+    if (this.lastKnownSizeBytes > 0) {
+      this.lastPersistedChunkCount = await getChunkCount(this.db);
+    }
+
+    // 4. Start periodic persistence BEFORE reconciliation so the
+    //    on-disk file (and cached size) updates during long index builds.
+    this.persistTimer = setInterval(() => this.persistIfDirty(), PERSIST_INTERVAL_MS);
+
+    // 5. Run startup reconciliation
     this.watcherState = 'indexing';
     try {
       const result = await reconcile(
@@ -104,13 +116,14 @@ export class SiloManager {
     this.reconcileProgress = undefined;
     this.watcherState = 'idle';
 
-    // 4. Create and start the file watcher
+    // 6. Force an immediate persist so the size is accurate the
+    //    moment the UI sees the "Idle" state.
+    await this.persistIfDirty();
+
+    // 7. Create and start the file watcher
     this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db);
     this.watcher.on((event) => this.handleWatcherEvent(event));
     this.watcher.start();
-
-    // 5. Start periodic persistence
-    this.persistTimer = setInterval(() => this.persistIfDirty(), PERSIST_INTERVAL_MS);
 
     console.log(`[silo:${this.config.name}] Started (watching ${this.config.directories.join(', ')})`);
   }
@@ -152,7 +165,7 @@ export class SiloManager {
   async getStatus(): Promise<SiloManagerStatus> {
     const fileCount = this.db ? await getIndexedFiles(this.db) : new Set();
     const chunks = this.db ? await getChunkCount(this.db) : 0;
-    const dbSize = this.getDatabaseSizeBytes();
+    const dbSize = this.estimateDatabaseSizeBytes(chunks);
 
     return {
       name: this.config.name,
@@ -197,6 +210,8 @@ export class SiloManager {
     const dbPath = this.resolveDbPath();
     await persistDatabase(this.db, dbPath);
     this.dirty = false;
+    this.lastKnownSizeBytes = this.readFileSizeFromDisk();
+    this.lastPersistedChunkCount = await getChunkCount(this.db);
   }
 
   // ── Internal ───────────────────────────────────────────────────────────────
@@ -252,10 +267,35 @@ export class SiloManager {
     return path.join(this.userDataDir, this.config.dbPath);
   }
 
-  private getDatabaseSizeBytes(): number {
-    const dbPath = this.resolveDbPath();
+  /**
+   * Estimate the current database size in bytes.
+   *
+   * When the DB matches what's on disk, returns the exact persisted size.
+   * When dirty (in-memory changes not yet written), extrapolates from the
+   * last-known bytes-per-chunk ratio so the UI shows the size growing
+   * live during indexing rather than sitting at 0 or a stale value.
+   */
+  private estimateDatabaseSizeBytes(currentChunkCount: number): number {
+    if (!this.dirty) return this.lastKnownSizeBytes;
+
+    // We have a baseline from a previous persist — extrapolate
+    if (this.lastPersistedChunkCount > 0 && this.lastKnownSizeBytes > 0) {
+      const bytesPerChunk = this.lastKnownSizeBytes / this.lastPersistedChunkCount;
+      return Math.round(currentChunkCount * bytesPerChunk);
+    }
+
+    // Brand-new silo, never persisted — rough estimate.
+    // Orama JSON with 384-dim embeddings typically runs ~13 KB/chunk.
+    if (currentChunkCount > 0) {
+      return currentChunkCount * 13_000;
+    }
+
+    return 0;
+  }
+
+  private readFileSizeFromDisk(): number {
     try {
-      const stat = fs.statSync(dbPath);
+      const stat = fs.statSync(this.resolveDbPath());
       return stat.size;
     } catch {
       return 0;

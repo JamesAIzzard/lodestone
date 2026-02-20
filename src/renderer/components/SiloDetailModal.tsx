@@ -14,7 +14,9 @@ import { useState, useEffect } from 'react';
 import type { SiloStatus, ActivityEvent } from '../../shared/types';
 
 function abbreviatePath(p: string): string {
-  return p.replace(/^\/home\/[^/]+/, '~');
+  return p
+    .replace(/^[A-Z]:\\Users\\[^\\]+/, '~')
+    .replace(/^\/home\/[^/]+/, '~');
 }
 
 function formatBytes(bytes: number): string {
@@ -43,10 +45,14 @@ interface SiloDetailModalProps {
   silo: SiloStatus | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onDeleted?: () => void;
 }
 
-export default function SiloDetailModal({ silo, open, onOpenChange }: SiloDetailModalProps) {
+export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted }: SiloDetailModalProps) {
   const [siloEvents, setSiloEvents] = useState<ActivityEvent[]>([]);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open && silo) {
@@ -54,7 +60,26 @@ export default function SiloDetailModal({ silo, open, onOpenChange }: SiloDetail
         setSiloEvents(events.filter((e) => e.siloName === silo.config.name).slice(0, 8));
       });
     }
+    if (!open) {
+      setConfirmDelete(false);
+      setDeleting(false);
+      setDeleteError(null);
+    }
   }, [open, silo]);
+
+  async function handleDelete() {
+    if (!silo) return;
+    setDeleting(true);
+    setDeleteError(null);
+    const result = await window.electronAPI?.deleteSilo(silo.config.name);
+    if (result?.success) {
+      onOpenChange(false);
+      onDeleted?.();
+    } else {
+      setDeleteError(result?.error ?? 'Failed to delete silo');
+      setDeleting(false);
+    }
+  }
 
   if (!silo) return null;
 
@@ -146,15 +171,53 @@ export default function SiloDetailModal({ silo, open, onOpenChange }: SiloDetail
           )}
         </section>
 
+        {/* Delete confirmation */}
+        {confirmDelete && (
+          <div className="mt-4 rounded-md border border-red-500/30 bg-red-500/5 p-4">
+            <p className="text-sm text-foreground">
+              Permanently delete <span className="font-semibold">{config.name}</span>?
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This will remove the silo configuration, stop the file watcher, and delete the
+              vector database from disk. This action cannot be undone.
+            </p>
+            {deleteError && (
+              <p className="mt-2 text-xs text-red-400">{deleteError}</p>
+            )}
+            <div className="mt-3 flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmDelete(false)}
+                disabled={deleting}
+                autoFocus
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleDelete}
+                disabled={deleting}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {deleting ? 'Deleting…' : 'Delete'}
+              </Button>
+            </div>
+          </div>
+        )}
+
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={() => alert('Rebuild triggered (mock)')}>
             <RotateCcw className="h-3.5 w-3.5" />
             Rebuild Index
           </Button>
-          <Button variant="destructive" size="sm" onClick={() => alert('Delete triggered (mock)')}>
-            <Trash2 className="h-3.5 w-3.5" />
-            Delete Silo
-          </Button>
+          {!confirmDelete && (
+            <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)}>
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete Silo
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

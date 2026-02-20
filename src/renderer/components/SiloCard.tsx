@@ -4,7 +4,9 @@ import { Badge } from './ui/badge';
 import type { SiloStatus, WatcherState } from '../../shared/types';
 
 function abbreviatePath(p: string): string {
-  return p.replace(/^\/home\/[^/]+/, '~');
+  return p
+    .replace(/^[A-Z]:\\Users\\[^\\]+/, '~')
+    .replace(/^\/home\/[^/]+/, '~');
 }
 
 function formatBytes(bytes: number): string {
@@ -93,9 +95,9 @@ export default function SiloCard({ silo, onClick }: SiloCardProps) {
       {/* Directories */}
       <div className="flex flex-col gap-1">
         {config.directories.map((dir) => (
-          <span key={dir} className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
+          <span key={dir} className="flex items-center gap-1.5 text-xs text-muted-foreground/70 min-w-0">
             <FolderOpen className="h-3 w-3 shrink-0" />
-            {abbreviatePath(dir)}
+            <span className="truncate">{abbreviatePath(dir)}</span>
           </span>
         ))}
       </div>

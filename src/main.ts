@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import started from 'electron-squirrel-startup';
 
@@ -27,6 +27,21 @@ const createWindow = () => {
     );
   }
 };
+
+// ── IPC Handlers ──────────────────────────────────────────────────────────────
+
+ipcMain.handle('dialog:selectDirectories', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory', 'multiSelections'],
+  });
+  return result.canceled ? [] : result.filePaths;
+});
+
+ipcMain.handle('shell:openPath', async (_event, filePath: string) => {
+  await shell.openPath(filePath);
+});
+
+// ── App Lifecycle ─────────────────────────────────────────────────────────────
 
 app.on('ready', createWindow);
 

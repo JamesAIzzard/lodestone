@@ -109,6 +109,23 @@ export interface SiloMeta {
 
 const META_VERSION = 2;
 
+// ── Stored Config Blob ──────────────────────────────────────────────────────
+
+/**
+ * Configuration snapshot stored inside the database for portable reconnection.
+ * When a user reconnects an existing .db file on a new machine, this blob
+ * provides the original silo settings so the wizard can pre-populate fields.
+ */
+export interface StoredSiloConfig {
+  name: string;
+  description?: string;
+  directories: string[];
+  extensions: string[];
+  ignore: string[];
+  ignoreFiles: string[];
+  model: string;
+}
+
 // ── Create ───────────────────────────────────────────────────────────────────
 
 /**
@@ -519,6 +536,53 @@ export function saveMeta(db: SiloDatabase, model: string, dimensions: number): v
     upsert.run('version', String(meta.version));
   });
   transaction();
+}
+
+// ── Config Blob ─────────────────────────────────────────────────────────────
+
+/**
+ * Save a silo configuration snapshot to the meta table as a JSON blob.
+ */
+export function saveConfigBlob(db: SiloDatabase, config: StoredSiloConfig): void {
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+    .run('config', JSON.stringify(config));
+}
+
+/**
+ * Load the stored silo configuration from the meta table.
+ * Returns null if no config blob has been stored yet.
+ */
+export function loadConfigBlob(db: SiloDatabase): StoredSiloConfig | null {
+  const row = db.prepare(`SELECT value FROM meta WHERE key = 'config'`).get() as { value: string } | undefined;
+  if (!row) return null;
+  try {
+    return JSON.parse(row.value) as StoredSiloConfig;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Open a database file read-only, read the config blob and meta, then close it.
+ * Used by the wizard to peek at stored config when reconnecting an existing DB.
+ * Does not load sqlite-vec since we only read the meta table.
+ */
+export function readConfigFromDbFile(dbPath: string): {
+  config: StoredSiloConfig | null;
+  meta: SiloMeta | null;
+} | null {
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const config = loadConfigBlob(db);
+      const meta = loadMeta(db);
+      return { config, meta };
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
 }
 
 // ── Internal Helpers ─────────────────────────────────────────────────────────

@@ -1,11 +1,29 @@
 import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings } from './types';
 
+/** Config snapshot stored inside a portable silo database. */
+export interface StoredSiloConfigResponse {
+  config: {
+    name: string;
+    description?: string;
+    directories: string[];
+    extensions: string[];
+    ignore: string[];
+    ignoreFiles: string[];
+    model: string;
+  } | null;
+  meta: {
+    model: string;
+    dimensions: number;
+  } | null;
+}
+
 export interface ElectronAPI {
   // ── Dialogs & Shell ────────────────────────────────────────────────────────
   selectDirectories: () => Promise<string[]>;
   selectDbFile: () => Promise<string | null>;
   saveDbFile: (defaultName: string) => Promise<string | null>;
   openPath: (path: string) => Promise<void>;
+  readDbConfig: (dbPath: string) => Promise<StoredSiloConfigResponse | null>;
 
   // ── Silos ──────────────────────────────────────────────────────────────────
   getSilos: () => Promise<SiloStatus[]>;

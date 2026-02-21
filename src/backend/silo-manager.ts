@@ -20,10 +20,12 @@ import {
   deleteMtime,
   loadMeta,
   saveMeta,
+  saveConfigBlob,
   makeStoredKey,
   resolveStoredKey,
   type SiloDatabase,
   type SiloSearchResult,
+  type StoredSiloConfig,
 } from './store';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
@@ -130,6 +132,13 @@ export class SiloManager {
         this.modelMismatch = true;
       }
     }
+    this.persistConfigBlob();
+  }
+
+  /** Update the silo description and persist to DB config blob. */
+  updateDescription(description: string): void {
+    this.config = { ...this.config, description };
+    this.persistConfigBlob();
   }
 
   /**
@@ -222,6 +231,7 @@ export class SiloManager {
       this.reconcileProgress = undefined;
 
       if (!this.stopped) {
+        this.persistConfigBlob();
         this.watcherState = 'idle';
         this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db, this.pauseToken);
         this.watcher.on((event) => this.handleWatcherEvent(event));
@@ -229,6 +239,21 @@ export class SiloManager {
         console.log(`[silo:${this.config.name}] Watcher restarted after ${reason} change`);
       }
     }
+  }
+
+  /** Build and persist the current config as a JSON blob in the database. */
+  private persistConfigBlob(): void {
+    if (!this.db) return;
+    const blob: StoredSiloConfig = {
+      name: this.config.name,
+      description: this.config.description || undefined,
+      directories: this.config.directories,
+      extensions: this.config.extensions,
+      ignore: this.config.ignore,
+      ignoreFiles: this.config.ignoreFiles,
+      model: this.config.model,
+    };
+    saveConfigBlob(this.db, blob);
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -293,7 +318,10 @@ export class SiloManager {
     }
     this.reconcileProgress = undefined;
 
-    // 6. Bail if stop() was called during reconciliation
+    // 6. Persist config blob for portable reconnection
+    this.persistConfigBlob();
+
+    // 7. Bail if stop() was called during reconciliation
     if (this.stopped) return;
     this.watcherState = 'idle';
 

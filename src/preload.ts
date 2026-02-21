@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('dialog:saveDbFile', defaultName),
   openPath: (path: string): Promise<void> =>
     ipcRenderer.invoke('shell:openPath', path),
+  readDbConfig: (dbPath: string): Promise<unknown> =>
+    ipcRenderer.invoke('db:readConfig', dbPath),
 
   // Silos
   getSilos: (): Promise<unknown[]> =>

@@ -37,6 +37,10 @@ export interface SiloSearchResult {
   filePath: string;
   score: number;
   sectionName: string | null;
+  headingPath: string[];
+  chunkText: string;
+  startLine: number;
+  endLine: number;
 }
 
 export type SiloDatabase = AnyOrama;
@@ -139,8 +143,8 @@ export async function searchSilo(
     mode: 'vector',
   });
 
-  // Aggregate by file: keep best score per file
-  const fileScores = new Map<string, { score: number; sectionName: string | null }>();
+  // Aggregate by file: keep best-scoring chunk per file
+  const fileScores = new Map<string, Omit<SiloSearchResult, 'filePath'>>();
 
   for (const hit of results.hits) {
     const doc = hit.document as unknown as StoredChunk;
@@ -150,13 +154,17 @@ export async function searchSilo(
       fileScores.set(doc.filePath, {
         score: hit.score,
         sectionName: headingPath.length > 0 ? headingPath[headingPath.length - 1] : null,
+        headingPath,
+        chunkText: doc.text,
+        startLine: doc.startLine,
+        endLine: doc.endLine,
       });
     }
   }
 
   // Sort by score descending and limit
   return Array.from(fileScores.entries())
-    .map(([filePath, { score, sectionName }]) => ({ filePath, score, sectionName }))
+    .map(([filePath, rest]) => ({ filePath, ...rest }))
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults);
 }

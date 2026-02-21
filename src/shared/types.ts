@@ -32,6 +32,10 @@ export interface SearchResult {
   filePath: string;
   score: number;
   matchingSection: string | null;
+  headingPath: string[];
+  chunkText: string;
+  startLine: number;
+  endLine: number;
   siloName: string;
 }
 

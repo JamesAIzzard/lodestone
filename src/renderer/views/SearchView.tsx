@@ -28,6 +28,7 @@ export default function SearchView() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [expandedResults, setExpandedResults] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     window.electronAPI?.getSilos().then(setSilos);
@@ -37,6 +38,7 @@ export default function SearchView() {
     if (!query.trim() || searching) return;
     setHasSearched(true);
     setSearching(true);
+    setExpandedResults(new Set());
     try {
       const silo = selectedSilo === 'all' ? undefined : selectedSilo;
       const res = await window.electronAPI?.search(query, silo) ?? [];
@@ -119,9 +121,9 @@ export default function SearchView() {
                     <span className="truncate text-sm font-medium text-foreground">
                       {fileName(result.filePath)}
                     </span>
-                    {result.matchingSection && (
+                    {result.headingPath.length > 0 && (
                       <span className="shrink-0 text-xs text-muted-foreground/60">
-                        — {result.matchingSection}
+                        — {result.headingPath.join(' > ')}
                       </span>
                     )}
                   </div>
@@ -131,6 +133,25 @@ export default function SearchView() {
                       {result.siloName}
                     </span>
                   </div>
+                  {result.chunkText && (
+                    <p
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setExpandedResults((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(i)) next.delete(i);
+                          else next.add(i);
+                          return next;
+                        });
+                      }}
+                      className={cn(
+                        'mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/70 cursor-pointer',
+                        !expandedResults.has(i) && 'line-clamp-2',
+                      )}
+                    >
+                      {result.chunkText}
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">

@@ -262,6 +262,10 @@ function registerIpcHandlers(): void {
           filePath: r.filePath,
           score: r.score,
           matchingSection: r.sectionName,
+          headingPath: r.headingPath,
+          chunkText: r.chunkText,
+          startLine: r.startLine,
+          endLine: r.endLine,
           siloName: name as string,
         });
       }

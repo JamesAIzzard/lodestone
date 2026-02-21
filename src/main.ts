@@ -16,6 +16,7 @@ import { SiloManager } from './backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, resolveModelAlias } from './backend/model-registry';
 import { startMcpServer } from './backend/mcp-server';
 import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus } from './shared/types';
+import { calibrateAndMerge, type RawSiloResult } from './backend/search-merge';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -139,8 +140,8 @@ function buildTrayMenu(): Menu {
           : state === 'error' ? '✕ Error'
             : '● Idle';
 
-  const siloItems = Array.from(siloManagers.entries()).map(([name]) => ({
-    label: `${name}  ${statusLabel('idle')}`,
+  const siloItems = Array.from(siloManagers.entries()).map(([name, manager]) => ({
+    label: `${name}  ${statusLabel(manager.getStatus().watcherState)}`,
     enabled: false,
   }));
 
@@ -440,15 +441,8 @@ function registerIpcHandlers(): void {
       group.push([name as string, manager]);
     }
 
-    // Collect raw results with bestCosineSimilarity for cross-silo calibration
-    const raw: Array<{
-      filePath: string;
-      rrfScore: number;
-      bestCosineSimilarity: number;
-      matchType: import('./shared/types').MatchType;
-      chunks: SearchResult['chunks'];
-      siloName: string;
-    }> = [];
+    // Collect raw results from all silos
+    const raw: RawSiloResult[] = [];
 
     // For each model group: embed once, then search all silos with the shared vector
     for (const [model, group] of byModel) {
@@ -472,38 +466,12 @@ function registerIpcHandlers(): void {
       }
     }
 
-    // Determine the set of silos that produced results
-    const silosWithResults = new Set(raw.map((r) => r.siloName));
-    const crossSilo = silosWithResults.size > 1;
+    const merged = calibrateAndMerge(raw);
+    merged.sort((a, b) => b.score - a.score);
 
-    // Build final results, applying calibration only when merging across silos.
-    // RRF scores are rank-based and only comparable within one silo — the top
-    // result in every silo scores near 1.0 regardless of actual relevance.
-    // To make scores comparable across silos, multiply by the silo's mean
-    // cosine similarity. This discounts entire silos that are weakly relevant
-    // to the query. Mean is more robust than max — it reflects overall silo
-    // relevance rather than being dominated by a single strong outlier.
-    //
-    // We use a silo-level factor (not per-file) because keyword-only results
-    // have no cosine signal — per-file calibration would zero them out.
-    const siloMeanCosine = new Map<string, number>();
-    if (crossSilo) {
-      const siloSums = new Map<string, { sum: number; count: number }>();
-      for (const r of raw) {
-        if (r.bestCosineSimilarity <= 0) continue; // skip keyword-only (no cosine data)
-        const entry = siloSums.get(r.siloName) ?? { sum: 0, count: 0 };
-        entry.sum += r.bestCosineSimilarity;
-        entry.count++;
-        siloSums.set(r.siloName, entry);
-      }
-      for (const [name, { sum, count }] of siloSums) {
-        siloMeanCosine.set(name, sum / count);
-      }
-    }
-
-    const results: SearchResult[] = raw.map((r) => ({
+    const results: SearchResult[] = merged.slice(0, 20).map((r) => ({
       filePath: r.filePath,
-      score: crossSilo ? r.rrfScore * (siloMeanCosine.get(r.siloName) ?? 0) : r.rrfScore,
+      score: r.score,
       matchType: r.matchType,
       chunks: r.chunks,
       siloName: r.siloName,
@@ -511,8 +479,7 @@ function registerIpcHandlers(): void {
       bestCosineSimilarity: r.bestCosineSimilarity,
     }));
 
-    results.sort((a, b) => b.score - a.score);
-    return results.slice(0, 20);
+    return results;
   });
 
   // Activity
@@ -598,20 +565,22 @@ function registerIpcHandlers(): void {
       }
       siloManagers.delete(name);
 
-      // 2. Delete the database file from disk
-      const siloToml = config.silos[name];
-      if (siloToml) {
-        const dbPath = path.isAbsolute(siloToml.db_path)
-          ? siloToml.db_path
-          : path.join(getUserDataDir(), siloToml.db_path);
-        try {
-          if (fs.existsSync(dbPath)) {
-            fs.unlinkSync(dbPath);
-            console.log(`[main] Deleted database file: ${dbPath}`);
-          }
-        } catch (err) {
-          console.error(`[main] Failed to delete database file:`, err);
+      // 2. Delete the database file from disk (use resolvedDbPath from the manager)
+      const resolvedDbPath = manager.getStatus().resolvedDbPath;
+      let dbDeleteError: string | undefined;
+      try {
+        if (fs.existsSync(resolvedDbPath)) {
+          fs.unlinkSync(resolvedDbPath);
+          console.log(`[main] Deleted database file: ${resolvedDbPath}`);
         }
+        // Also clean up WAL/SHM companion files
+        for (const suffix of ['-wal', '-shm']) {
+          const companion = resolvedDbPath + suffix;
+          if (fs.existsSync(companion)) fs.unlinkSync(companion);
+        }
+      } catch (err) {
+        dbDeleteError = err instanceof Error ? err.message : String(err);
+        console.error(`[main] Failed to delete database file:`, err);
       }
 
       // 3. Remove from config and persist
@@ -620,9 +589,13 @@ function registerIpcHandlers(): void {
       saveConfig(configPath, config);
       console.log(`[main] Silo "${name}" deleted from config`);
 
-      // 4. Update tray menu
+      // 4. Update tray menu and notify renderer
       if (tray) tray.setContextMenu(buildTrayMenu());
+      mainWindow?.webContents.send('silos:changed');
 
+      if (dbDeleteError) {
+        return { success: false, error: `Silo removed but database file could not be deleted: ${dbDeleteError}` };
+      }
       return { success: true };
     },
   );
@@ -887,8 +860,11 @@ async function startMcpMode(): Promise<void> {
   // Start the MCP server over the named-pipe socket
   const stopMcp = await startMcpServer({ config, siloManagers, input: socket, output: socket });
 
-  // Handle shutdown
+  // Handle shutdown (idempotent — may fire from signal + socket close)
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log('[main] Shutting down MCP mode...');
     await stopMcp();
     socket.destroy();

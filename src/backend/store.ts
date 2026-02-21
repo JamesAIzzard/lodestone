@@ -41,8 +41,15 @@ export function makeStoredKey(absPath: string, directories: string[]): string {
  */
 export function resolveStoredKey(storedKey: string, directories: string[]): string {
   const colonIdx = storedKey.indexOf(':');
-  if (colonIdx === -1) return storedKey; // legacy absolute path — return as-is
+  if (colonIdx === -1) {
+    console.warn(`[store] Legacy absolute path in stored key: ${storedKey}`);
+    return storedKey;
+  }
   const dirIndex = parseInt(storedKey.slice(0, colonIdx), 10);
+  if (isNaN(dirIndex) || dirIndex < 0 || dirIndex >= directories.length) {
+    console.warn(`[store] Invalid dirIndex ${dirIndex} in stored key "${storedKey}" (${directories.length} directories)`);
+    return storedKey;
+  }
   const relPath = storedKey.slice(colonIdx + 1);
   return path.join(directories[dirIndex], relPath);
 }
@@ -75,6 +82,17 @@ export interface SiloSearchResult {
 }
 
 export type SiloDatabase = Database.Database;
+
+// ── Search Constants ─────────────────────────────────────────────────────────
+
+/** Reciprocal Rank Fusion smoothing constant (standard default from Cormack et al. 2009). */
+export const RRF_K = 60;
+
+/** Candidate fan-out: retrieve this many × maxResults chunks before aggregating by file. */
+export const CHUNK_FANOUT = 5;
+
+/** Maximum chunks returned per file in search results. */
+export const MAX_CHUNKS_PER_FILE = 5;
 
 // ── Silo Meta ────────────────────────────────────────────────────────────────
 
@@ -268,7 +286,7 @@ export function searchSilo(
   queryVector: number[],
   maxResults: number = 10,
 ): SiloSearchResult[] {
-  const chunkLimit = maxResults * 5;
+  const chunkLimit = maxResults * CHUNK_FANOUT;
 
   const rows = db.prepare(`
     SELECT c.id, c.file_path, c.chunk_index, c.section_path, c.text,
@@ -305,8 +323,8 @@ export function hybridSearchSilo(
   maxResults: number = 10,
   vectorWeight: number = 0.5,
 ): SiloSearchResult[] {
-  const chunkLimit = maxResults * 5;
-  const k = 60; // RRF constant
+  const chunkLimit = maxResults * CHUNK_FANOUT;
+  const k = RRF_K;
 
   // 1. Vector search
   const vecRows = db.prepare(`
@@ -423,17 +441,6 @@ export function getChunkCount(db: SiloDatabase): number {
   return row.cnt;
 }
 
-/**
- * Get the content hashes for a specific file's chunks.
- * Returns null if the file is not in the database.
- */
-export function getFileHashes(db: SiloDatabase, filePath: string): string[] | null {
-  const rows = db.prepare(
-    `SELECT content_hash FROM chunks WHERE file_path = ?`,
-  ).all(filePath) as Array<{ content_hash: string }>;
-  return rows.length > 0 ? rows.map((r) => r.content_hash) : null;
-}
-
 // ── Mtime Persistence ────────────────────────────────────────────────────────
 
 /**
@@ -445,20 +452,6 @@ export function loadMtimes(db: SiloDatabase): Map<string, number> {
     mtime_ms: number;
   }>;
   return new Map(rows.map((r) => [r.file_path, r.mtime_ms]));
-}
-
-/**
- * Bulk save mtimes (replace all entries).
- */
-export function saveMtimes(db: SiloDatabase, mtimes: Map<string, number>): void {
-  const transaction = db.transaction(() => {
-    db.prepare(`DELETE FROM mtimes`).run();
-    const insert = db.prepare(`INSERT INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`);
-    for (const [filePath, mtimeMs] of mtimes) {
-      insert.run(filePath, mtimeMs);
-    }
-  });
-  transaction();
 }
 
 /**
@@ -568,7 +561,6 @@ function aggregateByFile(
   }>,
   maxResults: number,
 ): SiloSearchResult[] {
-  const maxChunksPerFile = 5;
   const fileMap = new Map<string, { bestScore: number; chunks: SiloSearchResultChunk[] }>();
 
   for (const row of rows) {
@@ -596,7 +588,7 @@ function aggregateByFile(
 
   for (const entry of fileMap.values()) {
     entry.chunks.sort((a, b) => b.score - a.score);
-    if (entry.chunks.length > maxChunksPerFile) entry.chunks.length = maxChunksPerFile;
+    if (entry.chunks.length > MAX_CHUNKS_PER_FILE) entry.chunks.length = MAX_CHUNKS_PER_FILE;
   }
 
   return Array.from(fileMap.entries())
@@ -628,7 +620,6 @@ function aggregateByFileRrf(
   ftsIds: Set<number>,
   cosineSims: Map<number, number>,
 ): SiloSearchResult[] {
-  const maxChunksPerFile = 5;
   const fileMap = new Map<string, {
     bestScore: number;
     bestCosineSim: number;
@@ -677,7 +668,7 @@ function aggregateByFileRrf(
 
   for (const entry of fileMap.values()) {
     entry.chunks.sort((a, b) => b.score - a.score);
-    if (entry.chunks.length > maxChunksPerFile) entry.chunks.length = maxChunksPerFile;
+    if (entry.chunks.length > MAX_CHUNKS_PER_FILE) entry.chunks.length = MAX_CHUNKS_PER_FILE;
   }
 
   return Array.from(fileMap.entries())

@@ -109,7 +109,7 @@ export function getBundledModelIds(): string[] {
  * Ollama models are not built-in.
  */
 export function isBuiltInModel(modelId: string): boolean {
-  return modelId in MODEL_REGISTRY;
+  return MODEL_REGISTRY[modelId]?.bundled === true;
 }
 
 /**

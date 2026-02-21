@@ -6,9 +6,7 @@ import {
   searchSilo,
   hybridSearchSilo,
   getChunkCount,
-  getFileHashes,
   loadMtimes,
-  saveMtimes,
   setMtime,
   deleteMtime,
   countMtimes,
@@ -90,8 +88,8 @@ describe('store', () => {
     expect(getChunkCount(db)).toBe(1);
 
     // Verify /b.md's data is intact and /a.md's is gone
-    expect(getFileHashes(db, '/b.md')).not.toBeNull();
-    expect(getFileHashes(db, '/a.md')).toBeNull();
+    const remaining = db.prepare(`SELECT file_path FROM chunks`).all() as Array<{ file_path: string }>;
+    expect(remaining.map((r) => r.file_path)).toEqual(['/b.md']);
   });
 
   // ── Vector Search ───────────────────────────────────────────────────────
@@ -231,11 +229,8 @@ describe('store', () => {
   // ── Mtime Persistence ──────────────────────────────────────────────────
 
   it('round-trips mtimes', () => {
-    const mtimes = new Map([
-      ['/a.md', 1000],
-      ['/b.md', 2000],
-    ]);
-    saveMtimes(db, mtimes);
+    setMtime(db, '/a.md', 1000);
+    setMtime(db, '/b.md', 2000);
 
     const loaded = loadMtimes(db);
     expect(loaded.size).toBe(2);
@@ -342,7 +337,7 @@ describe('store', () => {
 
     // Original data should still be intact (transaction rolled back)
     expect(getChunkCount(db)).toBe(1);
-    const hashes = getFileHashes(db, '/a.md');
-    expect(hashes).toEqual(['hash-/a.md-0']);
+    const rows = db.prepare(`SELECT content_hash FROM chunks WHERE file_path = ?`).all('/a.md') as Array<{ content_hash: string }>;
+    expect(rows.map((r) => r.content_hash)).toEqual(['hash-/a.md-0']);
   });
 });

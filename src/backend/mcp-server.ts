@@ -22,6 +22,7 @@ import type { Readable, Writable } from 'node:stream';
 import type { SiloManager } from './silo-manager';
 import type { LodestoneConfig } from './config';
 import { resolveModelAlias } from './model-registry';
+import { calibrateAndMerge, type RawSiloResult } from './search-merge';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -186,79 +187,47 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
         };
       }
 
-      type RawResult = {
-        filePath: string;
-        rrfScore: number;
-        bestCosineSimilarity: number;
-        matchType: string;
-        siloName: string;
-        chunks: Array<{
-          sectionPath: string[];
-          text: string;
-          startLine: number;
-          endLine: number;
-          score: number;
-        }>;
-      };
-
-      // Run search across selected silos
-      const raw: RawResult[] = [];
-
+      // Group silos by embedding model so we only embed the query once per model
+      const byModel = new Map<string, Array<[string, SiloManager]>>();
       for (const [name, manager] of managersToSearch) {
-        try {
-          const siloResults = await manager.search(query, limit);
-          for (const r of siloResults) {
-            raw.push({
-              filePath: r.filePath,
-              rrfScore: r.score,
-              bestCosineSimilarity: r.bestCosineSimilarity,
-              matchType: r.matchType,
-              siloName: name,
-              chunks: r.chunks,
-            });
+        const model = manager.getConfig().model;
+        let group = byModel.get(model);
+        if (!group) { group = []; byModel.set(model, group); }
+        group.push([name, manager]);
+      }
+
+      // Run search: embed once per model, then search all silos sharing that model
+      const raw: RawSiloResult[] = [];
+
+      for (const [, group] of byModel) {
+        const service = group[0][1].getEmbeddingService();
+        if (!service) continue;
+
+        const queryVector = await service.embed(query);
+
+        for (const [name, manager] of group) {
+          try {
+            const siloResults = manager.searchWithVector(queryVector, query, limit);
+            for (const r of siloResults) {
+              raw.push({
+                filePath: r.filePath,
+                rrfScore: r.score,
+                bestCosineSimilarity: r.bestCosineSimilarity,
+                matchType: r.matchType,
+                siloName: name,
+                chunks: r.chunks,
+              });
+            }
+          } catch (err) {
+            console.error(`[mcp] Search error in silo "${name}":`, err);
           }
-        } catch (err) {
-          console.error(`[mcp] Search error in silo "${name}":`, err);
         }
       }
 
-      // Determine the set of silos that produced results
-      const silosWithResults = new Set(raw.map((r) => r.siloName));
-      const crossSilo = silosWithResults.size > 1;
-
-      // Apply cross-silo score calibration when merging results from multiple silos.
-      // RRF scores are rank-based and only comparable within one silo — the top result
-      // in every silo scores near 1.0 regardless of actual relevance. Multiplying by the
-      // silo's mean cosine similarity discounts results from silos that are only weakly
-      // relevant to the query. Mean is more robust than max — it reflects overall silo
-      // relevance rather than being dominated by a single strong outlier. We use a
-      // silo-level factor (not per-file) so keyword-only results aren't zeroed out.
-      const siloMeanCosine = new Map<string, number>();
-      if (crossSilo) {
-        const siloSums = new Map<string, { sum: number; count: number }>();
-        for (const r of raw) {
-          if (r.bestCosineSimilarity <= 0) continue; // skip keyword-only (no cosine data)
-          const entry = siloSums.get(r.siloName) ?? { sum: 0, count: 0 };
-          entry.sum += r.bestCosineSimilarity;
-          entry.count++;
-          siloSums.set(r.siloName, entry);
-        }
-        for (const [name, { sum, count }] of siloSums) {
-          siloMeanCosine.set(name, sum / count);
-        }
-      }
-
-      const allResults = raw.map((r) => ({
-        filePath: r.filePath,
-        score: crossSilo ? r.rrfScore * (siloMeanCosine.get(r.siloName) ?? 0) : r.rrfScore,
-        matchType: r.matchType,
-        siloName: r.siloName,
-        chunks: r.chunks,
-      }));
-
-      // Sort by score and limit
-      allResults.sort((a, b) => b.score - a.score);
-      const topResults = allResults.slice(0, limit);
+      // Calibrate scores across silos and sort
+      const merged = calibrateAndMerge(raw);
+      merged.sort((a, b) => b.score - a.score);
+      const topResults = merged.slice(0, limit);
 
       const text = formatSearchResults(topResults);
 

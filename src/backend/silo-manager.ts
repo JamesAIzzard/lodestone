@@ -13,13 +13,11 @@ import type { ResolvedSiloConfig } from './config';
 import type { EmbeddingService } from './embedding';
 import {
   createSiloDatabase,
-  searchSilo,
   hybridSearchSilo,
   getChunkCount,
   loadMtimes,
   setMtime,
   deleteMtime,
-  countMtimes,
   loadMeta,
   saveMeta,
   makeStoredKey,

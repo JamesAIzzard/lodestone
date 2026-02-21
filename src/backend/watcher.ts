@@ -98,11 +98,6 @@ export class SiloWatcher {
     }
   }
 
-  /** Whether the watcher is currently processing files. */
-  get isProcessing(): boolean {
-    return this.processing;
-  }
-
   /** Number of files waiting in the queue. */
   get queueLength(): number {
     return this.queue.length;

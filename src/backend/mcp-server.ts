@@ -227,14 +227,30 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
       const crossSilo = silosWithResults.size > 1;
 
       // Apply cross-silo score calibration when merging results from multiple silos.
-      // Calibrated score = RRF score × best cosine similarity.
       // RRF scores are rank-based and only comparable within one silo — the top result
       // in every silo scores near 1.0 regardless of actual relevance. Multiplying by the
-      // best raw cosine similarity discounts results from silos that are only weakly
-      // relevant to the query, so the global ranking reflects true cross-silo relevance.
+      // silo's mean cosine similarity discounts results from silos that are only weakly
+      // relevant to the query. Mean is more robust than max — it reflects overall silo
+      // relevance rather than being dominated by a single strong outlier. We use a
+      // silo-level factor (not per-file) so keyword-only results aren't zeroed out.
+      const siloMeanCosine = new Map<string, number>();
+      if (crossSilo) {
+        const siloSums = new Map<string, { sum: number; count: number }>();
+        for (const r of raw) {
+          if (r.bestCosineSimilarity <= 0) continue; // skip keyword-only (no cosine data)
+          const entry = siloSums.get(r.siloName) ?? { sum: 0, count: 0 };
+          entry.sum += r.bestCosineSimilarity;
+          entry.count++;
+          siloSums.set(r.siloName, entry);
+        }
+        for (const [name, { sum, count }] of siloSums) {
+          siloMeanCosine.set(name, sum / count);
+        }
+      }
+
       const allResults = raw.map((r) => ({
         filePath: r.filePath,
-        score: crossSilo ? r.rrfScore * r.bestCosineSimilarity : r.rrfScore,
+        score: crossSilo ? r.rrfScore * (siloMeanCosine.get(r.siloName) ?? 0) : r.rrfScore,
         matchType: r.matchType,
         siloName: r.siloName,
         chunks: r.chunks,

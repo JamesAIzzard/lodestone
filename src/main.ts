@@ -477,13 +477,33 @@ function registerIpcHandlers(): void {
     const crossSilo = silosWithResults.size > 1;
 
     // Build final results, applying calibration only when merging across silos.
-    // Calibrated score = RRF score × best cosine similarity.
-    // This discounts high-ranking results from silos that are only weakly
-    // relevant to the query (low cosine similarity) relative to silos with
-    // genuinely strong matches.
+    // RRF scores are rank-based and only comparable within one silo — the top
+    // result in every silo scores near 1.0 regardless of actual relevance.
+    // To make scores comparable across silos, multiply by the silo's mean
+    // cosine similarity. This discounts entire silos that are weakly relevant
+    // to the query. Mean is more robust than max — it reflects overall silo
+    // relevance rather than being dominated by a single strong outlier.
+    //
+    // We use a silo-level factor (not per-file) because keyword-only results
+    // have no cosine signal — per-file calibration would zero them out.
+    const siloMeanCosine = new Map<string, number>();
+    if (crossSilo) {
+      const siloSums = new Map<string, { sum: number; count: number }>();
+      for (const r of raw) {
+        if (r.bestCosineSimilarity <= 0) continue; // skip keyword-only (no cosine data)
+        const entry = siloSums.get(r.siloName) ?? { sum: 0, count: 0 };
+        entry.sum += r.bestCosineSimilarity;
+        entry.count++;
+        siloSums.set(r.siloName, entry);
+      }
+      for (const [name, { sum, count }] of siloSums) {
+        siloMeanCosine.set(name, sum / count);
+      }
+    }
+
     const results: SearchResult[] = raw.map((r) => ({
       filePath: r.filePath,
-      score: crossSilo ? r.rrfScore * r.bestCosineSimilarity : r.rrfScore,
+      score: crossSilo ? r.rrfScore * (siloMeanCosine.get(r.siloName) ?? 0) : r.rrfScore,
       matchType: r.matchType,
       chunks: r.chunks,
       siloName: r.siloName,

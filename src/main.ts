@@ -241,6 +241,9 @@ async function initializeBackend(): Promise<void> {
 
     siloManagers.set(name, manager);
     attachActivityForwarding(manager);
+    manager.onStateChange(() => {
+      mainWindow?.webContents.send('silos:changed');
+    });
 
     if (resolved.sleeping) {
       manager.loadSleepingStatus();
@@ -271,7 +274,6 @@ async function sleepSilo(name: string): Promise<{ success: boolean; error?: stri
   }
 
   if (tray) tray.setContextMenu(buildTrayMenu());
-  mainWindow?.webContents.send('silos:changed');
   return { success: true };
 }
 
@@ -292,7 +294,6 @@ async function wakeSilo(name: string): Promise<{ success: boolean; error?: strin
   await manager.wake();
 
   if (tray) tray.setContextMenu(buildTrayMenu());
-  mainWindow?.webContents.send('silos:changed');
   return { success: true };
 }
 
@@ -662,6 +663,9 @@ function registerIpcHandlers(): void {
 
       siloManagers.set(slug, manager);
       attachActivityForwarding(manager);
+      manager.onStateChange(() => {
+        mainWindow?.webContents.send('silos:changed');
+      });
       if (tray) tray.setContextMenu(buildTrayMenu());
 
       // Enqueue startup — if another silo is currently indexing, this one

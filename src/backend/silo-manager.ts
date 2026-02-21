@@ -26,7 +26,7 @@ import {
   type SiloSearchResult,
 } from './store';
 import { SiloWatcher, type WatcherEvent } from './watcher';
-import { reconcile, type ReconcileProgressHandler } from './reconcile';
+import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
 import type { WatcherState } from '../shared/types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -54,7 +54,8 @@ export class SiloManager {
   private watcher: SiloWatcher | null = null;
   private lastUpdated: Date | null = null;
   private activityLog: WatcherEvent[] = [];
-  private watcherState: WatcherState = 'idle';
+  private _watcherState: WatcherState = 'idle';
+  private stateChangeListener?: () => void;
   private errorMessage?: string;
   private reconcileProgress?: { current: number; total: number };
   private mtimes = new Map<string, number>();
@@ -63,6 +64,17 @@ export class SiloManager {
   private cachedSizeBytes = 0;
   /** True when meta model differs from configured model */
   private modelMismatch = false;
+
+  private set watcherState(value: WatcherState) {
+    if (this._watcherState !== value) {
+      this._watcherState = value;
+      this.stateChangeListener?.();
+    }
+  }
+
+  private get watcherState(): WatcherState {
+    return this._watcherState;
+  }
 
   /** Set to true when stop() is called, checked by start() at each await. */
   private stopped = false;
@@ -81,6 +93,11 @@ export class SiloManager {
   /** Register a listener for watcher events. Only one listener is supported. */
   onEvent(listener: (event: WatcherEvent) => void): void {
     this.eventListener = listener;
+  }
+
+  /** Register a listener for watcher state transitions. Only one listener is supported. */
+  onStateChange(listener: () => void): void {
+    this.stateChangeListener = listener;
   }
 
   /**
@@ -154,6 +171,7 @@ export class SiloManager {
         this.db,
         this.mtimes,
         this.onReconcileProgress,
+        this.onReconcileEvent,
       );
       if (result.filesAdded > 0 || result.filesRemoved > 0 || result.filesUpdated > 0) {
         console.log(
@@ -408,6 +426,27 @@ export class SiloManager {
     if (progress.total > 0 && progress.current % 10 === 0) {
       console.log(`[silo:${this.config.name}] Reconcile: ${progress.current}/${progress.total}`);
     }
+  };
+
+  private onReconcileEvent: ReconcileEventHandler = (event) => {
+    // Only add to activity log and forward to renderer.
+    // Don't touch watcherState (stays 'indexing') or mtimes
+    // (reconcile() manages those itself). Individual file errors
+    // during reconciliation shouldn't mark the whole silo as errored.
+    const watcherEvent: WatcherEvent = {
+      timestamp: new Date(),
+      siloName: this.config.name,
+      filePath: event.filePath,
+      eventType: event.eventType,
+      errorMessage: event.errorMessage,
+    };
+
+    this.activityLog.push(watcherEvent);
+    if (this.activityLog.length > MAX_ACTIVITY_EVENTS) {
+      this.activityLog = this.activityLog.slice(-MAX_ACTIVITY_EVENTS);
+    }
+    this.lastUpdated = watcherEvent.timestamp;
+    this.eventListener?.(watcherEvent);
   };
 
   private handleWatcherEvent(event: WatcherEvent): void {

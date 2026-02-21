@@ -139,7 +139,17 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
   fs.mkdirSync(dir, { recursive: true });
 
   const db = new Database(dbPath);
-  sqliteVec.load(db);
+
+  // sqlite-vec's getLoadablePath() computes a path via __dirname which, in a
+  // production ASAR build, points inside app.asar.  SQLite's loadExtension()
+  // calls the OS's LoadLibrary/dlopen which can't read from ASAR archives.
+  // The actual DLL/dylib/so is unpacked to app.asar.unpacked — rewrite the
+  // path so SQLite can find it.
+  const vecExtPath = sqliteVec.getLoadablePath().replace(
+    /app\.asar([\\/])/,
+    'app.asar.unpacked$1',
+  );
+  db.loadExtension(vecExtPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 

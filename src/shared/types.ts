@@ -9,7 +9,7 @@ export interface SiloConfig {
   dbPath: string;
 }
 
-export type WatcherState = 'idle' | 'indexing' | 'error';
+export type WatcherState = 'idle' | 'indexing' | 'error' | 'sleeping';
 
 export interface SiloStatus {
   config: SiloConfig;

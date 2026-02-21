@@ -39,6 +39,22 @@ const siloManagers = new Map<string, SiloManager>();
 const startTime = Date.now();
 let nextEventId = 1;
 
+// Serializes silo starts so only one embedding model is loaded at a time.
+// Used by both initializeBackend() and silos:create to prevent concurrent starts.
+let siloStartQueue: Promise<void> = Promise.resolve();
+
+function enqueueSiloStart(name: string, manager: SiloManager): void {
+  manager.loadWaitingStatus();
+  siloStartQueue = siloStartQueue.then(async () => {
+    try {
+      await manager.start();
+      console.log(`[main] Silo "${name}" started`);
+    } catch (err) {
+      console.error(`[main] Failed to start silo "${name}":`, err);
+    }
+  });
+}
+
 function getUserDataDir(): string {
   return app.getPath('userData');
 }
@@ -87,9 +103,10 @@ function createWindow() {
 function buildTrayMenu(): Menu {
   const statusLabel = (state: string) =>
     state === 'sleeping' ? '⏸ Sleeping'
-      : state === 'indexing' ? '⟳ Indexing'
-        : state === 'error' ? '✕ Error'
-          : '● Idle';
+      : state === 'waiting' ? '⏳ Waiting'
+        : state === 'indexing' ? '⟳ Indexing'
+          : state === 'error' ? '✕ Error'
+            : '● Idle';
 
   const siloItems = Array.from(siloManagers.entries()).map(([name]) => ({
     label: `${name}  ${statusLabel('idle')}`,
@@ -191,9 +208,9 @@ async function initializeBackend(): Promise<void> {
   }
 
   // Initialize a SiloManager for each configured silo.
-  // Register immediately so the renderer can see them, then start
-  // indexing in the background (same pattern as silos:create).
-  // Sleeping silos are registered but not started.
+  // Register all managers immediately so the renderer can see them.
+  // Sleeping silos load cached stats; non-sleeping silos are enqueued
+  // for sequential startup via the shared start queue.
   for (const [name, siloToml] of Object.entries(config.silos)) {
     const resolved = resolveSiloConfig(name, siloToml, config);
     const manager = new SiloManager(
@@ -210,11 +227,7 @@ async function initializeBackend(): Promise<void> {
       manager.loadSleepingStatus();
       console.log(`[main] Silo "${name}" is sleeping`);
     } else {
-      manager.start().then(() => {
-        console.log(`[main] Silo "${name}" started`);
-      }).catch((err) => {
-        console.error(`[main] Failed to start silo "${name}":`, err);
-      });
+      enqueueSiloStart(name, manager);
     }
   }
 
@@ -595,12 +608,9 @@ function registerIpcHandlers(): void {
       attachActivityForwarding(manager);
       if (tray) tray.setContextMenu(buildTrayMenu());
 
-      // Start indexing in the background — don't block the UI
-      manager.start().then(() => {
-        console.log(`[main] Silo "${slug}" started and indexed`);
-      }).catch((err) => {
-        console.error(`[main] Failed to start silo "${slug}":`, err);
-      });
+      // Enqueue startup — if another silo is currently indexing, this one
+      // will show as 'Waiting' until the queue reaches it.
+      enqueueSiloStart(slug, manager);
 
       return { success: true };
     },
@@ -641,8 +651,9 @@ async function startMcpMode(): Promise<void> {
     console.log(`[main] Created default config at ${configPath}`);
   }
 
-  // Start all non-sleeping silos and wait for them to be ready
-  const startPromises: Promise<void>[] = [];
+  // Start all non-sleeping silos sequentially so only one embedding model
+  // is loaded into memory at a time (same sequencing as GUI mode).
+  const pendingManagers: Array<[string, SiloManager]> = [];
   for (const [name, siloToml] of Object.entries(config.silos)) {
     const resolved = resolveSiloConfig(name, siloToml, config);
     const manager = new SiloManager(
@@ -658,16 +669,18 @@ async function startMcpMode(): Promise<void> {
       manager.loadSleepingStatus();
       console.log(`[main] Silo "${name}" is sleeping`);
     } else {
-      startPromises.push(
-        manager.start()
-          .then(() => console.log(`[main] Silo "${name}" ready`))
-          .catch((err) => console.error(`[main] Failed to start silo "${name}":`, err)),
-      );
+      pendingManagers.push([name, manager]);
     }
   }
 
-  // Wait for all silos to finish initial indexing before accepting MCP calls
-  await Promise.all(startPromises);
+  for (const [name, manager] of pendingManagers) {
+    try {
+      await manager.start();
+      console.log(`[main] Silo "${name}" ready`);
+    } catch (err) {
+      console.error(`[main] Failed to start silo "${name}":`, err);
+    }
+  }
   console.log(`[main] All silos ready — starting MCP server`);
 
   // Start the MCP server on stdio

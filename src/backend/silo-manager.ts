@@ -314,6 +314,19 @@ export class SiloManager {
     this.lastKnownSizeBytes = this.readFileSizeFromDisk();
   }
 
+  /**
+   * Load minimal status for a silo that is queued but not yet started.
+   * Same lightweight approach as loadSleepingStatus() — reads file count
+   * and DB size from disk without loading the database into memory.
+   */
+  loadWaitingStatus(): void {
+    this.watcherState = 'waiting';
+    this.mtimes = loadMtimes(this.resolveMtimesPath());
+    this.cachedFileCount = this.mtimes.size;
+    this.mtimes.clear();
+    this.lastKnownSizeBytes = this.readFileSizeFromDisk();
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────────
 
   /** Whether this silo is currently sleeping. */
@@ -330,14 +343,14 @@ export class SiloManager {
 
   /** Get the current status of this silo. */
   async getStatus(): Promise<SiloManagerStatus> {
-    if (this.watcherState === 'sleeping') {
+    if (this.watcherState === 'sleeping' || this.watcherState === 'waiting') {
       return {
         name: this.config.name,
         indexedFileCount: this.cachedFileCount,
         chunkCount: this.cachedChunkCount,
         lastUpdated: this.lastUpdated,
         databaseSizeBytes: this.lastKnownSizeBytes,
-        watcherState: 'sleeping',
+        watcherState: this.watcherState,
       };
     }
 

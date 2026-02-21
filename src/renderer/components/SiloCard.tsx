@@ -20,6 +20,7 @@ const stateConfig: Record<WatcherState, { label: string; dotClass: string; badge
   indexing: { label: 'Indexing', dotClass: 'bg-amber-500 animate-pulse', badgeVariant: 'default' },
   error: { label: 'Error', dotClass: 'bg-red-500', badgeVariant: 'destructive' },
   sleeping: { label: 'Sleeping', dotClass: 'bg-blue-400', badgeVariant: 'secondary' },
+  waiting: { label: 'Waiting', dotClass: 'bg-gray-400 animate-pulse', badgeVariant: 'secondary' },
 };
 
 interface SiloCardProps {
@@ -34,6 +35,7 @@ export default function SiloCard({ silo, onClick, onSleepToggle }: SiloCardProps
   const hasModelOverride = config.modelOverride !== null;
   const isIndexing = watcherState === 'indexing';
   const isSleeping = watcherState === 'sleeping';
+  const isWaiting = watcherState === 'waiting';
   const progressPct = reconcileProgress && reconcileProgress.total > 0
     ? Math.round((reconcileProgress.current / reconcileProgress.total) * 100)
     : null;
@@ -56,7 +58,7 @@ export default function SiloCard({ silo, onClick, onSleepToggle }: SiloCardProps
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {onSleepToggle && !isIndexing && (
+          {onSleepToggle && !isIndexing && !isWaiting && (
             <span
               role="button"
               tabIndex={0}
@@ -80,7 +82,7 @@ export default function SiloCard({ silo, onClick, onSleepToggle }: SiloCardProps
         </div>
       </div>
 
-      <div className={cn(isSleeping && 'opacity-50')}>
+      <div className={cn((isSleeping || isWaiting) && 'opacity-50')}>
         {/* Progress bar (shown while indexing) */}
         {isIndexing && reconcileProgress && reconcileProgress.total > 0 && (
           <div className="flex flex-col gap-1">

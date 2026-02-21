@@ -11,7 +11,7 @@ export interface SiloConfig {
   description: string;
 }
 
-export type WatcherState = 'idle' | 'indexing' | 'error' | 'sleeping';
+export type WatcherState = 'idle' | 'indexing' | 'error' | 'sleeping' | 'waiting';
 
 export interface SiloStatus {
   config: SiloConfig;

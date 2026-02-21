@@ -7,6 +7,8 @@ export interface SiloConfig {
   ignorePatterns: string[];
   modelOverride: string | null;
   dbPath: string;
+  /** Human-readable description of what this silo contains */
+  description: string;
 }
 
 export type WatcherState = 'idle' | 'indexing' | 'error' | 'sleeping';
@@ -24,6 +26,8 @@ export interface SiloStatus {
     current: number;
     total: number;
   };
+  /** True when the configured model differs from the model that built the index */
+  modelMismatch?: boolean;
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────

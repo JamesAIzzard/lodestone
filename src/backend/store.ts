@@ -251,6 +251,64 @@ export async function getFileHashes(
   return hashes.length > 0 ? hashes : null;
 }
 
+// ── Meta (Sidecar) ────────────────────────────────────────────────────────
+
+/**
+ * Sidecar metadata stored alongside the database file.
+ * Records the model used to build the index, enabling mismatch detection
+ * when the user changes their embedding model.
+ */
+export interface SiloMeta {
+  /** Model identifier used to build this index */
+  model: string;
+  /** Vector dimensions of the model */
+  dimensions: number;
+  /** ISO timestamp of when the index was first created */
+  createdAt: string;
+  /** Schema version for forward compatibility */
+  version: number;
+}
+
+const META_VERSION = 1;
+
+/**
+ * Load the silo meta sidecar from disk.
+ * Returns null if the file doesn't exist or is corrupt.
+ */
+export function loadMeta(metaPath: string): SiloMeta | null {
+  if (!fs.existsSync(metaPath)) return null;
+  try {
+    const raw = fs.readFileSync(metaPath, 'utf-8');
+    const obj = JSON.parse(raw) as SiloMeta;
+    if (typeof obj.model !== 'string' || typeof obj.dimensions !== 'number') {
+      return null;
+    }
+    return obj;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save the silo meta sidecar to disk.
+ * Uses atomic write (tmp + rename) to prevent corruption on crash.
+ */
+export function saveMeta(metaPath: string, model: string, dimensions: number): void {
+  const existing = loadMeta(metaPath);
+  const meta: SiloMeta = {
+    model,
+    dimensions,
+    createdAt: existing?.createdAt ?? new Date().toISOString(),
+    version: META_VERSION,
+  };
+  const dir = path.dirname(metaPath);
+  fs.mkdirSync(dir, { recursive: true });
+  const data = JSON.stringify(meta, null, 2);
+  const tmpPath = metaPath + '.tmp';
+  fs.writeFileSync(tmpPath, data);
+  fs.renameSync(tmpPath, metaPath);
+}
+
 // ── Mtime Persistence ─────────────────────────────────────────────────────
 
 /**

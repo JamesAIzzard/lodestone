@@ -17,7 +17,12 @@
       "Bash(npx vitest run:*)",
       "Skill(commit-commands:commit)",
       "Skill(commit-commands:commit:*)",
-      "Bash(npx vite:*)"
+      "Bash(npx vite:*)",
+      "Bash(node:*)",
+      "Bash(ls:*)",
+      "Bash(npx electron-forge build:*)",
+      "Bash(npx electron-forge package:*)",
+      "Bash(npx vite build)"
     ]
   }
 }

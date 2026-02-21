@@ -18,9 +18,12 @@ import {
   getChunkCount,
   loadMtimes,
   saveMtimes,
+  loadMeta,
+  saveMeta,
   type SiloDatabase,
   type SiloSearchResult,
 } from './store';
+import { LEGACY_MODEL } from './model-registry';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler } from './reconcile';
 import type { WatcherState } from '../shared/types';
@@ -36,6 +39,8 @@ export interface SiloManagerStatus {
   watcherState: WatcherState;
   errorMessage?: string;
   reconcileProgress?: { current: number; total: number };
+  /** True when the configured model differs from the model used to build the index */
+  modelMismatch?: boolean;
 }
 
 // ── SiloManager ──────────────────────────────────────────────────────────────
@@ -59,18 +64,51 @@ export class SiloManager {
   private mtimes = new Map<string, number>();
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
+  /** True when meta.json model differs from configured model */
+  private modelMismatch = false;
 
   /** Set to true when stop() is called, checked by start() at each await. */
   private stopped = false;
   /** Tracks the in-flight start() so stop() can wait for it to settle. */
   private startPromise: Promise<void> | null = null;
 
+  /** External listener for watcher events (used by main process for renderer forwarding). */
+  private eventListener?: (event: WatcherEvent) => void;
+
   constructor(
-    private readonly config: ResolvedSiloConfig,
+    private config: ResolvedSiloConfig,
     private readonly ollamaUrl: string,
     private readonly modelCacheDir: string,
     private readonly userDataDir: string,
   ) {}
+
+  /** Register a listener for watcher events. Only one listener is supported. */
+  onEvent(listener: (event: WatcherEvent) => void): void {
+    this.eventListener = listener;
+  }
+
+  /**
+   * Update the configured model for this silo and re-check for mismatch.
+   *
+   * This does NOT restart the silo or change the running embedding service —
+   * it just updates the config so that:
+   *  1. silos:list returns the new model
+   *  2. modelMismatch is set if the new model differs from what built the index
+   *
+   * The user must rebuild the index for the new model to take effect.
+   */
+  updateModel(model: string): void {
+    this.config = { ...this.config, model };
+
+    // Re-check mismatch against meta.json
+    const meta = loadMeta(this.resolveMetaPath());
+    if (meta) {
+      this.modelMismatch = meta.model !== model;
+    } else if (this.db) {
+      // No meta.json but DB exists — legacy index, always mismatched
+      this.modelMismatch = true;
+    }
+  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -97,8 +135,26 @@ export class SiloManager {
     if (existing) {
       this.db = existing;
       console.log(`[silo:${this.config.name}] Loaded database from ${dbPath}`);
+
+      // Check meta.json for model mismatch
+      const meta = loadMeta(this.resolveMetaPath());
+      if (meta) {
+        if (meta.model !== this.config.model) {
+          this.modelMismatch = true;
+          console.warn(
+            `[silo:${this.config.name}] Model mismatch: index built with "${meta.model}" but config uses "${this.config.model}". Rebuild required.`,
+          );
+        }
+      } else {
+        // No meta.json but database exists — legacy index (pre-Phase 3)
+        this.modelMismatch = true;
+        console.warn(
+          `[silo:${this.config.name}] No meta.json found for existing database — legacy index (${LEGACY_MODEL}). Rebuild required.`,
+        );
+      }
     } else {
       this.db = await createSiloDatabase(this.embeddingService.dimensions);
+      this.modelMismatch = false;
       console.log(`[silo:${this.config.name}] Created new database`);
     }
 
@@ -206,6 +262,47 @@ export class SiloManager {
   }
 
   /**
+   * Rebuild the entire index from scratch.
+   * Stops the silo, deletes the database file on disk, clears mtimes,
+   * then restarts (which triggers a full reconciliation).
+   */
+  async rebuild(): Promise<void> {
+    console.log(`[silo:${this.config.name}] Rebuild requested`);
+    const wasSleeping = this.isSleeping;
+
+    // Stop everything gracefully
+    if (!wasSleeping) {
+      await this.stop();
+    }
+
+    // Delete the database, meta, and mtimes files from disk
+    for (const filePath of [
+      this.resolveDbPath(),
+      this.resolveMetaPath(),
+      this.resolveMtimesPath(),
+    ]) {
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch (err) {
+        console.error(`[silo:${this.config.name}] Failed to delete ${filePath}:`, err);
+      }
+    }
+
+    // Clear in-memory state
+    this.modelMismatch = false;
+    this.lastKnownSizeBytes = 0;
+    this.lastPersistedChunkCount = 0;
+    this.cachedFileCount = 0;
+    this.cachedChunkCount = 0;
+
+    // Restart — this will create a fresh database and run full reconciliation
+    await this.start();
+    console.log(`[silo:${this.config.name}] Rebuild complete`);
+  }
+
+  /**
    * Load minimal status for a sleeping silo without starting it.
    * Reads mtimes.json for file count and stats the DB file for size.
    */
@@ -256,6 +353,7 @@ export class SiloManager {
       watcherState: this.watcherState,
       errorMessage: this.errorMessage,
       reconcileProgress: this.reconcileProgress,
+      modelMismatch: this.modelMismatch || undefined,
     };
   }
 
@@ -290,6 +388,10 @@ export class SiloManager {
     const dbPath = this.resolveDbPath();
     await persistDatabase(this.db, dbPath);
     await saveMtimes(this.mtimes, this.resolveMtimesPath());
+    // Write meta.json sidecar — records which model built this index
+    if (this.embeddingService) {
+      saveMeta(this.resolveMetaPath(), this.config.model, this.embeddingService.dimensions);
+    }
     this.dirty = false;
     this.lastKnownSizeBytes = this.readFileSizeFromDisk();
     this.lastPersistedChunkCount = await getChunkCount(this.db);
@@ -318,6 +420,9 @@ export class SiloManager {
 
     this.lastUpdated = event.timestamp;
     this.dirty = true;
+
+    // Notify external listener (main process → renderer forwarding)
+    this.eventListener?.(event);
 
     // Update file modification times so offline edits are detected on restart
     if (event.eventType === 'indexed') {
@@ -363,6 +468,10 @@ export class SiloManager {
 
   private resolveMtimesPath(): string {
     return path.join(path.dirname(this.resolveDbPath()), 'mtimes.json');
+  }
+
+  private resolveMetaPath(): string {
+    return path.join(path.dirname(this.resolveDbPath()), 'meta.json');
   }
 
   /**

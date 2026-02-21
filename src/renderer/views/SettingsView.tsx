@@ -9,7 +9,7 @@ export default function SettingsView() {
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ connected: boolean; models: string[] } | null>(null);
-  const [selectedModel, setSelectedModel] = useState('built-in');
+  const [selectedModel, setSelectedModel] = useState('');
   const [extensions, setExtensions] = useState(['.md', '.py']);
   const [extInput, setExtInput] = useState('');
   const [ignorePatterns, setIgnorePatterns] = useState(['.git', '__pycache__', 'node_modules', '.obsidian']);
@@ -66,12 +66,22 @@ export default function SettingsView() {
     if (configPath) window.electronAPI?.openPath(configPath);
   }
 
-  // Build model list: always include built-in, plus any from Ollama test or server status
-  const availableModels = ['built-in (all-MiniLM-L6-v2)'];
+  // Build model list from server status + Ollama test results
+  const availableModels: string[] = [];
+  if (status) {
+    availableModels.push(...status.availableModels);
+  }
   if (testResult?.connected) {
-    availableModels.push(...testResult.models);
-  } else if (status) {
-    availableModels.push(...status.availableModels.filter((m) => !m.startsWith('built-in')));
+    // Add any Ollama models not already in the list
+    for (const m of testResult.models) {
+      if (!availableModels.includes(m)) {
+        availableModels.push(m);
+      }
+    }
+  }
+  // Fallback if nothing loaded yet
+  if (availableModels.length === 0) {
+    availableModels.push('snowflake-arctic-embed-xs');
   }
 
   return (

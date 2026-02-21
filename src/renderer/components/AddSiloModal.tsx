@@ -26,11 +26,12 @@ interface AddSiloModalProps {
 export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloModalProps) {
   const [stepIndex, setStepIndex] = useState(0);
   const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
   const [directories, setDirectories] = useState<string[]>([]);
   const [extensions, setExtensions] = useState<string[]>(['.md', '.py']);
   const [dbPath, setDbPath] = useState('');
-  const [model, setModel] = useState('built-in');
-  const [availableModels, setAvailableModels] = useState<string[]>(['built-in (all-MiniLM-L6-v2)']);
+  const [model, setModel] = useState('snowflake-arctic-embed-xs');
+  const [availableModels, setAvailableModels] = useState<string[]>(['snowflake-arctic-embed-xs']);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,10 +60,11 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   function reset() {
     setStepIndex(0);
     setName('');
+    setDescription('');
     setDirectories([]);
     setExtensions(['.md', '.py']);
     setDbPath('');
-    setModel('built-in');
+    setModel('snowflake-arctic-embed-xs');
     setError(null);
     setCreating(false);
   }
@@ -98,6 +100,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
           extensions,
           dbPath: dbPath.trim(),
           model,
+          description: description.trim() || undefined,
         });
         if (result && !result.success) {
           setError(result.error ?? 'Unknown error');
@@ -172,6 +175,19 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
                 autoFocus
                 onKeyDown={(e) => e.key === 'Enter' && canAdvance() && handleNext()}
               />
+              <label className="mb-1 mt-4 block text-sm text-muted-foreground">
+                Description <span className="text-muted-foreground/40">(optional)</span>
+              </label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g. Personal notes and research — Markdown files from my Obsidian vault"
+                rows={2}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground/50">
+                Helps AI agents decide which silo to search.
+              </p>
             </div>
           )}
 
@@ -290,7 +306,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
                       )}
                     />
                     {m}
-                    {m.startsWith('built-in') && (
+                    {m.startsWith('snowflake-arctic-embed') && (
                       <span className="text-[10px] text-muted-foreground">(default)</span>
                     )}
                   </button>

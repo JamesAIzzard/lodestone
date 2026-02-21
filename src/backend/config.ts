@@ -8,6 +8,7 @@
 import { parse, stringify } from 'smol-toml';
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveModelAlias, DEFAULT_MODEL } from './model-registry';
 
 // ── Config Types ─────────────────────────────────────────────────────────────
 
@@ -16,7 +17,8 @@ export interface ServerConfig {
 }
 
 export interface EmbeddingsConfig {
-  /** Default embedding model name (or 'built-in' for the bundled model) */
+  /** Default embedding model: a registry key (e.g. 'snowflake-arctic-embed-xs')
+   *  or an Ollama model name. Legacy 'built-in' alias is still accepted. */
   model: string;
   /** Ollama base URL — only used when the model is served via Ollama */
   ollama_url: string;
@@ -38,6 +40,8 @@ export interface SiloTomlConfig {
   ignore?: string[];
   model?: string;
   sleeping?: boolean;
+  /** Human-readable description of what this silo contains (for MCP tool routing) */
+  description?: string;
 }
 
 export interface LodestoneConfig {
@@ -54,13 +58,19 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     name: 'lodestone',
   },
   embeddings: {
-    model: 'built-in',
+    model: DEFAULT_MODEL,
     ollama_url: 'http://localhost:11434',
   },
   defaults: {
     debounce: 2.0,
-    extensions: ['.md', '.py'],
-    ignore: ['.git', '__pycache__', 'node_modules', '.obsidian'],
+    extensions: [
+      '.md', '.txt',
+      '.ts', '.tsx', '.js', '.jsx',
+      '.py', '.rs', '.go', '.java',
+      '.c', '.h', '.cpp', '.hpp',
+      '.cs', '.rb', '.swift', '.kt',
+    ],
+    ignore: ['.git', '__pycache__', 'node_modules', '.obsidian', 'dist', 'build', '.next'],
   },
   silos: {},
 };
@@ -97,6 +107,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
       ignore: Array.isArray(silo.ignore) ? silo.ignore as string[] : undefined,
       model: typeof silo.model === 'string' ? silo.model : undefined,
       sleeping: silo.sleeping === true ? true : undefined,
+      description: typeof silo.description === 'string' ? silo.description : undefined,
     };
   }
 
@@ -164,6 +175,8 @@ export interface ResolvedSiloConfig {
   model: string;
   debounce: number;
   sleeping: boolean;
+  /** Human-readable description for MCP tool routing */
+  description: string;
 }
 
 /**
@@ -175,14 +188,17 @@ export function resolveSiloConfig(
   silo: SiloTomlConfig,
   config: LodestoneConfig,
 ): ResolvedSiloConfig {
+  // Resolve 'built-in' alias → actual default model key for backward compat
+  const rawModel = silo.model ?? config.embeddings.model;
   return {
     name: siloName,
     directories: silo.directories,
     dbPath: silo.db_path,
     extensions: silo.extensions ?? config.defaults.extensions,
     ignore: silo.ignore ?? config.defaults.ignore,
-    model: silo.model ?? config.embeddings.model,
+    model: resolveModelAlias(rawModel),
     debounce: config.defaults.debounce,
     sleeping: silo.sleeping === true,
+    description: silo.description ?? '',
   };
 }

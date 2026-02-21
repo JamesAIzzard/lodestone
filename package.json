@@ -51,6 +51,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "@orama/orama": "^3.1.18",
     "@orama/plugin-data-persistence": "^3.1.18",
     "chokidar": "^5.0.0",
@@ -66,6 +67,9 @@
     "remark-parse": "^11.0.0",
     "smol-toml": "^1.6.0",
     "tailwind-merge": "^3.5.0",
-    "unified": "^11.0.5"
+    "tree-sitter-wasms": "^0.1.13",
+    "unified": "^11.0.5",
+    "web-tree-sitter": "^0.20.8",
+    "zod": "^4.3.6"
   }
 }

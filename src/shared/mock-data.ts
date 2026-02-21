@@ -18,8 +18,7 @@ function id(): string {
 
 // ── Silos ─────────────────────────────────────────────────────────────────────
 
-export const BUILT_IN_MODEL = 'built-in (all-MiniLM-L6-v2)';
-export const DEFAULT_MODEL = 'nomic-embed-text';
+export const DEFAULT_MODEL = 'snowflake-arctic-embed-xs';
 
 export const mockSilos: SiloStatus[] = [
   {
@@ -30,6 +29,7 @@ export const mockSilos: SiloStatus[] = [
       ignorePatterns: ['.git', '.obsidian', 'node_modules'],
       modelOverride: null,
       dbPath: '/home/james/.local/share/lodestone/personal-kb.db',
+      description: 'Personal notes, daily journal, and research from my Obsidian vault',
     },
     indexedFileCount: 342,
     chunkCount: 1_847,
@@ -51,6 +51,7 @@ export const mockSilos: SiloStatus[] = [
       ignorePatterns: ['.git', '__pycache__', 'node_modules', '.venv'],
       modelOverride: null,
       dbPath: '/home/james/.local/share/lodestone/dietrix.db',
+      description: 'Dietrix project — Python codebase for nutrition optimization',
     },
     indexedFileCount: 128,
     chunkCount: 2_103,
@@ -66,6 +67,7 @@ export const mockSilos: SiloStatus[] = [
       ignorePatterns: ['.git'],
       modelOverride: 'mxbai-embed-large',
       dbPath: '/home/james/.local/share/lodestone/reference-papers.db',
+      description: 'Academic papers on retrieval-augmented generation and dense passage retrieval',
     },
     indexedFileCount: 23,
     chunkCount: 614,

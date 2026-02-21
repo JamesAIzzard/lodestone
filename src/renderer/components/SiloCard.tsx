@@ -1,4 +1,4 @@
-import { FileText, Blocks, FolderOpen, Pause, Play } from 'lucide-react';
+import { FileText, Blocks, FolderOpen, Pause, Play, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from './ui/badge';
 import type { SiloStatus, WatcherState } from '../../shared/types';
@@ -49,7 +49,12 @@ export default function SiloCard({ silo, onClick, onSleepToggle }: SiloCardProps
     >
       {/* Header: name + status */}
       <div className="flex items-start justify-between gap-2">
-        <h3 className="text-sm font-semibold text-foreground truncate">{config.name}</h3>
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-foreground truncate">{config.name}</h3>
+          {config.description && (
+            <p className="text-xs text-muted-foreground/70 truncate mt-0.5">{config.description}</p>
+          )}
+        </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {onSleepToggle && !isIndexing && (
             <span
@@ -106,8 +111,16 @@ export default function SiloCard({ silo, onClick, onSleepToggle }: SiloCardProps
           </span>
         </div>
 
+        {/* Model mismatch warning */}
+        {silo.modelMismatch && (
+          <div className="flex items-center gap-1.5 text-xs text-amber-400">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            Model mismatch — rebuild required
+          </div>
+        )}
+
         {/* Model (only shown if overriding default) */}
-        {hasModelOverride && (
+        {hasModelOverride && !silo.modelMismatch && (
           <div className="text-xs text-amber-400/80">
             Model: {config.modelOverride}
           </div>

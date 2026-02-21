@@ -85,6 +85,8 @@ export default function SilosView() {
         onOpenChange={setDetailOpen}
         onDeleted={fetchSilos}
         onSleepToggle={selectedSilo ? () => handleSleepToggle(selectedSilo) : undefined}
+        onRebuilt={fetchSilos}
+        onUpdated={fetchSilos}
       />
 
       <AddSiloModal open={addOpen} onOpenChange={setAddOpen} onCreated={fetchSilos} />

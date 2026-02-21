@@ -1,6 +1,10 @@
 /**
  * Message protocol for communication between the main thread
  * (WorkerEmbeddingProxy) and the embedding worker thread.
+ *
+ * The `modelId` field added to InitRequest allows the main process to
+ * specify which built-in model the worker should load. This maps to a
+ * key in MODEL_REGISTRY (e.g. 'snowflake-arctic-embed-xs').
  */
 
 // ── Requests (main → worker) ────────────────────────────────────────────────
@@ -9,6 +13,8 @@ export interface InitRequest {
   id: number;
   type: 'init';
   cacheDir: string;
+  /** Model identifier from the registry (e.g. 'snowflake-arctic-embed-xs') */
+  modelId: string;
 }
 
 export interface EmbedRequest {

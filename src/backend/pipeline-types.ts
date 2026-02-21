@@ -65,10 +65,26 @@ export type Chunker = (
 ) => ChunkRecord[];
 
 /**
+ * An async chunker — same contract as Chunker but returns a Promise.
+ * Used for chunkers that require async initialization (e.g. Tree-sitter WASM).
+ */
+export type AsyncChunker = (
+  filePath: string,
+  extraction: ExtractionResult,
+  maxChunkTokens: number,
+) => Promise<ChunkRecord[]>;
+
+/**
  * A file processor pairs an extractor with a chunker.
  * The pipeline registry maps file extensions to these pairs.
+ *
+ * Processors can provide either a sync `chunker` or an async `asyncChunker`.
+ * If `asyncChunker` is present, it takes priority. The sync `chunker` is
+ * optional when an async chunker is provided (set to a dummy that throws).
  */
 export interface FileProcessor {
   extractor: Extractor;
   chunker: Chunker;
+  /** Async chunker — takes priority over sync chunker when present. */
+  asyncChunker?: AsyncChunker;
 }

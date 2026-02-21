@@ -28,6 +28,18 @@ if (started) {
 // clients interact with Lodestone.
 const isMcpMode = process.argv.includes('--mcp');
 
+// Ensure app name is always "Lodestone" so app.getPath('userData') resolves to
+// %APPDATA%/Lodestone regardless of how the process was launched (e.g. running
+// electron.exe directly in dev vs a packaged app).
+app.setName('Lodestone');
+
+// In MCP mode stdout is reserved for JSON-RPC. Redirect console.log to stderr
+// so JS-level logging doesn't corrupt the protocol. Native Electron/Chromium
+// stdout noise is handled by the mcp-wrapper.js filter process.
+if (isMcpMode) {
+  console.log = (...args: unknown[]) => console.error(...args);
+}
+
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
@@ -768,16 +780,26 @@ function registerIpcHandlers(): void {
  *
  * In this mode:
  * - No Electron window or tray is created
- * - stdout is reserved for MCP protocol messages (logging goes to stderr)
+ * - Logging goes to stderr (stdout is unused — MCP traffic flows over a named pipe)
  * - All silos are started and awaited before accepting MCP connections
- * - The process exits when the MCP transport disconnects (stdin closes)
+ * - The process exits when the named pipe disconnects
+ *
+ * On Windows, Electron is a GUI app and cannot receive piped stdin
+ * (electron/electron#4218). The mcp-wrapper.js proxy handles stdio with the
+ * MCP client and relays traffic over a named pipe that Electron connects to.
  */
 async function startMcpMode(): Promise<void> {
-  // Redirect console.log to stderr so it doesn't corrupt the stdio protocol
-  const originalLog = console.log;
-  console.log = (...args: unknown[]) => console.error(...args);
-
   console.log('[main] Starting in MCP mode (headless)');
+
+  // Parse the named-pipe path passed by mcp-wrapper.js
+  const ipcPathArg = process.argv.find((a) => a.startsWith('--ipc-path='));
+  const ipcPath = ipcPathArg?.split('=')[1];
+
+  if (!ipcPath) {
+    console.error('[main] MCP mode requires --ipc-path=<pipe>. Use mcp-wrapper.js to launch.');
+    app.quit();
+    return;
+  }
 
   // Load config
   const configPath = getDefaultConfigPath(getUserDataDir());
@@ -825,15 +847,31 @@ async function startMcpMode(): Promise<void> {
       console.error(`[main] Failed to start silo "${name}":`, err);
     }
   }
-  console.log(`[main] All silos ready — starting MCP server`);
+  console.log(`[main] All silos ready — connecting to MCP pipe`);
 
-  // Start the MCP server on stdio
-  const stopMcp = await startMcpServer({ config, siloManagers });
+  // Connect to the named pipe created by mcp-wrapper.js
+  const { createConnection } = await import('node:net');
+  const socket = createConnection(ipcPath);
 
-  // Handle shutdown signals
+  await new Promise<void>((resolve, reject) => {
+    socket.once('connect', () => {
+      console.log(`[main] Connected to MCP pipe: ${ipcPath}`);
+      resolve();
+    });
+    socket.once('error', (err) => {
+      console.error(`[main] Failed to connect to MCP pipe:`, err);
+      reject(err);
+    });
+  });
+
+  // Start the MCP server over the named-pipe socket
+  const stopMcp = await startMcpServer({ config, siloManagers, input: socket, output: socket });
+
+  // Handle shutdown
   const shutdown = async () => {
     console.log('[main] Shutting down MCP mode...');
     await stopMcp();
+    socket.destroy();
     await shutdownBackend();
     app.quit();
   };
@@ -841,8 +879,8 @@ async function startMcpMode(): Promise<void> {
   process.on('SIGINT', () => shutdown());
   process.on('SIGTERM', () => shutdown());
 
-  // When stdin closes (MCP client disconnects), shut down
-  process.stdin.on('end', () => shutdown());
+  // When the pipe disconnects (wrapper exited or MCP client disconnected), shut down
+  socket.on('close', () => shutdown());
 }
 
 // ── App Lifecycle ────────────────────────────────────────────────────────────

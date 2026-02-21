@@ -1,10 +1,15 @@
 /**
  * MCP Server — exposes Lodestone search as a tool via the Model Context Protocol.
  *
- * When Lodestone is launched with `--mcp`, it starts this server on stdin/stdout
- * instead of creating an Electron window. MCP clients (Claude Desktop, VS Code
- * extensions, etc.) can then call the `lodestone_search` tool to search across
- * all configured silos.
+ * When Lodestone is launched with `--mcp`, it starts this server instead of
+ * creating an Electron window. MCP clients (Claude Desktop, VS Code extensions,
+ * etc.) can then call the `lodestone_search` tool to search across all
+ * configured silos.
+ *
+ * On Windows, Electron cannot use piped stdin (it's a GUI app — see
+ * electron/electron#4218), so the transport reads/writes via a named-pipe
+ * socket provided by the mcp-wrapper.js proxy process, rather than
+ * process.stdin/stdout directly.
  *
  * The server uses the high-level McpServer API from @modelcontextprotocol/sdk
  * with Zod schemas for input validation.
@@ -13,6 +18,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import type { Readable, Writable } from 'node:stream';
 import type { SiloManager } from './silo-manager';
 import type { LodestoneConfig } from './config';
 import { resolveModelAlias } from './model-registry';
@@ -22,6 +28,10 @@ import { resolveModelAlias } from './model-registry';
 export interface McpServerDeps {
   config: LodestoneConfig;
   siloManagers: Map<string, SiloManager>;
+  /** Custom input stream (e.g. a named-pipe socket). Falls back to process.stdin. */
+  input?: Readable;
+  /** Custom output stream (e.g. a named-pipe socket). Falls back to process.stdout. */
+  output?: Writable;
 }
 
 // ── Formatting ───────────────────────────────────────────────────────────────
@@ -279,11 +289,14 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
   );
 
   // ── Connect transport ──
+  // Use custom streams when provided (named-pipe socket from mcp-wrapper),
+  // otherwise fall back to process.stdin/stdout for direct stdio mode.
 
-  const transport = new StdioServerTransport();
+  const transport = new StdioServerTransport(deps.input, deps.output);
   await server.connect(transport);
 
-  console.error('[mcp] Lodestone MCP server started on stdio');
+  const mode = deps.input ? 'named pipe' : 'stdio';
+  console.error(`[mcp] Lodestone MCP server started on ${mode}`);
   console.error(`[mcp] ${siloManagers.size} silo(s) available for search`);
 
   // Return cleanup function

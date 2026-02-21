@@ -110,6 +110,10 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
       if (code !== 0 && this.pending.size > 0) {
         this.rejectAll(new Error(`Embedding worker exited with code ${code}`));
       }
+      // Clean up references so the next embed call auto-respawns the worker
+      // instead of posting to a dead thread and hanging forever.
+      this.worker = null;
+      this.initPromise = null;
     });
 
     // Send init with the model ID and wait for model to load + warmup

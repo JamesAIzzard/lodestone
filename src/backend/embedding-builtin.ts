@@ -65,7 +65,12 @@ export class BuiltInEmbeddingService implements EmbeddingService {
   async embed(text: string): Promise<number[]> {
     const extractor = await this.getExtractor();
     const prefixed = this.def.queryPrefix + text;
-    const result = await extractor(prefixed, { pooling: 'mean', normalize: true });
+    const result = await extractor(prefixed, {
+      pooling: 'mean',
+      normalize: true,
+      truncation: true,
+      max_length: this.maxTokens,
+    });
     return Array.from(result.data as Float32Array).slice(0, this.dimensions);
   }
 
@@ -79,7 +84,12 @@ export class BuiltInEmbeddingService implements EmbeddingService {
     const prefixed = this.def.documentPrefix
       ? texts.map((t) => this.def.documentPrefix + t)
       : texts;
-    const result = await extractor(prefixed, { pooling: 'mean', normalize: true });
+    const result = await extractor(prefixed, {
+      pooling: 'mean',
+      normalize: true,
+      truncation: true,
+      max_length: this.maxTokens,
+    });
     const data = result.data as Float32Array;
     const vectors: number[][] = [];
     for (let i = 0; i < texts.length; i++) {

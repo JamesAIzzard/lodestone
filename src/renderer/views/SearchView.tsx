@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Search, FileText, ExternalLink, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
 import type { SiloStatus, SearchResult, MatchType } from '../../shared/types';
 
 function fileName(p: string): string {
@@ -48,6 +49,13 @@ export default function SearchView() {
     const unsub = window.electronAPI?.onSilosChanged(fetch);
     return () => unsub?.();
   }, []);
+
+  // Build silo name → colour lookup
+  const siloColorMap = useMemo(() => {
+    const map = new Map<string, SiloColor>();
+    for (const s of silos) map.set(s.config.name, s.config.color);
+    return map;
+  }, [silos]);
 
   async function handleSearch() {
     if (!query.trim() || searching) return;
@@ -178,7 +186,14 @@ export default function SearchView() {
                       </div>
                       <div className="flex items-center gap-2 text-xs text-muted-foreground/50">
                         <span className="truncate">{dirPath(result.filePath)}</span>
-                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        <span className={cn(
+                          'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
+                          (() => {
+                            const c = siloColorMap.get(result.siloName) ?? DEFAULT_SILO_COLOR;
+                            const classes = SILO_COLOR_MAP[c];
+                            return `${classes.bgSoft} ${classes.text}`;
+                          })(),
+                        )}>
                           {result.siloName}
                         </span>
                         <span className={cn(

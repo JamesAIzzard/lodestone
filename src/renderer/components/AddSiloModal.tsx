@@ -11,6 +11,8 @@ import { Button } from './ui/button';
 import { FolderOpen, Plus, X, HardDrive, Link, AlertTriangle, DatabaseZap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ExtensionPicker from './ExtensionPicker';
+import SiloAppearancePicker from './SiloAppearancePicker';
+import { autoAssignColor, DEFAULT_SILO_ICON, validateSiloColor, validateSiloIcon, type SiloColor, type SiloIconName } from '../../shared/silo-appearance';
 import type { StoredSiloConfigResponse } from '../../shared/electron-api';
 
 const NEW_STEPS = ['Mode', 'Name', 'Directories', 'Extensions', 'Model', 'Storage'] as const;
@@ -37,6 +39,10 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Appearance state
+  const [siloColor, setSiloColor] = useState<SiloColor>(() => autoAssignColor(0));
+  const [siloIcon, setSiloIcon] = useState<SiloIconName>(DEFAULT_SILO_ICON);
+
   // "Connect existing" state
   const [originalDirectories, setOriginalDirectories] = useState<string[]>([]);
   const [dbModel, setDbModel] = useState<string | null>(null);
@@ -47,13 +53,17 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   const isFirst = stepIndex === 0;
   const isLast = stepIndex === steps.length - 1;
 
-  // Fetch available models on mount
+  // Fetch available models and auto-assign colour on mount
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((status) => {
       if (status.availableModels.length > 0) {
         setAvailableModels(status.availableModels);
       }
       setModel(status.defaultModel);
+    });
+    // Auto-assign a colour based on the number of existing silos
+    window.electronAPI?.getSilos().then((silos) => {
+      setSiloColor(autoAssignColor(silos.length));
     });
   }, []);
 
@@ -79,6 +89,8 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
     setOriginalDirectories([]);
     setDbModel(null);
     setConfigLoaded(false);
+    setSiloColor(autoAssignColor(0));
+    setSiloIcon(DEFAULT_SILO_ICON);
   }
 
   function handleClose(open: boolean) {
@@ -115,6 +127,8 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
           dbPath: dbPath.trim(),
           model,
           description: description.trim() || undefined,
+          color: siloColor,
+          icon: siloIcon,
         });
         if (result && !result.success) {
           setError(result.error ?? 'Unknown error');
@@ -159,6 +173,8 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
       setExtensions(result.config.extensions);
       setOriginalDirectories(result.config.directories);
       setModel(result.config.model);
+      if (result.config.color) setSiloColor(validateSiloColor(result.config.color));
+      if (result.config.icon) setSiloIcon(validateSiloIcon(result.config.icon));
       setConfigLoaded(true);
     } else if (result?.meta) {
       // Legacy DB without config blob — pre-fill model from meta
@@ -271,6 +287,14 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
               <p className="mt-1 text-[11px] text-muted-foreground/50">
                 Helps AI agents decide which silo to search.
               </p>
+              <div className="mt-4">
+                <SiloAppearancePicker
+                  color={siloColor}
+                  icon={siloIcon}
+                  onColorChange={setSiloColor}
+                  onIconChange={setSiloIcon}
+                />
+              </div>
             </div>
           )}
 

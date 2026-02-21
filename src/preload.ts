@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Silos
   getSilos: (): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:list'),
-  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string }): Promise<unknown> =>
+  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string }): Promise<unknown> =>
     ipcRenderer.invoke('silos:create', opts),
   deleteSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:delete', name),
@@ -28,7 +28,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('silos:wake', name),
   rebuildSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:rebuild', name),
-  updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[] }): Promise<unknown> =>
+  updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string }): Promise<unknown> =>
     ipcRenderer.invoke('silos:update', name, updates),
   pauseSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:pause', name),

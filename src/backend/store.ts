@@ -124,6 +124,8 @@ export interface StoredSiloConfig {
   ignore: string[];
   ignoreFiles: string[];
   model: string;
+  color?: string;
+  icon?: string;
 }
 
 // ── Create ───────────────────────────────────────────────────────────────────

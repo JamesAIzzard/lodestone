@@ -9,6 +9,7 @@ import { parse, stringify } from 'smol-toml';
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveModelAlias, DEFAULT_MODEL } from './model-registry';
+import { validateSiloColor, validateSiloIcon, type SiloColor, type SiloIconName } from '../shared/silo-appearance';
 
 // ── Config Types ─────────────────────────────────────────────────────────────
 
@@ -45,6 +46,10 @@ export interface SiloTomlConfig {
   sleeping?: boolean;
   /** Human-readable description of what this silo contains (for MCP tool routing) */
   description?: string;
+  /** Named colour key from the palette (e.g. 'blue', 'emerald') */
+  color?: string;
+  /** Lucide icon name in kebab-case (e.g. 'database', 'book-open') */
+  icon?: string;
 }
 
 export interface LodestoneConfig {
@@ -113,6 +118,8 @@ export function loadConfig(configPath: string): LodestoneConfig {
       model: typeof silo.model === 'string' ? silo.model : undefined,
       sleeping: silo.sleeping === true ? true : undefined,
       description: typeof silo.description === 'string' ? silo.description : undefined,
+      color: typeof silo.color === 'string' ? silo.color : undefined,
+      icon: typeof silo.icon === 'string' ? silo.icon : undefined,
     };
   }
 
@@ -184,6 +191,10 @@ export interface ResolvedSiloConfig {
   sleeping: boolean;
   /** Human-readable description for MCP tool routing */
   description: string;
+  /** Palette colour for UI accent (validated, always present) */
+  color: SiloColor;
+  /** Lucide icon name for UI display (validated, always present) */
+  icon: SiloIconName;
 }
 
 /**
@@ -208,5 +219,7 @@ export function resolveSiloConfig(
     debounce: config.defaults.debounce,
     sleeping: silo.sleeping === true,
     description: silo.description ?? '',
+    color: validateSiloColor(silo.color),
+    icon: validateSiloIcon(silo.icon),
   };
 }

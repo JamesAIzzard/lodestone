@@ -13,6 +13,9 @@ import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
 import IgnorePatternsEditor from './IgnorePatternsEditor';
 import ExtensionPicker from './ExtensionPicker';
+import SiloAppearancePicker from './SiloAppearancePicker';
+import SiloIcon from './SiloIconComponent';
+import { SILO_COLOR_MAP, type SiloColor, type SiloIconName } from '../../shared/silo-appearance';
 import type { SiloStatus, ActivityEvent, ServerStatus, DefaultSettings } from '../../shared/types';
 
 function abbreviatePath(p: string): string {
@@ -88,6 +91,10 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
   const [extensionOverridden, setExtensionOverridden] = useState(false);
   const [defaultExtensions, setDefaultExtensions] = useState<string[]>([]);
 
+  // Appearance state
+  const [siloColor, setSiloColor] = useState<SiloColor>('blue');
+  const [siloIcon, setSiloIcon] = useState<SiloIconName>('database');
+
   // Sync description and model from silo prop when modal opens
   useEffect(() => {
     if (open && silo) {
@@ -116,6 +123,10 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
       // Set current extensions
       setExtensions(silo.config.extensions);
       setExtensionOverridden(silo.config.hasExtensionOverride);
+
+      // Set current appearance
+      setSiloColor(silo.config.color);
+      setSiloIcon(silo.config.icon);
     }
   }, [open, silo]);
 
@@ -259,9 +270,24 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     onUpdated?.();
   }
 
+  async function handleColorChange(newColor: SiloColor) {
+    if (!silo) return;
+    setSiloColor(newColor);
+    await window.electronAPI?.updateSilo(silo.config.name, { color: newColor });
+    onUpdated?.();
+  }
+
+  async function handleIconChange(newIcon: SiloIconName) {
+    if (!silo) return;
+    setSiloIcon(newIcon);
+    await window.electronAPI?.updateSilo(silo.config.name, { icon: newIcon });
+    onUpdated?.();
+  }
+
   if (!silo) return null;
 
   const { config } = silo;
+  const colorClasses = SILO_COLOR_MAP[siloColor];
   const defaultModel = serverStatus?.defaultModel ?? 'snowflake-arctic-embed-xs';
   const effectiveModel = selectedModel || config.modelOverride || defaultModel;
   const isOverride = effectiveModel !== defaultModel;
@@ -274,7 +300,10 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{config.name}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <SiloIcon icon={siloIcon} className={cn('h-5 w-5', colorClasses.text)} />
+            {config.name}
+          </DialogTitle>
           <DialogDescription>Silo configuration and indexing statistics.</DialogDescription>
         </DialogHeader>
 
@@ -318,6 +347,14 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
                 placeholder="Describe what this silo contains..."
                 rows={2}
                 className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+              />
+            </Row>
+            <Row label="Appearance">
+              <SiloAppearancePicker
+                color={siloColor}
+                icon={siloIcon}
+                onColorChange={handleColorChange}
+                onIconChange={handleIconChange}
               />
             </Row>
             <Row label="Model">

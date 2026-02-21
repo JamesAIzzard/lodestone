@@ -28,6 +28,8 @@ export interface SiloStatus {
   };
   /** True when the configured model differs from the model that built the index */
   modelMismatch?: boolean;
+  /** Absolute path to the silo's SQLite database file */
+  resolvedDbPath: string;
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────

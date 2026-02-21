@@ -73,6 +73,9 @@ export interface IndexFileResult {
 /**
  * Index a single file: read, extract, chunk, embed, and store.
  *
+ * @param absolutePath — on-disk path used for file I/O and processor dispatch
+ * @param storedKey — portable key ("{dirIndex}:{relPath}") used in the database
+ *
  * Dispatches to the appropriate extractor + chunker based on file extension.
  * Supports both sync and async chunkers (async chunkers are used for
  * Tree-sitter code parsing which requires WASM grammar loading).
@@ -81,40 +84,44 @@ export interface IndexFileResult {
  * Throws on unrecoverable errors (file not readable, embedding service down).
  */
 export async function indexFile(
-  filePath: string,
+  absolutePath: string,
+  storedKey: string,
   embeddingService: EmbeddingService,
   db: SiloDatabase,
 ): Promise<IndexFileResult> {
   const start = performance.now();
 
   // Read the file
-  const content = fs.readFileSync(filePath, 'utf-8');
+  const content = fs.readFileSync(absolutePath, 'utf-8');
 
   // Dispatch to the right extractor + chunker
-  const { extractor, chunker, asyncChunker } = getProcessor(filePath);
+  const { extractor, chunker, asyncChunker } = getProcessor(absolutePath);
   const extraction = extractor(content);
 
   // Use async chunker if available, otherwise sync
   const chunks = asyncChunker
-    ? await asyncChunker(filePath, extraction, embeddingService.maxTokens)
-    : chunker(filePath, extraction, embeddingService.maxTokens);
+    ? await asyncChunker(absolutePath, extraction, embeddingService.maxTokens)
+    : chunker(absolutePath, extraction, embeddingService.maxTokens);
 
   if (chunks.length === 0) {
     // Empty file or only metadata — remove any stale chunks
-    await deleteFileChunks(db, filePath);
-    return { filePath, chunkCount: 0, durationMs: performance.now() - start };
+    await deleteFileChunks(db, storedKey);
+    return { filePath: storedKey, chunkCount: 0, durationMs: performance.now() - start };
   }
 
+  // Rewrite chunk filePaths to stored key before persisting
+  const storedChunks = chunks.map((c) => ({ ...c, filePath: storedKey }));
+
   // Embed all chunks in a single batch
-  const texts = chunks.map((c) => c.text);
+  const texts = storedChunks.map((c) => c.text);
   const embeddings = await embeddingService.embedBatch(texts);
 
   // Store (atomic upsert: removes old chunks, inserts new)
-  await upsertFileChunks(db, filePath, chunks, embeddings);
+  await upsertFileChunks(db, storedKey, storedChunks, embeddings);
 
   return {
-    filePath,
-    chunkCount: chunks.length,
+    filePath: storedKey,
+    chunkCount: storedChunks.length,
     durationMs: performance.now() - start,
   };
 }

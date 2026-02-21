@@ -22,6 +22,8 @@ import {
   countMtimes,
   loadMeta,
   saveMeta,
+  makeStoredKey,
+  resolveStoredKey,
   type SiloDatabase,
   type SiloSearchResult,
 } from './store';
@@ -42,6 +44,8 @@ export interface SiloManagerStatus {
   reconcileProgress?: { current: number; total: number };
   /** True when the configured model differs from the model used to build the index */
   modelMismatch?: boolean;
+  /** Absolute path to the silo's SQLite database file */
+  resolvedDbPath: string;
 }
 
 // ── SiloManager ──────────────────────────────────────────────────────────────
@@ -361,7 +365,8 @@ export class SiloManager {
   async search(query: string, maxResults: number = 10): Promise<SiloSearchResult[]> {
     if (!this.embeddingService || !this.db) return [];
     const queryVector = await this.embeddingService.embed(query);
-    return hybridSearchSilo(this.db, queryVector, query, maxResults);
+    const results = hybridSearchSilo(this.db, queryVector, query, maxResults);
+    return this.resolveResultPaths(results);
   }
 
   /**
@@ -371,7 +376,16 @@ export class SiloManager {
    */
   searchWithVector(queryVector: number[], queryText: string, maxResults: number = 10): SiloSearchResult[] {
     if (!this.db) return [];
-    return hybridSearchSilo(this.db, queryVector, queryText, maxResults);
+    const results = hybridSearchSilo(this.db, queryVector, queryText, maxResults);
+    return this.resolveResultPaths(results);
+  }
+
+  /** Resolve stored keys in search results back to absolute file paths. */
+  private resolveResultPaths(results: SiloSearchResult[]): SiloSearchResult[] {
+    return results.map((r) => ({
+      ...r,
+      filePath: resolveStoredKey(r.filePath, this.config.directories),
+    }));
   }
 
   /** Get the current status of this silo. */
@@ -384,6 +398,7 @@ export class SiloManager {
         lastUpdated: this.lastUpdated,
         databaseSizeBytes: this.cachedSizeBytes,
         watcherState: this.watcherState,
+        resolvedDbPath: this.resolveDbPath(),
       };
     }
 
@@ -400,6 +415,7 @@ export class SiloManager {
       errorMessage: this.errorMessage,
       reconcileProgress: this.reconcileProgress,
       modelMismatch: this.modelMismatch || undefined,
+      resolvedDbPath: this.resolveDbPath(),
     };
   }
 
@@ -475,17 +491,24 @@ export class SiloManager {
     this.eventListener?.(event);
 
     // Update file modification times directly in SQLite
+    // event.filePath is an absolute path from the watcher — convert to stored key
     if (event.eventType === 'indexed' && this.db) {
       try {
+        const storedKey = makeStoredKey(event.filePath, this.config.directories);
         const stat = fs.statSync(event.filePath);
-        this.mtimes.set(event.filePath, stat.mtimeMs);
-        setMtime(this.db, event.filePath, stat.mtimeMs);
+        this.mtimes.set(storedKey, stat.mtimeMs);
+        setMtime(this.db, storedKey, stat.mtimeMs);
       } catch {
         // File vanished between indexing and stat — rare but harmless
       }
     } else if (event.eventType === 'deleted' && this.db) {
-      this.mtimes.delete(event.filePath);
-      deleteMtime(this.db, event.filePath);
+      try {
+        const storedKey = makeStoredKey(event.filePath, this.config.directories);
+        this.mtimes.delete(storedKey);
+        deleteMtime(this.db, storedKey);
+      } catch {
+        // Path outside configured directories — harmless
+      }
     }
 
     // Update watcher state

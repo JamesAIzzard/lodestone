@@ -356,6 +356,22 @@ function registerIpcHandlers(): void {
     return result.canceled ? [] : result.filePaths;
   });
 
+  ipcMain.handle('dialog:selectDbFile', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'SQLite Database', extensions: ['db'] }],
+    });
+    return result.canceled ? null : result.filePaths[0];
+  });
+
+  ipcMain.handle('dialog:saveDbFile', async (_event, defaultName: string) => {
+    const result = await dialog.showSaveDialog({
+      defaultPath: defaultName,
+      filters: [{ name: 'SQLite Database', extensions: ['db'] }],
+    });
+    return result.canceled ? null : result.filePath;
+  });
+
   ipcMain.handle('shell:openPath', async (_event, filePath: string) => {
     await shell.openPath(filePath);
   });
@@ -384,6 +400,7 @@ function registerIpcHandlers(): void {
         errorMessage: status.errorMessage,
         reconcileProgress: status.reconcileProgress,
         modelMismatch: status.modelMismatch,
+        resolvedDbPath: status.resolvedDbPath,
       });
     }
     return statuses;
@@ -570,6 +587,37 @@ function registerIpcHandlers(): void {
 
       // 4. Update tray menu
       if (tray) tray.setContextMenu(buildTrayMenu());
+
+      return { success: true };
+    },
+  );
+
+  // Disconnect a silo (remove from config but keep DB file on disk)
+  ipcMain.handle(
+    'silos:disconnect',
+    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
+      if (!config) return { success: false, error: 'Config not loaded' };
+
+      const manager = siloManagers.get(name);
+      if (!manager) return { success: false, error: `Silo "${name}" not found` };
+
+      // 1. Stop the silo manager (watcher, close DB)
+      try {
+        await manager.stop();
+      } catch (err) {
+        console.error(`[main] Error stopping silo "${name}":`, err);
+      }
+      siloManagers.delete(name);
+
+      // 2. Remove from config and persist (DB file is NOT deleted)
+      delete config.silos[name];
+      const configPath = getDefaultConfigPath(getUserDataDir());
+      saveConfig(configPath, config);
+      console.log(`[main] Silo "${name}" disconnected (database preserved on disk)`);
+
+      // 3. Update tray menu and notify renderer
+      if (tray) tray.setContextMenu(buildTrayMenu());
+      mainWindow?.webContents.send('silos:changed');
 
       return { success: true };
     },

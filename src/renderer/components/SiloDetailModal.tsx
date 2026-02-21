@@ -8,7 +8,7 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play } from 'lucide-react';
+import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play, HardDrive, Unplug } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
 import type { SiloStatus, ActivityEvent, ServerStatus } from '../../shared/types';
@@ -65,6 +65,8 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [editDescription, setEditDescription] = useState('');
 
@@ -97,6 +99,8 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
       setConfirmDelete(false);
       setDeleting(false);
       setDeleteError(null);
+      setConfirmDisconnect(false);
+      setDisconnecting(false);
     }
   }, [open, silo]);
 
@@ -135,6 +139,18 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     } else {
       setDeleteError(result?.error ?? 'Failed to delete silo');
       setDeleting(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    if (!silo) return;
+    setDisconnecting(true);
+    const result = await window.electronAPI?.disconnectSilo(silo.config.name);
+    if (result?.success) {
+      onOpenChange(false);
+      onDeleted?.();
+    } else {
+      setDisconnecting(false);
     }
   }
 
@@ -254,6 +270,25 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
                 ))}
               </div>
             </Row>
+            <Row label="Database">
+              <div className="flex items-center gap-2">
+                <HardDrive className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground font-mono truncate" title={silo.resolvedDbPath}>
+                  {abbreviatePath(silo.resolvedDbPath)}
+                </span>
+                <button
+                  onClick={() => {
+                    // Open the folder containing the DB file
+                    const dir = silo.resolvedDbPath.replace(/[/\\][^/\\]+$/, '');
+                    window.electronAPI?.openPath(dir);
+                  }}
+                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  title="Reveal in file manager"
+                >
+                  <FolderOpen className="h-3 w-3" />
+                </button>
+              </div>
+            </Row>
           </div>
         </section>
 
@@ -288,6 +323,39 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
             </div>
           )}
         </section>
+
+        {/* Disconnect confirmation */}
+        {confirmDisconnect && (
+          <div className="mt-4 rounded-md border border-amber-500/30 bg-amber-500/5 p-4">
+            <p className="text-sm text-foreground">
+              Disconnect <span className="font-semibold">{config.name}</span>?
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This will remove the silo from Lodestone but keep the database file on disk.
+              You can reconnect it later using &ldquo;Connect existing database&rdquo; when creating a new silo.
+            </p>
+            <div className="mt-3 flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmDisconnect(false)}
+                disabled={disconnecting}
+                autoFocus
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDisconnect}
+                disabled={disconnecting}
+              >
+                <Unplug className="h-3.5 w-3.5" />
+                {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Delete confirmation */}
         {confirmDelete && (
@@ -347,7 +415,13 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
             <RotateCcw className={cn('h-3.5 w-3.5', rebuilding && 'animate-spin')} />
             {rebuilding ? 'Rebuilding...' : 'Rebuild Index'}
           </Button>
-          {!confirmDelete && (
+          {!confirmDelete && !confirmDisconnect && (
+            <Button variant="outline" size="sm" onClick={() => setConfirmDisconnect(true)}>
+              <Unplug className="h-3.5 w-3.5" />
+              Disconnect
+            </Button>
+          )}
+          {!confirmDelete && !confirmDisconnect && (
             <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)}>
               <Trash2 className="h-3.5 w-3.5" />
               Delete Silo

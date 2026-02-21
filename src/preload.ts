@@ -4,6 +4,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Dialogs & Shell
   selectDirectories: (): Promise<string[]> =>
     ipcRenderer.invoke('dialog:selectDirectories'),
+  selectDbFile: (): Promise<string | null> =>
+    ipcRenderer.invoke('dialog:selectDbFile'),
+  saveDbFile: (defaultName: string): Promise<string | null> =>
+    ipcRenderer.invoke('dialog:saveDbFile', defaultName),
   openPath: (path: string): Promise<void> =>
     ipcRenderer.invoke('shell:openPath', path),
 
@@ -14,6 +18,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('silos:create', opts),
   deleteSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:delete', name),
+  disconnectSilo: (name: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:disconnect', name),
   sleepSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:sleep', name),
   wakeSilo: (name: string): Promise<unknown> =>

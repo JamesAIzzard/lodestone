@@ -36,6 +36,7 @@ export const mockSilos: SiloStatus[] = [
     lastUpdated: minutesAgo(3),
     databaseSizeBytes: 14_200_000,
     watcherState: 'idle',
+    resolvedDbPath: '/home/james/.local/share/lodestone/personal-kb.db',
   },
   {
     config: {
@@ -58,6 +59,7 @@ export const mockSilos: SiloStatus[] = [
     lastUpdated: minutesAgo(1),
     databaseSizeBytes: 8_700_000,
     watcherState: 'indexing',
+    resolvedDbPath: '/home/james/.local/share/lodestone/dietrix.db',
   },
   {
     config: {
@@ -74,6 +76,7 @@ export const mockSilos: SiloStatus[] = [
     lastUpdated: minutesAgo(47),
     databaseSizeBytes: 3_100_000,
     watcherState: 'idle',
+    resolvedDbPath: '/home/james/.local/share/lodestone/reference-papers.db',
   },
 ];
 

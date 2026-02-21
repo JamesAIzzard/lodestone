@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { indexFile, removeFile } from './pipeline';
-import { setMtime, deleteMtime, type SiloDatabase } from './store';
+import { setMtime, deleteMtime, makeStoredKey, resolveStoredKey, type SiloDatabase } from './store';
 import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
@@ -68,94 +68,107 @@ export async function reconcile(
 
   // 1. Scan disk for all matching files
   onProgress?.({ phase: 'scanning', current: 0, total: 0 });
-  const diskFiles = new Map<string, number>(); // filePath → mtimeMs
+  const diskAbsPaths = new Map<string, number>(); // absPath → mtimeMs
 
   for (const dir of config.directories) {
-    walkDirectory(dir, config.extensions, config.ignore, diskFiles);
+    walkDirectory(dir, config.extensions, config.ignore, diskAbsPaths);
   }
 
-  // 2. Determine which files are already indexed from the mtimes map
-  const indexedFiles = new Set(mtimes.keys());
+  // 2. Build storedKey → { absPath, mtime } map from disk scan
+  const diskStored = new Map<string, { absPath: string; mtime: number }>();
+  for (const [absPath, mtime] of diskAbsPaths) {
+    try {
+      const key = makeStoredKey(absPath, config.directories);
+      diskStored.set(key, { absPath, mtime });
+    } catch {
+      // path outside all directories — shouldn't happen with correct globs
+    }
+  }
 
-  // 3. Find files to add or update
-  const filesToIndex: string[] = [];
-  for (const [filePath, diskMtime] of diskFiles) {
-    if (!indexedFiles.has(filePath)) {
+  // 3. Determine which files are already indexed from the mtimes map (keyed by stored keys)
+  const indexedKeys = new Set(mtimes.keys());
+
+  // 4. Find files to add or update
+  const filesToIndex: Array<{ absPath: string; storedKey: string }> = [];
+  for (const [storedKey, { absPath, mtime }] of diskStored) {
+    if (!indexedKeys.has(storedKey)) {
       // New file — not yet in the database
-      filesToIndex.push(filePath);
+      filesToIndex.push({ absPath, storedKey });
     } else {
       // Existing file — check if modified while app was closed
-      const storedMtime = mtimes.get(filePath)!;
-      if (diskMtime !== storedMtime) {
-        filesToIndex.push(filePath);
+      const storedMtime = mtimes.get(storedKey)!;
+      if (mtime !== storedMtime) {
+        filesToIndex.push({ absPath, storedKey });
       }
     }
   }
 
-  // 4. Find files to remove (in mtimes but no longer on disk)
+  // 5. Find files to remove (in mtimes but no longer on disk)
   const filesToRemove: string[] = [];
-  for (const indexedPath of indexedFiles) {
-    if (!diskFiles.has(indexedPath)) {
-      filesToRemove.push(indexedPath);
+  for (const indexedKey of indexedKeys) {
+    if (!diskStored.has(indexedKey)) {
+      filesToRemove.push(indexedKey);
     }
   }
 
   // Total reflects all disk files so the UI shows overall progress,
   // not just remaining work.  Already-indexed files count as done.
-  const alreadyDone = diskFiles.size - filesToIndex.length;
-  const totalWork = diskFiles.size + filesToRemove.length;
+  const alreadyDone = diskStored.size - filesToIndex.length;
+  const totalWork = diskStored.size + filesToRemove.length;
 
-  // 5. Index new and modified files
+  // 6. Index new and modified files
   let progress = alreadyDone;
-  for (const filePath of filesToIndex) {
+  for (const { absPath, storedKey } of filesToIndex) {
     onProgress?.({
       phase: 'indexing',
       current: ++progress,
       total: totalWork,
-      filePath,
+      filePath: absPath,
     });
     try {
-      await indexFile(filePath, embeddingService, db);
-      const isUpdate = indexedFiles.has(filePath);
+      await indexFile(absPath, storedKey, embeddingService, db);
+      const isUpdate = indexedKeys.has(storedKey);
       if (isUpdate) {
         filesUpdated++;
       } else {
         filesAdded++;
       }
-      onEvent?.({ filePath, eventType: isUpdate ? 'reindexed' : 'indexed' });
+      // Resolve back to absolute path for UI display
+      onEvent?.({ filePath: absPath, eventType: isUpdate ? 'reindexed' : 'indexed' });
       // Record the current mtime so we detect future changes
       try {
-        const stat = fs.statSync(filePath);
-        mtimes.set(filePath, stat.mtimeMs);
-        setMtime(db, filePath, stat.mtimeMs);
+        const stat = fs.statSync(absPath);
+        mtimes.set(storedKey, stat.mtimeMs);
+        setMtime(db, storedKey, stat.mtimeMs);
       } catch {
         // File vanished between indexing and stat — rare but possible
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[reconcile] Failed to index ${filePath}:`, message);
-      onEvent?.({ filePath, eventType: 'error', errorMessage: message });
+      console.error(`[reconcile] Failed to index ${absPath}:`, message);
+      onEvent?.({ filePath: absPath, eventType: 'error', errorMessage: message });
     }
   }
 
-  // 6. Remove stale files
-  for (const filePath of filesToRemove) {
+  // 7. Remove stale files
+  for (const storedKey of filesToRemove) {
+    const absPath = resolveStoredKey(storedKey, config.directories);
     onProgress?.({
       phase: 'removing',
       current: ++progress,
       total: totalWork,
-      filePath,
+      filePath: absPath,
     });
     try {
-      await removeFile(filePath, db);
-      mtimes.delete(filePath);
-      deleteMtime(db, filePath);
+      await removeFile(storedKey, db);
+      mtimes.delete(storedKey);
+      deleteMtime(db, storedKey);
       filesRemoved++;
-      onEvent?.({ filePath, eventType: 'deleted' });
+      onEvent?.({ filePath: absPath, eventType: 'deleted' });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[reconcile] Failed to remove ${filePath}:`, message);
-      onEvent?.({ filePath, eventType: 'error', errorMessage: message });
+      console.error(`[reconcile] Failed to remove ${absPath}:`, message);
+      onEvent?.({ filePath: absPath, eventType: 'error', errorMessage: message });
     }
   }
 

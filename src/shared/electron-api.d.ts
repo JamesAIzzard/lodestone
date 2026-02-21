@@ -3,6 +3,8 @@ import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus } from './ty
 export interface ElectronAPI {
   // ── Dialogs & Shell ────────────────────────────────────────────────────────
   selectDirectories: () => Promise<string[]>;
+  selectDbFile: () => Promise<string | null>;
+  saveDbFile: (defaultName: string) => Promise<string | null>;
   openPath: (path: string) => Promise<void>;
 
   // ── Silos ──────────────────────────────────────────────────────────────────
@@ -16,6 +18,7 @@ export interface ElectronAPI {
     description?: string;
   }) => Promise<{ success: boolean; error?: string }>;
   deleteSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
+  disconnectSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   sleepSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   wakeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   rebuildSilo: (name: string) => Promise<{ success: boolean; error?: string }>;

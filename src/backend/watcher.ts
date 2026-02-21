@@ -10,7 +10,7 @@ import { watch, type FSWatcher } from 'chokidar';
 import path from 'node:path';
 import type { EmbeddingService } from './embedding';
 import { indexFile, removeFile } from './pipeline';
-import type { SiloDatabase } from './store';
+import { makeStoredKey, type SiloDatabase } from './store';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
 
@@ -34,7 +34,7 @@ export class SiloWatcher {
   private watcher: FSWatcher | null = null;
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private processing = false;
-  private queue: Array<{ filePath: string; type: 'upsert' | 'delete' }> = [];
+  private queue: Array<{ absPath: string; storedKey: string; type: 'upsert' | 'delete' }> = [];
   private onEvent: WatcherEventHandler | null = null;
 
   constructor(
@@ -100,24 +100,30 @@ export class SiloWatcher {
   // ── Internal ─────────────────────────────────────────────────────────────
 
   private debounce(filePath: string, type: 'upsert' | 'delete', delayMs: number): void {
-    const normalized = path.resolve(filePath);
+    const absPath = path.resolve(filePath);
+    let storedKey: string;
+    try {
+      storedKey = makeStoredKey(absPath, this.config.directories);
+    } catch {
+      return; // file outside configured directories
+    }
 
     // Clear any existing timer for this file
-    const existing = this.debounceTimers.get(normalized);
+    const existing = this.debounceTimers.get(storedKey);
     if (existing) clearTimeout(existing);
 
     const timer = setTimeout(() => {
-      this.debounceTimers.delete(normalized);
-      this.enqueue(normalized, type);
+      this.debounceTimers.delete(storedKey);
+      this.enqueue(absPath, storedKey, type);
     }, delayMs);
 
-    this.debounceTimers.set(normalized, timer);
+    this.debounceTimers.set(storedKey, timer);
   }
 
-  private enqueue(filePath: string, type: 'upsert' | 'delete'): void {
+  private enqueue(absPath: string, storedKey: string, type: 'upsert' | 'delete'): void {
     // Deduplicate: remove any existing entry for this file
-    this.queue = this.queue.filter((item) => item.filePath !== filePath);
-    this.queue.push({ filePath, type });
+    this.queue = this.queue.filter((item) => item.storedKey !== storedKey);
+    this.queue.push({ absPath, storedKey, type });
     this.processQueue();
   }
 
@@ -130,19 +136,19 @@ export class SiloWatcher {
 
       try {
         if (item.type === 'delete') {
-          await removeFile(item.filePath, this.db);
+          await removeFile(item.storedKey, this.db);
           this.emit({
             timestamp: new Date(),
             siloName: this.config.name,
-            filePath: item.filePath,
+            filePath: item.absPath,
             eventType: 'deleted',
           });
         } else {
-          const result = await indexFile(item.filePath, this.embeddingService, this.db);
+          const result = await indexFile(item.absPath, item.storedKey, this.embeddingService, this.db);
           this.emit({
             timestamp: new Date(),
             siloName: this.config.name,
-            filePath: item.filePath,
+            filePath: item.absPath,
             eventType: 'indexed',
             chunkCount: result.chunkCount,
             durationMs: result.durationMs,
@@ -150,11 +156,11 @@ export class SiloWatcher {
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[watcher] Error processing ${item.filePath}:`, message);
+        console.error(`[watcher] Error processing ${item.absPath}:`, message);
         this.emit({
           timestamp: new Date(),
           siloName: this.config.name,
-          filePath: item.filePath,
+          filePath: item.absPath,
           eventType: 'error',
           errorMessage: message,
         });

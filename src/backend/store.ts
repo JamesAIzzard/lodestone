@@ -18,6 +18,35 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ChunkRecord } from './pipeline-types';
 
+// ── Portable Path Utilities ──────────────────────────────────────────────────
+
+/**
+ * Convert an absolute file path to a portable stored key.
+ * Format: "{dirIndex}:{relPath}" with forward slashes.
+ * Throws if the path is not under any configured directory.
+ */
+export function makeStoredKey(absPath: string, directories: string[]): string {
+  for (let i = 0; i < directories.length; i++) {
+    const dir = directories[i];
+    const rel = path.relative(dir, absPath);
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+      return `${i}:${rel.replace(/\\/g, '/')}`;
+    }
+  }
+  throw new Error(`Path not under any silo directory: ${absPath}`);
+}
+
+/**
+ * Resolve a stored key back to an absolute path using the silo's configured directories.
+ */
+export function resolveStoredKey(storedKey: string, directories: string[]): string {
+  const colonIdx = storedKey.indexOf(':');
+  if (colonIdx === -1) return storedKey; // legacy absolute path — return as-is
+  const dirIndex = parseInt(storedKey.slice(0, colonIdx), 10);
+  const relPath = storedKey.slice(colonIdx + 1);
+  return path.join(directories[dirIndex], relPath);
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface SiloSearchResultChunk {
@@ -56,7 +85,7 @@ export interface SiloMeta {
   version: number;
 }
 
-const META_VERSION = 1;
+const META_VERSION = 2;
 
 // ── Create ───────────────────────────────────────────────────────────────────
 

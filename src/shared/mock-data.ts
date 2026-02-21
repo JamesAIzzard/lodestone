@@ -18,8 +18,7 @@ function id(): string {
 
 // ── Silos ─────────────────────────────────────────────────────────────────────
 
-export const BUILT_IN_MODEL = 'built-in (all-MiniLM-L6-v2)';
-export const DEFAULT_MODEL = 'nomic-embed-text';
+export const DEFAULT_MODEL = 'snowflake-arctic-embed-xs';
 
 export const mockSilos: SiloStatus[] = [
   {
@@ -30,6 +29,7 @@ export const mockSilos: SiloStatus[] = [
       ignorePatterns: ['.git', '.obsidian', 'node_modules'],
       modelOverride: null,
       dbPath: '/home/james/.local/share/lodestone/personal-kb.db',
+      description: 'Personal notes, daily journal, and research from my Obsidian vault',
     },
     indexedFileCount: 342,
     chunkCount: 1_847,
@@ -51,6 +51,7 @@ export const mockSilos: SiloStatus[] = [
       ignorePatterns: ['.git', '__pycache__', 'node_modules', '.venv'],
       modelOverride: null,
       dbPath: '/home/james/.local/share/lodestone/dietrix.db',
+      description: 'Dietrix project — Python codebase for nutrition optimization',
     },
     indexedFileCount: 128,
     chunkCount: 2_103,
@@ -66,6 +67,7 @@ export const mockSilos: SiloStatus[] = [
       ignorePatterns: ['.git'],
       modelOverride: 'mxbai-embed-large',
       dbPath: '/home/james/.local/share/lodestone/reference-papers.db',
+      description: 'Academic papers on retrieval-augmented generation and dense passage retrieval',
     },
     indexedFileCount: 23,
     chunkCount: 614,
@@ -81,6 +83,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/projects/lodestone/architecture.md',
     score: 0.94,
+    matchType: 'both',
     chunks: [
       {
         sectionPath: ['Architecture', 'Vector Store Design'],
@@ -98,6 +101,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-optimiser/src/solver/constraint_handler.py',
     score: 0.91,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['ConstraintHandler.validate'],
@@ -110,6 +114,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/notes/embedding-models-comparison.md',
     score: 0.89,
+    matchType: 'both',
     chunks: [
       {
         sectionPath: ['Embedding Models', 'Nomic Embed Text'],
@@ -127,6 +132,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-core/src/nutrients/calculator.py',
     score: 0.87,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['NutrientCalculator', 'NutrientCalculator.compute_totals'],
@@ -139,6 +145,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/papers/retrieval-augmented-generation-survey-2024.pdf',
     score: 0.85,
+    matchType: 'keyword',
     chunks: [
       {
         sectionPath: [],
@@ -161,6 +168,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/daily/2025-02-14.md',
     score: 0.82,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['Chunking Strategy Notes'],
@@ -173,6 +181,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-types/src/food_item.py',
     score: 0.80,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['FoodItem'],
@@ -185,6 +194,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/references/chokidar-watcher-patterns.md',
     score: 0.78,
+    matchType: 'keyword',
     chunks: [
       {
         sectionPath: ['Chokidar Patterns', 'Debounce Configuration'],
@@ -197,6 +207,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-data/seeds/usda_nutrients.toml',
     score: 0.75,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: [],
@@ -209,6 +220,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/papers/dense-passage-retrieval-karpukhin-2020.pdf',
     score: 0.73,
+    matchType: 'both',
     chunks: [
       {
         sectionPath: [],
@@ -221,6 +233,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/projects/lodestone/mcp-tool-design.md',
     score: 0.71,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['MCP Tool Design', 'Search Tool Parameters'],
@@ -233,6 +246,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-optimiser/src/solver/objective.py',
     score: 0.68,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['ObjectiveFunction', 'ObjectiveFunction.__call__'],

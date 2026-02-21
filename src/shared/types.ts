@@ -7,9 +7,11 @@ export interface SiloConfig {
   ignorePatterns: string[];
   modelOverride: string | null;
   dbPath: string;
+  /** Human-readable description of what this silo contains */
+  description: string;
 }
 
-export type WatcherState = 'idle' | 'indexing' | 'error' | 'sleeping';
+export type WatcherState = 'idle' | 'indexing' | 'error' | 'sleeping' | 'waiting';
 
 export interface SiloStatus {
   config: SiloConfig;
@@ -24,6 +26,8 @@ export interface SiloStatus {
     current: number;
     total: number;
   };
+  /** True when the configured model differs from the model that built the index */
+  modelMismatch?: boolean;
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────
@@ -36,9 +40,12 @@ export interface SearchResultChunk {
   score: number;
 }
 
+export type MatchType = 'semantic' | 'keyword' | 'both';
+
 export interface SearchResult {
   filePath: string;
   score: number;
+  matchType: MatchType;
   chunks: SearchResultChunk[];
   siloName: string;
 }

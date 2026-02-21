@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   CheckCircle2,
@@ -12,7 +12,6 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { mockServerStatus, BUILT_IN_MODEL } from '../../shared/mock-data';
 
 const STEPS = ['Ollama', 'Silo', 'Indexing'] as const;
 type Step = (typeof STEPS)[number];
@@ -26,62 +25,98 @@ export default function OnboardingView() {
 
   // Step 1 state
   const [ollamaChecking, setOllamaChecking] = useState(false);
-  const [ollamaFound, setOllamaFound] = useState<boolean | null>(null);
-  // Toggle this to test "not found" state during development
-  const [simulateNotFound] = useState(false);
+  const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [serverModels, setServerModels] = useState<string[]>([]);
+  const [defaultModel, setDefaultModel] = useState('snowflake-arctic-embed-xs');
 
   // Step 2 state
   const [siloName, setSiloName] = useState('');
   const [directories, setDirectories] = useState<string[]>([]);
   const [extensions, setExtensions] = useState<string[]>(['.md', '.py']);
-  const [model, setModel] = useState(BUILT_IN_MODEL);
+  const [model, setModel] = useState('');
 
   // Step 3 state
-  const [indexProgress, setIndexProgress] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [indexDone, setIndexDone] = useState(false);
+  const [indexProgress, setIndexProgress] = useState<{ current: number; total: number } | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const checkOllama = useCallback(() => {
+  const checkOllama = useCallback(async () => {
     setOllamaChecking(true);
-    setOllamaFound(null);
-    setTimeout(() => {
+    setOllamaConnected(null);
+    try {
+      // Fetch server status to get available models and default model
+      const status = await window.electronAPI?.getServerStatus();
+      if (status) {
+        setServerModels(status.availableModels);
+        setDefaultModel(status.defaultModel);
+        setModel(status.defaultModel);
+      }
+
+      // Test Ollama connection
+      const result = await window.electronAPI?.testOllamaConnection(
+        status?.ollamaUrl ?? 'http://localhost:11434',
+      );
+      setOllamaConnected(result?.connected ?? false);
+      setOllamaModels(result?.models ?? []);
+    } catch {
+      setOllamaConnected(false);
+    } finally {
       setOllamaChecking(false);
-      setOllamaFound(!simulateNotFound);
-    }, 1500);
-  }, [simulateNotFound]);
+    }
+  }, []);
 
   // Auto-check on mount
   useEffect(() => {
     checkOllama();
   }, [checkOllama]);
 
-  // Animate indexing progress
+  // Set model to default once loaded
   useEffect(() => {
-    if (step !== 'Indexing') return;
-    setIndexProgress(0);
-    setIndexDone(false);
-    const target = 342;
-    const duration = 3000;
-    const interval = 50;
-    const increment = target / (duration / interval);
-    let current = 0;
-    const timer = setInterval(() => {
-      current += increment;
-      if (current >= target) {
-        setIndexProgress(target);
-        setIndexDone(true);
-        clearInterval(timer);
-      } else {
-        setIndexProgress(Math.floor(current));
+    if (defaultModel && !model) {
+      setModel(defaultModel);
+    }
+  }, [defaultModel, model]);
+
+  // Poll indexing progress in step 3
+  useEffect(() => {
+    if (step !== 'Indexing' || indexDone) return;
+
+    pollRef.current = setInterval(async () => {
+      const silos = await window.electronAPI?.getSilos();
+      if (!silos) return;
+      const slug = siloName.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+      const silo = silos.find((s) => s.config.name === slug);
+      if (!silo) return;
+
+      if (silo.reconcileProgress && silo.reconcileProgress.total > 0) {
+        setIndexProgress(silo.reconcileProgress);
       }
-    }, interval);
-    return () => clearInterval(timer);
-  }, [step]);
+
+      if (silo.watcherState === 'idle' && silo.indexedFileCount > 0) {
+        setIndexDone(true);
+        setIndexProgress({ current: silo.indexedFileCount, total: silo.indexedFileCount });
+        if (pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      }
+    }, 1000);
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [step, indexDone, siloName]);
 
   function canAdvance(): boolean {
     switch (step) {
       case 'Ollama':
-        // Ollama is optional — user can skip once the check finishes
-        return !ollamaChecking && ollamaFound !== null;
+        return !ollamaChecking && ollamaConnected !== null;
       case 'Silo':
         return siloName.trim().length > 0 && directories.length > 0 && extensions.length > 0;
       case 'Indexing':
@@ -89,8 +124,28 @@ export default function OnboardingView() {
     }
   }
 
-  function handleNext() {
-    if (step === 'Indexing') {
+  async function handleNext() {
+    if (step === 'Silo') {
+      // Create the silo via the real backend
+      setStepIndex(2); // Move to Indexing step
+      setCreating(true);
+      setCreateError(null);
+
+      const slug = siloName.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+      const result = await window.electronAPI?.createSilo({
+        name: slug,
+        directories,
+        extensions,
+        dbPath: `${slug}.db`,
+        model: model || defaultModel,
+      });
+
+      setCreating(false);
+
+      if (result && !result.success) {
+        setCreateError(result.error ?? 'Failed to create silo');
+      }
+    } else if (step === 'Indexing') {
       navigate('/');
     } else {
       setStepIndex((i) => i + 1);
@@ -174,23 +229,25 @@ export default function OnboardingView() {
                   </div>
                 )}
 
-                {!ollamaChecking && ollamaFound === true && (
+                {!ollamaChecking && ollamaConnected === true && (
                   <div className="w-full">
                     <div className="flex items-center gap-2 text-sm text-emerald-400">
                       <CheckCircle2 className="h-5 w-5" />
-                      Ollama detected — {mockServerStatus.availableModels.length} models available
+                      Ollama detected — {ollamaModels.length} model{ollamaModels.length !== 1 ? 's' : ''} available
                     </div>
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                      {mockServerStatus.availableModels.map((m) => (
-                        <Badge key={m} variant="secondary" className="text-[10px]">
-                          {m}
-                        </Badge>
-                      ))}
-                    </div>
+                    {ollamaModels.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        {ollamaModels.map((m) => (
+                          <Badge key={m} variant="secondary" className="text-[10px]">
+                            {m}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {!ollamaChecking && ollamaFound === false && (
+                {!ollamaChecking && ollamaConnected === false && (
                   <div className="w-full">
                     <div className="flex items-center gap-2 text-sm text-amber-400">
                       <XCircle className="h-5 w-5" />
@@ -296,12 +353,15 @@ export default function OnboardingView() {
                 onChange={(e) => setModel(e.target.value)}
                 className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
               >
-                <option value={BUILT_IN_MODEL}>{BUILT_IN_MODEL}</option>
-                {ollamaFound && mockServerStatus.availableModels.map((m) => (
-                  <option key={m} value={m}>
-                    {m} (Ollama)
-                  </option>
-                ))}
+                {serverModels.length > 0 ? (
+                  serverModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))
+                ) : (
+                  <option value={defaultModel}>{defaultModel}</option>
+                )}
               </select>
             </div>
           )}
@@ -315,28 +375,52 @@ export default function OnboardingView() {
               </p>
 
               <div className="mt-6">
-                {/* Progress bar */}
-                <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary transition-all duration-100"
-                    style={{ width: `${(indexProgress / 342) * 100}%` }}
-                  />
-                </div>
-
-                <div className="mt-3 flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">
-                    {indexDone ? 'Indexing complete' : 'Indexing files...'}
-                  </span>
-                  <span className="tabular-nums text-foreground">
-                    {indexProgress} / 342 files
-                  </span>
-                </div>
-
-                {indexDone && (
-                  <div className="mt-4 flex items-center gap-2 text-sm text-emerald-400">
-                    <CheckCircle2 className="h-4 w-4" />
-                    All files indexed successfully
+                {creating && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Creating silo...
                   </div>
+                )}
+
+                {createError && (
+                  <div className="flex items-center gap-2 text-sm text-red-400">
+                    <XCircle className="h-4 w-4" />
+                    {createError}
+                  </div>
+                )}
+
+                {!creating && !createError && (
+                  <>
+                    {/* Progress bar */}
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all duration-300"
+                        style={{
+                          width: indexProgress && indexProgress.total > 0
+                            ? `${(indexProgress.current / indexProgress.total) * 100}%`
+                            : '0%',
+                        }}
+                      />
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">
+                        {indexDone ? 'Indexing complete' : 'Indexing files...'}
+                      </span>
+                      <span className="tabular-nums text-foreground">
+                        {indexProgress
+                          ? `${indexProgress.current.toLocaleString()} / ${indexProgress.total.toLocaleString()} files`
+                          : 'Scanning...'}
+                      </span>
+                    </div>
+
+                    {indexDone && (
+                      <div className="mt-4 flex items-center gap-2 text-sm text-emerald-400">
+                        <CheckCircle2 className="h-4 w-4" />
+                        All files indexed successfully
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -345,13 +429,13 @@ export default function OnboardingView() {
 
         {/* Navigation */}
         <div className="mt-6 flex justify-end">
-          <Button onClick={handleNext} disabled={!canAdvance()}>
+          <Button onClick={handleNext} disabled={!canAdvance() || creating}>
             {step === 'Indexing' ? (
               <>
                 Go to Dashboard
                 <ArrowRight className="h-4 w-4" />
               </>
-            ) : step === 'Ollama' && ollamaFound === false ? (
+            ) : step === 'Ollama' && ollamaConnected === false ? (
               <>
                 Continue with Built-in Model
                 <ArrowRight className="h-4 w-4" />

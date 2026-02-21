@@ -4,11 +4,21 @@
  * Provides a unified interface for generating vector embeddings from text,
  * with two backends: built-in (Transformers.js / ONNX via worker thread)
  * and Ollama REST API.
+ *
+ * Phase 3: The factory now uses the model registry to determine whether a
+ * model ID refers to a bundled model or an Ollama-hosted model. The legacy
+ * 'built-in' alias is resolved via resolveModelAlias() for backward compat.
  */
 
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { WorkerResponse } from './embedding-worker-protocol';
+import {
+  getModelDefinition,
+  isBuiltInModel,
+  resolveModelAlias,
+  DEFAULT_MODEL,
+} from './model-registry';
 
 // ── Interface ────────────────────────────────────────────────────────────────
 
@@ -31,6 +41,10 @@ export interface EmbeddingService {
  * (pipeline, reconcile, watcher) are completely unaware of the threading.
  * The worker is spawned lazily on the first embed call, matching the
  * previous lazy-load pattern of BuiltInEmbeddingService.
+ *
+ * Phase 3: Now accepts a modelId to pass to the worker, and reads
+ * initial dimensions/maxTokens from the registry so they're available
+ * before the worker finishes loading.
  */
 export class WorkerEmbeddingProxy implements EmbeddingService {
   private worker: Worker | null = null;
@@ -38,18 +52,26 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
   private nextId = 1;
   private pending = new Map<number, { resolve: (value: any) => void; reject: (err: Error) => void }>();
 
-  // Static defaults match the built-in model (all-MiniLM-L6-v2).
-  // Available immediately so callers can read dimensions before the
-  // first embed() call triggers lazy worker initialization.
-  private _dimensions = 384;
-  private _modelName = 'built-in (all-MiniLM-L6-v2)';
-  private _maxTokens = 128;
+  // Pre-populated from the model registry so callers can read
+  // dimensions/maxTokens immediately (before worker warmup completes).
+  private _dimensions: number;
+  private _modelName: string;
+  private _maxTokens: number;
 
   get dimensions(): number { return this._dimensions; }
   get modelName(): string { return this._modelName; }
   get maxTokens(): number { return this._maxTokens; }
 
-  constructor(private readonly cacheDir: string) {}
+  constructor(
+    private readonly modelId: string,
+    private readonly cacheDir: string,
+  ) {
+    // Seed from registry for instant access
+    const def = getModelDefinition(modelId);
+    this._dimensions = def?.dimensions ?? 384;
+    this._modelName = def ? `${modelId} (${def.displayName})` : modelId;
+    this._maxTokens = def?.maxTokens ?? 512;
+  }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -88,14 +110,20 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
       if (code !== 0 && this.pending.size > 0) {
         this.rejectAll(new Error(`Embedding worker exited with code ${code}`));
       }
+      // Clean up references so the next embed call auto-respawns the worker
+      // instead of posting to a dead thread and hanging forever.
+      this.worker = null;
+      this.initPromise = null;
     });
 
-    // Send init and wait for model to load + warmup
+    // Send init with the model ID and wait for model to load + warmup
     const response = await this.post<{ dimensions: number; modelName: string; maxTokens: number }>({
       type: 'init',
       cacheDir: this.cacheDir,
+      modelId: this.modelId,
     });
 
+    // Update with actual values from the worker (should match registry)
     this._dimensions = response.dimensions;
     this._modelName = response.modelName;
     this._maxTokens = response.maxTokens;
@@ -212,9 +240,10 @@ export class OllamaEmbeddingService implements EmbeddingService {
 // ── Factory ──────────────────────────────────────────────────────────────────
 
 export interface EmbeddingServiceOptions {
-  /** Model identifier: 'built-in' for the bundled model, or an Ollama model name */
+  /** Model identifier: a registry key (e.g. 'snowflake-arctic-embed-xs')
+   *  or an Ollama model name. The legacy alias 'built-in' is also accepted. */
   model: string;
-  /** Ollama base URL (only used when model is not 'built-in') */
+  /** Ollama base URL (only used when model is not a built-in) */
   ollamaUrl: string;
   /** Cache directory for built-in model files */
   modelCacheDir: string;
@@ -222,12 +251,19 @@ export interface EmbeddingServiceOptions {
 
 /**
  * Create the appropriate embedding service based on configuration.
+ *
+ * Uses the model registry to determine if the model is bundled (ONNX)
+ * or external (Ollama). The legacy 'built-in' alias resolves to the
+ * default model for backward compatibility with Phase 2 configs.
  */
 export function createEmbeddingService(options: EmbeddingServiceOptions): EmbeddingService {
-  if (options.model === 'built-in') {
-    return new WorkerEmbeddingProxy(options.modelCacheDir);
+  // Resolve 'built-in' → actual default model key
+  const modelId = resolveModelAlias(options.model);
+
+  if (isBuiltInModel(modelId)) {
+    return new WorkerEmbeddingProxy(modelId, options.modelCacheDir);
   }
-  return new OllamaEmbeddingService(options.ollamaUrl, options.model);
+  return new OllamaEmbeddingService(options.ollamaUrl, modelId);
 }
 
 // ── Ollama Utilities ─────────────────────────────────────────────────────────

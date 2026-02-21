@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Silos
   getSilos: (): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:list'),
-  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string }): Promise<unknown> =>
+  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string }): Promise<unknown> =>
     ipcRenderer.invoke('silos:create', opts),
   deleteSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:delete', name),
@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('silos:sleep', name),
   wakeSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:wake', name),
+  rebuildSilo: (name: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:rebuild', name),
+  updateSilo: (name: string, updates: { description?: string; model?: string }): Promise<unknown> =>
+    ipcRenderer.invoke('silos:update', name, updates),
   search: (query: string, siloName?: string): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:search', query, siloName),
 

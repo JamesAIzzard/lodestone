@@ -13,12 +13,20 @@ import {
 } from './backend/config';
 import { checkOllamaConnection } from './backend/embedding';
 import { SiloManager } from './backend/silo-manager';
+import { getBundledModelIds, getModelDefinition, resolveModelAlias } from './backend/model-registry';
+import { startMcpServer } from './backend/mcp-server';
 import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus } from './shared/types';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
   app.quit();
 }
+
+// ── MCP Mode Detection ──────────────────────────────────────────────────────
+// When launched with `--mcp`, Lodestone runs headless: no window, no tray,
+// just the MCP server on stdio. This is how Claude Desktop and other MCP
+// clients interact with Lodestone.
+const isMcpMode = process.argv.includes('--mcp');
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -30,6 +38,22 @@ let config: LodestoneConfig | null = null;
 const siloManagers = new Map<string, SiloManager>();
 const startTime = Date.now();
 let nextEventId = 1;
+
+// Serializes silo starts so only one embedding model is loaded at a time.
+// Used by both initializeBackend() and silos:create to prevent concurrent starts.
+let siloStartQueue: Promise<void> = Promise.resolve();
+
+function enqueueSiloStart(name: string, manager: SiloManager): void {
+  manager.loadWaitingStatus();
+  siloStartQueue = siloStartQueue.then(async () => {
+    try {
+      await manager.start();
+      console.log(`[main] Silo "${name}" started`);
+    } catch (err) {
+      console.error(`[main] Failed to start silo "${name}":`, err);
+    }
+  });
+}
 
 function getUserDataDir(): string {
   return app.getPath('userData');
@@ -79,9 +103,10 @@ function createWindow() {
 function buildTrayMenu(): Menu {
   const statusLabel = (state: string) =>
     state === 'sleeping' ? '⏸ Sleeping'
-      : state === 'indexing' ? '⟳ Indexing'
-        : state === 'error' ? '✕ Error'
-          : '● Idle';
+      : state === 'waiting' ? '⏳ Waiting'
+        : state === 'indexing' ? '⟳ Indexing'
+          : state === 'error' ? '✕ Error'
+            : '● Idle';
 
   const siloItems = Array.from(siloManagers.entries()).map(([name]) => ({
     label: `${name}  ${statusLabel('idle')}`,
@@ -183,9 +208,9 @@ async function initializeBackend(): Promise<void> {
   }
 
   // Initialize a SiloManager for each configured silo.
-  // Register immediately so the renderer can see them, then start
-  // indexing in the background (same pattern as silos:create).
-  // Sleeping silos are registered but not started.
+  // Register all managers immediately so the renderer can see them.
+  // Sleeping silos load cached stats; non-sleeping silos are enqueued
+  // for sequential startup via the shared start queue.
   for (const [name, siloToml] of Object.entries(config.silos)) {
     const resolved = resolveSiloConfig(name, siloToml, config);
     const manager = new SiloManager(
@@ -196,16 +221,13 @@ async function initializeBackend(): Promise<void> {
     );
 
     siloManagers.set(name, manager);
+    attachActivityForwarding(manager);
 
     if (resolved.sleeping) {
       manager.loadSleepingStatus();
       console.log(`[main] Silo "${name}" is sleeping`);
     } else {
-      manager.start().then(() => {
-        console.log(`[main] Silo "${name}" started`);
-      }).catch((err) => {
-        console.error(`[main] Failed to start silo "${name}":`, err);
-      });
+      enqueueSiloStart(name, manager);
     }
   }
 
@@ -273,6 +295,23 @@ function pushActivityToRenderer(event: ActivityEvent): void {
   }
 }
 
+/**
+ * Set up real-time activity event forwarding from a SiloManager to the renderer.
+ * Converts internal WatcherEvent objects to serializable ActivityEvent DTOs.
+ */
+function attachActivityForwarding(manager: SiloManager): void {
+  manager.onEvent((event) => {
+    pushActivityToRenderer({
+      id: String(nextEventId++),
+      timestamp: event.timestamp.toISOString(),
+      siloName: event.siloName,
+      filePath: event.filePath,
+      eventType: event.eventType,
+      errorMessage: event.errorMessage,
+    });
+  });
+}
+
 // ── IPC Handlers ─────────────────────────────────────────────────────────────
 
 function registerIpcHandlers(): void {
@@ -300,8 +339,9 @@ function registerIpcHandlers(): void {
           directories: cfg.directories,
           extensions: cfg.extensions,
           ignorePatterns: cfg.ignore,
-          modelOverride: cfg.model === config?.embeddings.model ? null : cfg.model,
+          modelOverride: cfg.model === resolveModelAlias(config?.embeddings.model ?? '') ? null : cfg.model,
           dbPath: cfg.dbPath,
+          description: cfg.description,
         },
         indexedFileCount: status.indexedFileCount,
         chunkCount: status.chunkCount,
@@ -310,6 +350,7 @@ function registerIpcHandlers(): void {
         watcherState: status.watcherState,
         errorMessage: status.errorMessage,
         reconcileProgress: status.reconcileProgress,
+        modelMismatch: status.modelMismatch,
       });
     }
     return statuses;
@@ -328,6 +369,7 @@ function registerIpcHandlers(): void {
         results.push({
           filePath: r.filePath,
           score: r.score,
+          matchType: r.matchType,
           chunks: r.chunks,
           siloName: name as string,
         });
@@ -374,8 +416,11 @@ function registerIpcHandlers(): void {
       totalFiles += status.indexedFileCount;
     }
 
-    // Build available models list (built-in is always present)
-    const models = ['built-in (all-MiniLM-L6-v2)'];
+    // Build available models list — bundled models from registry + Ollama models
+    const models: string[] = getBundledModelIds().map((id) => {
+      const def = getModelDefinition(id);
+      return def ? `${id} — ${def.displayName}` : id;
+    });
     if (ollamaResult) {
       models.push(...ollamaResult.models);
     }
@@ -385,7 +430,7 @@ function registerIpcHandlers(): void {
       ollamaState: ollamaResult ? 'connected' : 'disconnected',
       ollamaUrl,
       availableModels: models,
-      defaultModel: config?.embeddings.model ?? 'built-in',
+      defaultModel: resolveModelAlias(config?.embeddings.model ?? 'snowflake-arctic-embed-xs'),
       totalIndexedFiles: totalFiles,
     };
   });
@@ -411,7 +456,7 @@ function registerIpcHandlers(): void {
       const manager = siloManagers.get(name);
       if (!manager) return { success: false, error: `Silo "${name}" not found` };
 
-      // 1. Stop the silo manager (watcher, embedding service, final persist)
+      // 1. Stop the silo manager (watcher, embedding service, close DB)
       try {
         await manager.stop();
       } catch (err) {
@@ -463,12 +508,69 @@ function registerIpcHandlers(): void {
     },
   );
 
+  // Rebuild a silo from scratch
+  ipcMain.handle(
+    'silos:rebuild',
+    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
+      const manager = siloManagers.get(name);
+      if (!manager) return { success: false, error: `Silo "${name}" not found` };
+      try {
+        await manager.rebuild();
+        return { success: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[main] Failed to rebuild silo "${name}":`, err);
+        return { success: false, error: message };
+      }
+    },
+  );
+
+  // Update a silo's mutable fields (auto-persists to config.toml)
+  ipcMain.handle(
+    'silos:update',
+    async (
+      _event,
+      name: string,
+      updates: { description?: string; model?: string },
+    ): Promise<{ success: boolean; error?: string }> => {
+      if (!config) return { success: false, error: 'Config not loaded' };
+      const siloToml = config.silos[name];
+      if (!siloToml) return { success: false, error: `Silo "${name}" not found` };
+
+      // Apply description update
+      if (updates.description !== undefined) {
+        siloToml.description = updates.description.trim() || undefined;
+      }
+
+      // Apply model update
+      if (updates.model !== undefined) {
+        const resolvedDefault = resolveModelAlias(config.embeddings.model);
+        const resolvedNew = resolveModelAlias(updates.model);
+
+        // Store as override only if it differs from the global default
+        siloToml.model = resolvedNew !== resolvedDefault ? resolvedNew : undefined;
+
+        // Hot-update the running silo manager so mismatch detection works
+        const manager = siloManagers.get(name);
+        if (manager) {
+          manager.updateModel(resolvedNew);
+        }
+      }
+
+      // Auto-persist to config.toml
+      const configPath = getDefaultConfigPath(getUserDataDir());
+      saveConfig(configPath, config);
+      console.log(`[main] Silo "${name}" updated`);
+      return { success: true };
+    },
+  );
+
   // Create a new silo
   ipcMain.handle(
     'silos:create',
     async (
       _event,
-      opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string },
+      opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string },
     ): Promise<{ success: boolean; error?: string }> => {
       if (!config) return { success: false, error: 'Config not loaded' };
 
@@ -477,15 +579,16 @@ function registerIpcHandlers(): void {
       if (siloManagers.has(slug)) return { success: false, error: `Silo "${slug}" already exists` };
       if (opts.directories.length === 0) return { success: false, error: 'At least one directory is required' };
 
-      // Normalize model name — the UI may send display strings like "built-in (all-MiniLM-L6-v2)"
-      const model = opts.model.startsWith('built-in') ? 'built-in' : opts.model;
+      // Normalize model name — strip display suffixes like " — Arctic Embed XS (22MB, 384-dim)"
+      const model = resolveModelAlias(opts.model.split(' — ')[0].trim());
 
       // Add to config and persist
       const siloToml: import('./backend/config').SiloTomlConfig = {
         directories: opts.directories,
         db_path: opts.dbPath,
         extensions: opts.extensions.length > 0 ? opts.extensions : undefined,
-        model: model !== config.embeddings.model ? model : undefined,
+        model: model !== resolveModelAlias(config.embeddings.model) ? model : undefined,
+        description: opts.description?.trim() || undefined,
       };
 
       config.silos[slug] = siloToml;
@@ -503,23 +606,115 @@ function registerIpcHandlers(): void {
       );
 
       siloManagers.set(slug, manager);
+      attachActivityForwarding(manager);
       if (tray) tray.setContextMenu(buildTrayMenu());
 
-      // Start indexing in the background — don't block the UI
-      manager.start().then(() => {
-        console.log(`[main] Silo "${slug}" started and indexed`);
-      }).catch((err) => {
-        console.error(`[main] Failed to start silo "${slug}":`, err);
-      });
+      // Enqueue startup — if another silo is currently indexing, this one
+      // will show as 'Waiting' until the queue reaches it.
+      enqueueSiloStart(slug, manager);
 
       return { success: true };
     },
   );
 }
 
+// ── MCP Headless Mode ────────────────────────────────────────────────────────
+
+/**
+ * Start Lodestone in headless MCP mode.
+ *
+ * In this mode:
+ * - No Electron window or tray is created
+ * - stdout is reserved for MCP protocol messages (logging goes to stderr)
+ * - All silos are started and awaited before accepting MCP connections
+ * - The process exits when the MCP transport disconnects (stdin closes)
+ */
+async function startMcpMode(): Promise<void> {
+  // Redirect console.log to stderr so it doesn't corrupt the stdio protocol
+  const originalLog = console.log;
+  console.log = (...args: unknown[]) => console.error(...args);
+
+  console.log('[main] Starting in MCP mode (headless)');
+
+  // Load config
+  const configPath = getDefaultConfigPath(getUserDataDir());
+  if (configExists(configPath)) {
+    try {
+      config = loadConfig(configPath);
+      console.log(`[main] Loaded config from ${configPath}`);
+    } catch (err) {
+      console.error('[main] Failed to load config:', err);
+      config = createDefaultConfig();
+    }
+  } else {
+    config = createDefaultConfig();
+    saveConfig(configPath, config);
+    console.log(`[main] Created default config at ${configPath}`);
+  }
+
+  // Start all non-sleeping silos sequentially so only one embedding model
+  // is loaded into memory at a time (same sequencing as GUI mode).
+  const pendingManagers: Array<[string, SiloManager]> = [];
+  for (const [name, siloToml] of Object.entries(config.silos)) {
+    const resolved = resolveSiloConfig(name, siloToml, config);
+    const manager = new SiloManager(
+      resolved,
+      config.embeddings.ollama_url,
+      getModelCacheDir(),
+      getUserDataDir(),
+    );
+
+    siloManagers.set(name, manager);
+
+    if (resolved.sleeping) {
+      manager.loadSleepingStatus();
+      console.log(`[main] Silo "${name}" is sleeping`);
+    } else {
+      pendingManagers.push([name, manager]);
+    }
+  }
+
+  for (const [name, manager] of pendingManagers) {
+    try {
+      await manager.start();
+      console.log(`[main] Silo "${name}" ready`);
+    } catch (err) {
+      console.error(`[main] Failed to start silo "${name}":`, err);
+    }
+  }
+  console.log(`[main] All silos ready — starting MCP server`);
+
+  // Start the MCP server on stdio
+  const stopMcp = await startMcpServer({ config, siloManagers });
+
+  // Handle shutdown signals
+  const shutdown = async () => {
+    console.log('[main] Shutting down MCP mode...');
+    await stopMcp();
+    await shutdownBackend();
+    app.quit();
+  };
+
+  process.on('SIGINT', () => shutdown());
+  process.on('SIGTERM', () => shutdown());
+
+  // When stdin closes (MCP client disconnects), shut down
+  process.stdin.on('end', () => shutdown());
+}
+
 // ── App Lifecycle ────────────────────────────────────────────────────────────
 
 app.on('ready', () => {
+  if (isMcpMode) {
+    // Headless MCP mode — no window, no tray, no IPC handlers
+    startMcpMode().catch((err) => {
+      console.error('[main] MCP mode failed:', err);
+      app.quit();
+    });
+    return;
+  }
+
+  // Normal GUI mode
   registerIpcHandlers();
   createWindow();
   createTray();
@@ -546,6 +741,10 @@ app.on('will-quit', (event) => {
 });
 
 app.on('window-all-closed', () => {
+  if (isMcpMode) {
+    // In MCP mode, don't quit when no windows — there are no windows
+    return;
+  }
   if (process.platform === 'darwin') {
     // macOS: app stays in dock
   }
@@ -553,6 +752,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
+  if (isMcpMode) return;
   if (mainWindow) {
     mainWindow.show();
     mainWindow.focus();

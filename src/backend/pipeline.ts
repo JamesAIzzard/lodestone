@@ -14,8 +14,10 @@ import path from 'node:path';
 import type { FileProcessor } from './pipeline-types';
 import { extractMarkdown } from './extractors/markdown';
 import { extractPlaintext } from './extractors/plaintext';
+import { extractCode } from './extractors/code';
 import { chunkByHeading } from './chunkers/heading';
 import { chunkPlaintext } from './chunkers/plaintext';
+import { chunkCodeAsync, CODE_EXTENSIONS } from './chunkers/code';
 import type { EmbeddingService } from './embedding';
 import { upsertFileChunks, deleteFileChunks, type SiloDatabase } from './store';
 
@@ -26,10 +28,23 @@ import { upsertFileChunks, deleteFileChunks, type SiloDatabase } from './store';
  * Extensions not in this map fall back to the default processor.
  */
 const processors = new Map<string, FileProcessor>([
+  // Markdown — heading-based chunking
   ['.md',       { extractor: extractMarkdown,  chunker: chunkByHeading }],
   ['.markdown', { extractor: extractMarkdown,  chunker: chunkByHeading }],
   ['.mdx',      { extractor: extractMarkdown,  chunker: chunkByHeading }],
 ]);
+
+// Code files — Tree-sitter AST-based chunking (async)
+// The dummy sync chunker is never called because asyncChunker takes priority.
+const codeProcessor: FileProcessor = {
+  extractor: extractCode,
+  chunker: chunkPlaintext, // sync fallback (not used when asyncChunker is present)
+  asyncChunker: chunkCodeAsync,
+};
+
+for (const ext of CODE_EXTENSIONS) {
+  processors.set(ext, codeProcessor);
+}
 
 /** Default processor for unregistered extensions. */
 const defaultProcessor: FileProcessor = {
@@ -59,6 +74,9 @@ export interface IndexFileResult {
  * Index a single file: read, extract, chunk, embed, and store.
  *
  * Dispatches to the appropriate extractor + chunker based on file extension.
+ * Supports both sync and async chunkers (async chunkers are used for
+ * Tree-sitter code parsing which requires WASM grammar loading).
+ *
  * Returns the number of chunks produced.
  * Throws on unrecoverable errors (file not readable, embedding service down).
  */
@@ -73,9 +91,13 @@ export async function indexFile(
   const content = fs.readFileSync(filePath, 'utf-8');
 
   // Dispatch to the right extractor + chunker
-  const { extractor, chunker } = getProcessor(filePath);
+  const { extractor, chunker, asyncChunker } = getProcessor(filePath);
   const extraction = extractor(content);
-  const chunks = chunker(filePath, extraction, embeddingService.maxTokens);
+
+  // Use async chunker if available, otherwise sync
+  const chunks = asyncChunker
+    ? await asyncChunker(filePath, extraction, embeddingService.maxTokens)
+    : chunker(filePath, extraction, embeddingService.maxTokens);
 
   if (chunks.length === 0) {
     // Empty file or only metadata — remove any stale chunks

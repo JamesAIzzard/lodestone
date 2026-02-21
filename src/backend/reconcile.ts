@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { indexFile, removeFile } from './pipeline';
-import type { SiloDatabase } from './store';
+import { setMtime, deleteMtime, type SiloDatabase } from './store';
 import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
 
@@ -114,6 +114,7 @@ export async function reconcile(
       try {
         const stat = fs.statSync(filePath);
         mtimes.set(filePath, stat.mtimeMs);
+        setMtime(db, filePath, stat.mtimeMs);
       } catch {
         // File vanished between indexing and stat — rare but possible
       }
@@ -133,6 +134,7 @@ export async function reconcile(
     try {
       await removeFile(filePath, db);
       mtimes.delete(filePath);
+      deleteMtime(db, filePath);
       filesRemoved++;
     } catch (err) {
       console.error(`[reconcile] Failed to remove ${filePath}:`, err);

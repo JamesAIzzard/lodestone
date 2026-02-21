@@ -3,6 +3,10 @@
  *
  * Runs in a separate thread via worker_threads to keep the main Electron
  * process event loop free for IPC and rendering during indexing.
+ *
+ * Phase 3: Now receives a modelId in the init message and passes it
+ * to BuiltInEmbeddingService, which looks up the model configuration
+ * from the registry.
  */
 
 import { parentPort } from 'node:worker_threads';
@@ -15,7 +19,7 @@ parentPort!.on('message', async (msg: WorkerRequest) => {
   try {
     switch (msg.type) {
       case 'init': {
-        service = new BuiltInEmbeddingService(msg.cacheDir);
+        service = new BuiltInEmbeddingService(msg.modelId, msg.cacheDir);
         // Force model load so latency is paid during init, not first real embed
         await service.embed('warmup');
         parentPort!.postMessage({

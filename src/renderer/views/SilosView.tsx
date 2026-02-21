@@ -23,7 +23,7 @@ export default function SilosView() {
 
   // Poll while any silo is indexing
   useEffect(() => {
-    const anyIndexing = silos.some((s) => s.watcherState === 'indexing');
+    const anyIndexing = silos.some((s) => s.watcherState === 'indexing' || s.watcherState === 'waiting');
     if (anyIndexing && !pollRef.current) {
       pollRef.current = setInterval(fetchSilos, 2000);
     } else if (!anyIndexing && pollRef.current) {
@@ -85,6 +85,8 @@ export default function SilosView() {
         onOpenChange={setDetailOpen}
         onDeleted={fetchSilos}
         onSleepToggle={selectedSilo ? () => handleSleepToggle(selectedSilo) : undefined}
+        onRebuilt={fetchSilos}
+        onUpdated={fetchSilos}
       />
 
       <AddSiloModal open={addOpen} onOpenChange={setAddOpen} onCreated={fetchSilos} />

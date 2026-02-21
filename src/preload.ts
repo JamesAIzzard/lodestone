@@ -34,6 +34,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('activity:push', handler);
   },
 
+  // Silo state changes (e.g. sleep/wake from tray)
+  onSilosChanged: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('silos:changed', handler);
+    return () => ipcRenderer.removeListener('silos:changed', handler);
+  },
+
   // Server / Settings
   getServerStatus: (): Promise<unknown> =>
     ipcRenderer.invoke('server:status'),

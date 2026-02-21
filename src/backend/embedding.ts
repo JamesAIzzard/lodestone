@@ -32,25 +32,85 @@ export interface EmbeddingService {
   dispose(): Promise<void>;
 }
 
+// ── Shared ONNX Worker ──────────────────────────────────────────────────────
+//
+// ONNX Runtime's native code has process-global state that crashes when
+// multiple worker threads load models simultaneously. ALL built-in models
+// share a single worker thread to avoid this. The worker holds a Map of
+// BuiltInEmbeddingService instances keyed by model ID and serializes all
+// ONNX calls through a queue.
+
+let sharedWorker: Worker | null = null;
+let sharedNextId = 1;
+const sharedPending = new Map<number, { resolve: (value: any) => void; reject: (err: Error) => void }>();
+const activeProxies = new Set<WorkerEmbeddingProxy>();
+
+function ensureSharedWorker(): Worker {
+  if (!sharedWorker) {
+    const workerPath = path.join(__dirname, 'embedding-worker.js');
+    sharedWorker = new Worker(workerPath);
+
+    sharedWorker.on('message', (msg: WorkerResponse) => {
+      const entry = sharedPending.get(msg.id);
+      if (!entry) return;
+      sharedPending.delete(msg.id);
+      if (msg.type === 'error') {
+        entry.reject(new Error(msg.message));
+      } else {
+        entry.resolve(msg);
+      }
+    });
+
+    sharedWorker.on('error', (err) => {
+      for (const entry of sharedPending.values()) entry.reject(err);
+      sharedPending.clear();
+    });
+
+    sharedWorker.on('exit', (code) => {
+      if (code !== 0 && sharedPending.size > 0) {
+        const exitErr = new Error(`Embedding worker exited with code ${code}`);
+        for (const entry of sharedPending.values()) entry.reject(exitErr);
+        sharedPending.clear();
+      }
+      sharedWorker = null;
+      // Reset init state so proxies re-init on next use (auto-respawn)
+      for (const proxy of activeProxies) {
+        proxy._resetInit();
+      }
+    });
+  }
+  return sharedWorker;
+}
+
+function postToSharedWorker<T>(msg: Record<string, unknown>): Promise<T> {
+  const worker = ensureSharedWorker();
+  return new Promise<T>((resolve, reject) => {
+    const id = sharedNextId++;
+    sharedPending.set(id, { resolve, reject });
+    worker.postMessage({ ...msg, id });
+  });
+}
+
+async function terminateSharedWorker(): Promise<void> {
+  if (!sharedWorker) return;
+  const worker = sharedWorker;
+  sharedWorker = null;
+  await worker.terminate();
+}
+
 // ── Built-in (Worker Thread Proxy) ──────────────────────────────────────────
 
 /**
- * Proxy that delegates ONNX embedding inference to a worker thread.
+ * Proxy that delegates ONNX embedding inference to the shared worker thread.
  *
- * Implements the same `EmbeddingService` interface so all callers
- * (pipeline, reconcile, watcher) are completely unaware of the threading.
- * The worker is spawned lazily on the first embed call, matching the
- * previous lazy-load pattern of BuiltInEmbeddingService.
+ * All built-in model proxies share a single worker. Each proxy sends an
+ * 'init' message for its model on first use, and all embed/embedBatch
+ * calls include the modelId so the worker routes to the correct model.
  *
- * Phase 3: Now accepts a modelId to pass to the worker, and reads
- * initial dimensions/maxTokens from the registry so they're available
- * before the worker finishes loading.
+ * The worker is terminated only when the last proxy is disposed.
  */
 export class WorkerEmbeddingProxy implements EmbeddingService {
-  private worker: Worker | null = null;
   private initPromise: Promise<void> | null = null;
-  private nextId = 1;
-  private pending = new Map<number, { resolve: (value: any) => void; reject: (err: Error) => void }>();
 
   // Pre-populated from the model registry so callers can read
   // dimensions/maxTokens immediately (before worker warmup completes).
@@ -71,13 +131,19 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
     this._dimensions = def?.dimensions ?? 384;
     this._modelName = def ? `${modelId} (${def.displayName})` : modelId;
     this._maxTokens = def?.maxTokens ?? 512;
+    activeProxies.add(this);
+  }
+
+  /** @internal Called by shared worker on exit to reset init state for auto-respawn. */
+  _resetInit(): void {
+    this.initPromise = null;
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
   private ensureInit(): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this.spawnAndInit().catch((err) => {
+      this.initPromise = this.doInit().catch((err) => {
         // Reset so the next call retries instead of caching a rejected promise
         this.initPromise = null;
         throw err;
@@ -86,38 +152,12 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
     return this.initPromise;
   }
 
-  private async spawnAndInit(): Promise<void> {
-    const workerPath = path.join(__dirname, 'embedding-worker.js');
-    this.worker = new Worker(workerPath);
-
-    this.worker.on('message', (msg: WorkerResponse) => {
-      const entry = this.pending.get(msg.id);
-      if (!entry) return;
-      this.pending.delete(msg.id);
-
-      if (msg.type === 'error') {
-        entry.reject(new Error(msg.message));
-      } else {
-        entry.resolve(msg);
-      }
-    });
-
-    this.worker.on('error', (err) => {
-      this.rejectAll(err);
-    });
-
-    this.worker.on('exit', (code) => {
-      if (code !== 0 && this.pending.size > 0) {
-        this.rejectAll(new Error(`Embedding worker exited with code ${code}`));
-      }
-      // Clean up references so the next embed call auto-respawns the worker
-      // instead of posting to a dead thread and hanging forever.
-      this.worker = null;
-      this.initPromise = null;
-    });
-
-    // Send init with the model ID and wait for model to load + warmup
-    const response = await this.post<{ dimensions: number; modelName: string; maxTokens: number }>({
+  private async doInit(): Promise<void> {
+    const response = await postToSharedWorker<{
+      dimensions: number;
+      modelName: string;
+      maxTokens: number;
+    }>({
       type: 'init',
       cacheDir: this.cacheDir,
       modelId: this.modelId,
@@ -133,47 +173,38 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
 
   async embed(text: string): Promise<number[]> {
     await this.ensureInit();
-    const response = await this.post<{ vector: number[] }>({ type: 'embed', text });
+    const response = await postToSharedWorker<{ vector: number[] }>({
+      type: 'embed',
+      text,
+      modelId: this.modelId,
+    });
     return response.vector;
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
     await this.ensureInit();
-    const response = await this.post<{ vectors: number[][] }>({ type: 'embedBatch', texts });
+    const response = await postToSharedWorker<{ vectors: number[][] }>({
+      type: 'embedBatch',
+      texts,
+      modelId: this.modelId,
+    });
     return response.vectors;
   }
 
   async dispose(): Promise<void> {
-    if (!this.worker) return;
+    activeProxies.delete(this);
     try {
-      await this.post({ type: 'dispose' });
+      await postToSharedWorker({ type: 'dispose', modelId: this.modelId });
     } catch {
       // Worker may already be gone
     }
-    await this.worker.terminate();
-    this.worker = null;
     this.initPromise = null;
-  }
 
-  // ── Internal messaging ───────────────────────────────────────────────────
-
-  private post<T>(msg: Record<string, unknown>): Promise<T> {
-    if (!this.worker) {
-      return Promise.reject(new Error('Embedding worker is not running'));
+    // Terminate the worker when no proxies remain
+    if (activeProxies.size === 0) {
+      await terminateSharedWorker();
     }
-    return new Promise<T>((resolve, reject) => {
-      const id = this.nextId++;
-      this.pending.set(id, { resolve, reject });
-      this.worker!.postMessage({ ...msg, id });
-    });
-  }
-
-  private rejectAll(err: Error): void {
-    for (const entry of this.pending.values()) {
-      entry.reject(err);
-    }
-    this.pending.clear();
   }
 }
 

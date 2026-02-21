@@ -21,17 +21,23 @@ export interface EmbedRequest {
   id: number;
   type: 'embed';
   text: string;
+  /** Route to the correct model when the worker hosts multiple models */
+  modelId: string;
 }
 
 export interface EmbedBatchRequest {
   id: number;
   type: 'embedBatch';
   texts: string[];
+  /** Route to the correct model when the worker hosts multiple models */
+  modelId: string;
 }
 
 export interface DisposeRequest {
   id: number;
   type: 'dispose';
+  /** If set, dispose only this model; otherwise dispose all */
+  modelId?: string;
 }
 
 export type WorkerRequest = InitRequest | EmbedRequest | EmbedBatchRequest | DisposeRequest;

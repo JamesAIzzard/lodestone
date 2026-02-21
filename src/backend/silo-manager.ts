@@ -10,7 +10,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ResolvedSiloConfig } from './config';
-import { createEmbeddingService, type EmbeddingService } from './embedding';
+import type { EmbeddingService } from './embedding';
 import {
   createSiloDatabase,
   searchSilo,
@@ -74,8 +74,7 @@ export class SiloManager {
 
   constructor(
     private config: ResolvedSiloConfig,
-    private readonly ollamaUrl: string,
-    private readonly modelCacheDir: string,
+    private readonly sharedEmbeddingService: EmbeddingService,
     private readonly userDataDir: string,
   ) {}
 
@@ -119,12 +118,8 @@ export class SiloManager {
   }
 
   private async doStart(): Promise<void> {
-    // 1. Create embedding service
-    this.embeddingService = createEmbeddingService({
-      model: this.config.model,
-      ollamaUrl: this.ollamaUrl,
-      modelCacheDir: this.modelCacheDir,
-    });
+    // 1. Use the shared embedding service
+    this.embeddingService = this.sharedEmbeddingService;
 
     // 2. Open or create the SQLite database
     const dbPath = this.resolveDbPath();
@@ -210,10 +205,9 @@ export class SiloManager {
       this.db = null;
     }
 
-    if (this.embeddingService) {
-      await this.embeddingService.dispose();
-      this.embeddingService = null;
-    }
+    // Don't dispose the embedding service — it's shared across silos.
+    // The main process manages its lifecycle.
+    this.embeddingService = null;
 
     this.mtimes.clear();
     console.log(`[silo:${this.config.name}] Stopped`);
@@ -341,6 +335,16 @@ export class SiloManager {
     if (!this.embeddingService || !this.db) return [];
     const queryVector = await this.embeddingService.embed(query);
     return hybridSearchSilo(this.db, queryVector, query, maxResults);
+  }
+
+  /**
+   * Search with a pre-computed query vector.
+   * Used by the main process to embed the query once and share the
+   * vector across all silos, avoiding redundant ONNX inference calls.
+   */
+  searchWithVector(queryVector: number[], queryText: string, maxResults: number = 10): SiloSearchResult[] {
+    if (!this.db) return [];
+    return hybridSearchSilo(this.db, queryVector, queryText, maxResults);
   }
 
   /** Get the current status of this silo. */

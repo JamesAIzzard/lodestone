@@ -26,6 +26,9 @@ export interface ElectronAPI {
   getActivity: (limit?: number) => Promise<ActivityEvent[]>;
   onActivity: (callback: (event: ActivityEvent) => void) => () => void;
 
+  // ── Silo state push (e.g. tray sleep/wake) ────────────────────────────────
+  onSilosChanged: (callback: () => void) => () => void;
+
   // ── Server / Settings ──────────────────────────────────────────────────────
   getServerStatus: () => Promise<ServerStatus>;
   testOllamaConnection: (url: string) => Promise<{ connected: boolean; models: string[] }>;

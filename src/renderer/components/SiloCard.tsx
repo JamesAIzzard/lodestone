@@ -81,7 +81,7 @@ export default function SiloCard({ silo, onClick }: SiloCardProps) {
           {chunkCount.toLocaleString()} chunks
         </span>
         <span className="text-muted-foreground/60">
-          {formatBytes(silo.databaseSizeBytes)}
+          {isIndexing ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)}
         </span>
       </div>
 

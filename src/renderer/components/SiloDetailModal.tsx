@@ -99,7 +99,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted }:
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat icon={FileText} label="Files" value={silo.indexedFileCount.toLocaleString()} />
           <Stat icon={Blocks} label="Chunks" value={silo.chunkCount.toLocaleString()} />
-          <Stat label="DB Size" value={formatBytes(silo.databaseSizeBytes)} />
+          <Stat label="DB Size" value={silo.watcherState === 'indexing' ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)} />
           <Stat label="Updated" value={formatTime(silo.lastUpdated)} />
         </div>
 

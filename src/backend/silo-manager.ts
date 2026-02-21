@@ -276,7 +276,7 @@ export class SiloManager {
    * live during indexing rather than sitting at 0 or a stale value.
    */
   private estimateDatabaseSizeBytes(currentChunkCount: number): number {
-    if (!this.dirty) return this.lastKnownSizeBytes;
+    if (!this.dirty && this.watcherState !== 'indexing') return this.lastKnownSizeBytes;
 
     // We have a baseline from a previous persist — extrapolate
     if (this.lastPersistedChunkCount > 0 && this.lastKnownSizeBytes > 0) {

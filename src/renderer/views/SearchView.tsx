@@ -43,7 +43,10 @@ export default function SearchView() {
   const [expandedResults, setExpandedResults] = useState<Set<number>>(new Set());
 
   useEffect(() => {
-    window.electronAPI?.getSilos().then(setSilos);
+    const fetch = () => window.electronAPI?.getSilos().then(setSilos);
+    fetch();
+    const unsub = window.electronAPI?.onSilosChanged(fetch);
+    return () => unsub?.();
   }, []);
 
   async function handleSearch() {
@@ -70,39 +73,42 @@ export default function SearchView() {
   }
 
   return (
-    <div className="p-6">
-      <h1 className="mb-6 text-lg font-semibold text-foreground">Search</h1>
+    <div>
+      {/* Sticky header */}
+      <div className="sticky top-0 z-10 bg-background px-6 pt-6 pb-4">
+        <h1 className="mb-4 text-lg font-semibold text-foreground">Search</h1>
 
-      {/* Controls */}
-      <div className="flex gap-3">
-        <select
-          value={selectedSilo}
-          onChange={(e) => setSelectedSilo(e.target.value)}
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-        >
-          <option value="all">All Silos</option>
-          {silos.map((s) => (
-            <option key={s.config.name} value={s.config.name} disabled={s.watcherState === 'sleeping'}>
-              {s.config.name}{s.watcherState === 'sleeping' ? ' (sleeping)' : ''}
-            </option>
-          ))}
-        </select>
+        {/* Controls */}
+        <div className="flex gap-3">
+          <select
+            value={selectedSilo}
+            onChange={(e) => setSelectedSilo(e.target.value)}
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <option value="all">All Silos</option>
+            {silos.map((s) => (
+              <option key={s.config.name} value={s.config.name} disabled={s.watcherState === 'sleeping'}>
+                {s.config.name}{s.watcherState === 'sleeping' ? ' (sleeping)' : ''}
+              </option>
+            ))}
+          </select>
 
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-            placeholder="Search your indexed files..."
-            className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
-          />
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+              placeholder="Search your indexed files..."
+              className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
         </div>
       </div>
 
       {/* Results */}
-      <div className="mt-6">
+      <div className="px-6 pb-6">
         {searching && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />

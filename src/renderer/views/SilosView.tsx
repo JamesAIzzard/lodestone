@@ -19,6 +19,9 @@ export default function SilosView() {
 
   useEffect(() => {
     fetchSilos();
+    // Re-fetch when state changes externally (e.g. tray sleep/wake)
+    const unsub = window.electronAPI?.onSilosChanged(fetchSilos);
+    return () => unsub?.();
   }, []);
 
   // Poll while any silo is indexing

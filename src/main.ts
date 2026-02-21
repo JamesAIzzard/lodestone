@@ -11,7 +11,7 @@ import {
   resolveSiloConfig,
   type LodestoneConfig,
 } from './backend/config';
-import { checkOllamaConnection } from './backend/embedding';
+import { checkOllamaConnection, createEmbeddingService, type EmbeddingService } from './backend/embedding';
 import { SiloManager } from './backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, resolveModelAlias } from './backend/model-registry';
 import { startMcpServer } from './backend/mcp-server';
@@ -38,6 +38,25 @@ let config: LodestoneConfig | null = null;
 const siloManagers = new Map<string, SiloManager>();
 const startTime = Date.now();
 let nextEventId = 1;
+
+// Shared embedding services keyed by resolved model ID.
+// All silos using the same model share one worker thread,
+// preventing concurrent ONNX native calls from crashing.
+const embeddingServices = new Map<string, EmbeddingService>();
+
+function getOrCreateEmbeddingService(model: string): EmbeddingService {
+  const modelId = resolveModelAlias(model);
+  let service = embeddingServices.get(modelId);
+  if (!service) {
+    service = createEmbeddingService({
+      model: modelId,
+      ollamaUrl: config?.embeddings.ollama_url ?? 'http://localhost:11434',
+      modelCacheDir: getModelCacheDir(),
+    });
+    embeddingServices.set(modelId, service);
+  }
+  return service;
+}
 
 // Serializes silo starts so only one embedding model is loaded at a time.
 // Used by both initializeBackend() and silos:create to prevent concurrent starts.
@@ -213,10 +232,10 @@ async function initializeBackend(): Promise<void> {
   // for sequential startup via the shared start queue.
   for (const [name, siloToml] of Object.entries(config.silos)) {
     const resolved = resolveSiloConfig(name, siloToml, config);
+    const embeddingService = getOrCreateEmbeddingService(resolved.model);
     const manager = new SiloManager(
       resolved,
-      config.embeddings.ollama_url,
-      getModelCacheDir(),
+      embeddingService,
       getUserDataDir(),
     );
 
@@ -252,6 +271,7 @@ async function sleepSilo(name: string): Promise<{ success: boolean; error?: stri
   }
 
   if (tray) tray.setContextMenu(buildTrayMenu());
+  mainWindow?.webContents.send('silos:changed');
   return { success: true };
 }
 
@@ -272,6 +292,7 @@ async function wakeSilo(name: string): Promise<{ success: boolean; error?: strin
   await manager.wake();
 
   if (tray) tray.setContextMenu(buildTrayMenu());
+  mainWindow?.webContents.send('silos:changed');
   return { success: true };
 }
 
@@ -285,6 +306,17 @@ async function shutdownBackend(): Promise<void> {
     }
   }
   siloManagers.clear();
+
+  // Dispose shared embedding services (terminates worker threads)
+  for (const [modelId, service] of embeddingServices) {
+    try {
+      await service.dispose();
+      console.log(`[main] Embedding service "${modelId}" disposed`);
+    } catch (err) {
+      console.error(`[main] Error disposing embedding service "${modelId}":`, err);
+    }
+  }
+  embeddingServices.clear();
 }
 
 // ── Activity Event Forwarding ────────────────────────────────────────────────
@@ -362,17 +394,40 @@ function registerIpcHandlers(): void {
       ? [[siloName, siloManagers.get(siloName)] as const].filter(([, m]) => m)
       : Array.from(siloManagers.entries());
 
+    if (managers.length === 0) return [];
+
+    // Group silos by their embedding model so we only embed the query
+    // once per model (all built-in silos share one worker thread).
+    const byModel = new Map<string, Array<[string, SiloManager]>>();
     for (const [name, manager] of managers) {
-      if (!manager) continue;
-      const siloResults = await manager.search(query, 10);
-      for (const r of siloResults) {
-        results.push({
-          filePath: r.filePath,
-          score: r.score,
-          matchType: r.matchType,
-          chunks: r.chunks,
-          siloName: name as string,
-        });
+      if (!manager || manager.isSleeping) continue;
+      const model = manager.getConfig().model;
+      let group = byModel.get(model);
+      if (!group) {
+        group = [];
+        byModel.set(model, group);
+      }
+      group.push([name as string, manager]);
+    }
+
+    // For each model group: embed once, then search all silos with the shared vector
+    for (const [model, group] of byModel) {
+      const service = embeddingServices.get(resolveModelAlias(model));
+      if (!service) continue;
+
+      const queryVector = await service.embed(query);
+
+      for (const [name, manager] of group) {
+        const siloResults = manager.searchWithVector(queryVector, query, 10);
+        for (const r of siloResults) {
+          results.push({
+            filePath: r.filePath,
+            score: r.score,
+            matchType: r.matchType,
+            chunks: r.chunks,
+            siloName: name,
+          });
+        }
       }
     }
 
@@ -598,10 +653,10 @@ function registerIpcHandlers(): void {
 
       // Create the silo manager and register it immediately so the UI can see it
       const resolved = resolveSiloConfig(slug, siloToml, config);
+      const embeddingService = getOrCreateEmbeddingService(resolved.model);
       const manager = new SiloManager(
         resolved,
-        config.embeddings.ollama_url,
-        getModelCacheDir(),
+        embeddingService,
         getUserDataDir(),
       );
 
@@ -657,10 +712,10 @@ async function startMcpMode(): Promise<void> {
   const pendingManagers: Array<[string, SiloManager]> = [];
   for (const [name, siloToml] of Object.entries(config.silos)) {
     const resolved = resolveSiloConfig(name, siloToml, config);
+    const embeddingService = getOrCreateEmbeddingService(resolved.model);
     const manager = new SiloManager(
       resolved,
-      config.embeddings.ollama_url,
-      getModelCacheDir(),
+      embeddingService,
       getUserDataDir(),
     );
 

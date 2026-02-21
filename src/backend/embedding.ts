@@ -55,7 +55,11 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
 
   private ensureInit(): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this.spawnAndInit();
+      this.initPromise = this.spawnAndInit().catch((err) => {
+        // Reset so the next call retries instead of caching a rejected promise
+        this.initPromise = null;
+        throw err;
+      });
     }
     return this.initPromise;
   }
@@ -127,6 +131,9 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
   // ── Internal messaging ───────────────────────────────────────────────────
 
   private post<T>(msg: Record<string, unknown>): Promise<T> {
+    if (!this.worker) {
+      return Promise.reject(new Error('Embedding worker is not running'));
+    }
     return new Promise<T>((resolve, reject) => {
       const id = this.nextId++;
       this.pending.set(id, { resolve, reject });

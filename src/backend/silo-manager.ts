@@ -56,6 +56,11 @@ export class SiloManager {
   private lastKnownSizeBytes = 0;
   private lastPersistedChunkCount = 0;
 
+  /** Set to true when stop() is called, checked by start() at each await. */
+  private stopped = false;
+  /** Tracks the in-flight start() so stop() can wait for it to settle. */
+  private startPromise: Promise<void> | null = null;
+
   constructor(
     private readonly config: ResolvedSiloConfig,
     private readonly ollamaUrl: string,
@@ -63,8 +68,16 @@ export class SiloManager {
     private readonly userDataDir: string,
   ) {}
 
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
+
   /** Initialize all subsystems and start watching. */
   async start(): Promise<void> {
+    this.stopped = false;
+    this.startPromise = this.doStart();
+    return this.startPromise;
+  }
+
+  private async doStart(): Promise<void> {
     // 1. Create embedding service
     this.embeddingService = createEmbeddingService({
       model: this.config.model,
@@ -75,6 +88,8 @@ export class SiloManager {
     // 2. Load or create the database
     const dbPath = this.resolveDbPath();
     const existing = await loadDatabase(dbPath, this.embeddingService.dimensions);
+    if (this.stopped) return;
+
     if (existing) {
       this.db = existing;
       console.log(`[silo:${this.config.name}] Loaded database from ${dbPath}`);
@@ -94,6 +109,7 @@ export class SiloManager {
     this.persistTimer = setInterval(() => this.persistIfDirty(), PERSIST_INTERVAL_MS);
 
     // 5. Run startup reconciliation
+    if (this.stopped) return;
     this.watcherState = 'indexing';
     try {
       const result = await reconcile(
@@ -110,16 +126,21 @@ export class SiloManager {
         console.log(`[silo:${this.config.name}] Reconciliation: index up to date`);
       }
     } catch (err) {
+      if (this.stopped) return; // expected during shutdown
       console.error(`[silo:${this.config.name}] Reconciliation failed:`, err);
     }
     this.reconcileProgress = undefined;
+
+    // 6. Bail if stop() was called during reconciliation
+    if (this.stopped) return;
     this.watcherState = 'idle';
 
-    // 6. Force an immediate persist so the size is accurate the
+    // 7. Force an immediate persist so the size is accurate the
     //    moment the UI sees the "Idle" state.
     await this.persistIfDirty();
 
-    // 7. Create and start the file watcher
+    // 8. Create and start the file watcher
+    if (this.stopped) return;
     this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db);
     this.watcher.on((event) => this.handleWatcherEvent(event));
     this.watcher.start();
@@ -129,6 +150,14 @@ export class SiloManager {
 
   /** Graceful shutdown: stop watcher, persist database, dispose embedding service. */
   async stop(): Promise<void> {
+    this.stopped = true;
+
+    // Wait for start() to finish so we don't tear down underneath it.
+    if (this.startPromise) {
+      await this.startPromise.catch(() => {});
+      this.startPromise = null;
+    }
+
     if (this.persistTimer) {
       clearInterval(this.persistTimer);
       this.persistTimer = null;

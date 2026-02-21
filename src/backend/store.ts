@@ -163,23 +163,32 @@ export async function searchSilo(
 
 /**
  * Save the database to disk at the given path.
- * Uses the Orama persistence plugin which properly serializes all indexes.
+ *
+ * Writes to a temporary file first, then atomically renames it into place.
+ * This prevents a crash mid-write from corrupting the only copy on disk.
  */
 export async function persistDatabase(db: SiloDatabase, dbPath: string): Promise<void> {
   const dir = path.dirname(dbPath);
   fs.mkdirSync(dir, { recursive: true });
   const data = await persist(db, 'json');
-  fs.writeFileSync(dbPath, data as string);
+  const tmpPath = dbPath + '.tmp';
+  await fs.promises.writeFile(tmpPath, data as string);
+  fs.renameSync(tmpPath, dbPath);
 }
 
 /**
- * Load a database from disk. Returns null if the file doesn't exist.
- * Uses the Orama persistence plugin which fully restores all indexes.
+ * Load a database from disk. Returns null if the file doesn't exist
+ * or is corrupt (e.g. truncated by a crash).
  */
 export async function loadDatabase(dbPath: string, _dimensions: number): Promise<SiloDatabase | null> {
   if (!fs.existsSync(dbPath)) return null;
-  const raw = fs.readFileSync(dbPath, 'utf-8');
-  return restore('json', raw) as Promise<SiloDatabase>;
+  try {
+    const raw = fs.readFileSync(dbPath, 'utf-8');
+    return await (restore('json', raw) as Promise<SiloDatabase>);
+  } catch (err) {
+    console.error(`[store] Failed to load database from ${dbPath}, starting fresh:`, err);
+    return null;
+  }
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────

@@ -43,6 +43,15 @@ export default function SilosView() {
     setDetailOpen(true);
   }
 
+  async function handleSleepToggle(silo: SiloStatus) {
+    if (silo.watcherState === 'sleeping') {
+      await window.electronAPI?.wakeSilo(silo.config.name);
+    } else {
+      await window.electronAPI?.sleepSilo(silo.config.name);
+    }
+    fetchSilos();
+  }
+
   return (
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between">
@@ -64,6 +73,7 @@ export default function SilosView() {
               key={silo.config.name}
               silo={silo}
               onClick={() => handleCardClick(silo)}
+              onSleepToggle={() => handleSleepToggle(silo)}
             />
           ))}
         </div>
@@ -74,6 +84,7 @@ export default function SilosView() {
         open={detailOpen}
         onOpenChange={setDetailOpen}
         onDeleted={fetchSilos}
+        onSleepToggle={selectedSilo ? () => handleSleepToggle(selectedSilo) : undefined}
       />
 
       <AddSiloModal open={addOpen} onOpenChange={setAddOpen} onCreated={fetchSilos} />

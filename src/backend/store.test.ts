@@ -10,7 +10,7 @@ import {
   loadDatabase,
   type SiloDatabase,
 } from './store';
-import type { ChunkRecord } from './chunker';
+import type { ChunkRecord } from './pipeline-types';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -21,11 +21,11 @@ function makeChunk(filePath: string, index: number, text: string): ChunkRecord {
   return {
     filePath,
     chunkIndex: index,
-    headingPath: ['Section'],
+    sectionPath: ['Section'],
     text,
     startLine: 1,
     endLine: 5,
-    frontmatter: {},
+    metadata: {},
     contentHash: `hash-${filePath}-${index}`,
   };
 }

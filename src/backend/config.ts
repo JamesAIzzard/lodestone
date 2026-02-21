@@ -37,6 +37,7 @@ export interface SiloTomlConfig {
   extensions?: string[];
   ignore?: string[];
   model?: string;
+  sleeping?: boolean;
 }
 
 export interface LodestoneConfig {
@@ -95,6 +96,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
       extensions: Array.isArray(silo.extensions) ? silo.extensions as string[] : undefined,
       ignore: Array.isArray(silo.ignore) ? silo.ignore as string[] : undefined,
       model: typeof silo.model === 'string' ? silo.model : undefined,
+      sleeping: silo.sleeping === true ? true : undefined,
     };
   }
 
@@ -161,6 +163,7 @@ export interface ResolvedSiloConfig {
   ignore: string[];
   model: string;
   debounce: number;
+  sleeping: boolean;
 }
 
 /**
@@ -180,5 +183,6 @@ export function resolveSiloConfig(
     ignore: silo.ignore ?? config.defaults.ignore,
     model: silo.model ?? config.embeddings.model,
     debounce: config.defaults.debounce,
+    sleeping: silo.sleeping === true,
   };
 }

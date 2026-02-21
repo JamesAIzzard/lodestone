@@ -23,7 +23,6 @@ if (started) {
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
-let indexingPaused = false;
 
 // ── Backend State ────────────────────────────────────────────────────────────
 
@@ -79,12 +78,19 @@ function createWindow() {
 
 function buildTrayMenu(): Menu {
   const statusLabel = (state: string) =>
-    state === 'indexing' ? '⟳ Indexing' : state === 'error' ? '✕ Error' : '● Idle';
+    state === 'sleeping' ? '⏸ Sleeping'
+      : state === 'indexing' ? '⟳ Indexing'
+        : state === 'error' ? '✕ Error'
+          : '● Idle';
 
   const siloItems = Array.from(siloManagers.entries()).map(([name]) => ({
     label: `${name}  ${statusLabel('idle')}`,
     enabled: false,
   }));
+
+  const allSleeping = siloManagers.size > 0 &&
+    Array.from(siloManagers.values()).every((m) => m.isSleeping);
+  const anySleeping = Array.from(siloManagers.values()).some((m) => m.isSleeping);
 
   return Menu.buildFromTemplate([
     {
@@ -106,10 +112,25 @@ function buildTrayMenu(): Menu {
         : [{ label: 'No silos configured', enabled: false }],
     },
     {
-      label: indexingPaused ? 'Resume Indexing' : 'Pause Indexing',
-      click: () => {
-        indexingPaused = !indexingPaused;
-        if (tray) tray.setContextMenu(buildTrayMenu());
+      label: 'Sleep All',
+      enabled: !allSleeping,
+      click: async () => {
+        for (const [name, manager] of siloManagers) {
+          if (!manager.isSleeping) {
+            await sleepSilo(name);
+          }
+        }
+      },
+    },
+    {
+      label: 'Wake All',
+      enabled: anySleeping,
+      click: async () => {
+        for (const [name, manager] of siloManagers) {
+          if (manager.isSleeping) {
+            await wakeSilo(name);
+          }
+        }
       },
     },
     { type: 'separator' },
@@ -164,6 +185,7 @@ async function initializeBackend(): Promise<void> {
   // Initialize a SiloManager for each configured silo.
   // Register immediately so the renderer can see them, then start
   // indexing in the background (same pattern as silos:create).
+  // Sleeping silos are registered but not started.
   for (const [name, siloToml] of Object.entries(config.silos)) {
     const resolved = resolveSiloConfig(name, siloToml, config);
     const manager = new SiloManager(
@@ -175,15 +197,60 @@ async function initializeBackend(): Promise<void> {
 
     siloManagers.set(name, manager);
 
-    manager.start().then(() => {
-      console.log(`[main] Silo "${name}" started`);
-    }).catch((err) => {
-      console.error(`[main] Failed to start silo "${name}":`, err);
-    });
+    if (resolved.sleeping) {
+      manager.loadSleepingStatus();
+      console.log(`[main] Silo "${name}" is sleeping`);
+    } else {
+      manager.start().then(() => {
+        console.log(`[main] Silo "${name}" started`);
+      }).catch((err) => {
+        console.error(`[main] Failed to start silo "${name}":`, err);
+      });
+    }
   }
 
   // Update tray menu now that silos are loaded
   if (tray) tray.setContextMenu(buildTrayMenu());
+}
+
+async function sleepSilo(name: string): Promise<{ success: boolean; error?: string }> {
+  const manager = siloManagers.get(name);
+  if (!manager) return { success: false, error: `Silo "${name}" not found` };
+  if (manager.isSleeping) return { success: true };
+
+  await manager.sleep();
+
+  // Persist sleeping state to config
+  if (config) {
+    const siloToml = config.silos[name];
+    if (siloToml) {
+      siloToml.sleeping = true;
+      saveConfig(getDefaultConfigPath(getUserDataDir()), config);
+    }
+  }
+
+  if (tray) tray.setContextMenu(buildTrayMenu());
+  return { success: true };
+}
+
+async function wakeSilo(name: string): Promise<{ success: boolean; error?: string }> {
+  const manager = siloManagers.get(name);
+  if (!manager) return { success: false, error: `Silo "${name}" not found` };
+  if (!manager.isSleeping) return { success: true };
+
+  // Clear sleeping state in config first
+  if (config) {
+    const siloToml = config.silos[name];
+    if (siloToml) {
+      delete siloToml.sleeping;
+      saveConfig(getDefaultConfigPath(getUserDataDir()), config);
+    }
+  }
+
+  await manager.wake();
+
+  if (tray) tray.setContextMenu(buildTrayMenu());
+  return { success: true };
 }
 
 async function shutdownBackend(): Promise<void> {
@@ -378,6 +445,21 @@ function registerIpcHandlers(): void {
       if (tray) tray.setContextMenu(buildTrayMenu());
 
       return { success: true };
+    },
+  );
+
+  // Sleep / wake a silo
+  ipcMain.handle(
+    'silos:sleep',
+    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
+      return sleepSilo(name);
+    },
+  );
+
+  ipcMain.handle(
+    'silos:wake',
+    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
+      return wakeSilo(name);
     },
   );
 

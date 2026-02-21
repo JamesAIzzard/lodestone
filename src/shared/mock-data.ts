@@ -83,12 +83,12 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.94,
     chunks: [
       {
-        headingPath: ['Architecture', 'Vector Store Design'],
+        sectionPath: ['Architecture', 'Vector Store Design'],
         text: 'The vector store uses Orama with per-silo databases. Each chunk is stored with its embedding vector, heading path, and source line range for traceability back to the original document.',
         startLine: 45, endLine: 52, score: 0.94,
       },
       {
-        headingPath: ['Architecture', 'Chunking Pipeline'],
+        sectionPath: ['Architecture', 'Chunking Pipeline'],
         text: 'Files are split by heading hierarchy using a remark AST parser. Oversized sections are sub-split at paragraph and sentence boundaries to stay within the token limit.',
         startLine: 60, endLine: 68, score: 0.87,
       },
@@ -100,7 +100,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.91,
     chunks: [
       {
-        headingPath: ['ConstraintHandler.validate'],
+        sectionPath: ['ConstraintHandler.validate'],
         text: 'def validate(self, solution: Solution) -> list[ConstraintViolation]:\n    """Check all constraints against the current solution and return violations."""',
         startLine: 88, endLine: 102, score: 0.91,
       },
@@ -112,12 +112,12 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.89,
     chunks: [
       {
-        headingPath: ['Embedding Models', 'Nomic Embed Text'],
+        sectionPath: ['Embedding Models', 'Nomic Embed Text'],
         text: 'Nomic Embed Text v1.5 supports variable-length embeddings via Matryoshka training. At 768 dimensions it scores competitively with larger models while running locally through Ollama.',
         startLine: 34, endLine: 39, score: 0.89,
       },
       {
-        headingPath: ['Embedding Models', 'all-MiniLM-L6-v2'],
+        sectionPath: ['Embedding Models', 'all-MiniLM-L6-v2'],
         text: 'A lightweight 384-dimension model suitable for local inference. Fast but limited to 128-token context windows, which constrains chunk size.',
         startLine: 22, endLine: 27, score: 0.81,
       },
@@ -129,7 +129,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.87,
     chunks: [
       {
-        headingPath: ['NutrientCalculator', 'NutrientCalculator.compute_totals'],
+        sectionPath: ['NutrientCalculator', 'NutrientCalculator.compute_totals'],
         text: 'Aggregates nutrient values across all ingredients in a recipe, applying quantity scaling and unit conversions before summing.',
         startLine: 120, endLine: 135, score: 0.87,
       },
@@ -141,17 +141,17 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.85,
     chunks: [
       {
-        headingPath: [],
+        sectionPath: [],
         text: 'Retrieval-augmented generation combines parametric knowledge stored in model weights with non-parametric knowledge retrieved from an external corpus at inference time.',
         startLine: 1, endLine: 8, score: 0.85,
       },
       {
-        headingPath: [],
+        sectionPath: [],
         text: 'The retriever component maps queries to dense vectors and performs approximate nearest-neighbour search over a pre-indexed document collection.',
         startLine: 15, endLine: 22, score: 0.79,
       },
       {
-        headingPath: [],
+        sectionPath: [],
         text: 'Chunking strategy significantly impacts retrieval quality. Fixed-size windows lose semantic coherence while heading-based splits preserve document structure.',
         startLine: 45, endLine: 51, score: 0.74,
       },
@@ -163,7 +163,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.82,
     chunks: [
       {
-        headingPath: ['Chunking Strategy Notes'],
+        sectionPath: ['Chunking Strategy Notes'],
         text: 'Heading-based splitting preserves document structure better than fixed-size windows. Sub-splitting at paragraph then sentence boundaries handles oversized sections without breaking mid-thought.',
         startLine: 12, endLine: 18, score: 0.82,
       },
@@ -175,7 +175,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.80,
     chunks: [
       {
-        headingPath: ['FoodItem'],
+        sectionPath: ['FoodItem'],
         text: '@dataclass\nclass FoodItem:\n    name: str\n    nutrients: dict[str, NutrientValue]\n    category: FoodCategory',
         startLine: 15, endLine: 22, score: 0.80,
       },
@@ -187,7 +187,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.78,
     chunks: [
       {
-        headingPath: ['Chokidar Patterns', 'Debounce Configuration'],
+        sectionPath: ['Chokidar Patterns', 'Debounce Configuration'],
         text: 'Setting awaitWriteFinish with a stabilityThreshold of 500ms prevents partial-read issues when editors write files incrementally.',
         startLine: 28, endLine: 33, score: 0.78,
       },
@@ -199,7 +199,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.75,
     chunks: [
       {
-        headingPath: [],
+        sectionPath: [],
         text: '[nutrients.protein]\nunit = "g"\nrda = 50.0\ncategory = "macronutrient"',
         startLine: 1, endLine: 12, score: 0.75,
       },
@@ -211,7 +211,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.73,
     chunks: [
       {
-        headingPath: [],
+        sectionPath: [],
         text: 'Dense representations learned from a small number of questions and passages can substantially outperform sparse retrieval methods like BM25 for open-domain question answering.',
         startLine: 1, endLine: 6, score: 0.73,
       },
@@ -223,7 +223,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.71,
     chunks: [
       {
-        headingPath: ['MCP Tool Design', 'Search Tool Parameters'],
+        sectionPath: ['MCP Tool Design', 'Search Tool Parameters'],
         text: 'The search tool accepts a query string and optional silo name filter. Results include file paths, relevance scores, and the matching section heading.',
         startLine: 22, endLine: 28, score: 0.71,
       },
@@ -235,7 +235,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.68,
     chunks: [
       {
-        headingPath: ['ObjectiveFunction', 'ObjectiveFunction.__call__'],
+        sectionPath: ['ObjectiveFunction', 'ObjectiveFunction.__call__'],
         text: 'def __call__(self, solution: Solution) -> float:\n    """Evaluate the objective function for a candidate solution, returning a scalar cost."""',
         startLine: 44, endLine: 58, score: 0.68,
       },

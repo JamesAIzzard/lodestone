@@ -57,6 +57,8 @@ export class SiloManager {
   private lastKnownSizeBytes = 0;
   private lastPersistedChunkCount = 0;
   private mtimes = new Map<string, number>();
+  private cachedFileCount = 0;
+  private cachedChunkCount = 0;
 
   /** Set to true when stop() is called, checked by start() at each await. */
   private stopped = false;
@@ -187,7 +189,40 @@ export class SiloManager {
     console.log(`[silo:${this.config.name}] Stopped`);
   }
 
+  /** Put the silo to sleep: persist data, release all resources from RAM. */
+  async sleep(): Promise<void> {
+    // Cache stats before releasing resources
+    this.cachedFileCount = this.mtimes.size;
+    this.cachedChunkCount = this.db ? await getChunkCount(this.db) : 0;
+    await this.stop();
+    this.watcherState = 'sleeping';
+    console.log(`[silo:${this.config.name}] Sleeping`);
+  }
+
+  /** Wake the silo: reload database, reconcile, start watching. */
+  async wake(): Promise<void> {
+    this.watcherState = 'idle';
+    await this.start();
+  }
+
+  /**
+   * Load minimal status for a sleeping silo without starting it.
+   * Reads mtimes.json for file count and stats the DB file for size.
+   */
+  loadSleepingStatus(): void {
+    this.watcherState = 'sleeping';
+    this.mtimes = loadMtimes(this.resolveMtimesPath());
+    this.cachedFileCount = this.mtimes.size;
+    this.mtimes.clear(); // Don't hold in memory — just needed the count
+    this.lastKnownSizeBytes = this.readFileSizeFromDisk();
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────────
+
+  /** Whether this silo is currently sleeping. */
+  get isSleeping(): boolean {
+    return this.watcherState === 'sleeping';
+  }
 
   /** Embed a query and search the silo database. */
   async search(query: string, maxResults: number = 10): Promise<SiloSearchResult[]> {
@@ -198,6 +233,17 @@ export class SiloManager {
 
   /** Get the current status of this silo. */
   async getStatus(): Promise<SiloManagerStatus> {
+    if (this.watcherState === 'sleeping') {
+      return {
+        name: this.config.name,
+        indexedFileCount: this.cachedFileCount,
+        chunkCount: this.cachedChunkCount,
+        lastUpdated: this.lastUpdated,
+        databaseSizeBytes: this.lastKnownSizeBytes,
+        watcherState: 'sleeping',
+      };
+    }
+
     const chunks = this.db ? await getChunkCount(this.db) : 0;
     const dbSize = this.estimateDatabaseSizeBytes(chunks);
 

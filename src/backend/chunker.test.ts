@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { extractMarkdown, chunkMarkdown } from './chunker';
+import { extractMarkdown } from './extractors/markdown';
+import { chunkByHeading } from './chunkers/heading';
+
+// Helper: extract then chunk in one step (mirrors old chunkMarkdown API)
+function chunkMarkdown(filePath: string, content: string, maxChunkTokens: number = 8192) {
+  const extraction = extractMarkdown(content);
+  return chunkByHeading(filePath, extraction, maxChunkTokens);
+}
 
 // ── extractMarkdown ──────────────────────────────────────────────────────────
 
@@ -14,7 +21,7 @@ tags:
 
 Body text here.`;
     const result = extractMarkdown(content);
-    expect(result.frontmatter).toEqual({ title: 'Test Note', tags: ['lodestone'] });
+    expect(result.metadata).toEqual({ title: 'Test Note', tags: ['lodestone'] });
     expect(result.body).toContain('# Heading');
     expect(result.body).toContain('Body text here.');
     expect(result.body).not.toContain('title: Test Note');
@@ -23,20 +30,20 @@ Body text here.`;
   it('handles files with no frontmatter', () => {
     const content = '# Just a heading\n\nSome text.';
     const result = extractMarkdown(content);
-    expect(result.frontmatter).toEqual({});
+    expect(result.metadata).toEqual({});
     expect(result.body).toBe('# Just a heading\n\nSome text.');
   });
 
   it('handles empty files', () => {
     const result = extractMarkdown('');
-    expect(result.frontmatter).toEqual({});
+    expect(result.metadata).toEqual({});
     expect(result.body).toBe('');
   });
 });
 
-// ── chunkMarkdown — basic heading splitting ──────────────────────────────────
+// ── chunkByHeading — basic heading splitting ──────────────────────────────────
 
-describe('chunkMarkdown', () => {
+describe('chunkByHeading', () => {
   it('splits on headings with hierarchy metadata', () => {
     const content = `# Architecture
 
@@ -58,16 +65,16 @@ TOML-based config.`;
 
     expect(chunks.length).toBe(4);
 
-    expect(chunks[0].headingPath).toEqual(['Architecture']);
+    expect(chunks[0].sectionPath).toEqual(['Architecture']);
     expect(chunks[0].text).toContain('Overview of the system');
 
-    expect(chunks[1].headingPath).toEqual(['Architecture', 'File Processing Pipeline']);
+    expect(chunks[1].sectionPath).toEqual(['Architecture', 'File Processing Pipeline']);
     expect(chunks[1].text).toContain('Extraction, chunking, embedding');
 
-    expect(chunks[2].headingPath).toEqual(['Architecture', 'Vector Store']);
+    expect(chunks[2].sectionPath).toEqual(['Architecture', 'Vector Store']);
     expect(chunks[2].text).toContain('Orama-based storage');
 
-    expect(chunks[3].headingPath).toEqual(['Configuration']);
+    expect(chunks[3].sectionPath).toEqual(['Configuration']);
     expect(chunks[3].text).toContain('TOML-based config');
   });
 
@@ -81,9 +88,9 @@ Content under heading.`;
     const chunks = chunkMarkdown('/path/to/notes.md', content, 8192);
 
     expect(chunks.length).toBe(2);
-    expect(chunks[0].headingPath).toEqual(['notes.md']);
+    expect(chunks[0].sectionPath).toEqual(['notes.md']);
     expect(chunks[0].text).toContain('Some intro text');
-    expect(chunks[1].headingPath).toEqual(['First Heading']);
+    expect(chunks[1].sectionPath).toEqual(['First Heading']);
   });
 
   it('handles files with no headings', () => {
@@ -91,7 +98,7 @@ Content under heading.`;
     const chunks = chunkMarkdown('/test/plain.md', content, 8192);
 
     expect(chunks.length).toBe(1);
-    expect(chunks[0].headingPath).toEqual(['plain.md']);
+    expect(chunks[0].sectionPath).toEqual(['plain.md']);
     expect(chunks[0].text).toContain('Just a plain paragraph');
   });
 
@@ -106,7 +113,7 @@ Content here.`;
     const chunks = chunkMarkdown('/test/note.md', content, 8192);
 
     expect(chunks.length).toBe(1);
-    expect(chunks[0].frontmatter).toEqual({ title: 'My Note' });
+    expect(chunks[0].metadata).toEqual({ title: 'My Note' });
     expect(chunks[0].text).toContain('Content here');
     // Frontmatter should not appear in chunk text
     expect(chunks[0].text).not.toContain('title: My Note');
@@ -139,9 +146,9 @@ Final text.`;
 
     // Should only split on the real headings, not the # in code blocks
     expect(chunks.length).toBe(2);
-    expect(chunks[0].headingPath).toEqual(['Real Heading']);
+    expect(chunks[0].sectionPath).toEqual(['Real Heading']);
     expect(chunks[0].text).toContain('# This is a Python comment');
-    expect(chunks[1].headingPath).toEqual(['Second Heading']);
+    expect(chunks[1].sectionPath).toEqual(['Second Heading']);
   });
 
   // ── Chunk metadata ───────────────────────────────────────────────────────
@@ -195,8 +202,8 @@ Paragraph 2.`;
     for (const chunk of chunks) {
       expect(chunk.text.length / 4).toBeLessThanOrEqual(70); // some slack
     }
-    // All chunks should share the same heading path
-    expect(new Set(chunks.map((c) => JSON.stringify(c.headingPath))).size).toBe(1);
+    // All chunks should share the same section path
+    expect(new Set(chunks.map((c) => JSON.stringify(c.sectionPath))).size).toBe(1);
   });
 
   // ── Deep heading nesting ────────────────────────────────────────────────
@@ -220,9 +227,9 @@ Text.`;
 
     const chunks = chunkMarkdown('/test/deep.md', content, 8192);
 
-    expect(chunks[0].headingPath).toEqual(['Level 1']);
-    expect(chunks[1].headingPath).toEqual(['Level 1', 'Level 2']);
-    expect(chunks[2].headingPath).toEqual(['Level 1', 'Level 2', 'Level 3']);
-    expect(chunks[3].headingPath).toEqual(['Level 1', 'Level 2', 'Level 3', 'Level 4']);
+    expect(chunks[0].sectionPath).toEqual(['Level 1']);
+    expect(chunks[1].sectionPath).toEqual(['Level 1', 'Level 2']);
+    expect(chunks[2].sectionPath).toEqual(['Level 1', 'Level 2', 'Level 3']);
+    expect(chunks[3].sectionPath).toEqual(['Level 1', 'Level 2', 'Level 3', 'Level 4']);
   });
 });

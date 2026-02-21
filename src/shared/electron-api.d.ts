@@ -15,6 +15,8 @@ export interface ElectronAPI {
     model: string;
   }) => Promise<{ success: boolean; error?: string }>;
   deleteSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
+  sleepSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
+  wakeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   search: (query: string, siloName?: string) => Promise<SearchResult[]>;
 
   // ── Activity ───────────────────────────────────────────────────────────────

@@ -17,24 +17,24 @@ import {
 import { persist, restore } from '@orama/plugin-data-persistence';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ChunkRecord } from './chunker';
+import type { ChunkRecord } from './pipeline-types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface StoredChunk {
   filePath: string;
   chunkIndex: number;
-  headingPath: string;      // JSON-encoded string[] (Orama doesn't support arrays of strings natively)
+  sectionPath: string;      // JSON-encoded string[] (Orama doesn't support arrays of strings natively)
   text: string;
   startLine: number;
   endLine: number;
-  frontmatter: string;      // JSON-encoded Record<string, unknown>
+  metadata: string;         // JSON-encoded Record<string, unknown>
   contentHash: string;
   embedding: number[];
 }
 
 export interface SiloSearchResultChunk {
-  headingPath: string[];
+  sectionPath: string[];
   text: string;
   startLine: number;
   endLine: number;
@@ -60,11 +60,11 @@ export async function createSiloDatabase(dimensions: number): Promise<SiloDataba
     schema: {
       filePath: 'string',
       chunkIndex: 'number',
-      headingPath: 'string',
+      sectionPath: 'string',
       text: 'string',
       startLine: 'number',
       endLine: 'number',
-      frontmatter: 'string',
+      metadata: 'string',
       contentHash: 'string',
       embedding: `vector[${dimensions}]`,
     } as const,
@@ -92,11 +92,11 @@ export async function upsertFileChunks(
     await insert(db, {
       filePath: chunk.filePath,
       chunkIndex: chunk.chunkIndex,
-      headingPath: JSON.stringify(chunk.headingPath),
+      sectionPath: JSON.stringify(chunk.sectionPath),
       text: chunk.text,
       startLine: chunk.startLine,
       endLine: chunk.endLine,
-      frontmatter: JSON.stringify(chunk.frontmatter),
+      metadata: JSON.stringify(chunk.metadata),
       contentHash: chunk.contentHash,
       embedding: embeddings[i],
     });
@@ -153,9 +153,9 @@ export async function searchSilo(
 
   for (const hit of results.hits) {
     const doc = hit.document as unknown as StoredChunk;
-    const headingPath: string[] = JSON.parse(doc.headingPath);
+    const sectionPath: string[] = JSON.parse(doc.sectionPath);
     const chunk: SiloSearchResultChunk = {
-      headingPath,
+      sectionPath,
       text: doc.text,
       startLine: doc.startLine,
       endLine: doc.endLine,

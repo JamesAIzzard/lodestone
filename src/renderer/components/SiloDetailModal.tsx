@@ -8,7 +8,7 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle } from 'lucide-react';
+import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle, Pause, Play } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
 import type { SiloStatus, ActivityEvent } from '../../shared/types';
@@ -46,9 +46,10 @@ interface SiloDetailModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDeleted?: () => void;
+  onSleepToggle?: () => void;
 }
 
-export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted }: SiloDetailModalProps) {
+export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, onSleepToggle }: SiloDetailModalProps) {
   const [siloEvents, setSiloEvents] = useState<ActivityEvent[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -208,6 +209,18 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted }:
         )}
 
         <DialogFooter>
+          {onSleepToggle && silo.watcherState !== 'indexing' && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => { onSleepToggle(); onOpenChange(false); }}
+            >
+              {silo.watcherState === 'sleeping'
+                ? <><Play className="h-3.5 w-3.5" /> Wake</>
+                : <><Pause className="h-3.5 w-3.5" /> Sleep</>
+              }
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={() => alert('Rebuild triggered (mock)')}>
             <RotateCcw className="h-3.5 w-3.5" />
             Rebuild Index

@@ -511,11 +511,14 @@ export class SiloManager {
       }
     }
 
-    // Update watcher state
+    // Update watcher state.
+    // Note: check queueLength rather than isProcessing — the event is emitted
+    // from inside processQueue() while `processing` is still true, so for the
+    // last item isProcessing would incorrectly keep us in 'indexing'.
     if (event.eventType === 'error') {
       this.watcherState = 'error';
       this.errorMessage = event.errorMessage;
-    } else if (this.watcher?.isProcessing) {
+    } else if (this.watcher && this.watcher.queueLength > 0) {
       this.watcherState = 'indexing';
     } else {
       this.watcherState = 'idle';

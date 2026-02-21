@@ -28,14 +28,18 @@ export interface SiloStatus {
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
+export interface SearchResultChunk {
+  headingPath: string[];
+  text: string;
+  startLine: number;
+  endLine: number;
+  score: number;
+}
+
 export interface SearchResult {
   filePath: string;
   score: number;
-  matchingSection: string | null;
-  headingPath: string[];
-  chunkText: string;
-  startLine: number;
-  endLine: number;
+  chunks: SearchResultChunk[];
   siloName: string;
 }
 

@@ -33,14 +33,18 @@ export interface StoredChunk {
   embedding: number[];
 }
 
+export interface SiloSearchResultChunk {
+  headingPath: string[];
+  text: string;
+  startLine: number;
+  endLine: number;
+  score: number;
+}
+
 export interface SiloSearchResult {
   filePath: string;
   score: number;
-  sectionName: string | null;
-  headingPath: string[];
-  chunkText: string;
-  startLine: number;
-  endLine: number;
+  chunks: SiloSearchResultChunk[];
 }
 
 export type SiloDatabase = AnyOrama;
@@ -143,28 +147,39 @@ export async function searchSilo(
     mode: 'vector',
   });
 
-  // Aggregate by file: keep best-scoring chunk per file
-  const fileScores = new Map<string, Omit<SiloSearchResult, 'filePath'>>();
+  // Aggregate by file: collect top chunks per file
+  const maxChunksPerFile = 5;
+  const fileMap = new Map<string, { bestScore: number; chunks: SiloSearchResultChunk[] }>();
 
   for (const hit of results.hits) {
     const doc = hit.document as unknown as StoredChunk;
-    const existing = fileScores.get(doc.filePath);
-    if (!existing || hit.score > existing.score) {
-      const headingPath: string[] = JSON.parse(doc.headingPath);
-      fileScores.set(doc.filePath, {
-        score: hit.score,
-        sectionName: headingPath.length > 0 ? headingPath[headingPath.length - 1] : null,
-        headingPath,
-        chunkText: doc.text,
-        startLine: doc.startLine,
-        endLine: doc.endLine,
-      });
+    const headingPath: string[] = JSON.parse(doc.headingPath);
+    const chunk: SiloSearchResultChunk = {
+      headingPath,
+      text: doc.text,
+      startLine: doc.startLine,
+      endLine: doc.endLine,
+      score: hit.score,
+    };
+
+    const existing = fileMap.get(doc.filePath);
+    if (existing) {
+      existing.chunks.push(chunk);
+      if (hit.score > existing.bestScore) existing.bestScore = hit.score;
+    } else {
+      fileMap.set(doc.filePath, { bestScore: hit.score, chunks: [chunk] });
     }
   }
 
-  // Sort by score descending and limit
-  return Array.from(fileScores.entries())
-    .map(([filePath, rest]) => ({ filePath, ...rest }))
+  // Sort chunks within each file, keep top N
+  for (const entry of fileMap.values()) {
+    entry.chunks.sort((a, b) => b.score - a.score);
+    if (entry.chunks.length > maxChunksPerFile) entry.chunks.length = maxChunksPerFile;
+  }
+
+  // Sort files by best score descending and limit
+  return Array.from(fileMap.entries())
+    .map(([filePath, { bestScore, chunks }]) => ({ filePath, score: bestScore, chunks }))
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults);
 }

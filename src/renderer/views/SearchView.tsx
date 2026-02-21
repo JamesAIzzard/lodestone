@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, FileText, ExternalLink, Loader2 } from 'lucide-react';
+import { Search, FileText, ExternalLink, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { SiloStatus, SearchResult } from '../../shared/types';
 
@@ -46,6 +46,15 @@ export default function SearchView() {
     } finally {
       setSearching(false);
     }
+  }
+
+  function toggleExpand(index: number) {
+    setExpandedResults((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
   }
 
   return (
@@ -105,70 +114,90 @@ export default function SearchView() {
               {results.length} result{results.length !== 1 && 's'}
             </p>
 
-            {results.map((result, i) => (
-              <button
-                key={`${result.filePath}-${i}`}
-                onClick={() => handleOpenFile(result.filePath)}
-                className={cn(
-                  'group flex items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors',
-                  'hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                )}
-              >
-                <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+            {results.map((result, i) => {
+              const isExpanded = expandedResults.has(i);
 
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium text-foreground">
-                      {fileName(result.filePath)}
-                    </span>
-                    {result.headingPath.length > 0 && (
-                      <span className="shrink-0 text-xs text-muted-foreground/60">
-                        — {result.headingPath.join(' > ')}
-                      </span>
+              return (
+                <div key={`${result.filePath}-${i}`}>
+                  {/* Result row */}
+                  <button
+                    onClick={() => toggleExpand(i)}
+                    className={cn(
+                      'group flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors',
+                      'hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      isExpanded && 'bg-accent/20',
                     )}
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground/50">
-                    <span className="truncate">{dirPath(result.filePath)}</span>
-                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                      {result.siloName}
-                    </span>
-                  </div>
-                  {result.chunkText && (
-                    <p
+                  >
+                    {isExpanded
+                      ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    }
+
+                    <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium text-foreground">
+                          {fileName(result.filePath)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground/50">
+                        <span className="truncate">{dirPath(result.filePath)}</span>
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {result.siloName}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-foreground/30"
+                          style={{ width: scorePercent(result.score) }}
+                        />
+                      </div>
+                      <span className="w-8 text-right text-xs text-muted-foreground">
+                        {scorePercent(result.score)}
+                      </span>
+                    </div>
+
+                    <ExternalLink
+                      className="h-3.5 w-3.5 shrink-0 text-muted-foreground/30 opacity-0 transition-opacity group-hover:opacity-100"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setExpandedResults((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(i)) next.delete(i);
-                          else next.add(i);
-                          return next;
-                        });
+                        handleOpenFile(result.filePath);
                       }}
-                      className={cn(
-                        'mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/70 cursor-pointer',
-                        !expandedResults.has(i) && 'line-clamp-2',
-                      )}
-                    >
-                      {result.chunkText}
-                    </p>
+                    />
+                  </button>
+
+                  {/* Expanded chunks */}
+                  {isExpanded && result.chunks.length > 0 && (
+                    <div className="ml-[26px] border-l-2 border-accent/40 pl-4 pb-2">
+                      {result.chunks.map((chunk, ci) => (
+                        <div
+                          key={ci}
+                          className="mt-2 rounded-md bg-muted/30 px-3 py-2"
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            {chunk.headingPath.length > 0 && (
+                              <span className="text-[11px] font-medium text-muted-foreground">
+                                {chunk.headingPath.join(' > ')}
+                              </span>
+                            )}
+                            <span className="shrink-0 text-[10px] text-muted-foreground/50">
+                              {scorePercent(chunk.score)}
+                            </span>
+                          </div>
+                          <p className="whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/70">
+                            {chunk.text}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
-                    <div
-                      className="h-full rounded-full bg-foreground/30"
-                      style={{ width: scorePercent(result.score) }}
-                    />
-                  </div>
-                  <span className="w-8 text-right text-xs text-muted-foreground">
-                    {scorePercent(result.score)}
-                  </span>
-                </div>
-
-                <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground/30 opacity-0 transition-opacity group-hover:opacity-100" />
-              </button>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

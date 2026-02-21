@@ -27,6 +27,7 @@ import {
 } from './store';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
+import { PauseToken } from './pause-token';
 import type { WatcherState } from '../shared/types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -42,6 +43,8 @@ export interface SiloManagerStatus {
   reconcileProgress?: { current: number; total: number };
   /** True when the configured model differs from the model used to build the index */
   modelMismatch?: boolean;
+  /** True when indexing is paused */
+  paused?: boolean;
   /** Absolute path to the silo's SQLite database file */
   resolvedDbPath: string;
 }
@@ -66,6 +69,8 @@ export class SiloManager {
   private cachedSizeBytes = 0;
   /** True when meta model differs from configured model */
   private modelMismatch = false;
+  private pauseToken = new PauseToken();
+  private _paused = false;
 
   private set watcherState(value: WatcherState) {
     if (this._watcherState !== value) {
@@ -136,6 +141,96 @@ export class SiloManager {
     this.sharedEmbeddingService = service;
   }
 
+  // ── Pause / Resume ───────────────────────────────────────────────────────
+
+  /** Pause indexing. Queue processing and reconciliation suspend at the next yield point. */
+  pause(): void {
+    if (this._paused) return;
+    this._paused = true;
+    this.pauseToken.pause();
+    console.log(`[silo:${this.config.name}] Paused`);
+    this.stateChangeListener?.();
+  }
+
+  /** Resume indexing from where it was paused. */
+  resume(): void {
+    if (!this._paused) return;
+    this._paused = false;
+    this.pauseToken.resume();
+    console.log(`[silo:${this.config.name}] Resumed`);
+    this.stateChangeListener?.();
+  }
+
+  /** Whether indexing is currently paused. */
+  get isPaused(): boolean {
+    return this._paused;
+  }
+
+  // ── Config hot-swap ────────────────────────────────────────────────────
+
+  /**
+   * Update ignore patterns, re-reconcile to remove now-ignored files, and restart the watcher.
+   */
+  async updateIgnorePatterns(ignore: string[], ignoreFiles: string[]): Promise<void> {
+    this.config = { ...this.config, ignore, ignoreFiles };
+    await this.reconcileAndRestartWatcher('ignore pattern');
+  }
+
+  /**
+   * Update file extensions, re-reconcile to index/remove files, and restart the watcher.
+   */
+  async updateExtensions(extensions: string[]): Promise<void> {
+    this.config = { ...this.config, extensions };
+    await this.reconcileAndRestartWatcher('extension');
+  }
+
+  /**
+   * Stop the watcher, re-reconcile the database against disk using the current config,
+   * then restart the watcher. Used after config changes that affect which files are indexed.
+   */
+  private async reconcileAndRestartWatcher(reason: string): Promise<void> {
+    if (this.watcher) {
+      await this.watcher.stop();
+      this.watcher = null;
+    }
+
+    if (this.embeddingService && this.db && !this.stopped) {
+      this.watcherState = 'indexing';
+      try {
+        const result = await reconcile(
+          this.config,
+          this.embeddingService,
+          this.db,
+          this.mtimes,
+          this.onReconcileProgress,
+          this.onReconcileEvent,
+          this.pauseToken,
+        );
+        const changes = [
+          result.filesAdded > 0 && `+${result.filesAdded}`,
+          result.filesRemoved > 0 && `-${result.filesRemoved}`,
+          result.filesUpdated > 0 && `~${result.filesUpdated}`,
+        ].filter(Boolean).join(' ');
+        if (changes) {
+          console.log(`[silo:${this.config.name}] ${reason} change: ${changes} files`);
+        }
+      } catch (err) {
+        if (!this.stopped) {
+          console.error(`[silo:${this.config.name}] Re-reconciliation after ${reason} change failed:`, err);
+        }
+      }
+      this.reconcileProgress = undefined;
+
+      if (!this.stopped) {
+        this.watcherState = 'idle';
+        this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db, this.pauseToken);
+        this.watcher.on((event) => this.handleWatcherEvent(event));
+        this.watcher.start();
+        console.log(`[silo:${this.config.name}] Watcher restarted after ${reason} change`);
+      }
+    }
+  }
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   /** Initialize all subsystems and start watching. */
@@ -183,6 +278,7 @@ export class SiloManager {
         this.mtimes,
         this.onReconcileProgress,
         this.onReconcileEvent,
+        this.pauseToken,
       );
       if (result.filesAdded > 0 || result.filesRemoved > 0 || result.filesUpdated > 0) {
         console.log(
@@ -203,7 +299,7 @@ export class SiloManager {
 
     // 7. Create and start the file watcher
     if (this.stopped) return;
-    this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db);
+    this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db, this.pauseToken);
     this.watcher.on((event) => this.handleWatcherEvent(event));
     this.watcher.start();
 
@@ -213,6 +309,11 @@ export class SiloManager {
   /** Graceful shutdown: stop watcher, close database, dispose embedding service. */
   async stop(): Promise<void> {
     this.stopped = true;
+    // If paused, resume so in-flight loops can notice `stopped` and exit.
+    if (this._paused) {
+      this._paused = false;
+      this.pauseToken.resume();
+    }
 
     // Wait for start() to finish so we don't tear down underneath it.
     if (this.startPromise) {
@@ -389,6 +490,7 @@ export class SiloManager {
       errorMessage: this.errorMessage,
       reconcileProgress: this.reconcileProgress,
       modelMismatch: this.modelMismatch || undefined,
+      paused: this._paused || undefined,
       resolvedDbPath: this.resolveDbPath(),
     };
   }

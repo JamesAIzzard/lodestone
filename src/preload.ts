@@ -26,8 +26,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('silos:wake', name),
   rebuildSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:rebuild', name),
-  updateSilo: (name: string, updates: { description?: string; model?: string }): Promise<unknown> =>
+  updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[] }): Promise<unknown> =>
     ipcRenderer.invoke('silos:update', name, updates),
+  pauseSilo: (name: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:pause', name),
+  resumeSilo: (name: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:resume', name),
   search: (query: string, siloName?: string): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:search', query, siloName),
 
@@ -46,6 +50,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('silos:changed', handler);
     return () => ipcRenderer.removeListener('silos:changed', handler);
   },
+
+  // Defaults
+  getDefaults: (): Promise<unknown> =>
+    ipcRenderer.invoke('defaults:get'),
+  updateDefaults: (updates: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke('defaults:update', updates),
 
   // Server / Settings
   getServerStatus: (): Promise<unknown> =>

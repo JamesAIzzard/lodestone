@@ -11,7 +11,9 @@ import { Badge } from './ui/badge';
 import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play, HardDrive, Unplug } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
-import type { SiloStatus, ActivityEvent, ServerStatus } from '../../shared/types';
+import IgnorePatternsEditor from './IgnorePatternsEditor';
+import ExtensionPicker from './ExtensionPicker';
+import type { SiloStatus, ActivityEvent, ServerStatus, DefaultSettings } from '../../shared/types';
 
 function abbreviatePath(p: string): string {
   return p
@@ -74,6 +76,18 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
   const [selectedModel, setSelectedModel] = useState('');
 
+  // Ignore patterns state
+  const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
+  const [fileIgnore, setFileIgnore] = useState<string[]>([]);
+  const [ignoreOverridden, setIgnoreOverridden] = useState(false);
+  const [defaultFolderIgnore, setDefaultFolderIgnore] = useState<string[]>([]);
+  const [defaultFileIgnore, setDefaultFileIgnore] = useState<string[]>([]);
+
+  // Extension state
+  const [extensions, setExtensions] = useState<string[]>([]);
+  const [extensionOverridden, setExtensionOverridden] = useState(false);
+  const [defaultExtensions, setDefaultExtensions] = useState<string[]>([]);
+
   // Sync description and model from silo prop when modal opens
   useEffect(() => {
     if (open && silo) {
@@ -86,6 +100,22 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
         const effective = silo.config.modelOverride ?? status.defaultModel;
         setSelectedModel(effective);
       });
+
+      // Load defaults for inheritance
+      window.electronAPI?.getDefaults().then((d) => {
+        setDefaultFolderIgnore(d.ignore);
+        setDefaultFileIgnore(d.ignoreFiles);
+        setDefaultExtensions(d.extensions);
+      });
+
+      // Set current ignore patterns
+      setFolderIgnore(silo.config.ignorePatterns);
+      setFileIgnore(silo.config.ignoreFilePatterns);
+      setIgnoreOverridden(silo.config.hasIgnoreOverride || silo.config.hasFileIgnoreOverride);
+
+      // Set current extensions
+      setExtensions(silo.config.extensions);
+      setExtensionOverridden(silo.config.hasExtensionOverride);
     }
   }, [open, silo]);
 
@@ -152,6 +182,81 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     } else {
       setDisconnecting(false);
     }
+  }
+
+  async function handleFolderIgnoreChange(patterns: string[]) {
+    if (!silo) return;
+    setFolderIgnore(patterns);
+    await window.electronAPI?.updateSilo(silo.config.name, { ignore: patterns });
+    onUpdated?.();
+  }
+
+  async function handleFileIgnoreChange(patterns: string[]) {
+    if (!silo) return;
+    setFileIgnore(patterns);
+    await window.electronAPI?.updateSilo(silo.config.name, { ignoreFiles: patterns });
+    onUpdated?.();
+  }
+
+  async function handleIgnoreOverride() {
+    setIgnoreOverridden(true);
+    // Copy defaults as starting point for customization
+    const folders = [...defaultFolderIgnore];
+    const files = [...defaultFileIgnore];
+    setFolderIgnore(folders);
+    setFileIgnore(files);
+    if (silo) {
+      await window.electronAPI?.updateSilo(silo.config.name, { ignore: folders, ignoreFiles: files });
+      onUpdated?.();
+    }
+  }
+
+  async function handleIgnoreRevert() {
+    setIgnoreOverridden(false);
+    setFolderIgnore(defaultFolderIgnore);
+    setFileIgnore(defaultFileIgnore);
+    if (silo) {
+      // Empty arrays signal "revert to defaults"
+      await window.electronAPI?.updateSilo(silo.config.name, { ignore: [], ignoreFiles: [] });
+      onUpdated?.();
+    }
+  }
+
+  async function handleExtensionsChange(exts: string[]) {
+    if (!silo) return;
+    setExtensions(exts);
+    await window.electronAPI?.updateSilo(silo.config.name, { extensions: exts });
+    onUpdated?.();
+  }
+
+  async function handleExtensionOverride() {
+    setExtensionOverridden(true);
+    const exts = [...defaultExtensions];
+    setExtensions(exts);
+    if (silo) {
+      await window.electronAPI?.updateSilo(silo.config.name, { extensions: exts });
+      onUpdated?.();
+    }
+  }
+
+  async function handleExtensionRevert() {
+    setExtensionOverridden(false);
+    setExtensions(defaultExtensions);
+    if (silo) {
+      // Empty array signals "revert to defaults"
+      await window.electronAPI?.updateSilo(silo.config.name, { extensions: [] });
+      onUpdated?.();
+    }
+  }
+
+  async function handlePauseToggle() {
+    if (!silo) return;
+    if (silo.paused) {
+      await window.electronAPI?.resumeSilo(silo.config.name);
+    } else {
+      await window.electronAPI?.pauseSilo(silo.config.name);
+    }
+    onUpdated?.();
   }
 
   if (!silo) return null;
@@ -252,13 +357,26 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
               </div>
             </Row>
             <Row label="Extensions">
-              <div className="flex flex-wrap gap-1">
-                {config.extensions.map((ext) => (
-                  <Badge key={ext} variant="secondary" className="text-[10px]">
-                    {ext}
-                  </Badge>
-                ))}
-              </div>
+              <ExtensionPicker
+                extensions={extensions}
+                onChange={handleExtensionsChange}
+                inherited
+                isOverridden={extensionOverridden}
+                onOverride={handleExtensionOverride}
+                onRevertToDefaults={handleExtensionRevert}
+              />
+            </Row>
+            <Row label="Ignore">
+              <IgnorePatternsEditor
+                folderPatterns={folderIgnore}
+                filePatterns={fileIgnore}
+                onFolderPatternsChange={handleFolderIgnoreChange}
+                onFilePatternsChange={handleFileIgnoreChange}
+                inherited
+                isOverridden={ignoreOverridden}
+                onOverride={handleIgnoreOverride}
+                onRevertToDefaults={handleIgnoreRevert}
+              />
             </Row>
             <Row label="Directories">
               <div className="flex flex-col gap-1">
@@ -394,6 +512,14 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
         )}
 
         <DialogFooter>
+          {silo.watcherState === 'indexing' && (
+            <Button variant="outline" size="sm" onClick={handlePauseToggle}>
+              {silo.paused
+                ? <><Play className="h-3.5 w-3.5" /> Resume</>
+                : <><Pause className="h-3.5 w-3.5" /> Pause</>
+              }
+            </Button>
+          )}
           {onSleepToggle && silo.watcherState !== 'indexing' && (
             <Button
               variant="outline"

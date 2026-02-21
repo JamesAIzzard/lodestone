@@ -8,14 +8,13 @@ import {
   DialogFooter,
 } from './ui/dialog';
 import { Button } from './ui/button';
-import { Badge } from './ui/badge';
 import { FolderOpen, Plus, X, HardDrive, Link } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import ExtensionPicker from './ExtensionPicker';
 
 const STEPS = ['Name', 'Directories', 'Extensions', 'Model', 'Storage'] as const;
 type Step = (typeof STEPS)[number];
 
-const COMMON_EXTENSIONS = ['.md', '.py', '.ts', '.js', '.toml', '.yaml', '.json', '.pdf'];
 
 interface AddSiloModalProps {
   open: boolean;
@@ -132,12 +131,6 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
     setDirectories((prev) => prev.filter((d) => d !== dir));
   }
 
-  function toggleExtension(ext: string) {
-    setExtensions((prev) =>
-      prev.includes(ext) ? prev.filter((e) => e !== ext) : [...prev, ext],
-    );
-  }
-
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent>
@@ -234,32 +227,10 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
               <label className="mb-2 block text-sm text-muted-foreground">
                 File extensions to index
               </label>
-              <div className="flex flex-wrap gap-2">
-                {COMMON_EXTENSIONS.map((ext) => (
-                  <button
-                    key={ext}
-                    onClick={() => toggleExtension(ext)}
-                    className={cn(
-                      'rounded-md border px-2.5 py-1 text-xs transition-colors',
-                      extensions.includes(ext)
-                        ? 'border-primary bg-primary/10 text-foreground'
-                        : 'border-border text-muted-foreground hover:border-foreground/20',
-                    )}
-                  >
-                    {ext}
-                  </button>
-                ))}
-              </div>
-              <div className="mt-3 flex flex-wrap gap-1">
-                {extensions.map((ext) => (
-                  <Badge key={ext} variant="secondary" className="gap-1">
-                    {ext}
-                    <button onClick={() => toggleExtension(ext)}>
-                      <X className="h-2.5 w-2.5" />
-                    </button>
-                  </Badge>
-                ))}
-              </div>
+              <ExtensionPicker
+                extensions={extensions}
+                onChange={setExtensions}
+              />
             </div>
           )}
 

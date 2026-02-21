@@ -12,6 +12,8 @@ import { setMtime, deleteMtime, makeStoredKey, resolveStoredKey, type SiloDataba
 import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
+import { matchesAnyPattern } from './pattern-match';
+import type { PauseToken } from './pause-token';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -60,6 +62,7 @@ export async function reconcile(
   mtimes: Map<string, number>,
   onProgress?: ReconcileProgressHandler,
   onEvent?: ReconcileEventHandler,
+  pauseToken?: PauseToken,
 ): Promise<ReconcileResult> {
   const start = performance.now();
   let filesAdded = 0;
@@ -71,7 +74,7 @@ export async function reconcile(
   const diskAbsPaths = new Map<string, number>(); // absPath → mtimeMs
 
   for (const dir of config.directories) {
-    walkDirectory(dir, config.extensions, config.ignore, diskAbsPaths);
+    walkDirectory(dir, config.extensions, config.ignore, config.ignoreFiles, diskAbsPaths);
   }
 
   // 2. Build storedKey → { absPath, mtime } map from disk scan
@@ -119,6 +122,7 @@ export async function reconcile(
   // 6. Index new and modified files
   let progress = alreadyDone;
   for (const { absPath, storedKey } of filesToIndex) {
+    if (pauseToken) await pauseToken.waitIfPaused();
     onProgress?.({
       phase: 'indexing',
       current: ++progress,
@@ -152,6 +156,7 @@ export async function reconcile(
 
   // 7. Remove stale files
   for (const storedKey of filesToRemove) {
+    if (pauseToken) await pauseToken.waitIfPaused();
     const absPath = resolveStoredKey(storedKey, config.directories);
     onProgress?.({
       phase: 'removing',
@@ -187,7 +192,8 @@ export async function reconcile(
 function walkDirectory(
   dir: string,
   extensions: string[],
-  ignore: string[],
+  ignoreFolders: string[],
+  ignoreFiles: string[],
   result: Map<string, number>,
 ): void {
   if (!fs.existsSync(dir)) return;
@@ -197,12 +203,11 @@ function walkDirectory(
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
 
-    // Check ignore patterns
-    if (ignore.some((pattern) => entry.name === pattern)) continue;
-
     if (entry.isDirectory()) {
-      walkDirectory(fullPath, extensions, ignore, result);
+      if (matchesAnyPattern(entry.name, ignoreFolders)) continue;
+      walkDirectory(fullPath, extensions, ignoreFolders, ignoreFiles, result);
     } else if (entry.isFile()) {
+      if (matchesAnyPattern(entry.name, ignoreFiles)) continue;
       const ext = path.extname(entry.name).toLowerCase();
       if (extensions.includes(ext)) {
         try {

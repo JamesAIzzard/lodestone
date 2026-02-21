@@ -1,4 +1,4 @@
-import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus } from './types';
+import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings } from './types';
 
 export interface ElectronAPI {
   // ── Dialogs & Shell ────────────────────────────────────────────────────────
@@ -22,7 +22,9 @@ export interface ElectronAPI {
   sleepSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   wakeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   rebuildSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
-  updateSilo: (name: string, updates: { description?: string; model?: string }) => Promise<{ success: boolean; error?: string }>;
+  updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[] }) => Promise<{ success: boolean; error?: string }>;
+  pauseSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
+  resumeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   search: (query: string, siloName?: string) => Promise<SearchResult[]>;
 
   // ── Activity ───────────────────────────────────────────────────────────────
@@ -31,6 +33,10 @@ export interface ElectronAPI {
 
   // ── Silo state push (e.g. tray sleep/wake) ────────────────────────────────
   onSilosChanged: (callback: () => void) => () => void;
+
+  // ── Defaults ──────────────────────────────────────────────────────────────
+  getDefaults: () => Promise<DefaultSettings>;
+  updateDefaults: (updates: Partial<DefaultSettings>) => Promise<{ success: boolean }>;
 
   // ── Server / Settings ──────────────────────────────────────────────────────
   getServerStatus: () => Promise<ServerStatus>;

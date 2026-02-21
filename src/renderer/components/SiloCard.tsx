@@ -27,10 +27,12 @@ interface SiloCardProps {
   silo: SiloStatus;
   onClick: () => void;
   onSleepToggle?: () => void;
+  onPauseToggle?: () => void;
 }
 
-export default function SiloCard({ silo, onClick, onSleepToggle }: SiloCardProps) {
+export default function SiloCard({ silo, onClick, onSleepToggle, onPauseToggle }: SiloCardProps) {
   const { config, indexedFileCount, chunkCount, watcherState, reconcileProgress } = silo;
+  const isPaused = !!silo.paused;
   const state = stateConfig[watcherState];
   const hasModelOverride = config.modelOverride !== null;
   const isIndexing = watcherState === 'indexing';
@@ -58,6 +60,23 @@ export default function SiloCard({ silo, onClick, onSleepToggle }: SiloCardProps
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          {/* Pause/resume button — shown while indexing */}
+          {onPauseToggle && isIndexing && (
+            <span
+              role="button"
+              tabIndex={0}
+              title={isPaused ? 'Resume indexing' : 'Pause indexing'}
+              onClick={(e) => { e.stopPropagation(); onPauseToggle(); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onPauseToggle(); } }}
+              className="rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground hover:bg-accent/40"
+            >
+              {isPaused
+                ? <Play className="h-3.5 w-3.5" />
+                : <Pause className="h-3.5 w-3.5" />
+              }
+            </span>
+          )}
+          {/* Sleep/wake button — shown when not indexing/waiting */}
           {onSleepToggle && !isIndexing && !isWaiting && (
             <span
               role="button"
@@ -73,16 +92,18 @@ export default function SiloCard({ silo, onClick, onSleepToggle }: SiloCardProps
               }
             </span>
           )}
-          <Badge variant={state.badgeVariant} className="gap-1.5 whitespace-nowrap">
-            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', state.dotClass)} />
-            {isIndexing && progressPct !== null
-              ? `Indexing ${progressPct}%`
-              : state.label}
+          <Badge variant={isPaused ? 'secondary' : state.badgeVariant} className="gap-1.5 whitespace-nowrap">
+            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', isPaused ? 'bg-amber-500' : state.dotClass)} />
+            {isPaused
+              ? 'Paused'
+              : isIndexing && progressPct !== null
+                ? `Indexing ${progressPct}%`
+                : state.label}
           </Badge>
         </div>
       </div>
 
-      <div className={cn((isSleeping || isWaiting) && 'opacity-50')}>
+      <div className={cn((isSleeping || isWaiting || isPaused) && 'opacity-50')}>
         {/* Progress bar (shown while indexing) */}
         {isIndexing && reconcileProgress && reconcileProgress.total > 0 && (
           <div className="flex flex-col gap-1">

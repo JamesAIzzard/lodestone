@@ -13,6 +13,8 @@ import { indexFile, removeFile } from './pipeline';
 import { makeStoredKey, type SiloDatabase } from './store';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
+import { matchesAnyPattern } from './pattern-match';
+import type { PauseToken } from './pause-token';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,6 +43,7 @@ export class SiloWatcher {
     private readonly config: ResolvedSiloConfig,
     private readonly embeddingService: EmbeddingService,
     private readonly db: SiloDatabase,
+    private readonly pauseToken?: PauseToken,
   ) {}
 
   /** Register a listener for watcher events (activity feed). */
@@ -55,17 +58,15 @@ export class SiloWatcher {
     // chokidar v4+ removed glob support — watch directories directly and
     // filter by extension + ignore patterns via the `ignored` callback.
     const extSet = new Set(this.config.extensions.map((e) => e.toLowerCase()));
-    const ignoreSet = new Set(this.config.ignore.map((p) => p.toLowerCase()));
 
     this.watcher = watch(this.config.directories, {
       ignored: (filePath, stats) => {
-        const base = path.basename(filePath).toLowerCase();
-        // Always allow directories through so chokidar recurses into them,
-        // but skip ignored directory names.
+        const base = path.basename(filePath);
         if (!stats || stats.isDirectory()) {
-          return ignoreSet.has(base);
+          return matchesAnyPattern(base, this.config.ignore);
         }
-        // For files, reject unless the extension is in the configured set.
+        // For files, check file ignore patterns first, then extension whitelist.
+        if (matchesAnyPattern(base, this.config.ignoreFiles)) return true;
         const ext = path.extname(filePath).toLowerCase();
         return !extSet.has(ext);
       },
@@ -138,6 +139,7 @@ export class SiloWatcher {
     this.processing = true;
 
     while (this.queue.length > 0) {
+      if (this.pauseToken) await this.pauseToken.waitIfPaused();
       const item = this.queue.shift()!;
 
       try {

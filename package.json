@@ -13,7 +13,8 @@
     "lint": "eslint --ext .ts,.tsx .",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "reset-data": "node scripts/reset-data.mjs"
   },
   "keywords": [],
   "author": {
@@ -51,6 +52,7 @@
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
     "@orama/orama": "^3.1.18",
+    "@orama/plugin-data-persistence": "^3.1.18",
     "chokidar": "^5.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

@@ -103,7 +103,6 @@ export class SiloManager {
         this.onReconcileProgress,
       );
       if (result.filesAdded > 0 || result.filesRemoved > 0 || result.filesUpdated > 0) {
-        this.dirty = true;
         console.log(
           `[silo:${this.config.name}] Reconciliation: +${result.filesAdded} -${result.filesRemoved} ~${result.filesUpdated} (${(result.durationMs / 1000).toFixed(1)}s)`,
         );
@@ -222,6 +221,7 @@ export class SiloManager {
       this.reconcileProgress = undefined;
       return;
     }
+    this.dirty = true;
     this.reconcileProgress = { current: progress.current, total: progress.total };
     if (progress.total > 0 && progress.current % 10 === 0) {
       console.log(`[silo:${this.config.name}] Reconcile: ${progress.current}/${progress.total}`);

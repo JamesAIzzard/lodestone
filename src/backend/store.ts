@@ -11,12 +11,10 @@ import {
   remove,
   search,
   searchVector,
-  save,
-  load,
   count,
   type AnyOrama,
-  type RawData,
 } from '@orama/orama';
+import { persist, restore } from '@orama/plugin-data-persistence';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ChunkRecord } from './chunker';
@@ -165,25 +163,23 @@ export async function searchSilo(
 
 /**
  * Save the database to disk at the given path.
- * Creates parent directories if they don't exist.
+ * Uses the Orama persistence plugin which properly serializes all indexes.
  */
 export async function persistDatabase(db: SiloDatabase, dbPath: string): Promise<void> {
   const dir = path.dirname(dbPath);
   fs.mkdirSync(dir, { recursive: true });
-  const data = await save(db);
-  fs.writeFileSync(dbPath, JSON.stringify(data));
+  const data = await persist(db, 'json');
+  fs.writeFileSync(dbPath, data as string);
 }
 
 /**
  * Load a database from disk. Returns null if the file doesn't exist.
+ * Uses the Orama persistence plugin which fully restores all indexes.
  */
-export async function loadDatabase(dbPath: string, dimensions: number): Promise<SiloDatabase | null> {
+export async function loadDatabase(dbPath: string, _dimensions: number): Promise<SiloDatabase | null> {
   if (!fs.existsSync(dbPath)) return null;
   const raw = fs.readFileSync(dbPath, 'utf-8');
-  const data = JSON.parse(raw) as RawData;
-  const db = await createSiloDatabase(dimensions);
-  await load(db, data);
-  return db;
+  return restore('json', raw) as Promise<SiloDatabase>;
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────

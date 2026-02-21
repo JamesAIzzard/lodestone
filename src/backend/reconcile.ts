@@ -80,10 +80,13 @@ export async function reconcile(
     }
   }
 
-  const totalWork = filesToIndex.length + filesToRemove.length;
+  // Total reflects all disk files so the UI shows overall progress,
+  // not just remaining work.  Already-indexed files count as done.
+  const alreadyDone = diskFiles.size - filesToIndex.length;
+  const totalWork = diskFiles.size + filesToRemove.length;
 
   // 5. Index new files
-  let progress = 0;
+  let progress = alreadyDone;
   for (const filePath of filesToIndex) {
     onProgress?.({
       phase: 'indexing',

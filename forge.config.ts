@@ -34,6 +34,11 @@ const config: ForgeConfig = {
           config: 'vite.preload.config.ts',
           target: 'preload',
         },
+        {
+          entry: 'src/backend/embedding-worker.ts',
+          config: 'vite.worker.config.ts',
+          target: 'main',
+        },
       ],
       renderer: [
         {

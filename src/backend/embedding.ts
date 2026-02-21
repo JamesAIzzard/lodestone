@@ -2,11 +2,13 @@
  * Embedding service abstraction layer.
  *
  * Provides a unified interface for generating vector embeddings from text,
- * with two backends: built-in (Transformers.js / ONNX) and Ollama REST API.
+ * with two backends: built-in (Transformers.js / ONNX via worker thread)
+ * and Ollama REST API.
  */
 
-import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
+import type { WorkerResponse } from './embedding-worker-protocol';
 
 // ── Interface ────────────────────────────────────────────────────────────────
 
@@ -20,62 +22,123 @@ export interface EmbeddingService {
   dispose(): Promise<void>;
 }
 
-// ── Built-in (Transformers.js) ───────────────────────────────────────────────
+// ── Built-in (Worker Thread Proxy) ──────────────────────────────────────────
 
-const BUILTIN_MODEL_ID = 'Xenova/all-MiniLM-L6-v2';
-const BUILTIN_DIMENSIONS = 384;
-const BUILTIN_MAX_TOKENS = 128; // produces poor results beyond this
+/**
+ * Proxy that delegates ONNX embedding inference to a worker thread.
+ *
+ * Implements the same `EmbeddingService` interface so all callers
+ * (pipeline, reconcile, watcher) are completely unaware of the threading.
+ * The worker is spawned lazily on the first embed call, matching the
+ * previous lazy-load pattern of BuiltInEmbeddingService.
+ */
+export class WorkerEmbeddingProxy implements EmbeddingService {
+  private worker: Worker | null = null;
+  private initPromise: Promise<void> | null = null;
+  private nextId = 1;
+  private pending = new Map<number, { resolve: (value: any) => void; reject: (err: Error) => void }>();
 
-export class BuiltInEmbeddingService implements EmbeddingService {
-  private extractor: FeatureExtractionPipeline | null = null;
+  // Static defaults match the built-in model (all-MiniLM-L6-v2).
+  // Available immediately so callers can read dimensions before the
+  // first embed() call triggers lazy worker initialization.
+  private _dimensions = 384;
+  private _modelName = 'built-in (all-MiniLM-L6-v2)';
+  private _maxTokens = 128;
 
-  readonly dimensions = BUILTIN_DIMENSIONS;
-  readonly modelName = 'built-in (all-MiniLM-L6-v2)';
-  readonly maxTokens = BUILTIN_MAX_TOKENS;
+  get dimensions(): number { return this._dimensions; }
+  get modelName(): string { return this._modelName; }
+  get maxTokens(): number { return this._maxTokens; }
 
-  /**
-   * @param cacheDir Directory to store downloaded model files.
-   *                 In Electron, use app.getPath('userData') + '/models'.
-   */
   constructor(private readonly cacheDir: string) {}
 
-  private async getExtractor(): Promise<FeatureExtractionPipeline> {
-    if (!this.extractor) {
-      env.cacheDir = this.cacheDir;
-      env.allowLocalModels = true;
-      env.allowRemoteModels = true;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.extractor = await (pipeline as any)('feature-extraction', BUILTIN_MODEL_ID, {
-        dtype: 'q8',
-      }) as FeatureExtractionPipeline;
+  // ── Lifecycle ────────────────────────────────────────────────────────────
+
+  private ensureInit(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.spawnAndInit();
     }
-    return this.extractor;
+    return this.initPromise;
   }
 
+  private async spawnAndInit(): Promise<void> {
+    const workerPath = path.join(__dirname, 'embedding-worker.js');
+    this.worker = new Worker(workerPath);
+
+    this.worker.on('message', (msg: WorkerResponse) => {
+      const entry = this.pending.get(msg.id);
+      if (!entry) return;
+      this.pending.delete(msg.id);
+
+      if (msg.type === 'error') {
+        entry.reject(new Error(msg.message));
+      } else {
+        entry.resolve(msg);
+      }
+    });
+
+    this.worker.on('error', (err) => {
+      this.rejectAll(err);
+    });
+
+    this.worker.on('exit', (code) => {
+      if (code !== 0 && this.pending.size > 0) {
+        this.rejectAll(new Error(`Embedding worker exited with code ${code}`));
+      }
+    });
+
+    // Send init and wait for model to load + warmup
+    const response = await this.post<{ dimensions: number; modelName: string; maxTokens: number }>({
+      type: 'init',
+      cacheDir: this.cacheDir,
+    });
+
+    this._dimensions = response.dimensions;
+    this._modelName = response.modelName;
+    this._maxTokens = response.maxTokens;
+  }
+
+  // ── EmbeddingService implementation ──────────────────────────────────────
+
   async embed(text: string): Promise<number[]> {
-    const extractor = await this.getExtractor();
-    const result = await extractor(text, { pooling: 'mean', normalize: true });
-    return Array.from(result.data as Float32Array).slice(0, this.dimensions);
+    await this.ensureInit();
+    const response = await this.post<{ vector: number[] }>({ type: 'embed', text });
+    return response.vector;
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
-    const extractor = await this.getExtractor();
-    const result = await extractor(texts, { pooling: 'mean', normalize: true });
-    const data = result.data as Float32Array;
-    const vectors: number[][] = [];
-    for (let i = 0; i < texts.length; i++) {
-      const start = i * this.dimensions;
-      vectors.push(Array.from(data.slice(start, start + this.dimensions)));
-    }
-    return vectors;
+    await this.ensureInit();
+    const response = await this.post<{ vectors: number[][] }>({ type: 'embedBatch', texts });
+    return response.vectors;
   }
 
   async dispose(): Promise<void> {
-    if (this.extractor) {
-      await this.extractor.dispose();
-      this.extractor = null;
+    if (!this.worker) return;
+    try {
+      await this.post({ type: 'dispose' });
+    } catch {
+      // Worker may already be gone
     }
+    await this.worker.terminate();
+    this.worker = null;
+    this.initPromise = null;
+  }
+
+  // ── Internal messaging ───────────────────────────────────────────────────
+
+  private post<T>(msg: Record<string, unknown>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const id = this.nextId++;
+      this.pending.set(id, { resolve, reject });
+      this.worker!.postMessage({ ...msg, id });
+    });
+  }
+
+  private rejectAll(err: Error): void {
+    for (const entry of this.pending.values()) {
+      entry.reject(err);
+    }
+    this.pending.clear();
   }
 }
 
@@ -155,7 +218,7 @@ export interface EmbeddingServiceOptions {
  */
 export function createEmbeddingService(options: EmbeddingServiceOptions): EmbeddingService {
   if (options.model === 'built-in') {
-    return new BuiltInEmbeddingService(options.modelCacheDir);
+    return new WorkerEmbeddingProxy(options.modelCacheDir);
   }
   return new OllamaEmbeddingService(options.ollamaUrl, options.model);
 }

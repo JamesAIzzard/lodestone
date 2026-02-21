@@ -161,7 +161,9 @@ async function initializeBackend(): Promise<void> {
     console.log(`[main] Created default config at ${configPath}`);
   }
 
-  // Initialize a SiloManager for each configured silo
+  // Initialize a SiloManager for each configured silo.
+  // Register immediately so the renderer can see them, then start
+  // indexing in the background (same pattern as silos:create).
   for (const [name, siloToml] of Object.entries(config.silos)) {
     const resolved = resolveSiloConfig(name, siloToml, config);
     const manager = new SiloManager(
@@ -171,16 +173,13 @@ async function initializeBackend(): Promise<void> {
       getUserDataDir(),
     );
 
-    try {
-      await manager.start();
-      siloManagers.set(name, manager);
+    siloManagers.set(name, manager);
 
-      // Forward activity events to the renderer
-      manager.getConfig(); // verify config is accessible
+    manager.start().then(() => {
       console.log(`[main] Silo "${name}" started`);
-    } catch (err) {
+    }).catch((err) => {
       console.error(`[main] Failed to start silo "${name}":`, err);
-    }
+    });
   }
 
   // Update tray menu now that silos are loaded

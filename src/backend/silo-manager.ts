@@ -303,36 +303,12 @@ export class SiloManager {
     console.log(`[silo:${this.config.name}] Rebuild complete`);
   }
 
-  /**
-   * Load minimal status for a sleeping silo without starting it.
-   * Opens the DB briefly to count mtimes, then closes.
-   */
-  loadSleepingStatus(): void {
-    this.watcherState = 'sleeping';
-    this.cachedSizeBytes = this.readFileSizeFromDisk();
+  /** Load minimal status for an offline silo (sleeping or waiting) without starting it. */
+  loadSleepingStatus(): void { this.loadOfflineStatus('sleeping'); }
+  loadWaitingStatus(): void { this.loadOfflineStatus('waiting'); }
 
-    const dbPath = this.resolveDbPath();
-    if (fs.existsSync(dbPath)) {
-      try {
-        const db = new Database(dbPath, { readonly: true });
-        try {
-          const row = db.prepare(`SELECT COUNT(*) as cnt FROM mtimes`).get() as { cnt: number };
-          this.cachedFileCount = row.cnt;
-        } catch {
-          this.cachedFileCount = 0;
-        }
-        db.close();
-      } catch {
-        this.cachedFileCount = 0;
-      }
-    }
-  }
-
-  /**
-   * Load minimal status for a silo that is queued but not yet started.
-   */
-  loadWaitingStatus(): void {
-    this.watcherState = 'waiting';
+  private loadOfflineStatus(state: 'sleeping' | 'waiting'): void {
+    this.watcherState = state;
     this.cachedSizeBytes = this.readFileSizeFromDisk();
 
     const dbPath = this.resolveDbPath();

@@ -11,6 +11,7 @@ import { indexFile, removeFile } from './pipeline';
 import { setMtime, deleteMtime, type SiloDatabase } from './store';
 import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
+import type { ActivityEventType } from '../shared/types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,6 +23,15 @@ export interface ReconcileProgress {
 }
 
 export type ReconcileProgressHandler = (progress: ReconcileProgress) => void;
+
+/** Emitted for each file successfully processed or errored during reconciliation. */
+export interface ReconcileEvent {
+  filePath: string;
+  eventType: ActivityEventType;
+  errorMessage?: string;
+}
+
+export type ReconcileEventHandler = (event: ReconcileEvent) => void;
 
 export interface ReconcileResult {
   filesAdded: number;
@@ -49,6 +59,7 @@ export async function reconcile(
   db: SiloDatabase,
   mtimes: Map<string, number>,
   onProgress?: ReconcileProgressHandler,
+  onEvent?: ReconcileEventHandler,
 ): Promise<ReconcileResult> {
   const start = performance.now();
   let filesAdded = 0;
@@ -105,11 +116,13 @@ export async function reconcile(
     });
     try {
       await indexFile(filePath, embeddingService, db);
-      if (indexedFiles.has(filePath)) {
+      const isUpdate = indexedFiles.has(filePath);
+      if (isUpdate) {
         filesUpdated++;
       } else {
         filesAdded++;
       }
+      onEvent?.({ filePath, eventType: isUpdate ? 'reindexed' : 'indexed' });
       // Record the current mtime so we detect future changes
       try {
         const stat = fs.statSync(filePath);
@@ -119,7 +132,9 @@ export async function reconcile(
         // File vanished between indexing and stat — rare but possible
       }
     } catch (err) {
-      console.error(`[reconcile] Failed to index ${filePath}:`, err);
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[reconcile] Failed to index ${filePath}:`, message);
+      onEvent?.({ filePath, eventType: 'error', errorMessage: message });
     }
   }
 
@@ -136,8 +151,11 @@ export async function reconcile(
       mtimes.delete(filePath);
       deleteMtime(db, filePath);
       filesRemoved++;
+      onEvent?.({ filePath, eventType: 'deleted' });
     } catch (err) {
-      console.error(`[reconcile] Failed to remove ${filePath}:`, err);
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[reconcile] Failed to remove ${filePath}:`, message);
+      onEvent?.({ filePath, eventType: 'error', errorMessage: message });
     }
   }
 

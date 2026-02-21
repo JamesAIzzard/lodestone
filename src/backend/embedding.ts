@@ -27,8 +27,10 @@ export interface EmbeddingService {
   embedBatch(texts: string[]): Promise<number[][]>;
   readonly dimensions: number;
   readonly modelName: string;
-  /** Maximum tokens the model handles well (for chunking decisions) */
+  /** Model's technical context window limit — used for max_length/truncation in ONNX */
   readonly maxTokens: number;
+  /** Target chunk size for the pipeline chunkers — typically much smaller than maxTokens */
+  readonly chunkTokens: number;
   dispose(): Promise<void>;
 }
 
@@ -113,14 +115,16 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
   private initPromise: Promise<void> | null = null;
 
   // Pre-populated from the model registry so callers can read
-  // dimensions/maxTokens immediately (before worker warmup completes).
+  // dimensions/maxTokens/chunkTokens immediately (before worker warmup completes).
   private _dimensions: number;
   private _modelName: string;
   private _maxTokens: number;
+  private _chunkTokens: number;
 
   get dimensions(): number { return this._dimensions; }
   get modelName(): string { return this._modelName; }
   get maxTokens(): number { return this._maxTokens; }
+  get chunkTokens(): number { return this._chunkTokens; }
 
   constructor(
     private readonly modelId: string,
@@ -131,6 +135,7 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
     this._dimensions = def?.dimensions ?? 384;
     this._modelName = def ? `${modelId} (${def.displayName})` : modelId;
     this._maxTokens = def?.maxTokens ?? 512;
+    this._chunkTokens = def?.chunkTokens ?? 512;
     activeProxies.add(this);
   }
 
@@ -157,6 +162,7 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
       dimensions: number;
       modelName: string;
       maxTokens: number;
+      chunkTokens: number;
     }>({
       type: 'init',
       cacheDir: this.cacheDir,
@@ -167,6 +173,7 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
     this._dimensions = response.dimensions;
     this._modelName = response.modelName;
     this._maxTokens = response.maxTokens;
+    this._chunkTokens = response.chunkTokens;
   }
 
   // ── EmbeddingService implementation ──────────────────────────────────────
@@ -213,7 +220,8 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
 export class OllamaEmbeddingService implements EmbeddingService {
   private _dimensions: number | null = null;
 
-  readonly maxTokens = 8192; // nomic-embed-text supports up to 8192
+  readonly maxTokens = 8192;   // nomic-embed-text supports up to 8192
+  readonly chunkTokens = 512;  // target chunk size — large maxTokens causes huge ONNX tensors
 
   constructor(
     private readonly baseUrl: string,

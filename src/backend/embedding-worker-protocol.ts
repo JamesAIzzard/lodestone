@@ -50,6 +50,7 @@ export interface InitOkResponse {
   dimensions: number;
   modelName: string;
   maxTokens: number;
+  chunkTokens: number;
 }
 
 export interface EmbedOkResponse {

@@ -401,6 +401,7 @@ function registerIpcHandlers(): void {
         reconcileProgress: status.reconcileProgress,
         modelMismatch: status.modelMismatch,
         resolvedDbPath: status.resolvedDbPath,
+        resolvedModel: cfg.model,
       });
     }
     return statuses;
@@ -474,6 +475,8 @@ function registerIpcHandlers(): void {
       matchType: r.matchType,
       chunks: r.chunks,
       siloName: r.siloName,
+      rrfScore: r.rrfScore,
+      bestCosineSimilarity: r.bestCosineSimilarity,
     }));
 
     results.sort((a, b) => b.score - a.score);

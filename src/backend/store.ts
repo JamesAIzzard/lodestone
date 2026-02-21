@@ -55,6 +55,10 @@ export interface SiloSearchResultChunk {
   startLine: number;
   endLine: number;
   score: number;
+  /** Whether this chunk was found by semantic, keyword, or both search paths */
+  matchType: MatchType;
+  /** Cosine similarity to the query (0 for keyword-only chunks) */
+  cosineSimilarity: number;
 }
 
 export type MatchType = 'semantic' | 'keyword' | 'both';
@@ -577,6 +581,8 @@ function aggregateByFile(
       startLine: row.start_line,
       endLine: row.end_line,
       score,
+      matchType: 'semantic',
+      cosineSimilarity: score,
     };
 
     const existing = fileMap.get(row.file_path);
@@ -633,17 +639,23 @@ function aggregateByFileRrf(
 
   for (const row of rows) {
     const sectionPath: string[] = JSON.parse(row.section_path);
+    const inVec = vecIds.has(row.id);
+    const inFts = ftsIds.has(row.id);
+    const cosineSim = cosineSims.get(row.id) ?? 0;
+
+    let chunkMatchType: MatchType = 'semantic';
+    if (inVec && inFts) chunkMatchType = 'both';
+    else if (inFts) chunkMatchType = 'keyword';
+
     const chunk: SiloSearchResultChunk = {
       sectionPath,
       text: row.text,
       startLine: row.start_line,
       endLine: row.end_line,
       score: row.rrf_score,
+      matchType: chunkMatchType,
+      cosineSimilarity: cosineSim,
     };
-
-    const inVec = vecIds.has(row.id);
-    const inFts = ftsIds.has(row.id);
-    const cosineSim = cosineSims.get(row.id) ?? 0;
 
     const existing = fileMap.get(row.file_path);
     if (existing) {

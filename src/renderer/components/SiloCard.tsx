@@ -1,6 +1,8 @@
 import { FileText, Blocks, FolderOpen, Pause, Play, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from './ui/badge';
+import { SILO_COLOR_MAP } from '../../shared/silo-appearance';
+import SiloIcon from './SiloIconComponent';
 import type { SiloStatus, WatcherState } from '../../shared/types';
 
 function abbreviatePath(p: string): string {
@@ -34,6 +36,7 @@ export default function SiloCard({ silo, onClick, onSleepToggle, onPauseToggle }
   const { config, indexedFileCount, chunkCount, watcherState, reconcileProgress } = silo;
   const isPaused = !!silo.paused;
   const state = stateConfig[watcherState];
+  const colorClasses = SILO_COLOR_MAP[config.color];
   const hasModelOverride = config.modelOverride !== null;
   const isIndexing = watcherState === 'indexing';
   const isSleeping = watcherState === 'sleeping';
@@ -46,7 +49,8 @@ export default function SiloCard({ silo, onClick, onSleepToggle, onPauseToggle }
     <button
       onClick={onClick}
       className={cn(
-        'flex w-full flex-col gap-3 rounded-lg border border-border bg-card p-4 text-left transition-colors',
+        'flex w-full flex-col gap-3 rounded-lg border border-border border-l-[3px] bg-card p-4 text-left transition-colors',
+        colorClasses.cardAccent,
         'hover:border-foreground/20 hover:bg-accent/30',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
       )}
@@ -54,7 +58,10 @@ export default function SiloCard({ silo, onClick, onSleepToggle, onPauseToggle }
       {/* Header: name + status */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-foreground truncate">{config.name}</h3>
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground truncate">
+            <SiloIcon icon={config.icon} className={cn('h-3.5 w-3.5 shrink-0', colorClasses.text)} />
+            {config.name}
+          </h3>
           {config.description && (
             <p className="text-xs text-muted-foreground/70 truncate mt-0.5">{config.description}</p>
           )}

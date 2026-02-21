@@ -1,3 +1,5 @@
+import type { SiloColor, SiloIconName } from './silo-appearance';
+
 // ── Silo ──────────────────────────────────────────────────────────────────────
 
 export interface SiloConfig {
@@ -16,6 +18,10 @@ export interface SiloConfig {
   dbPath: string;
   /** Human-readable description of what this silo contains */
   description: string;
+  /** Named palette colour key */
+  color: SiloColor;
+  /** Lucide icon name */
+  icon: SiloIconName;
 }
 
 export type WatcherState = 'idle' | 'indexing' | 'error' | 'sleeping' | 'waiting';

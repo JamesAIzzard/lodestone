@@ -10,6 +10,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ResolvedSiloConfig } from './config';
+import { validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import type { EmbeddingService } from './embedding';
 import {
   createSiloDatabase,
@@ -241,6 +242,18 @@ export class SiloManager {
     }
   }
 
+  /** Update the silo colour and persist to DB config blob. */
+  updateColor(color: string): void {
+    this.config = { ...this.config, color: validateSiloColor(color) };
+    this.persistConfigBlob();
+  }
+
+  /** Update the silo icon and persist to DB config blob. */
+  updateIcon(icon: string): void {
+    this.config = { ...this.config, icon: validateSiloIcon(icon) };
+    this.persistConfigBlob();
+  }
+
   /** Build and persist the current config as a JSON blob in the database. */
   private persistConfigBlob(): void {
     if (!this.db) return;
@@ -252,6 +265,8 @@ export class SiloManager {
       ignore: this.config.ignore,
       ignoreFiles: this.config.ignoreFiles,
       model: this.config.model,
+      color: this.config.color,
+      icon: this.config.icon,
     };
     saveConfigBlob(this.db, blob);
   }

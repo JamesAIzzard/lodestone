@@ -13,6 +13,7 @@ import {
   resolveSiloConfig,
   type SiloTomlConfig,
 } from '../backend/config';
+import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import { checkOllamaConnection } from '../backend/embedding';
 import { SiloManager } from '../backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, resolveModelAlias } from '../backend/model-registry';
@@ -80,6 +81,8 @@ export function registerIpcHandlers(ctx: AppContext): void {
           modelOverride: cfg.model === resolveModelAlias(ctx.config?.embeddings.model ?? '') ? null : cfg.model,
           dbPath: cfg.dbPath,
           description: cfg.description,
+          color: cfg.color,
+          icon: cfg.icon,
         },
         indexedFileCount: status.indexedFileCount,
         chunkCount: status.chunkCount,
@@ -390,7 +393,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     async (
       _event,
       name: string,
-      updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[] },
+      updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string },
     ): Promise<{ success: boolean; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
       const siloToml = ctx.config.silos[name];
@@ -402,6 +405,20 @@ export function registerIpcHandlers(ctx: AppContext): void {
         if (manager) {
           manager.updateDescription(updates.description.trim());
         }
+      }
+
+      if (updates.color !== undefined) {
+        const validated = validateSiloColor(updates.color);
+        siloToml.color = validated;
+        const manager = ctx.siloManagers.get(name);
+        if (manager) manager.updateColor(validated);
+      }
+
+      if (updates.icon !== undefined) {
+        const validated = validateSiloIcon(updates.icon);
+        siloToml.icon = validated;
+        const manager = ctx.siloManagers.get(name);
+        if (manager) manager.updateIcon(validated);
       }
 
       if (updates.model !== undefined) {
@@ -457,7 +474,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     'silos:create',
     async (
       _event,
-      opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string },
+      opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string },
     ): Promise<{ success: boolean; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
 
@@ -468,12 +485,20 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
       const model = resolveModelAlias(opts.model.split(' — ')[0].trim());
 
+      // Auto-assign colour if not provided, cycling through the palette
+      const color = opts.color
+        ? validateSiloColor(opts.color)
+        : autoAssignColor(ctx.siloManagers.size);
+      const icon = opts.icon ? validateSiloIcon(opts.icon) : undefined;
+
       const siloToml: SiloTomlConfig = {
         directories: opts.directories,
         db_path: opts.dbPath,
         extensions: opts.extensions.length > 0 ? opts.extensions : undefined,
         model: model !== resolveModelAlias(ctx.config.embeddings.model) ? model : undefined,
         description: opts.description?.trim() || undefined,
+        color,
+        icon: icon ?? undefined,
       };
 
       ctx.config.silos[slug] = siloToml;

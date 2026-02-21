@@ -5,7 +5,7 @@ import {
   deleteFileChunks,
   searchSilo,
   getChunkCount,
-  getIndexedFiles,
+  getFileHashes,
   persistDatabase,
   loadDatabase,
   type SiloDatabase,
@@ -80,9 +80,9 @@ describe('store', () => {
     await deleteFileChunks(db, '/a.md');
     expect(await getChunkCount(db)).toBe(1);
 
-    const files = await getIndexedFiles(db);
-    expect(files.has('/b.md')).toBe(true);
-    expect(files.has('/a.md')).toBe(false);
+    // Verify /b.md's data is intact and /a.md's is gone
+    expect(await getFileHashes(db, '/b.md')).not.toBeNull();
+    expect(await getFileHashes(db, '/a.md')).toBeNull();
   });
 
   it('searches and aggregates by file', async () => {
@@ -107,16 +107,6 @@ describe('store', () => {
     if (results.length > 1) {
       expect(results[0].score).toBeGreaterThan(results[1].score);
     }
-  });
-
-  it('returns indexed file set', async () => {
-    await upsertFileChunks(db, '/x.md', [makeChunk('/x.md', 0, 'X')], [makeVector(1)]);
-    await upsertFileChunks(db, '/y.md', [makeChunk('/y.md', 0, 'Y')], [makeVector(2)]);
-
-    const files = await getIndexedFiles(db);
-    expect(files.size).toBe(2);
-    expect(files.has('/x.md')).toBe(true);
-    expect(files.has('/y.md')).toBe(true);
   });
 
   it('persists to disk and reloads', async () => {

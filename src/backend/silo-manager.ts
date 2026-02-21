@@ -16,7 +16,8 @@ import {
   persistDatabase,
   searchSilo,
   getChunkCount,
-  getIndexedFiles,
+  loadMtimes,
+  saveMtimes,
   type SiloDatabase,
   type SiloSearchResult,
 } from './store';
@@ -55,6 +56,7 @@ export class SiloManager {
   private reconcileProgress?: { current: number; total: number };
   private lastKnownSizeBytes = 0;
   private lastPersistedChunkCount = 0;
+  private mtimes = new Map<string, number>();
 
   /** Set to true when stop() is called, checked by start() at each await. */
   private stopped = false;
@@ -98,17 +100,20 @@ export class SiloManager {
       console.log(`[silo:${this.config.name}] Created new database`);
     }
 
-    // 3. Seed cached size from existing file on disk (if any)
+    // 3. Load file modification times for offline change detection
+    this.mtimes = loadMtimes(this.resolveMtimesPath());
+
+    // 4. Seed cached size from existing file on disk (if any)
     this.lastKnownSizeBytes = this.readFileSizeFromDisk();
     if (this.lastKnownSizeBytes > 0) {
       this.lastPersistedChunkCount = await getChunkCount(this.db);
     }
 
-    // 4. Start periodic persistence BEFORE reconciliation so the
+    // 5. Start periodic persistence BEFORE reconciliation so the
     //    on-disk file (and cached size) updates during long index builds.
     this.persistTimer = setInterval(() => this.persistIfDirty(), PERSIST_INTERVAL_MS);
 
-    // 5. Run startup reconciliation
+    // 6. Run startup reconciliation
     if (this.stopped) return;
     this.watcherState = 'indexing';
     try {
@@ -116,6 +121,7 @@ export class SiloManager {
         this.config,
         this.embeddingService,
         this.db,
+        this.mtimes,
         this.onReconcileProgress,
       );
       if (result.filesAdded > 0 || result.filesRemoved > 0 || result.filesUpdated > 0) {
@@ -131,15 +137,15 @@ export class SiloManager {
     }
     this.reconcileProgress = undefined;
 
-    // 6. Bail if stop() was called during reconciliation
+    // 7. Bail if stop() was called during reconciliation
     if (this.stopped) return;
     this.watcherState = 'idle';
 
-    // 7. Force an immediate persist so the size is accurate the
+    // 8. Force an immediate persist so the size is accurate the
     //    moment the UI sees the "Idle" state.
     await this.persistIfDirty();
 
-    // 8. Create and start the file watcher
+    // 9. Create and start the file watcher
     if (this.stopped) return;
     this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db);
     this.watcher.on((event) => this.handleWatcherEvent(event));
@@ -177,6 +183,7 @@ export class SiloManager {
     }
 
     this.db = null;
+    this.mtimes.clear();
     console.log(`[silo:${this.config.name}] Stopped`);
   }
 
@@ -191,13 +198,12 @@ export class SiloManager {
 
   /** Get the current status of this silo. */
   async getStatus(): Promise<SiloManagerStatus> {
-    const fileCount = this.db ? await getIndexedFiles(this.db) : new Set();
     const chunks = this.db ? await getChunkCount(this.db) : 0;
     const dbSize = this.estimateDatabaseSizeBytes(chunks);
 
     return {
       name: this.config.name,
-      indexedFileCount: fileCount.size,
+      indexedFileCount: this.mtimes.size,
       chunkCount: chunks,
       lastUpdated: this.lastUpdated,
       databaseSizeBytes: dbSize,
@@ -232,11 +238,12 @@ export class SiloManager {
     this.dirty = true;
   }
 
-  /** Force a database persist to disk now. */
+  /** Force a database and mtimes persist to disk now. */
   async persist(): Promise<void> {
     if (!this.db) return;
     const dbPath = this.resolveDbPath();
     await persistDatabase(this.db, dbPath);
+    await saveMtimes(this.mtimes, this.resolveMtimesPath());
     this.dirty = false;
     this.lastKnownSizeBytes = this.readFileSizeFromDisk();
     this.lastPersistedChunkCount = await getChunkCount(this.db);
@@ -266,6 +273,18 @@ export class SiloManager {
     this.lastUpdated = event.timestamp;
     this.dirty = true;
 
+    // Update file modification times so offline edits are detected on restart
+    if (event.eventType === 'indexed') {
+      try {
+        const stat = fs.statSync(event.filePath);
+        this.mtimes.set(event.filePath, stat.mtimeMs);
+      } catch {
+        // File vanished between indexing and stat — rare but harmless
+      }
+    } else if (event.eventType === 'deleted') {
+      this.mtimes.delete(event.filePath);
+    }
+
     // Update watcher state
     if (event.eventType === 'error') {
       this.watcherState = 'error';
@@ -294,6 +313,10 @@ export class SiloManager {
       return this.config.dbPath;
     }
     return path.join(this.userDataDir, this.config.dbPath);
+  }
+
+  private resolveMtimesPath(): string {
+    return path.join(path.dirname(this.resolveDbPath()), 'mtimes.json');
   }
 
   /**

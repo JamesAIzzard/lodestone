@@ -97,19 +97,21 @@ export async function upsertFileChunks(
 
 /**
  * Remove all chunks belonging to a file.
+ *
+ * Uses full-text search on the filePath property to find candidates,
+ * then an exact === check to filter out false positives from tokenisation.
+ * This is safe because no single file can produce enough chunks to exceed
+ * the 10,000 result limit.
  */
 export async function deleteFileChunks(db: SiloDatabase, filePath: string): Promise<void> {
-  // Search for all chunks with this file path
   const results = await search(db, {
     term: filePath,
     properties: ['filePath'],
     limit: 10000,
-    threshold: 0, // exact match
+    threshold: 0,
   });
 
-  // Remove each matching document
   for (const hit of results.hits) {
-    // Double-check the file path matches exactly (search might be fuzzy)
     if ((hit.document as unknown as StoredChunk).filePath === filePath) {
       await remove(db, hit.id);
     }
@@ -201,22 +203,6 @@ export async function getChunkCount(db: SiloDatabase): Promise<number> {
 }
 
 /**
- * Get the set of unique file paths in the database.
- */
-export async function getIndexedFiles(db: SiloDatabase): Promise<Set<string>> {
-  // Search for all documents (empty term matches everything)
-  const results = await search(db, {
-    term: '',
-    limit: 100000,
-  });
-  const files = new Set<string>();
-  for (const hit of results.hits) {
-    files.add((hit.document as unknown as StoredChunk).filePath);
-  }
-  return files;
-}
-
-/**
  * Get the content hash for a specific file's chunks (for change detection).
  * Returns null if the file is not in the database.
  */
@@ -240,4 +226,35 @@ export async function getFileHashes(
   }
 
   return hashes.length > 0 ? hashes : null;
+}
+
+// ── Mtime Persistence ─────────────────────────────────────────────────────
+
+/**
+ * Load the file-path → mtime map from disk.
+ * Returns an empty map if the file doesn't exist or is corrupt.
+ */
+export function loadMtimes(mtimesPath: string): Map<string, number> {
+  if (!fs.existsSync(mtimesPath)) return new Map();
+  try {
+    const raw = fs.readFileSync(mtimesPath, 'utf-8');
+    const obj = JSON.parse(raw) as Record<string, number>;
+    return new Map(Object.entries(obj));
+  } catch (err) {
+    console.error(`[store] Failed to load mtimes from ${mtimesPath}, starting fresh:`, err);
+    return new Map();
+  }
+}
+
+/**
+ * Save the file-path → mtime map to disk.
+ * Uses atomic write (tmp + rename) to prevent corruption on crash.
+ */
+export async function saveMtimes(mtimes: Map<string, number>, mtimesPath: string): Promise<void> {
+  const dir = path.dirname(mtimesPath);
+  fs.mkdirSync(dir, { recursive: true });
+  const data = JSON.stringify(Object.fromEntries(mtimes));
+  const tmpPath = mtimesPath + '.tmp';
+  await fs.promises.writeFile(tmpPath, data);
+  fs.renameSync(tmpPath, mtimesPath);
 }

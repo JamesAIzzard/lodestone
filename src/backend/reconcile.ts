@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { indexFile, removeFile } from './pipeline';
-import { getIndexedFiles, type SiloDatabase } from './store';
+import type { SiloDatabase } from './store';
 import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
 
@@ -35,14 +35,19 @@ export interface ReconcileResult {
 /**
  * Reconcile the database with the files on disk.
  *
- * - Files on disk but not in DB → index
- * - Files in DB but not on disk → remove
- * - Files where mtime has changed → re-index (basic change detection)
+ * - Files on disk but not in mtimes → index (new files)
+ * - Files in mtimes but not on disk → remove (deleted files)
+ * - Files where disk mtime differs from stored mtime → re-index (offline edits)
+ *
+ * The mtimes map is mutated in place: entries are added after successful
+ * indexing and removed after successful deletion. The caller is responsible
+ * for persisting the updated map to disk.
  */
 export async function reconcile(
   config: ResolvedSiloConfig,
   embeddingService: EmbeddingService,
   db: SiloDatabase,
+  mtimes: Map<string, number>,
   onProgress?: ReconcileProgressHandler,
 ): Promise<ReconcileResult> {
   const start = performance.now();
@@ -52,27 +57,31 @@ export async function reconcile(
 
   // 1. Scan disk for all matching files
   onProgress?.({ phase: 'scanning', current: 0, total: 0 });
-  const diskFiles = new Map<string, number>(); // filePath → mtime
+  const diskFiles = new Map<string, number>(); // filePath → mtimeMs
 
   for (const dir of config.directories) {
     walkDirectory(dir, config.extensions, config.ignore, diskFiles);
   }
 
-  // 2. Get files currently in the database
-  const indexedFiles = await getIndexedFiles(db);
+  // 2. Determine which files are already indexed from the mtimes map
+  const indexedFiles = new Set(mtimes.keys());
 
   // 3. Find files to add or update
   const filesToIndex: string[] = [];
-  for (const [filePath] of diskFiles) {
+  for (const [filePath, diskMtime] of diskFiles) {
     if (!indexedFiles.has(filePath)) {
+      // New file — not yet in the database
       filesToIndex.push(filePath);
+    } else {
+      // Existing file — check if modified while app was closed
+      const storedMtime = mtimes.get(filePath)!;
+      if (diskMtime !== storedMtime) {
+        filesToIndex.push(filePath);
+      }
     }
-    // Note: For a more sophisticated change detection, we could compare
-    // content hashes. For now, new files (not in DB) are always indexed.
-    // Modified files will be caught by the watcher going forward.
   }
 
-  // 4. Find files to remove (in DB but not on disk)
+  // 4. Find files to remove (in mtimes but no longer on disk)
   const filesToRemove: string[] = [];
   for (const indexedPath of indexedFiles) {
     if (!diskFiles.has(indexedPath)) {
@@ -85,7 +94,7 @@ export async function reconcile(
   const alreadyDone = diskFiles.size - filesToIndex.length;
   const totalWork = diskFiles.size + filesToRemove.length;
 
-  // 5. Index new files
+  // 5. Index new and modified files
   let progress = alreadyDone;
   for (const filePath of filesToIndex) {
     onProgress?.({
@@ -100,6 +109,13 @@ export async function reconcile(
         filesUpdated++;
       } else {
         filesAdded++;
+      }
+      // Record the current mtime so we detect future changes
+      try {
+        const stat = fs.statSync(filePath);
+        mtimes.set(filePath, stat.mtimeMs);
+      } catch {
+        // File vanished between indexing and stat — rare but possible
       }
     } catch (err) {
       console.error(`[reconcile] Failed to index ${filePath}:`, err);
@@ -116,6 +132,7 @@ export async function reconcile(
     });
     try {
       await removeFile(filePath, db);
+      mtimes.delete(filePath);
       filesRemoved++;
     } catch (err) {
       console.error(`[reconcile] Failed to remove ${filePath}:`, err);

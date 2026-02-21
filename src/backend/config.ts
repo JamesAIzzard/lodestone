@@ -29,8 +29,10 @@ export interface DefaultsConfig {
   debounce: number;
   /** Default file extensions to index */
   extensions: string[];
-  /** Default ignore patterns */
+  /** Default folder ignore patterns (matched against directory basenames) */
   ignore: string[];
+  /** Default file ignore patterns (matched against file basenames) */
+  ignore_files: string[];
 }
 
 export interface SiloTomlConfig {
@@ -38,6 +40,7 @@ export interface SiloTomlConfig {
   db_path: string;
   extensions?: string[];
   ignore?: string[];
+  ignore_files?: string[];
   model?: string;
   sleeping?: boolean;
   /** Human-readable description of what this silo contains (for MCP tool routing) */
@@ -71,6 +74,7 @@ const DEFAULT_CONFIG: LodestoneConfig = {
       '.cs', '.rb', '.swift', '.kt',
     ],
     ignore: ['.git', '__pycache__', 'node_modules', '.obsidian', 'dist', 'build', '.next'],
+    ignore_files: ['.DS_Store', 'Thumbs.db'],
   },
   silos: {},
 };
@@ -105,6 +109,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
       db_path: silo.db_path as string,
       extensions: Array.isArray(silo.extensions) ? silo.extensions as string[] : undefined,
       ignore: Array.isArray(silo.ignore) ? silo.ignore as string[] : undefined,
+      ignore_files: Array.isArray(silo.ignore_files) ? silo.ignore_files as string[] : undefined,
       model: typeof silo.model === 'string' ? silo.model : undefined,
       sleeping: silo.sleeping === true ? true : undefined,
       description: typeof silo.description === 'string' ? silo.description : undefined,
@@ -123,6 +128,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
       debounce: typeof defaults.debounce === 'number' ? defaults.debounce : DEFAULT_CONFIG.defaults.debounce,
       extensions: Array.isArray(defaults.extensions) ? defaults.extensions as string[] : DEFAULT_CONFIG.defaults.extensions,
       ignore: Array.isArray(defaults.ignore) ? defaults.ignore as string[] : DEFAULT_CONFIG.defaults.ignore,
+      ignore_files: Array.isArray(defaults.ignore_files) ? defaults.ignore_files as string[] : DEFAULT_CONFIG.defaults.ignore_files,
     },
     silos: validatedSilos,
   };
@@ -172,6 +178,7 @@ export interface ResolvedSiloConfig {
   dbPath: string;
   extensions: string[];
   ignore: string[];
+  ignoreFiles: string[];
   model: string;
   debounce: number;
   sleeping: boolean;
@@ -196,6 +203,7 @@ export function resolveSiloConfig(
     dbPath: silo.db_path,
     extensions: silo.extensions ?? config.defaults.extensions,
     ignore: silo.ignore ?? config.defaults.ignore,
+    ignoreFiles: silo.ignore_files ?? config.defaults.ignore_files,
     model: resolveModelAlias(rawModel),
     debounce: config.defaults.debounce,
     sleeping: silo.sleeping === true,

@@ -24,6 +24,15 @@ export default function SilosView() {
     return () => unsub?.();
   }, []);
 
+  // Keep the selected silo in sync with the latest data so the
+  // detail modal reflects live stats (file count, chunks, progress, etc.)
+  useEffect(() => {
+    if (selectedSilo) {
+      const updated = silos.find((s) => s.config.name === selectedSilo.config.name);
+      if (updated) setSelectedSilo(updated);
+    }
+  }, [silos]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Poll while any silo is indexing
   useEffect(() => {
     const anyIndexing = silos.some((s) => s.watcherState === 'indexing' || s.watcherState === 'waiting');
@@ -55,6 +64,15 @@ export default function SilosView() {
     fetchSilos();
   }
 
+  async function handlePauseToggle(silo: SiloStatus) {
+    if (silo.paused) {
+      await window.electronAPI?.resumeSilo(silo.config.name);
+    } else {
+      await window.electronAPI?.pauseSilo(silo.config.name);
+    }
+    fetchSilos();
+  }
+
   return (
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between">
@@ -77,6 +95,7 @@ export default function SilosView() {
               silo={silo}
               onClick={() => handleCardClick(silo)}
               onSleepToggle={() => handleSleepToggle(silo)}
+              onPauseToggle={() => handlePauseToggle(silo)}
             />
           ))}
         </div>

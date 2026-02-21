@@ -5,6 +5,13 @@ export interface SiloConfig {
   directories: string[];
   extensions: string[];
   ignorePatterns: string[];
+  ignoreFilePatterns: string[];
+  /** True when this silo has explicit folder ignore overrides */
+  hasIgnoreOverride: boolean;
+  /** True when this silo has explicit file ignore overrides */
+  hasFileIgnoreOverride: boolean;
+  /** True when this silo has explicit extension overrides */
+  hasExtensionOverride: boolean;
   modelOverride: string | null;
   dbPath: string;
   /** Human-readable description of what this silo contains */
@@ -28,6 +35,8 @@ export interface SiloStatus {
   };
   /** True when the configured model differs from the model that built the index */
   modelMismatch?: boolean;
+  /** True when indexing is paused */
+  paused?: boolean;
   /** Absolute path to the silo's SQLite database file */
   resolvedDbPath: string;
   /** The effective embedding model for this silo (global default or per-silo override) */
@@ -74,6 +83,15 @@ export interface ActivityEvent {
   filePath: string;
   eventType: ActivityEventType;
   errorMessage?: string;
+}
+
+// ── Defaults ──────────────────────────────────────────────────────────────────
+
+export interface DefaultSettings {
+  extensions: string[];
+  ignore: string[];
+  ignoreFiles: string[];
+  debounce: number;
 }
 
 // ── Server ────────────────────────────────────────────────────────────────────

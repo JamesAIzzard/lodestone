@@ -9,13 +9,15 @@ import { dialog, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
 import {
   saveConfig,
+  createDefaultConfig,
+  resolveSiloConfig,
   type SiloTomlConfig,
 } from '../backend/config';
 import { checkOllamaConnection } from '../backend/embedding';
 import { SiloManager } from '../backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, resolveModelAlias } from '../backend/model-registry';
 import { calibrateAndMerge, type RawSiloResult } from '../backend/search-merge';
-import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus } from '../shared/types';
+import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings } from '../shared/types';
 import type { AppContext } from './context';
 import { sleepSilo, wakeSilo, registerManager } from './lifecycle';
 import { buildTrayMenu } from './tray';
@@ -57,12 +59,17 @@ export function registerIpcHandlers(ctx: AppContext): void {
     for (const manager of ctx.siloManagers.values()) {
       const status = await manager.getStatus();
       const cfg = manager.getConfig();
+      const siloToml = ctx.config?.silos[cfg.name];
       statuses.push({
         config: {
           name: cfg.name,
           directories: cfg.directories,
           extensions: cfg.extensions,
           ignorePatterns: cfg.ignore,
+          ignoreFilePatterns: cfg.ignoreFiles,
+          hasIgnoreOverride: siloToml?.ignore !== undefined,
+          hasFileIgnoreOverride: siloToml?.ignore_files !== undefined,
+          hasExtensionOverride: siloToml?.extensions !== undefined,
           modelOverride: cfg.model === resolveModelAlias(ctx.config?.embeddings.model ?? '') ? null : cfg.model,
           dbPath: cfg.dbPath,
           description: cfg.description,
@@ -75,6 +82,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
         errorMessage: status.errorMessage,
         reconcileProgress: status.reconcileProgress,
         modelMismatch: status.modelMismatch,
+        paused: status.paused,
         resolvedDbPath: status.resolvedDbPath,
         resolvedModel: cfg.model,
       });
@@ -205,6 +213,65 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return ctx.configPath();
   });
 
+  // ── Defaults ──────────────────────────────────────────────────────────
+
+  ipcMain.handle('defaults:get', async (): Promise<DefaultSettings> => {
+    if (!ctx.config) {
+      const def = createDefaultConfig();
+      return {
+        extensions: def.defaults.extensions,
+        ignore: def.defaults.ignore,
+        ignoreFiles: def.defaults.ignore_files,
+        debounce: def.defaults.debounce,
+      };
+    }
+    return {
+      extensions: ctx.config.defaults.extensions,
+      ignore: ctx.config.defaults.ignore,
+      ignoreFiles: ctx.config.defaults.ignore_files,
+      debounce: ctx.config.defaults.debounce,
+    };
+  });
+
+  ipcMain.handle(
+    'defaults:update',
+    async (_event, updates: Partial<DefaultSettings>): Promise<{ success: boolean }> => {
+      if (!ctx.config) return { success: false };
+
+      if (updates.extensions !== undefined) ctx.config.defaults.extensions = updates.extensions;
+      if (updates.ignore !== undefined) ctx.config.defaults.ignore = updates.ignore;
+      if (updates.ignoreFiles !== undefined) ctx.config.defaults.ignore_files = updates.ignoreFiles;
+      if (updates.debounce !== undefined) ctx.config.defaults.debounce = updates.debounce;
+
+      saveConfig(ctx.configPath(), ctx.config);
+      return { success: true };
+    },
+  );
+
+  // ── Pause / Resume ────────────────────────────────────────────────────
+
+  ipcMain.handle(
+    'silos:pause',
+    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
+      const manager = ctx.siloManagers.get(name);
+      if (!manager) return { success: false, error: `Silo "${name}" not found` };
+      manager.pause();
+      ctx.mainWindow?.webContents.send('silos:changed');
+      return { success: true };
+    },
+  );
+
+  ipcMain.handle(
+    'silos:resume',
+    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
+      const manager = ctx.siloManagers.get(name);
+      if (!manager) return { success: false, error: `Silo "${name}" not found` };
+      manager.resume();
+      ctx.mainWindow?.webContents.send('silos:changed');
+      return { success: true };
+    },
+  );
+
   // ── Silo CRUD ───────────────────────────────────────────────────────────
 
   ipcMain.handle(
@@ -316,7 +383,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     async (
       _event,
       name: string,
-      updates: { description?: string; model?: string },
+      updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[] },
     ): Promise<{ success: boolean; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
       const siloToml = ctx.config.silos[name];
@@ -335,6 +402,37 @@ export function registerIpcHandlers(ctx: AppContext): void {
         const manager = ctx.siloManagers.get(name);
         if (manager) {
           manager.updateModel(resolvedNew);
+        }
+      }
+
+      // Ignore pattern updates — empty array means "revert to defaults"
+      if (updates.ignore !== undefined) {
+        siloToml.ignore = updates.ignore.length > 0 ? updates.ignore : undefined;
+      }
+      if (updates.ignoreFiles !== undefined) {
+        siloToml.ignore_files = updates.ignoreFiles.length > 0 ? updates.ignoreFiles : undefined;
+      }
+
+      // Extension updates — empty array means "revert to defaults"
+      if (updates.extensions !== undefined) {
+        siloToml.extensions = updates.extensions.length > 0 ? updates.extensions : undefined;
+      }
+
+      // Hot-swap the watcher if ignore patterns changed
+      if (updates.ignore !== undefined || updates.ignoreFiles !== undefined) {
+        const manager = ctx.siloManagers.get(name);
+        if (manager) {
+          const resolved = resolveSiloConfig(name, siloToml, ctx.config);
+          await manager.updateIgnorePatterns(resolved.ignore, resolved.ignoreFiles);
+        }
+      }
+
+      // Hot-swap the watcher if extensions changed
+      if (updates.extensions !== undefined) {
+        const manager = ctx.siloManagers.get(name);
+        if (manager) {
+          const resolved = resolveSiloConfig(name, siloToml, ctx.config);
+          await manager.updateExtensions(resolved.extensions);
         }
       }
 

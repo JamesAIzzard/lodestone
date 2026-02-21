@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git push:*)",
+      "Bash(echo:*)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash(npm install:*)",
+      "Bash(git merge:*)",
+      "Bash(npm start)",
+      "Bash(npm run reset-data:*)",
+      "Bash(tasklist:*)",
+      "Bash(npx vitest run:*)",
+      "Skill(commit-commands:commit)",
+      "Skill(commit-commands:commit:*)",
+      "Bash(npx vite:*)"
+    ]
+  }
+}

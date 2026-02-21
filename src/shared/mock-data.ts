@@ -37,6 +37,7 @@ export const mockSilos: SiloStatus[] = [
     databaseSizeBytes: 14_200_000,
     watcherState: 'idle',
     resolvedDbPath: '/home/james/.local/share/lodestone/personal-kb.db',
+    resolvedModel: DEFAULT_MODEL,
   },
   {
     config: {
@@ -60,6 +61,7 @@ export const mockSilos: SiloStatus[] = [
     databaseSizeBytes: 8_700_000,
     watcherState: 'indexing',
     resolvedDbPath: '/home/james/.local/share/lodestone/dietrix.db',
+    resolvedModel: DEFAULT_MODEL,
   },
   {
     config: {
@@ -77,6 +79,7 @@ export const mockSilos: SiloStatus[] = [
     databaseSizeBytes: 3_100_000,
     watcherState: 'idle',
     resolvedDbPath: '/home/james/.local/share/lodestone/reference-papers.db',
+    resolvedModel: 'mxbai-embed-large',
   },
 ];
 
@@ -86,17 +89,19 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/projects/lodestone/architecture.md',
     score: 0.94,
+    rrfScore: 0.94,
+    bestCosineSimilarity: 0.91,
     matchType: 'both',
     chunks: [
       {
         sectionPath: ['Architecture', 'Vector Store Design'],
         text: 'The vector store uses Orama with per-silo databases. Each chunk is stored with its embedding vector, heading path, and source line range for traceability back to the original document.',
-        startLine: 45, endLine: 52, score: 0.94,
+        startLine: 45, endLine: 52, score: 0.94, matchType: 'both', cosineSimilarity: 0.91,
       },
       {
         sectionPath: ['Architecture', 'Chunking Pipeline'],
         text: 'Files are split by heading hierarchy using a remark AST parser. Oversized sections are sub-split at paragraph and sentence boundaries to stay within the token limit.',
-        startLine: 60, endLine: 68, score: 0.87,
+        startLine: 60, endLine: 68, score: 0.87, matchType: 'semantic', cosineSimilarity: 0.85,
       },
     ],
     siloName: 'personal-kb',
@@ -104,12 +109,14 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-optimiser/src/solver/constraint_handler.py',
     score: 0.91,
+    rrfScore: 0.91,
+    bestCosineSimilarity: 0.91,
     matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['ConstraintHandler.validate'],
         text: 'def validate(self, solution: Solution) -> list[ConstraintViolation]:\n    """Check all constraints against the current solution and return violations."""',
-        startLine: 88, endLine: 102, score: 0.91,
+        startLine: 88, endLine: 102, score: 0.91, matchType: 'semantic', cosineSimilarity: 0.91,
       },
     ],
     siloName: 'dietrix',
@@ -117,17 +124,19 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/notes/embedding-models-comparison.md',
     score: 0.89,
+    rrfScore: 0.89,
+    bestCosineSimilarity: 0.87,
     matchType: 'both',
     chunks: [
       {
         sectionPath: ['Embedding Models', 'Nomic Embed Text'],
         text: 'Nomic Embed Text v1.5 supports variable-length embeddings via Matryoshka training. At 768 dimensions it scores competitively with larger models while running locally through Ollama.',
-        startLine: 34, endLine: 39, score: 0.89,
+        startLine: 34, endLine: 39, score: 0.89, matchType: 'both', cosineSimilarity: 0.87,
       },
       {
         sectionPath: ['Embedding Models', 'all-MiniLM-L6-v2'],
         text: 'A lightweight 384-dimension model suitable for local inference. Fast but limited to 128-token context windows, which constrains chunk size.',
-        startLine: 22, endLine: 27, score: 0.81,
+        startLine: 22, endLine: 27, score: 0.81, matchType: 'keyword', cosineSimilarity: 0,
       },
     ],
     siloName: 'personal-kb',
@@ -135,12 +144,14 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-core/src/nutrients/calculator.py',
     score: 0.87,
+    rrfScore: 0.87,
+    bestCosineSimilarity: 0.87,
     matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['NutrientCalculator', 'NutrientCalculator.compute_totals'],
         text: 'Aggregates nutrient values across all ingredients in a recipe, applying quantity scaling and unit conversions before summing.',
-        startLine: 120, endLine: 135, score: 0.87,
+        startLine: 120, endLine: 135, score: 0.87, matchType: 'semantic', cosineSimilarity: 0.87,
       },
     ],
     siloName: 'dietrix',
@@ -148,22 +159,24 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/papers/retrieval-augmented-generation-survey-2024.pdf',
     score: 0.85,
+    rrfScore: 0.85,
+    bestCosineSimilarity: 0,
     matchType: 'keyword',
     chunks: [
       {
         sectionPath: [],
         text: 'Retrieval-augmented generation combines parametric knowledge stored in model weights with non-parametric knowledge retrieved from an external corpus at inference time.',
-        startLine: 1, endLine: 8, score: 0.85,
+        startLine: 1, endLine: 8, score: 0.85, matchType: 'keyword', cosineSimilarity: 0,
       },
       {
         sectionPath: [],
         text: 'The retriever component maps queries to dense vectors and performs approximate nearest-neighbour search over a pre-indexed document collection.',
-        startLine: 15, endLine: 22, score: 0.79,
+        startLine: 15, endLine: 22, score: 0.79, matchType: 'keyword', cosineSimilarity: 0,
       },
       {
         sectionPath: [],
         text: 'Chunking strategy significantly impacts retrieval quality. Fixed-size windows lose semantic coherence while heading-based splits preserve document structure.',
-        startLine: 45, endLine: 51, score: 0.74,
+        startLine: 45, endLine: 51, score: 0.74, matchType: 'keyword', cosineSimilarity: 0,
       },
     ],
     siloName: 'reference-papers',
@@ -171,12 +184,14 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/daily/2025-02-14.md',
     score: 0.82,
+    rrfScore: 0.82,
+    bestCosineSimilarity: 0.82,
     matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['Chunking Strategy Notes'],
         text: 'Heading-based splitting preserves document structure better than fixed-size windows. Sub-splitting at paragraph then sentence boundaries handles oversized sections without breaking mid-thought.',
-        startLine: 12, endLine: 18, score: 0.82,
+        startLine: 12, endLine: 18, score: 0.82, matchType: 'semantic', cosineSimilarity: 0.82,
       },
     ],
     siloName: 'personal-kb',
@@ -184,12 +199,14 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-types/src/food_item.py',
     score: 0.80,
+    rrfScore: 0.80,
+    bestCosineSimilarity: 0.80,
     matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['FoodItem'],
         text: '@dataclass\nclass FoodItem:\n    name: str\n    nutrients: dict[str, NutrientValue]\n    category: FoodCategory',
-        startLine: 15, endLine: 22, score: 0.80,
+        startLine: 15, endLine: 22, score: 0.80, matchType: 'semantic', cosineSimilarity: 0.80,
       },
     ],
     siloName: 'dietrix',
@@ -197,12 +214,14 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/references/chokidar-watcher-patterns.md',
     score: 0.78,
+    rrfScore: 0.78,
+    bestCosineSimilarity: 0,
     matchType: 'keyword',
     chunks: [
       {
         sectionPath: ['Chokidar Patterns', 'Debounce Configuration'],
         text: 'Setting awaitWriteFinish with a stabilityThreshold of 500ms prevents partial-read issues when editors write files incrementally.',
-        startLine: 28, endLine: 33, score: 0.78,
+        startLine: 28, endLine: 33, score: 0.78, matchType: 'keyword', cosineSimilarity: 0,
       },
     ],
     siloName: 'personal-kb',
@@ -210,12 +229,14 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-data/seeds/usda_nutrients.toml',
     score: 0.75,
+    rrfScore: 0.75,
+    bestCosineSimilarity: 0.75,
     matchType: 'semantic',
     chunks: [
       {
         sectionPath: [],
         text: '[nutrients.protein]\nunit = "g"\nrda = 50.0\ncategory = "macronutrient"',
-        startLine: 1, endLine: 12, score: 0.75,
+        startLine: 1, endLine: 12, score: 0.75, matchType: 'semantic', cosineSimilarity: 0.75,
       },
     ],
     siloName: 'dietrix',
@@ -223,12 +244,14 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/papers/dense-passage-retrieval-karpukhin-2020.pdf',
     score: 0.73,
+    rrfScore: 0.73,
+    bestCosineSimilarity: 0.70,
     matchType: 'both',
     chunks: [
       {
         sectionPath: [],
         text: 'Dense representations learned from a small number of questions and passages can substantially outperform sparse retrieval methods like BM25 for open-domain question answering.',
-        startLine: 1, endLine: 6, score: 0.73,
+        startLine: 1, endLine: 6, score: 0.73, matchType: 'both', cosineSimilarity: 0.70,
       },
     ],
     siloName: 'reference-papers',
@@ -236,12 +259,14 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/projects/lodestone/mcp-tool-design.md',
     score: 0.71,
+    rrfScore: 0.71,
+    bestCosineSimilarity: 0.71,
     matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['MCP Tool Design', 'Search Tool Parameters'],
         text: 'The search tool accepts a query string and optional silo name filter. Results include file paths, relevance scores, and the matching section heading.',
-        startLine: 22, endLine: 28, score: 0.71,
+        startLine: 22, endLine: 28, score: 0.71, matchType: 'semantic', cosineSimilarity: 0.71,
       },
     ],
     siloName: 'personal-kb',
@@ -249,12 +274,14 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-optimiser/src/solver/objective.py',
     score: 0.68,
+    rrfScore: 0.68,
+    bestCosineSimilarity: 0.68,
     matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['ObjectiveFunction', 'ObjectiveFunction.__call__'],
         text: 'def __call__(self, solution: Solution) -> float:\n    """Evaluate the objective function for a candidate solution, returning a scalar cost."""',
-        startLine: 44, endLine: 58, score: 0.68,
+        startLine: 44, endLine: 58, score: 0.68, matchType: 'semantic', cosineSimilarity: 0.68,
       },
     ],
     siloName: 'dietrix',

@@ -214,17 +214,42 @@ export default function SearchView() {
                   {/* Expanded chunks */}
                   {isExpanded && result.chunks.length > 0 && (
                     <div className="ml-[26px] border-l-2 border-accent/40 pl-4 pb-2">
+                      {/* File-level score breakdown */}
+                      <div className="mt-1.5 mb-1 flex items-center gap-1.5 text-[10px] text-muted-foreground/40">
+                        <span>RRF {scorePercent(result.rrfScore)}</span>
+                        <span>·</span>
+                        <span>best cosine {scorePercent(result.bestCosineSimilarity)}</span>
+                        {Math.abs(result.score - result.rrfScore) > 0.001 && (
+                          <>
+                            <span>·</span>
+                            <span>calibrated {scorePercent(result.score)}</span>
+                          </>
+                        )}
+                      </div>
                       {result.chunks.map((chunk, ci) => (
                         <div
                           key={ci}
                           className="mt-2 rounded-md bg-muted/30 px-3 py-2"
                         >
-                          <div className="flex items-center justify-between gap-2 mb-1">
-                            {chunk.sectionPath.length > 0 && (
-                              <span className="text-[11px] font-medium text-muted-foreground">
-                                {chunk.sectionPath.join(' > ')}
+                          <div className="flex items-start justify-between gap-2 mb-1">
+                            <div className="flex flex-wrap items-center gap-1 min-w-0">
+                              {chunk.sectionPath.length > 0 && (
+                                <span className="text-[11px] font-medium text-muted-foreground">
+                                  {chunk.sectionPath.join(' > ')}
+                                </span>
+                              )}
+                              <span className={cn(
+                                'rounded px-1 py-0.5 text-[9px]',
+                                matchTypeColor[chunk.matchType],
+                              )}>
+                                {matchTypeLabel[chunk.matchType]}
                               </span>
-                            )}
+                              {chunk.cosineSimilarity > 0 && (
+                                <span className="text-[10px] text-muted-foreground/40">
+                                  cos {scorePercent(chunk.cosineSimilarity)}
+                                </span>
+                              )}
+                            </div>
                             <span className="shrink-0 text-[10px] text-muted-foreground/50">
                               {scorePercent(chunk.score)}
                             </span>

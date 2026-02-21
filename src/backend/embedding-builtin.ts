@@ -27,6 +27,7 @@ export class BuiltInEmbeddingService implements EmbeddingService {
   readonly dimensions: number;
   readonly modelName: string;
   readonly maxTokens: number;
+  readonly chunkTokens: number;
 
   /**
    * @param modelId  Registry key (e.g. 'snowflake-arctic-embed-xs').
@@ -43,6 +44,7 @@ export class BuiltInEmbeddingService implements EmbeddingService {
     this.dimensions = def.dimensions;
     this.modelName = `${modelId} (${def.displayName})`;
     this.maxTokens = def.maxTokens;
+    this.chunkTokens = def.chunkTokens;
   }
 
   private async getExtractor(): Promise<FeatureExtractionPipeline> {
@@ -71,7 +73,14 @@ export class BuiltInEmbeddingService implements EmbeddingService {
       truncation: true,
       max_length: this.maxTokens,
     });
-    return Array.from(result.data as Float32Array).slice(0, this.dimensions);
+    // Extract data before disposal — result is a Tensor backed by WASM heap
+    // memory that V8's GC does not manage. Explicit disposal is required to
+    // prevent the WASM heap from growing unboundedly across many embed() calls.
+    try {
+      return Array.from((result.data as Float32Array).subarray(0, this.dimensions));
+    } finally {
+      result.dispose();
+    }
   }
 
   /**
@@ -90,13 +99,18 @@ export class BuiltInEmbeddingService implements EmbeddingService {
       truncation: true,
       max_length: this.maxTokens,
     });
-    const data = result.data as Float32Array;
-    const vectors: number[][] = [];
-    for (let i = 0; i < texts.length; i++) {
-      const start = i * this.dimensions;
-      vectors.push(Array.from(data.slice(start, start + this.dimensions)));
+    // Extract all vectors before disposal — see embed() comment above.
+    try {
+      const data = result.data as Float32Array;
+      const vectors: number[][] = [];
+      for (let i = 0; i < texts.length; i++) {
+        const start = i * this.dimensions;
+        vectors.push(Array.from(data.subarray(start, start + this.dimensions)));
+      }
+      return vectors;
+    } finally {
+      result.dispose();
     }
-    return vectors;
   }
 
   async dispose(): Promise<void> {

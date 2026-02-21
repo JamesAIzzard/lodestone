@@ -60,6 +60,14 @@ function getProcessor(filePath: string): FileProcessor {
   return processors.get(ext) ?? defaultProcessor;
 }
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/**
+ * Maximum number of chunks sent to the embedding service in one call.
+ * Caps peak ONNX memory usage and gives GC a chance to reclaim between batches.
+ */
+const MAX_EMBED_BATCH_SIZE = 32;
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface IndexFileResult {
@@ -98,10 +106,13 @@ export async function indexFile(
   const { extractor, chunker, asyncChunker } = getProcessor(absolutePath);
   const extraction = extractor(content);
 
-  // Use async chunker if available, otherwise sync
+  // Use async chunker if available, otherwise sync.
+  // Use chunkTokens (not maxTokens) — the chunker target size is intentionally
+  // smaller than the model's technical context window for better retrieval precision
+  // and lower ONNX peak memory.
   const chunks = asyncChunker
-    ? await asyncChunker(absolutePath, extraction, embeddingService.maxTokens)
-    : chunker(absolutePath, extraction, embeddingService.maxTokens);
+    ? await asyncChunker(absolutePath, extraction, embeddingService.chunkTokens)
+    : chunker(absolutePath, extraction, embeddingService.chunkTokens);
 
   if (chunks.length === 0) {
     // Empty file or only metadata — remove any stale chunks
@@ -112,9 +123,15 @@ export async function indexFile(
   // Rewrite chunk filePaths to stored key before persisting
   const storedChunks = chunks.map((c) => ({ ...c, filePath: storedKey }));
 
-  // Embed all chunks in a single batch
+  // Embed chunks in capped batches — avoids unbounded peak ONNX memory
+  // for files with many chunks, and lets GC reclaim between batches.
   const texts = storedChunks.map((c) => c.text);
-  const embeddings = await embeddingService.embedBatch(texts);
+  const embeddings: number[][] = [];
+  for (let i = 0; i < texts.length; i += MAX_EMBED_BATCH_SIZE) {
+    const batch = texts.slice(i, i + MAX_EMBED_BATCH_SIZE);
+    const batchEmbeddings = await embeddingService.embedBatch(batch);
+    embeddings.push(...batchEmbeddings);
+  }
 
   // Store (atomic upsert: removes old chunks, inserts new)
   await upsertFileChunks(db, storedKey, storedChunks, embeddings);

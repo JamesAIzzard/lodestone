@@ -121,12 +121,10 @@ export default function SiloCard({ silo, onClick, onSleepToggle }: SiloCardProps
           </div>
         )}
 
-        {/* Model (only shown if overriding default) */}
-        {hasModelOverride && !silo.modelMismatch && (
-          <div className="text-xs text-amber-400/80">
-            Model: {config.modelOverride}
-          </div>
-        )}
+        {/* Model (always shown) */}
+        <div className={cn('text-xs', hasModelOverride ? 'text-amber-400/80' : 'text-muted-foreground/50')}>
+          {silo.resolvedModel}
+        </div>
 
         {/* Directories */}
         <div className="flex flex-col gap-1">

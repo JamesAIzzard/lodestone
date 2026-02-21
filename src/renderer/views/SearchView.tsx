@@ -196,9 +196,9 @@ export default function SearchView() {
                           className="mt-2 rounded-md bg-muted/30 px-3 py-2"
                         >
                           <div className="flex items-center justify-between gap-2 mb-1">
-                            {chunk.headingPath.length > 0 && (
+                            {chunk.sectionPath.length > 0 && (
                               <span className="text-[11px] font-medium text-muted-foreground">
-                                {chunk.headingPath.join(' > ')}
+                                {chunk.sectionPath.join(' > ')}
                               </span>
                             )}
                             <span className="shrink-0 text-[10px] text-muted-foreground/50">

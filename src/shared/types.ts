@@ -29,7 +29,7 @@ export interface SiloStatus {
 // ── Search ────────────────────────────────────────────────────────────────────
 
 export interface SearchResultChunk {
-  headingPath: string[];
+  sectionPath: string[];
   text: string;
   startLine: number;
   endLine: number;

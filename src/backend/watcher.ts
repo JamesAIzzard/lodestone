@@ -52,12 +52,23 @@ export class SiloWatcher {
   start(): void {
     if (this.watcher) return;
 
-    const globs = this.config.directories.flatMap((dir) =>
-      this.config.extensions.map((ext) => path.join(dir, '**', `*${ext}`)),
-    );
+    // chokidar v4+ removed glob support — watch directories directly and
+    // filter by extension + ignore patterns via the `ignored` callback.
+    const extSet = new Set(this.config.extensions.map((e) => e.toLowerCase()));
+    const ignoreSet = new Set(this.config.ignore.map((p) => p.toLowerCase()));
 
-    this.watcher = watch(globs, {
-      ignored: this.config.ignore.map((pattern) => `**/${pattern}/**`),
+    this.watcher = watch(this.config.directories, {
+      ignored: (filePath, stats) => {
+        const base = path.basename(filePath).toLowerCase();
+        // Always allow directories through so chokidar recurses into them,
+        // but skip ignored directory names.
+        if (!stats || stats.isDirectory()) {
+          return ignoreSet.has(base);
+        }
+        // For files, reject unless the extension is in the configured set.
+        const ext = path.extname(filePath).toLowerCase();
+        return !extSet.has(ext);
+      },
       persistent: true,
       ignoreInitial: true,
       awaitWriteFinish: {

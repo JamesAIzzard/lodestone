@@ -52,6 +52,13 @@ export function registerIpcHandlers(ctx: AppContext): void {
     await shell.openPath(filePath);
   });
 
+  // ── Database peek (for "Connect existing" wizard) ─────────────────────
+
+  ipcMain.handle('db:readConfig', async (_event, dbPath: string) => {
+    const { readConfigFromDbFile } = await import('../backend/store');
+    return readConfigFromDbFile(dbPath);
+  });
+
   // ── Silos ───────────────────────────────────────────────────────────────
 
   ipcMain.handle('silos:list', async (): Promise<SiloStatus[]> => {
@@ -391,6 +398,10 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
       if (updates.description !== undefined) {
         siloToml.description = updates.description.trim() || undefined;
+        const manager = ctx.siloManagers.get(name);
+        if (manager) {
+          manager.updateDescription(updates.description.trim());
+        }
       }
 
       if (updates.model !== undefined) {

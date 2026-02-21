@@ -35,6 +35,10 @@ export interface SiloSearchResult {
   score: number;
   matchType: MatchType;
   chunks: SiloSearchResultChunk[];
+  /** Best raw cosine similarity (0–1) among the file's vector-matched chunks.
+   *  Used to calibrate RRF scores for cross-silo merging.
+   *  0 for results with no vector match (keyword-only). */
+  bestCosineSimilarity: number;
 }
 
 export type SiloDatabase = Database.Database;
@@ -304,6 +308,13 @@ export function hybridSearchSilo(
   const penaltyRank = chunkLimit + 1;
   const bm25Weight = 1 - vectorWeight;
 
+  // Map chunk ID → cosine similarity (for cross-silo score calibration)
+  const cosineSims = new Map<number, number>();
+  for (const row of vecRows) {
+    // sqlite-vec returns cosine distance (0 = identical, 2 = opposite)
+    cosineSims.set(row.rowid, 1 - row.distance / 2);
+  }
+
   // Map chunk ID → vector rank (1-based)
   const vecRankMap = new Map<number, number>();
   for (let i = 0; i < vecRows.length; i++) {
@@ -366,7 +377,7 @@ export function hybridSearchSilo(
     rrf_score: number;
   }>;
 
-  return aggregateByFileRrf(rows, maxResults, new Set(vecRankMap.keys()), new Set(ftsRankMap.keys()));
+  return aggregateByFileRrf(rows, maxResults, new Set(vecRankMap.keys()), new Set(ftsRankMap.keys()), cosineSims);
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────
@@ -555,7 +566,8 @@ function aggregateByFile(
 
   return Array.from(fileMap.entries())
     .map(([filePath, { bestScore, chunks }]) => ({
-      filePath, score: bestScore, matchType: 'semantic' as MatchType, chunks,
+      filePath, score: bestScore, matchType: 'semantic' as MatchType,
+      bestCosineSimilarity: bestScore, chunks,
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults);
@@ -579,10 +591,12 @@ function aggregateByFileRrf(
   maxResults: number,
   vecIds: Set<number>,
   ftsIds: Set<number>,
+  cosineSims: Map<number, number>,
 ): SiloSearchResult[] {
   const maxChunksPerFile = 5;
   const fileMap = new Map<string, {
     bestScore: number;
+    bestCosineSim: number;
     hasVec: boolean;
     hasFts: boolean;
     chunks: SiloSearchResultChunk[];
@@ -600,16 +614,19 @@ function aggregateByFileRrf(
 
     const inVec = vecIds.has(row.id);
     const inFts = ftsIds.has(row.id);
+    const cosineSim = cosineSims.get(row.id) ?? 0;
 
     const existing = fileMap.get(row.file_path);
     if (existing) {
       existing.chunks.push(chunk);
       if (row.rrf_score > existing.bestScore) existing.bestScore = row.rrf_score;
+      if (cosineSim > existing.bestCosineSim) existing.bestCosineSim = cosineSim;
       if (inVec) existing.hasVec = true;
       if (inFts) existing.hasFts = true;
     } else {
       fileMap.set(row.file_path, {
         bestScore: row.rrf_score,
+        bestCosineSim: cosineSim,
         hasVec: inVec,
         hasFts: inFts,
         chunks: [chunk],
@@ -623,11 +640,11 @@ function aggregateByFileRrf(
   }
 
   return Array.from(fileMap.entries())
-    .map(([filePath, { bestScore, hasVec, hasFts, chunks }]) => {
+    .map(([filePath, { bestScore, bestCosineSim, hasVec, hasFts, chunks }]) => {
       let matchType: MatchType = 'semantic';
       if (hasVec && hasFts) matchType = 'both';
       else if (hasFts) matchType = 'keyword';
-      return { filePath, score: bestScore, matchType, chunks };
+      return { filePath, score: bestScore, matchType, bestCosineSimilarity: bestCosineSim, chunks };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults);

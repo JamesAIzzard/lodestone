@@ -390,7 +390,6 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle('silos:search', async (_event, query: string, siloName?: string): Promise<SearchResult[]> => {
-    const results: SearchResult[] = [];
     const managers = siloName
       ? [[siloName, siloManagers.get(siloName)] as const].filter(([, m]) => m)
       : Array.from(siloManagers.entries());
@@ -401,7 +400,7 @@ function registerIpcHandlers(): void {
     // once per model (all built-in silos share one worker thread).
     const byModel = new Map<string, Array<[string, SiloManager]>>();
     for (const [name, manager] of managers) {
-      if (!manager || manager.isSleeping) continue;
+      if (!manager || manager.isSleeping || manager.hasModelMismatch()) continue;
       const model = manager.getConfig().model;
       let group = byModel.get(model);
       if (!group) {
@@ -410,6 +409,16 @@ function registerIpcHandlers(): void {
       }
       group.push([name as string, manager]);
     }
+
+    // Collect raw results with bestCosineSimilarity for cross-silo calibration
+    const raw: Array<{
+      filePath: string;
+      rrfScore: number;
+      bestCosineSimilarity: number;
+      matchType: import('./shared/types').MatchType;
+      chunks: SearchResult['chunks'];
+      siloName: string;
+    }> = [];
 
     // For each model group: embed once, then search all silos with the shared vector
     for (const [model, group] of byModel) {
@@ -421,9 +430,10 @@ function registerIpcHandlers(): void {
       for (const [name, manager] of group) {
         const siloResults = manager.searchWithVector(queryVector, query, 10);
         for (const r of siloResults) {
-          results.push({
+          raw.push({
             filePath: r.filePath,
-            score: r.score,
+            rrfScore: r.score,
+            bestCosineSimilarity: r.bestCosineSimilarity,
             matchType: r.matchType,
             chunks: r.chunks,
             siloName: name,
@@ -432,7 +442,23 @@ function registerIpcHandlers(): void {
       }
     }
 
-    // Sort by score across all silos
+    // Determine the set of silos that produced results
+    const silosWithResults = new Set(raw.map((r) => r.siloName));
+    const crossSilo = silosWithResults.size > 1;
+
+    // Build final results, applying calibration only when merging across silos.
+    // Calibrated score = RRF score × best cosine similarity.
+    // This discounts high-ranking results from silos that are only weakly
+    // relevant to the query (low cosine similarity) relative to silos with
+    // genuinely strong matches.
+    const results: SearchResult[] = raw.map((r) => ({
+      filePath: r.filePath,
+      score: crossSilo ? r.rrfScore * r.bestCosineSimilarity : r.rrfScore,
+      matchType: r.matchType,
+      chunks: r.chunks,
+      siloName: r.siloName,
+    }));
+
     results.sort((a, b) => b.score - a.score);
     return results.slice(0, 20);
   });
@@ -571,6 +597,13 @@ function registerIpcHandlers(): void {
       const manager = siloManagers.get(name);
       if (!manager) return { success: false, error: `Silo "${name}" not found` };
       try {
+        // Ensure the embedding service matches the configured model.
+        // After a model switch via silos:update, the manager still holds the
+        // old service — swap it before rebuilding so the new index uses the
+        // correct model and dimensions.
+        const embeddingService = getOrCreateEmbeddingService(manager.getConfig().model);
+        manager.updateEmbeddingService(embeddingService);
+
         await manager.rebuild();
         return { success: true };
       } catch (err) {

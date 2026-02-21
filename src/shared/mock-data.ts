@@ -83,6 +83,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/projects/lodestone/architecture.md',
     score: 0.94,
+    matchType: 'both',
     chunks: [
       {
         sectionPath: ['Architecture', 'Vector Store Design'],
@@ -100,6 +101,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-optimiser/src/solver/constraint_handler.py',
     score: 0.91,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['ConstraintHandler.validate'],
@@ -112,6 +114,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/notes/embedding-models-comparison.md',
     score: 0.89,
+    matchType: 'both',
     chunks: [
       {
         sectionPath: ['Embedding Models', 'Nomic Embed Text'],
@@ -129,6 +132,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-core/src/nutrients/calculator.py',
     score: 0.87,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['NutrientCalculator', 'NutrientCalculator.compute_totals'],
@@ -141,6 +145,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/papers/retrieval-augmented-generation-survey-2024.pdf',
     score: 0.85,
+    matchType: 'keyword',
     chunks: [
       {
         sectionPath: [],
@@ -163,6 +168,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/daily/2025-02-14.md',
     score: 0.82,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['Chunking Strategy Notes'],
@@ -175,6 +181,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-types/src/food_item.py',
     score: 0.80,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['FoodItem'],
@@ -187,6 +194,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/references/chokidar-watcher-patterns.md',
     score: 0.78,
+    matchType: 'keyword',
     chunks: [
       {
         sectionPath: ['Chokidar Patterns', 'Debounce Configuration'],
@@ -199,6 +207,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-data/seeds/usda_nutrients.toml',
     score: 0.75,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: [],
@@ -211,6 +220,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/papers/dense-passage-retrieval-karpukhin-2020.pdf',
     score: 0.73,
+    matchType: 'both',
     chunks: [
       {
         sectionPath: [],
@@ -223,6 +233,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/projects/lodestone/mcp-tool-design.md',
     score: 0.71,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['MCP Tool Design', 'Search Tool Parameters'],
@@ -235,6 +246,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-optimiser/src/solver/objective.py',
     score: 0.68,
+    matchType: 'semantic',
     chunks: [
       {
         sectionPath: ['ObjectiveFunction', 'ObjectiveFunction.__call__'],

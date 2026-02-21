@@ -1,13 +1,19 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   createSiloDatabase,
   upsertFileChunks,
   deleteFileChunks,
   searchSilo,
+  hybridSearchSilo,
   getChunkCount,
   getFileHashes,
-  persistDatabase,
-  loadDatabase,
+  loadMtimes,
+  saveMtimes,
+  setMtime,
+  deleteMtime,
+  countMtimes,
+  loadMeta,
+  saveMeta,
   type SiloDatabase,
 } from './store';
 import type { ChunkRecord } from './pipeline-types';
@@ -16,6 +22,8 @@ import path from 'node:path';
 import os from 'node:os';
 
 const DIMS = 4; // Use tiny vectors for tests
+
+let tmpDir: string;
 
 function makeChunk(filePath: string, index: number, text: string): ChunkRecord {
   return {
@@ -40,67 +48,68 @@ function makeVector(seed: number): number[] {
 describe('store', () => {
   let db: SiloDatabase;
 
-  beforeEach(async () => {
-    db = await createSiloDatabase(DIMS);
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lodestone-test-'));
+    const dbPath = path.join(tmpDir, 'test.db');
+    db = createSiloDatabase(dbPath, DIMS);
   });
 
-  it('inserts and counts chunks', async () => {
+  afterEach(() => {
+    try { db.close(); } catch { /* already closed */ }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // ── Basic CRUD ──────────────────────────────────────────────────────────
+
+  it('inserts and counts chunks', () => {
     const chunks = [makeChunk('/a.md', 0, 'Hello'), makeChunk('/a.md', 1, 'World')];
     const embeddings = [makeVector(1), makeVector(2)];
 
-    await upsertFileChunks(db, '/a.md', chunks, embeddings);
-    expect(await getChunkCount(db)).toBe(2);
+    upsertFileChunks(db, '/a.md', chunks, embeddings);
+    expect(getChunkCount(db)).toBe(2);
   });
 
-  it('upsert replaces existing chunks for a file', async () => {
+  it('upsert replaces existing chunks for a file', () => {
     const chunks1 = [makeChunk('/a.md', 0, 'Original')];
     const chunks2 = [makeChunk('/a.md', 0, 'Updated'), makeChunk('/a.md', 1, 'New chunk')];
 
-    await upsertFileChunks(db, '/a.md', chunks1, [makeVector(1)]);
-    expect(await getChunkCount(db)).toBe(1);
+    upsertFileChunks(db, '/a.md', chunks1, [makeVector(1)]);
+    expect(getChunkCount(db)).toBe(1);
 
-    await upsertFileChunks(db, '/a.md', chunks2, [makeVector(3), makeVector(4)]);
-    expect(await getChunkCount(db)).toBe(2);
+    upsertFileChunks(db, '/a.md', chunks2, [makeVector(3), makeVector(4)]);
+    expect(getChunkCount(db)).toBe(2);
   });
 
-  it('deletes chunks for a file without affecting others', async () => {
-    await upsertFileChunks(
-      db, '/a.md',
-      [makeChunk('/a.md', 0, 'A')],
-      [makeVector(1)],
-    );
-    await upsertFileChunks(
-      db, '/b.md',
-      [makeChunk('/b.md', 0, 'B')],
-      [makeVector(2)],
-    );
+  it('deletes chunks for a file without affecting others', () => {
+    upsertFileChunks(db, '/a.md', [makeChunk('/a.md', 0, 'A')], [makeVector(1)]);
+    upsertFileChunks(db, '/b.md', [makeChunk('/b.md', 0, 'B')], [makeVector(2)]);
 
-    expect(await getChunkCount(db)).toBe(2);
+    expect(getChunkCount(db)).toBe(2);
 
-    await deleteFileChunks(db, '/a.md');
-    expect(await getChunkCount(db)).toBe(1);
+    deleteFileChunks(db, '/a.md');
+    expect(getChunkCount(db)).toBe(1);
 
     // Verify /b.md's data is intact and /a.md's is gone
-    expect(await getFileHashes(db, '/b.md')).not.toBeNull();
-    expect(await getFileHashes(db, '/a.md')).toBeNull();
+    expect(getFileHashes(db, '/b.md')).not.toBeNull();
+    expect(getFileHashes(db, '/a.md')).toBeNull();
   });
 
-  it('searches and aggregates by file', async () => {
-    // Insert chunks for two files with related but different vectors
-    // Use vectors that are both in the positive hemisphere to ensure both return
-    await upsertFileChunks(
+  // ── Vector Search ───────────────────────────────────────────────────────
+
+  it('searches and aggregates by file', () => {
+    upsertFileChunks(
       db, '/close.md',
       [makeChunk('/close.md', 0, 'Close match')],
       [makeVector(1)],
     );
-    await upsertFileChunks(
+    upsertFileChunks(
       db, '/far.md',
       [makeChunk('/far.md', 0, 'Far match')],
       [makeVector(2)],
     );
 
-    // Search with a vector identical to makeVector(1) — /close.md should rank higher
-    const results = await searchSilo(db, makeVector(1), 10);
+    // Search with vector identical to makeVector(1) — /close.md should rank higher
+    const results = searchSilo(db, makeVector(1), 10);
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0].filePath).toBe('/close.md');
 
@@ -109,34 +118,231 @@ describe('store', () => {
     }
   });
 
-  it('persists to disk and reloads', async () => {
-    await upsertFileChunks(
+  it('returns chunks with parsed sectionPath', () => {
+    const chunk = makeChunk('/a.md', 0, 'Test content');
+    chunk.sectionPath = ['Architecture', 'Pipeline'];
+    upsertFileChunks(db, '/a.md', [chunk], [makeVector(1)]);
+
+    const results = searchSilo(db, makeVector(1), 10);
+    expect(results[0].chunks[0].sectionPath).toEqual(['Architecture', 'Pipeline']);
+  });
+
+  it('limits chunks per file to 5', () => {
+    // Insert 8 chunks for the same file
+    const chunks: ChunkRecord[] = [];
+    const embeddings: number[][] = [];
+    for (let i = 0; i < 8; i++) {
+      chunks.push(makeChunk('/many.md', i, `Chunk ${i}`));
+      embeddings.push(makeVector(i + 1));
+    }
+    upsertFileChunks(db, '/many.md', chunks, embeddings);
+
+    const results = searchSilo(db, makeVector(1), 10);
+    expect(results.length).toBe(1);
+    expect(results[0].chunks.length).toBeLessThanOrEqual(5);
+  });
+
+  // ── Hybrid Search ───────────────────────────────────────────────────────
+
+  it('hybrid search returns results from both vector and keyword matches', () => {
+    // Semantically close to query vector
+    upsertFileChunks(
+      db, '/semantic.md',
+      [makeChunk('/semantic.md', 0, 'general information about the world')],
+      [makeVector(1)],
+    );
+    // Contains exact keyword match
+    upsertFileChunks(
+      db, '/keyword.md',
+      [makeChunk('/keyword.md', 0, 'specific keyword xylophone target')],
+      [makeVector(100)], // Very different vector
+    );
+
+    const results = hybridSearchSilo(db, makeVector(1), 'xylophone', 10);
+    const filePaths = results.map((r) => r.filePath);
+
+    // Both files should appear — one via vector, one via keyword
+    expect(filePaths).toContain('/semantic.md');
+    expect(filePaths).toContain('/keyword.md');
+  });
+
+  it('hybrid search with empty query text falls back to vector-only', () => {
+    upsertFileChunks(
       db, '/a.md',
-      [makeChunk('/a.md', 0, 'Persisted')],
+      [makeChunk('/a.md', 0, 'Test content')],
       [makeVector(1)],
     );
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lodestone-test-'));
+    const results = hybridSearchSilo(db, makeVector(1), '', 10);
+    expect(results.length).toBe(1);
+    expect(results[0].filePath).toBe('/a.md');
+  });
+
+  // ── FTS5 ────────────────────────────────────────────────────────────────
+
+  it('FTS5 index is synced after upsert and delete', () => {
+    upsertFileChunks(
+      db, '/a.md',
+      [makeChunk('/a.md', 0, 'uniqueword alpha')],
+      [makeVector(1)],
+    );
+
+    // FTS5 should find the keyword
+    const ftsResult = db.prepare(
+      `SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH '"uniqueword"'`,
+    ).all();
+    expect(ftsResult.length).toBe(1);
+
+    // After delete, FTS5 should be empty for that term
+    deleteFileChunks(db, '/a.md');
+    const ftsAfter = db.prepare(
+      `SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH '"uniqueword"'`,
+    ).all();
+    expect(ftsAfter.length).toBe(0);
+  });
+
+  it('FTS5 is synced correctly after upsert replaces content', () => {
+    upsertFileChunks(
+      db, '/a.md',
+      [makeChunk('/a.md', 0, 'oldterm specialword')],
+      [makeVector(1)],
+    );
+
+    // Replace with different text
+    upsertFileChunks(
+      db, '/a.md',
+      [makeChunk('/a.md', 0, 'newterm differentword')],
+      [makeVector(2)],
+    );
+
+    // Old term should not be findable
+    const oldResult = db.prepare(
+      `SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH '"oldterm"'`,
+    ).all();
+    expect(oldResult.length).toBe(0);
+
+    // New term should be findable
+    const newResult = db.prepare(
+      `SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH '"newterm"'`,
+    ).all();
+    expect(newResult.length).toBe(1);
+  });
+
+  // ── Mtime Persistence ──────────────────────────────────────────────────
+
+  it('round-trips mtimes', () => {
+    const mtimes = new Map([
+      ['/a.md', 1000],
+      ['/b.md', 2000],
+    ]);
+    saveMtimes(db, mtimes);
+
+    const loaded = loadMtimes(db);
+    expect(loaded.size).toBe(2);
+    expect(loaded.get('/a.md')).toBe(1000);
+    expect(loaded.get('/b.md')).toBe(2000);
+  });
+
+  it('sets and deletes individual mtimes', () => {
+    setMtime(db, '/a.md', 1000);
+    setMtime(db, '/b.md', 2000);
+    expect(countMtimes(db)).toBe(2);
+
+    deleteMtime(db, '/a.md');
+    expect(countMtimes(db)).toBe(1);
+
+    const loaded = loadMtimes(db);
+    expect(loaded.has('/a.md')).toBe(false);
+    expect(loaded.get('/b.md')).toBe(2000);
+  });
+
+  it('setMtime updates existing entries', () => {
+    setMtime(db, '/a.md', 1000);
+    setMtime(db, '/a.md', 2000);
+    expect(countMtimes(db)).toBe(1);
+
+    const loaded = loadMtimes(db);
+    expect(loaded.get('/a.md')).toBe(2000);
+  });
+
+  // ── Meta Persistence ───────────────────────────────────────────────────
+
+  it('round-trips meta', () => {
+    saveMeta(db, 'arctic-xs', 384);
+
+    const meta = loadMeta(db);
+    expect(meta).not.toBeNull();
+    expect(meta!.model).toBe('arctic-xs');
+    expect(meta!.dimensions).toBe(384);
+    expect(meta!.version).toBe(1);
+    expect(meta!.createdAt).toBeTruthy();
+  });
+
+  it('preserves createdAt on meta update', () => {
+    saveMeta(db, 'arctic-xs', 384);
+    const first = loadMeta(db)!;
+
+    saveMeta(db, 'nomic-v1.5', 768);
+    const second = loadMeta(db)!;
+
+    expect(second.model).toBe('nomic-v1.5');
+    expect(second.dimensions).toBe(768);
+    expect(second.createdAt).toBe(first.createdAt);
+  });
+
+  it('loadMeta returns null for empty database', () => {
+    expect(loadMeta(db)).toBeNull();
+  });
+
+  // ── Database Properties ────────────────────────────────────────────────
+
+  it('database uses WAL journal mode', () => {
+    const mode = db.pragma('journal_mode', { simple: true }) as string;
+    expect(mode).toBe('wal');
+  });
+
+  it('reopening an existing database preserves data', () => {
+    upsertFileChunks(db, '/a.md', [makeChunk('/a.md', 0, 'Persisted')], [makeVector(1)]);
+    setMtime(db, '/a.md', 1234);
+    saveMeta(db, 'test-model', DIMS);
+
     const dbPath = path.join(tmpDir, 'test.db');
+    db.close();
 
-    await persistDatabase(db, dbPath);
-    expect(fs.existsSync(dbPath)).toBe(true);
+    // Reopen
+    const db2 = createSiloDatabase(dbPath, DIMS);
+    expect(getChunkCount(db2)).toBe(1);
+    expect(loadMtimes(db2).get('/a.md')).toBe(1234);
+    expect(loadMeta(db2)!.model).toBe('test-model');
 
-    const loaded = await loadDatabase(dbPath, DIMS);
-    expect(loaded).not.toBeNull();
-    expect(await getChunkCount(loaded!)).toBe(1);
-
-    // Search should work on the loaded db
-    const results = await searchSilo(loaded!, makeVector(1), 10);
+    const results = searchSilo(db2, makeVector(1), 10);
     expect(results.length).toBe(1);
     expect(results[0].filePath).toBe('/a.md');
 
-    // Cleanup
-    fs.rmSync(tmpDir, { recursive: true });
+    db2.close();
+    // Reassign so afterEach doesn't try to close the already-closed handle
+    db = createSiloDatabase(path.join(tmpDir, 'dummy.db'), DIMS);
   });
 
-  it('loadDatabase returns null for missing file', async () => {
-    const result = await loadDatabase('/nonexistent/path.db', DIMS);
-    expect(result).toBeNull();
+  // ── Transaction Atomicity ──────────────────────────────────────────────
+
+  it('upsert is atomic — partial failure leaves no stale data', () => {
+    // Insert initial data
+    upsertFileChunks(db, '/a.md', [makeChunk('/a.md', 0, 'Initial')], [makeVector(1)]);
+    expect(getChunkCount(db)).toBe(1);
+
+    // Attempt upsert with mismatched vector dimensions (wrong size)
+    // This should throw inside the transaction
+    try {
+      const badEmbedding = [1, 2]; // Wrong dimension count
+      upsertFileChunks(db, '/a.md', [makeChunk('/a.md', 0, 'Bad')], [badEmbedding]);
+    } catch {
+      // Expected — vec_chunks rejects wrong-dimension vectors
+    }
+
+    // Original data should still be intact (transaction rolled back)
+    expect(getChunkCount(db)).toBe(1);
+    const hashes = getFileHashes(db, '/a.md');
+    expect(hashes).toEqual(['hash-/a.md-0']);
   });
 });

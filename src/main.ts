@@ -369,6 +369,7 @@ function registerIpcHandlers(): void {
         results.push({
           filePath: r.filePath,
           score: r.score,
+          matchType: r.matchType,
           chunks: r.chunks,
           siloName: name as string,
         });
@@ -455,7 +456,7 @@ function registerIpcHandlers(): void {
       const manager = siloManagers.get(name);
       if (!manager) return { success: false, error: `Silo "${name}" not found` };
 
-      // 1. Stop the silo manager (watcher, embedding service, final persist)
+      // 1. Stop the silo manager (watcher, embedding service, close DB)
       try {
         await manager.stop();
       } catch (err) {

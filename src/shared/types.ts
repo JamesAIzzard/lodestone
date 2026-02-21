@@ -40,9 +40,12 @@ export interface SearchResultChunk {
   score: number;
 }
 
+export type MatchType = 'semantic' | 'keyword' | 'both';
+
 export interface SearchResult {
   filePath: string;
   score: number;
+  matchType: MatchType;
   chunks: SearchResultChunk[];
   siloName: string;
 }

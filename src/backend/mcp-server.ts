@@ -35,6 +35,7 @@ function formatSearchResults(
   results: Array<{
     filePath: string;
     score: number;
+    matchType: string;
     siloName: string;
     chunks: Array<{
       sectionPath: string[];
@@ -53,7 +54,9 @@ function formatSearchResults(
 
   for (const result of results) {
     lines.push(`## ${result.filePath}`);
-    lines.push(`Silo: ${result.siloName} | Score: ${result.score.toFixed(4)}`);
+    const matchLabel = result.matchType === 'both' ? 'semantic + keyword'
+      : result.matchType === 'keyword' ? 'keyword' : 'semantic';
+    lines.push(`Silo: ${result.siloName} | Score: ${result.score.toFixed(4)} | Match: ${matchLabel}`);
     lines.push('');
 
     for (const chunk of result.chunks) {
@@ -177,6 +180,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
       const allResults: Array<{
         filePath: string;
         score: number;
+        matchType: string;
         siloName: string;
         chunks: Array<{
           sectionPath: string[];
@@ -194,6 +198,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
             allResults.push({
               filePath: r.filePath,
               score: r.score,
+              matchType: r.matchType,
               siloName: name,
               chunks: r.chunks,
             });

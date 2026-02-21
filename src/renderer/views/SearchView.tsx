@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Search, FileText, ExternalLink, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { SiloStatus, SearchResult } from '../../shared/types';
+import type { SiloStatus, SearchResult, MatchType } from '../../shared/types';
 
 function fileName(p: string): string {
   return p.split(/[/\\]/).pop() ?? p;
@@ -20,6 +20,18 @@ function scorePercent(score: number): string {
 function handleOpenFile(filePath: string) {
   window.electronAPI?.openPath(filePath);
 }
+
+const matchTypeLabel: Record<MatchType, string> = {
+  semantic: 'semantic',
+  keyword: 'keyword',
+  both: 'semantic + keyword',
+};
+
+const matchTypeColor: Record<MatchType, string> = {
+  semantic: 'bg-blue-500/15 text-blue-400',
+  keyword: 'bg-amber-500/15 text-amber-400',
+  both: 'bg-emerald-500/15 text-emerald-400',
+};
 
 export default function SearchView() {
   const [query, setQuery] = useState('');
@@ -162,6 +174,12 @@ export default function SearchView() {
                         <span className="truncate">{dirPath(result.filePath)}</span>
                         <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                           {result.siloName}
+                        </span>
+                        <span className={cn(
+                          'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
+                          matchTypeColor[result.matchType],
+                        )}>
+                          {matchTypeLabel[result.matchType]}
                         </span>
                       </div>
                     </div>

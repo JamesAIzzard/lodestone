@@ -1,29 +1,30 @@
 /**
  * Silo Manager — top-level orchestrator for a single silo.
  *
- * Ties together the embedding service, vector database, file watcher,
+ * Ties together the embedding service, SQLite database, file watcher,
  * and configuration for one silo. The Electron main process interacts
  * with this class for all silo operations.
  */
 
+import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ResolvedSiloConfig } from './config';
 import { createEmbeddingService, type EmbeddingService } from './embedding';
 import {
   createSiloDatabase,
-  loadDatabase,
-  persistDatabase,
   searchSilo,
+  hybridSearchSilo,
   getChunkCount,
   loadMtimes,
-  saveMtimes,
+  setMtime,
+  deleteMtime,
+  countMtimes,
   loadMeta,
   saveMeta,
   type SiloDatabase,
   type SiloSearchResult,
 } from './store';
-import { LEGACY_MODEL } from './model-registry';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler } from './reconcile';
 import type { WatcherState } from '../shared/types';
@@ -45,26 +46,22 @@ export interface SiloManagerStatus {
 
 // ── SiloManager ──────────────────────────────────────────────────────────────
 
-const PERSIST_INTERVAL_MS = 30_000; // 30 seconds
 const MAX_ACTIVITY_EVENTS = 200;
 
 export class SiloManager {
   private embeddingService: EmbeddingService | null = null;
   private db: SiloDatabase | null = null;
   private watcher: SiloWatcher | null = null;
-  private persistTimer: ReturnType<typeof setInterval> | null = null;
-  private dirty = false;
   private lastUpdated: Date | null = null;
   private activityLog: WatcherEvent[] = [];
   private watcherState: WatcherState = 'idle';
   private errorMessage?: string;
   private reconcileProgress?: { current: number; total: number };
-  private lastKnownSizeBytes = 0;
-  private lastPersistedChunkCount = 0;
   private mtimes = new Map<string, number>();
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
-  /** True when meta.json model differs from configured model */
+  private cachedSizeBytes = 0;
+  /** True when meta model differs from configured model */
   private modelMismatch = false;
 
   /** Set to true when stop() is called, checked by start() at each await. */
@@ -100,13 +97,15 @@ export class SiloManager {
   updateModel(model: string): void {
     this.config = { ...this.config, model };
 
-    // Re-check mismatch against meta.json
-    const meta = loadMeta(this.resolveMetaPath());
-    if (meta) {
-      this.modelMismatch = meta.model !== model;
-    } else if (this.db) {
-      // No meta.json but DB exists — legacy index, always mismatched
-      this.modelMismatch = true;
+    // Re-check mismatch against stored meta
+    if (this.db) {
+      const meta = loadMeta(this.db);
+      if (meta) {
+        this.modelMismatch = meta.model !== model;
+      } else {
+        // No meta but DB exists — legacy or corrupt, flag mismatch
+        this.modelMismatch = true;
+      }
     }
   }
 
@@ -127,51 +126,30 @@ export class SiloManager {
       modelCacheDir: this.modelCacheDir,
     });
 
-    // 2. Load or create the database
+    // 2. Open or create the SQLite database
     const dbPath = this.resolveDbPath();
-    const existing = await loadDatabase(dbPath, this.embeddingService.dimensions);
-    if (this.stopped) return;
+    this.db = createSiloDatabase(dbPath, this.embeddingService.dimensions);
+    console.log(`[silo:${this.config.name}] Opened database at ${dbPath}`);
 
-    if (existing) {
-      this.db = existing;
-      console.log(`[silo:${this.config.name}] Loaded database from ${dbPath}`);
-
-      // Check meta.json for model mismatch
-      const meta = loadMeta(this.resolveMetaPath());
-      if (meta) {
-        if (meta.model !== this.config.model) {
-          this.modelMismatch = true;
-          console.warn(
-            `[silo:${this.config.name}] Model mismatch: index built with "${meta.model}" but config uses "${this.config.model}". Rebuild required.`,
-          );
-        }
-      } else {
-        // No meta.json but database exists — legacy index (pre-Phase 3)
+    // 3. Check meta for model mismatch
+    const meta = loadMeta(this.db);
+    if (meta) {
+      if (meta.model !== this.config.model) {
         this.modelMismatch = true;
         console.warn(
-          `[silo:${this.config.name}] No meta.json found for existing database — legacy index (${LEGACY_MODEL}). Rebuild required.`,
+          `[silo:${this.config.name}] Model mismatch: index built with "${meta.model}" but config uses "${this.config.model}". Rebuild required.`,
         );
       }
     } else {
-      this.db = await createSiloDatabase(this.embeddingService.dimensions);
+      // First run or fresh DB — write meta now
+      saveMeta(this.db, this.config.model, this.embeddingService.dimensions);
       this.modelMismatch = false;
-      console.log(`[silo:${this.config.name}] Created new database`);
     }
 
-    // 3. Load file modification times for offline change detection
-    this.mtimes = loadMtimes(this.resolveMtimesPath());
+    // 4. Load file modification times for offline change detection
+    this.mtimes = loadMtimes(this.db);
 
-    // 4. Seed cached size from existing file on disk (if any)
-    this.lastKnownSizeBytes = this.readFileSizeFromDisk();
-    if (this.lastKnownSizeBytes > 0) {
-      this.lastPersistedChunkCount = await getChunkCount(this.db);
-    }
-
-    // 5. Start periodic persistence BEFORE reconciliation so the
-    //    on-disk file (and cached size) updates during long index builds.
-    this.persistTimer = setInterval(() => this.persistIfDirty(), PERSIST_INTERVAL_MS);
-
-    // 6. Run startup reconciliation
+    // 5. Run startup reconciliation
     if (this.stopped) return;
     this.watcherState = 'indexing';
     try {
@@ -195,15 +173,11 @@ export class SiloManager {
     }
     this.reconcileProgress = undefined;
 
-    // 7. Bail if stop() was called during reconciliation
+    // 6. Bail if stop() was called during reconciliation
     if (this.stopped) return;
     this.watcherState = 'idle';
 
-    // 8. Force an immediate persist so the size is accurate the
-    //    moment the UI sees the "Idle" state.
-    await this.persistIfDirty();
-
-    // 9. Create and start the file watcher
+    // 7. Create and start the file watcher
     if (this.stopped) return;
     this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db);
     this.watcher.on((event) => this.handleWatcherEvent(event));
@@ -212,7 +186,7 @@ export class SiloManager {
     console.log(`[silo:${this.config.name}] Started (watching ${this.config.directories.join(', ')})`);
   }
 
-  /** Graceful shutdown: stop watcher, persist database, dispose embedding service. */
+  /** Graceful shutdown: stop watcher, close database, dispose embedding service. */
   async stop(): Promise<void> {
     this.stopped = true;
 
@@ -222,34 +196,35 @@ export class SiloManager {
       this.startPromise = null;
     }
 
-    if (this.persistTimer) {
-      clearInterval(this.persistTimer);
-      this.persistTimer = null;
-    }
-
     if (this.watcher) {
       await this.watcher.stop();
       this.watcher = null;
     }
 
-    // Final persist
-    await this.persistIfDirty();
+    if (this.db) {
+      try {
+        this.db.close();
+      } catch {
+        // Already closed or failed — harmless
+      }
+      this.db = null;
+    }
 
     if (this.embeddingService) {
       await this.embeddingService.dispose();
       this.embeddingService = null;
     }
 
-    this.db = null;
     this.mtimes.clear();
     console.log(`[silo:${this.config.name}] Stopped`);
   }
 
-  /** Put the silo to sleep: persist data, release all resources from RAM. */
+  /** Put the silo to sleep: cache stats, release all resources. */
   async sleep(): Promise<void> {
     // Cache stats before releasing resources
     this.cachedFileCount = this.mtimes.size;
-    this.cachedChunkCount = this.db ? await getChunkCount(this.db) : 0;
+    this.cachedChunkCount = this.db ? getChunkCount(this.db) : 0;
+    this.cachedSizeBytes = this.readFileSizeFromDisk();
     await this.stop();
     this.watcherState = 'sleeping';
     console.log(`[silo:${this.config.name}] Sleeping`);
@@ -275,11 +250,15 @@ export class SiloManager {
       await this.stop();
     }
 
-    // Delete the database, meta, and mtimes files from disk
+    // Delete the database file and WAL/SHM companion files
+    const dbPath = this.resolveDbPath();
     for (const filePath of [
-      this.resolveDbPath(),
-      this.resolveMetaPath(),
-      this.resolveMtimesPath(),
+      dbPath,
+      dbPath + '-wal',
+      dbPath + '-shm',
+      // Also clean up any leftover Orama-era sidecar files
+      path.join(path.dirname(dbPath), 'mtimes.json'),
+      path.join(path.dirname(dbPath), 'meta.json'),
     ]) {
       try {
         if (fs.existsSync(filePath)) {
@@ -292,10 +271,9 @@ export class SiloManager {
 
     // Clear in-memory state
     this.modelMismatch = false;
-    this.lastKnownSizeBytes = 0;
-    this.lastPersistedChunkCount = 0;
     this.cachedFileCount = 0;
     this.cachedChunkCount = 0;
+    this.cachedSizeBytes = 0;
 
     // Restart — this will create a fresh database and run full reconciliation
     await this.start();
@@ -304,27 +282,51 @@ export class SiloManager {
 
   /**
    * Load minimal status for a sleeping silo without starting it.
-   * Reads mtimes.json for file count and stats the DB file for size.
+   * Opens the DB briefly to count mtimes, then closes.
    */
   loadSleepingStatus(): void {
     this.watcherState = 'sleeping';
-    this.mtimes = loadMtimes(this.resolveMtimesPath());
-    this.cachedFileCount = this.mtimes.size;
-    this.mtimes.clear(); // Don't hold in memory — just needed the count
-    this.lastKnownSizeBytes = this.readFileSizeFromDisk();
+    this.cachedSizeBytes = this.readFileSizeFromDisk();
+
+    const dbPath = this.resolveDbPath();
+    if (fs.existsSync(dbPath)) {
+      try {
+        const db = new Database(dbPath, { readonly: true });
+        try {
+          const row = db.prepare(`SELECT COUNT(*) as cnt FROM mtimes`).get() as { cnt: number };
+          this.cachedFileCount = row.cnt;
+        } catch {
+          this.cachedFileCount = 0;
+        }
+        db.close();
+      } catch {
+        this.cachedFileCount = 0;
+      }
+    }
   }
 
   /**
    * Load minimal status for a silo that is queued but not yet started.
-   * Same lightweight approach as loadSleepingStatus() — reads file count
-   * and DB size from disk without loading the database into memory.
    */
   loadWaitingStatus(): void {
     this.watcherState = 'waiting';
-    this.mtimes = loadMtimes(this.resolveMtimesPath());
-    this.cachedFileCount = this.mtimes.size;
-    this.mtimes.clear();
-    this.lastKnownSizeBytes = this.readFileSizeFromDisk();
+    this.cachedSizeBytes = this.readFileSizeFromDisk();
+
+    const dbPath = this.resolveDbPath();
+    if (fs.existsSync(dbPath)) {
+      try {
+        const db = new Database(dbPath, { readonly: true });
+        try {
+          const row = db.prepare(`SELECT COUNT(*) as cnt FROM mtimes`).get() as { cnt: number };
+          this.cachedFileCount = row.cnt;
+        } catch {
+          this.cachedFileCount = 0;
+        }
+        db.close();
+      } catch {
+        this.cachedFileCount = 0;
+      }
+    }
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -334,28 +336,28 @@ export class SiloManager {
     return this.watcherState === 'sleeping';
   }
 
-  /** Embed a query and search the silo database. */
+  /** Embed a query and search the silo database using hybrid search. */
   async search(query: string, maxResults: number = 10): Promise<SiloSearchResult[]> {
     if (!this.embeddingService || !this.db) return [];
     const queryVector = await this.embeddingService.embed(query);
-    return searchSilo(this.db, queryVector, maxResults);
+    return hybridSearchSilo(this.db, queryVector, query, maxResults);
   }
 
   /** Get the current status of this silo. */
-  async getStatus(): Promise<SiloManagerStatus> {
+  getStatus(): SiloManagerStatus {
     if (this.watcherState === 'sleeping' || this.watcherState === 'waiting') {
       return {
         name: this.config.name,
         indexedFileCount: this.cachedFileCount,
         chunkCount: this.cachedChunkCount,
         lastUpdated: this.lastUpdated,
-        databaseSizeBytes: this.lastKnownSizeBytes,
+        databaseSizeBytes: this.cachedSizeBytes,
         watcherState: this.watcherState,
       };
     }
 
-    const chunks = this.db ? await getChunkCount(this.db) : 0;
-    const dbSize = this.estimateDatabaseSizeBytes(chunks);
+    const chunks = this.db ? getChunkCount(this.db) : 0;
+    const dbSize = this.readFileSizeFromDisk();
 
     return {
       name: this.config.name,
@@ -390,26 +392,6 @@ export class SiloManager {
     return this.embeddingService;
   }
 
-  /** Mark the database as dirty (needs persist). */
-  markDirty(): void {
-    this.dirty = true;
-  }
-
-  /** Force a database and mtimes persist to disk now. */
-  async persist(): Promise<void> {
-    if (!this.db) return;
-    const dbPath = this.resolveDbPath();
-    await persistDatabase(this.db, dbPath);
-    await saveMtimes(this.mtimes, this.resolveMtimesPath());
-    // Write meta.json sidecar — records which model built this index
-    if (this.embeddingService) {
-      saveMeta(this.resolveMetaPath(), this.config.model, this.embeddingService.dimensions);
-    }
-    this.dirty = false;
-    this.lastKnownSizeBytes = this.readFileSizeFromDisk();
-    this.lastPersistedChunkCount = await getChunkCount(this.db);
-  }
-
   // ── Internal ───────────────────────────────────────────────────────────────
 
   private onReconcileProgress: ReconcileProgressHandler = (progress) => {
@@ -418,7 +400,6 @@ export class SiloManager {
       this.reconcileProgress = undefined;
       return;
     }
-    this.dirty = true;
     this.reconcileProgress = { current: progress.current, total: progress.total };
     if (progress.total > 0 && progress.current % 10 === 0) {
       console.log(`[silo:${this.config.name}] Reconcile: ${progress.current}/${progress.total}`);
@@ -432,21 +413,22 @@ export class SiloManager {
     }
 
     this.lastUpdated = event.timestamp;
-    this.dirty = true;
 
     // Notify external listener (main process → renderer forwarding)
     this.eventListener?.(event);
 
-    // Update file modification times so offline edits are detected on restart
-    if (event.eventType === 'indexed') {
+    // Update file modification times directly in SQLite
+    if (event.eventType === 'indexed' && this.db) {
       try {
         const stat = fs.statSync(event.filePath);
         this.mtimes.set(event.filePath, stat.mtimeMs);
+        setMtime(this.db, event.filePath, stat.mtimeMs);
       } catch {
         // File vanished between indexing and stat — rare but harmless
       }
-    } else if (event.eventType === 'deleted') {
+    } else if (event.eventType === 'deleted' && this.db) {
       this.mtimes.delete(event.filePath);
+      deleteMtime(this.db, event.filePath);
     }
 
     // Update watcher state
@@ -461,62 +443,26 @@ export class SiloManager {
     }
   }
 
-  private async persistIfDirty(): Promise<void> {
-    if (!this.dirty || !this.db) return;
-    try {
-      await this.persist();
-      console.log(`[silo:${this.config.name}] Database persisted to disk`);
-    } catch (err) {
-      console.error(`[silo:${this.config.name}] Failed to persist database:`, err);
-    }
-  }
-
   private resolveDbPath(): string {
-    // If db_path is relative, resolve against userDataDir
     if (path.isAbsolute(this.config.dbPath)) {
       return this.config.dbPath;
     }
     return path.join(this.userDataDir, this.config.dbPath);
   }
 
-  private resolveMtimesPath(): string {
-    return path.join(path.dirname(this.resolveDbPath()), 'mtimes.json');
-  }
-
-  private resolveMetaPath(): string {
-    return path.join(path.dirname(this.resolveDbPath()), 'meta.json');
-  }
-
-  /**
-   * Estimate the current database size in bytes.
-   *
-   * When the DB matches what's on disk, returns the exact persisted size.
-   * When dirty (in-memory changes not yet written), extrapolates from the
-   * last-known bytes-per-chunk ratio so the UI shows the size growing
-   * live during indexing rather than sitting at 0 or a stale value.
-   */
-  private estimateDatabaseSizeBytes(currentChunkCount: number): number {
-    if (!this.dirty && this.watcherState !== 'indexing') return this.lastKnownSizeBytes;
-
-    // We have a baseline from a previous persist — extrapolate
-    if (this.lastPersistedChunkCount > 0 && this.lastKnownSizeBytes > 0) {
-      const bytesPerChunk = this.lastKnownSizeBytes / this.lastPersistedChunkCount;
-      return Math.round(currentChunkCount * bytesPerChunk);
-    }
-
-    // Brand-new silo, never persisted — rough estimate.
-    // Orama JSON with 384-dim embeddings typically runs ~13 KB/chunk.
-    if (currentChunkCount > 0) {
-      return currentChunkCount * 13_000;
-    }
-
-    return 0;
-  }
-
   private readFileSizeFromDisk(): number {
     try {
-      const stat = fs.statSync(this.resolveDbPath());
-      return stat.size;
+      const dbPath = this.resolveDbPath();
+      let size = 0;
+      // Include main DB + WAL file for accurate size
+      if (fs.existsSync(dbPath)) {
+        size += fs.statSync(dbPath).size;
+      }
+      const walPath = dbPath + '-wal';
+      if (fs.existsSync(walPath)) {
+        size += fs.statSync(walPath).size;
+      }
+      return size;
     } catch {
       return 0;
     }

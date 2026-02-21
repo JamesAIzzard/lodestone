@@ -86,7 +86,7 @@ export class SiloManager {
 
   constructor(
     private config: ResolvedSiloConfig,
-    private readonly sharedEmbeddingService: EmbeddingService,
+    private sharedEmbeddingService: EmbeddingService,
     private readonly userDataDir: string,
   ) {}
 
@@ -123,6 +123,15 @@ export class SiloManager {
         this.modelMismatch = true;
       }
     }
+  }
+
+  /**
+   * Replace the shared embedding service.
+   * Call this before rebuild() when the configured model has changed,
+   * so the new index is built with the correct model and dimensions.
+   */
+  updateEmbeddingService(service: EmbeddingService): void {
+    this.sharedEmbeddingService = service;
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -397,6 +406,11 @@ export class SiloManager {
   /** Get recent activity events. */
   getActivityFeed(limit: number = 50): WatcherEvent[] {
     return this.activityLog.slice(-limit);
+  }
+
+  /** Whether the index was built with a different model than currently configured. */
+  hasModelMismatch(): boolean {
+    return this.modelMismatch;
   }
 
   /** Get the resolved silo config. */

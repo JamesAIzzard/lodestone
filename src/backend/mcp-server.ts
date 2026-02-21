@@ -176,10 +176,10 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
         };
       }
 
-      // Run search across selected silos
-      const allResults: Array<{
+      type RawResult = {
         filePath: string;
-        score: number;
+        rrfScore: number;
+        bestCosineSimilarity: number;
         matchType: string;
         siloName: string;
         chunks: Array<{
@@ -189,15 +189,19 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
           endLine: number;
           score: number;
         }>;
-      }> = [];
+      };
+
+      // Run search across selected silos
+      const raw: RawResult[] = [];
 
       for (const [name, manager] of managersToSearch) {
         try {
           const siloResults = await manager.search(query, limit);
           for (const r of siloResults) {
-            allResults.push({
+            raw.push({
               filePath: r.filePath,
-              score: r.score,
+              rrfScore: r.score,
+              bestCosineSimilarity: r.bestCosineSimilarity,
               matchType: r.matchType,
               siloName: name,
               chunks: r.chunks,
@@ -207,6 +211,24 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
           console.error(`[mcp] Search error in silo "${name}":`, err);
         }
       }
+
+      // Determine the set of silos that produced results
+      const silosWithResults = new Set(raw.map((r) => r.siloName));
+      const crossSilo = silosWithResults.size > 1;
+
+      // Apply cross-silo score calibration when merging results from multiple silos.
+      // Calibrated score = RRF score × best cosine similarity.
+      // RRF scores are rank-based and only comparable within one silo — the top result
+      // in every silo scores near 1.0 regardless of actual relevance. Multiplying by the
+      // best raw cosine similarity discounts results from silos that are only weakly
+      // relevant to the query, so the global ranking reflects true cross-silo relevance.
+      const allResults = raw.map((r) => ({
+        filePath: r.filePath,
+        score: crossSilo ? r.rrfScore * r.bestCosineSimilarity : r.rrfScore,
+        matchType: r.matchType,
+        siloName: r.siloName,
+        chunks: r.chunks,
+      }));
 
       // Sort by score and limit
       allResults.sort((a, b) => b.score - a.score);

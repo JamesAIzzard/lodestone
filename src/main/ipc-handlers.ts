@@ -228,6 +228,10 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return ctx.configPath();
   });
 
+  ipcMain.handle('data:dir', async (): Promise<string> => {
+    return ctx.getUserDataDir();
+  });
+
   // ── Defaults ──────────────────────────────────────────────────────────
 
   ipcMain.handle('defaults:get', async (): Promise<DefaultSettings> => {

@@ -74,10 +74,18 @@ app.on('ready', () => {
 
   // Defer backend init until the renderer has loaded so that heavy
   // reconciliation / ONNX embedding work doesn't starve the event loop.
-  ctx.mainWindow!.webContents.once('did-finish-load', () => {
-    initializeBackend(ctx).catch((err) => {
+  ctx.mainWindow!.webContents.once('did-finish-load', async () => {
+    try {
+      await initializeBackend(ctx);
+
+      // Start the internal API pipe server so MCP processes can connect.
+      // Must happen after initializeBackend so silos are registered.
+      const { InternalApi } = await import('./main/internal-api');
+      ctx.internalApi = new InternalApi(ctx);
+      ctx.internalApi.start();
+    } catch (err) {
       console.error('[main] Backend initialization error:', err);
-    });
+    }
   });
 });
 
@@ -103,6 +111,10 @@ app.on('will-quit', (event) => {
         resolve();
       }, SHUTDOWN_TIMEOUT_MS).unref();
     });
+
+    // Stop the internal API pipe server before shutting down backends
+    ctx.internalApi?.stop();
+    ctx.internalApi = null;
 
     Promise.race([shutdownBackend(ctx), timeout]).finally(() => app.quit());
   }

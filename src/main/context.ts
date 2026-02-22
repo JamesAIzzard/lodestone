@@ -15,6 +15,7 @@ import { createEmbeddingService, type EmbeddingService } from '../backend/embedd
 import { resolveModelAlias } from '../backend/model-registry';
 import type { SiloManager } from '../backend/silo-manager';
 import { IndexingQueue } from '../backend/indexing-queue';
+import type { InternalApi } from './internal-api';
 
 export interface AppContext {
   config: LodestoneConfig | null;
@@ -27,6 +28,7 @@ export interface AppContext {
   nextEventId: number;
   startTime: number;
   indexingQueue: IndexingQueue;
+  internalApi: InternalApi | null;
 
   getOrCreateEmbeddingService(model: string): EmbeddingService;
   getUserDataDir(): string;
@@ -46,6 +48,7 @@ export function createAppContext(): AppContext {
     nextEventId: 1,
     startTime: Date.now(),
     indexingQueue: new IndexingQueue(),
+    internalApi: null,
 
     getOrCreateEmbeddingService(model: string): EmbeddingService {
       const modelId = resolveModelAlias(model);

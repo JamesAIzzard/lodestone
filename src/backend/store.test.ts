@@ -33,6 +33,8 @@ function makeChunk(filePath: string, index: number, text: string): ChunkRecord {
     endLine: 5,
     metadata: {},
     contentHash: `hash-${filePath}-${index}`,
+    headingDepth: 0,
+    tagsText: '',
   };
 }
 

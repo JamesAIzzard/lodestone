@@ -1,4 +1,4 @@
-import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings } from './types';
+import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings, SearchWeights } from './types';
 
 /** Config snapshot stored inside a portable silo database. */
 export interface StoredSiloConfigResponse {
@@ -45,7 +45,7 @@ export interface ElectronAPI {
   wakeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   rebuildSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string }) => Promise<{ success: boolean; error?: string }>;
-  search: (query: string, siloName?: string) => Promise<SearchResult[]>;
+  search: (query: string, siloName?: string, weights?: SearchWeights) => Promise<SearchResult[]>;
 
   // ── Activity ───────────────────────────────────────────────────────────────
   getActivity: (limit?: number) => Promise<ActivityEvent[]>;
@@ -61,6 +61,10 @@ export interface ElectronAPI {
 
   // ── Silo rename ────────────────────────────────────────────────────────────
   renameSilo: (oldName: string, newName: string) => Promise<{ success: boolean; error?: string }>;
+
+  // ── Search Weights ─────────────────────────────────────────────────────────
+  getSearchWeights: () => Promise<SearchWeights>;
+  updateSearchWeights: (weights: SearchWeights) => Promise<{ success: boolean }>;
 
   // ── Server / Settings ──────────────────────────────────────────────────────
   getServerStatus: () => Promise<ServerStatus>;

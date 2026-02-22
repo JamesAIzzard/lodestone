@@ -32,8 +32,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('silos:update', name, updates),
   renameSilo: (oldName: string, newName: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:rename', oldName, newName),
-  search: (query: string, siloName?: string): Promise<unknown[]> =>
-    ipcRenderer.invoke('silos:search', query, siloName),
+  search: (query: string, siloName?: string, weights?: unknown): Promise<unknown[]> =>
+    ipcRenderer.invoke('silos:search', query, siloName, weights),
 
   // Activity
   getActivity: (limit?: number): Promise<unknown[]> =>
@@ -50,6 +50,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('silos:changed', handler);
     return () => ipcRenderer.removeListener('silos:changed', handler);
   },
+
+  // Search weights
+  getSearchWeights: (): Promise<unknown> =>
+    ipcRenderer.invoke('search:getWeights'),
+  updateSearchWeights: (weights: unknown): Promise<unknown> =>
+    ipcRenderer.invoke('search:updateWeights', weights),
 
   // Defaults
   getDefaults: (): Promise<unknown> =>

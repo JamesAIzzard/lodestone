@@ -40,6 +40,8 @@ export function chunkPlaintext(
       endLine: lineCount + metadataLineCount,
       metadata,
       contentHash: hashText(body),
+      headingDepth: 0,
+      tagsText: '',
     }];
   }
 
@@ -72,6 +74,8 @@ export function chunkPlaintext(
       endLine: lineOffset + lineCount - 1,
       metadata,
       contentHash: hashText(text),
+      headingDepth: 0,
+      tagsText: '',
     });
     // Advance by lines used + blank line separator
     lineOffset += lineCount + 1;

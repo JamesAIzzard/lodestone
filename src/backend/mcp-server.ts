@@ -23,6 +23,8 @@ import type { SiloManager } from './silo-manager';
 import type { LodestoneConfig } from './config';
 import { resolveModelAlias } from './model-registry';
 import { calibrateAndMerge, type RawSiloResult } from './search-merge';
+import type { SearchWeights, SearchPreset } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS, SEARCH_PRESETS } from '../shared/types';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,6 +35,8 @@ export interface McpServerDeps {
   input?: Readable;
   /** Custom output stream (e.g. a named-pipe socket). Falls back to process.stdout. */
   output?: Writable;
+  /** Returns the current search weights from config (live — reads on each search). */
+  getWeights?: () => SearchWeights;
 }
 
 // ── Formatting ───────────────────────────────────────────────────────────────
@@ -116,7 +120,7 @@ function buildSiloSummary(siloManagers: Map<string, SiloManager>): string {
  * @returns A cleanup function that shuts down the server.
  */
 export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise<void>> {
-  const { config, siloManagers } = deps;
+  const { config, siloManagers, getWeights } = deps;
 
   const server = new McpServer(
     {
@@ -144,15 +148,23 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
         'Returns ranked file results with relevant code/text chunks.',
         `Default embedding model: ${defaultModel}`,
         '',
+        'Search presets (controls how signals are weighted):',
+        '  • balanced — general-purpose mix of semantic + keyword signals (default)',
+        '  • semantic  — prioritises vector similarity; best for conceptual/prose queries',
+        '  • keyword   — prioritises BM25 + trigram; best for exact terms or identifiers',
+        '  • code      — boosts filepath scoring; best for source-code silos',
+        '',
         siloSummary,
       ].join('\n'),
       inputSchema: {
         query: z.string().describe('The search query — use natural language or code snippets'),
         silo: z.string().optional().describe('Restrict search to a specific silo name (omit to search all)'),
         maxResults: z.number().min(1).max(50).optional().describe('Maximum results to return (default: 10)'),
+        preset: z.enum(['balanced', 'semantic', 'keyword', 'code']).optional()
+          .describe('Search weight preset (default: balanced). Use "code" for source-code silos, "semantic" for prose, "keyword" for exact terms.'),
       },
     },
-    async ({ query, silo, maxResults }) => {
+    async ({ query, silo, maxResults, preset }) => {
       const limit = maxResults ?? 10;
 
       // Determine which managers to search
@@ -230,6 +242,9 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
         group.push([name, manager]);
       }
 
+      // Resolve weights from preset, defaulting to balanced
+      const weights: SearchWeights = SEARCH_PRESETS[preset ?? 'balanced'];
+
       // Run search: embed once per model, then search all silos sharing that model
       const raw: RawSiloResult[] = [];
 
@@ -239,7 +254,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
 
         for (const [name, manager] of group) {
           try {
-            const siloResults = manager.searchWithVector(queryVector, query, limit);
+            const siloResults = manager.searchWithVector(queryVector, query, limit, weights);
             for (const r of siloResults) {
               raw.push({
                 filePath: r.filePath,
@@ -248,6 +263,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
                 matchType: r.matchType,
                 siloName: name,
                 chunks: r.chunks,
+                weights: r.weights,
+                breakdown: r.breakdown,
               });
             }
           } catch (err) {

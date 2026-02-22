@@ -19,7 +19,8 @@ import { checkOllamaConnection } from '../backend/embedding';
 import { SiloManager } from '../backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
 import { calibrateAndMerge, type RawSiloResult } from '../backend/search-merge';
-import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings } from '../shared/types';
+import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings, SearchWeights } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import type { AppContext } from './context';
 import { stopSilo, wakeSilo, registerManager } from './lifecycle';
 import { buildTrayMenu } from './tray';
@@ -100,12 +101,15 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return statuses;
   });
 
-  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string): Promise<SearchResult[]> => {
+  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string, weights?: SearchWeights): Promise<SearchResult[]> => {
     const managers = siloName
       ? [[siloName, ctx.siloManagers.get(siloName)] as const].filter(([, m]) => m)
       : Array.from(ctx.siloManagers.entries());
 
     if (managers.length === 0) return [];
+
+    // Use provided weights, or fall back to config weights, then defaults
+    const effectiveWeights: SearchWeights = weights ?? ctx.config?.search?.weights ?? DEFAULT_SEARCH_WEIGHTS;
 
     const byModel = new Map<string, Array<[string, SiloManager]>>();
     for (const [name, manager] of managers) {
@@ -128,7 +132,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       const queryVector = await service.embed(query);
 
       for (const [name, manager] of group) {
-        const siloResults = manager.searchWithVector(queryVector, query, 10);
+        const siloResults = manager.searchWithVector(queryVector, query, 10, effectiveWeights);
         for (const r of siloResults) {
           raw.push({
             filePath: r.filePath,
@@ -137,6 +141,8 @@ export function registerIpcHandlers(ctx: AppContext): void {
             matchType: r.matchType,
             chunks: r.chunks,
             siloName: name,
+            weights: r.weights,
+            breakdown: r.breakdown,
           });
         }
       }
@@ -149,13 +155,35 @@ export function registerIpcHandlers(ctx: AppContext): void {
       filePath: r.filePath,
       score: r.score,
       matchType: r.matchType,
-      chunks: r.chunks,
+      chunks: r.chunks.map((c) => ({
+        ...c,
+        breakdown: c.breakdown,
+      })),
       siloName: r.siloName,
       rrfScore: r.rrfScore,
       bestCosineSimilarity: r.bestCosineSimilarity,
+      weights: r.weights,
+      breakdown: r.breakdown,
     }));
 
     return results;
+  });
+
+  // ── Search Weights ──────────────────────────────────────────────────────
+
+  ipcMain.handle('search:getWeights', async (): Promise<SearchWeights> => {
+    return ctx.config?.search?.weights ?? DEFAULT_SEARCH_WEIGHTS;
+  });
+
+  ipcMain.handle('search:updateWeights', async (_event, weights: SearchWeights): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+    if (!ctx.config.search) {
+      ctx.config.search = { weights };
+    } else {
+      ctx.config.search.weights = weights;
+    }
+    saveConfig(ctx.configPath(), ctx.config);
+    return { success: true };
   });
 
   // ── Activity ────────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import {
   configExists,
 } from '../backend/config';
 import { startMcpServer } from '../backend/mcp-server';
+import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import type { AppContext } from './context';
 import { registerManager, shutdownBackend } from './lifecycle';
 
@@ -80,6 +81,7 @@ export async function startMcpMode(ctx: AppContext): Promise<void> {
     siloManagers: ctx.siloManagers,
     input: socket,
     output: socket,
+    getWeights: () => ctx.config?.search?.weights ?? DEFAULT_SEARCH_WEIGHTS,
   });
 
   let shuttingDown = false;

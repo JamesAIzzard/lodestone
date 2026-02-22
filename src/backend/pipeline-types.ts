@@ -44,6 +44,10 @@ export interface ChunkRecord {
   metadata: Record<string, unknown>;
   /** SHA-256 hash of the chunk text (for change detection) */
   contentHash: string;
+  /** Heading depth of the section this chunk belongs to (1–6 for h1–h6, 0 for no heading) */
+  headingDepth: number;
+  /** Flattened tags/aliases/title for metadata FTS indexing */
+  tagsText: string;
 }
 
 // ── Pluggable interfaces ─────────────────────────────────────────────────────

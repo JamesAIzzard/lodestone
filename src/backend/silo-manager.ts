@@ -30,7 +30,8 @@ import {
 } from './store';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
-import type { WatcherState } from '../shared/types';
+import type { WatcherState, SearchWeights } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import { IndexingQueue } from './indexing-queue';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -489,10 +490,10 @@ export class SiloManager {
   }
 
   /** Embed a query and search the silo database using hybrid search. */
-  async search(query: string, maxResults: number = 10): Promise<SiloSearchResult[]> {
+  async search(query: string, maxResults: number = 10, weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS): Promise<SiloSearchResult[]> {
     if (!this.embeddingService || !this.db) return [];
     const queryVector = await this.embeddingService.embed(query);
-    const results = hybridSearchSilo(this.db, queryVector, query, maxResults);
+    const results = hybridSearchSilo(this.db, queryVector, query, maxResults, weights);
     return this.resolveResultPaths(results);
   }
 
@@ -501,9 +502,9 @@ export class SiloManager {
    * Used by the main process to embed the query once and share the
    * vector across all silos, avoiding redundant ONNX inference calls.
    */
-  searchWithVector(queryVector: number[], queryText: string, maxResults: number = 10): SiloSearchResult[] {
+  searchWithVector(queryVector: number[], queryText: string, maxResults: number = 10, weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS): SiloSearchResult[] {
     if (!this.db) return [];
-    const results = hybridSearchSilo(this.db, queryVector, queryText, maxResults);
+    const results = hybridSearchSilo(this.db, queryVector, queryText, maxResults, weights);
     return this.resolveResultPaths(results);
   }
 

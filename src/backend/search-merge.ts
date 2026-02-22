@@ -7,7 +7,8 @@
  * shared by the main process IPC handler and the MCP server.
  */
 
-import type { MatchType } from '../shared/types';
+import type { MatchType, SearchWeights, ScoreBreakdown } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import type { SiloSearchResultChunk } from './store';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -20,6 +21,8 @@ export interface RawSiloResult {
   matchType: MatchType;
   siloName: string;
   chunks: SiloSearchResultChunk[];
+  weights: SearchWeights;
+  breakdown: ScoreBreakdown;
 }
 
 /** Merged result with calibrated score. */

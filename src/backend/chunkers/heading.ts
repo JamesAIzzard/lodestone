@@ -48,6 +48,8 @@ export function chunkByHeading(
 
     const estimatedTokens = estimateTokens(text);
 
+    const tagsText = flattenMetadataForSearch(metadata);
+
     if (estimatedTokens <= maxChunkTokens) {
       chunks.push({
         filePath,
@@ -58,6 +60,8 @@ export function chunkByHeading(
         endLine: section.endLine + metadataLineCount,
         metadata,
         contentHash: hashText(text),
+        headingDepth: section.depth,
+        tagsText,
       });
     } else {
       // Sub-split oversized chunks
@@ -72,6 +76,8 @@ export function chunkByHeading(
           endLine: section.endLine + metadataLineCount,
           metadata,
           contentHash: hashText(sub),
+          headingDepth: section.depth,
+          tagsText,
         });
       }
     }
@@ -146,4 +152,34 @@ function splitByHeadings(tree: Root, filePath: string): RawSection[] {
  */
 function nodesToText(nodes: Content[]): string {
   return nodes.map((n) => toString(n)).join('\n\n');
+}
+
+/**
+ * Flatten YAML frontmatter metadata into a single searchable string.
+ * Extracts title, aliases, and tags so they appear in the metadata FTS index.
+ */
+function flattenMetadataForSearch(metadata: Record<string, unknown>): string {
+  const parts: string[] = [];
+
+  if (typeof metadata.title === 'string') {
+    parts.push(metadata.title);
+  }
+
+  if (Array.isArray(metadata.aliases)) {
+    for (const a of metadata.aliases) {
+      if (typeof a === 'string') parts.push(a);
+    }
+  } else if (typeof metadata.aliases === 'string') {
+    parts.push(metadata.aliases);
+  }
+
+  if (Array.isArray(metadata.tags)) {
+    for (const t of metadata.tags) {
+      if (typeof t === 'string') parts.push(t);
+    }
+  } else if (typeof metadata.tags === 'string') {
+    parts.push(metadata.tags);
+  }
+
+  return parts.join(' ');
 }

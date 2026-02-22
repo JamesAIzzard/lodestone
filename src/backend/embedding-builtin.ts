@@ -12,6 +12,7 @@
  *   - embedBatch() → document prefix (used for indexing chunks)
  */
 
+import os from 'node:os';
 import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
 import type { EmbeddingService } from './embedding';
 import {
@@ -52,9 +53,19 @@ export class BuiltInEmbeddingService implements EmbeddingService {
       env.cacheDir = this.cacheDir;
       env.allowLocalModels = true;
       env.allowRemoteModels = true;
+
+      // Limit ONNX Runtime thread count to avoid saturating all CPU cores
+      // during indexing. Cap at 2 (or half the cores, whichever is smaller).
+      const cpuCount = os.cpus().length;
+      const onnxThreads = Math.max(1, Math.min(2, Math.floor(cpuCount / 2)));
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       this.extractor = await (pipeline as any)('feature-extraction', this.def.hfModelId, {
         dtype: this.def.dtype,
+        session_options: {
+          intraOpNumThreads: onnxThreads,
+          interOpNumThreads: 1,
+        },
       }) as FeatureExtractionPipeline;
     }
     return this.extractor;
@@ -111,6 +122,10 @@ export class BuiltInEmbeddingService implements EmbeddingService {
     } finally {
       result.dispose();
     }
+  }
+
+  async ensureReady(): Promise<void> {
+    // Dimensions are known from the model registry at construction time — nothing to probe.
   }
 
   async dispose(): Promise<void> {

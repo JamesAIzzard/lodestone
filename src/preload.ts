@@ -22,20 +22,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('silos:delete', name),
   disconnectSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:disconnect', name),
-  sleepSilo: (name: string): Promise<unknown> =>
-    ipcRenderer.invoke('silos:sleep', name),
+  stopSilo: (name: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:stop', name),
   wakeSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:wake', name),
   rebuildSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:rebuild', name),
   updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string }): Promise<unknown> =>
     ipcRenderer.invoke('silos:update', name, updates),
-  pauseSilo: (name: string): Promise<unknown> =>
-    ipcRenderer.invoke('silos:pause', name),
-  resumeSilo: (name: string): Promise<unknown> =>
-    ipcRenderer.invoke('silos:resume', name),
-  search: (query: string, siloName?: string): Promise<unknown[]> =>
-    ipcRenderer.invoke('silos:search', query, siloName),
+  renameSilo: (oldName: string, newName: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:rename', oldName, newName),
+  search: (query: string, siloName?: string, weights?: unknown): Promise<unknown[]> =>
+    ipcRenderer.invoke('silos:search', query, siloName, weights),
 
   // Activity
   getActivity: (limit?: number): Promise<unknown[]> =>
@@ -53,11 +51,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('silos:changed', handler);
   },
 
+  // Search weights
+  getSearchWeights: (): Promise<unknown> =>
+    ipcRenderer.invoke('search:getWeights'),
+  updateSearchWeights: (weights: unknown): Promise<unknown> =>
+    ipcRenderer.invoke('search:updateWeights', weights),
+
   // Defaults
   getDefaults: (): Promise<unknown> =>
     ipcRenderer.invoke('defaults:get'),
   updateDefaults: (updates: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('defaults:update', updates),
+  resetAllSettings: (): Promise<unknown> =>
+    ipcRenderer.invoke('defaults:reset-all'),
 
   // Server / Settings
   getServerStatus: (): Promise<unknown> =>
@@ -66,4 +72,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('ollama:test', url),
   getConfigPath: (): Promise<string> =>
     ipcRenderer.invoke('config:path'),
+
+  // Claude Desktop Integration
+  getClaudeDesktopStatus: (): Promise<unknown> =>
+    ipcRenderer.invoke('mcp:getClaudeDesktopStatus'),
+  configureClaudeDesktop: (): Promise<unknown> =>
+    ipcRenderer.invoke('mcp:configureClaudeDesktop'),
 });

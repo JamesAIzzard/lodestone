@@ -14,9 +14,18 @@ import type { AppContext } from './context';
 import { attachActivityForwarding } from './activity';
 import { buildTrayMenu } from './tray';
 
-// ── Initialization ──────────────────────────────────────────────────────────
+// ── Notifications ────────────────────────────────────────────────────────────
 
-export async function initializeBackend(ctx: AppContext): Promise<void> {
+/** Rebuild the tray menu and notify the renderer that silo state changed. */
+export function notifySilosChanged(ctx: AppContext): void {
+  if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
+  ctx.mainWindow?.webContents.send('silos:changed');
+}
+
+// ── Configuration ────────────────────────────────────────────────────────────
+
+/** Load config from disk, or create + persist defaults if missing/corrupt. */
+export function loadOrInitConfig(ctx: AppContext): void {
   const configPath = ctx.configPath();
 
   if (configExists(configPath)) {
@@ -32,17 +41,23 @@ export async function initializeBackend(ctx: AppContext): Promise<void> {
     saveConfig(configPath, ctx.config);
     console.log(`[main] Created default config at ${configPath}`);
   }
+}
 
-  for (const [name, siloToml] of Object.entries(ctx.config.silos)) {
+// ── Initialization ──────────────────────────────────────────────────────────
+
+export async function initializeBackend(ctx: AppContext): Promise<void> {
+  loadOrInitConfig(ctx);
+
+  for (const [name, siloToml] of Object.entries(ctx.config!.silos)) {
     registerManager(ctx, name, siloToml);
   }
 
-  if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
+  notifySilosChanged(ctx);
 }
 
 /**
  * Create a SiloManager, register it in the context, wire up event forwarding,
- * and either load cached sleeping stats or enqueue startup.
+ * and either load cached stopped stats or enqueue startup.
  */
 export function registerManager(
   ctx: AppContext,
@@ -55,45 +70,52 @@ export function registerManager(
     resolved,
     embeddingService,
     ctx.getUserDataDir(),
+    ctx.indexingQueue,
   );
 
   ctx.siloManagers.set(name, manager);
   attachActivityForwarding(ctx, manager);
-  manager.onStateChange(() => {
-    ctx.mainWindow?.webContents.send('silos:changed');
-  });
+  manager.onStateChange(() => notifySilosChanged(ctx));
 
-  if (resolved.sleeping) {
-    manager.loadSleepingStatus();
-    console.log(`[main] Silo "${name}" is sleeping`);
+  if (resolved.stopped) {
+    manager.loadStoppedStatus();
+    console.log(`[main] Silo "${name}" is stopped`);
   } else {
-    ctx.enqueueSiloStart(name, manager);
+    enqueueSiloStart(name, manager);
   }
 
   return manager;
 }
 
+/** Mark a silo as waiting and fire off its async start. */
+function enqueueSiloStart(name: string, manager: SiloManager): void {
+  manager.loadWaitingStatus();
+  manager.start().catch((err) => {
+    console.error(`[main] Failed to start silo "${name}":`, err);
+  });
+}
+
 // ── Sleep / Wake ────────────────────────────────────────────────────────────
 
-export async function sleepSilo(
+export async function stopSilo(
   ctx: AppContext,
   name: string,
 ): Promise<{ success: boolean; error?: string }> {
   const manager = ctx.siloManagers.get(name);
   if (!manager) return { success: false, error: `Silo "${name}" not found` };
-  if (manager.isSleeping) return { success: true };
+  if (manager.isStopped) return { success: true };
 
-  await manager.sleep();
+  await manager.freeze();
 
   if (ctx.config) {
     const siloToml = ctx.config.silos[name];
     if (siloToml) {
-      siloToml.sleeping = true;
+      siloToml.stopped = true;
       saveConfig(ctx.configPath(), ctx.config);
     }
   }
 
-  if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
+  notifySilosChanged(ctx);
   return { success: true };
 }
 
@@ -103,19 +125,19 @@ export async function wakeSilo(
 ): Promise<{ success: boolean; error?: string }> {
   const manager = ctx.siloManagers.get(name);
   if (!manager) return { success: false, error: `Silo "${name}" not found` };
-  if (!manager.isSleeping) return { success: true };
+  if (!manager.isStopped) return { success: true };
 
   if (ctx.config) {
     const siloToml = ctx.config.silos[name];
     if (siloToml) {
-      delete siloToml.sleeping;
+      delete siloToml.stopped;
       saveConfig(ctx.configPath(), ctx.config);
     }
   }
 
   await manager.wake();
 
-  if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
+  notifySilosChanged(ctx);
   return { success: true };
 }
 

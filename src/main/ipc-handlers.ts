@@ -5,8 +5,9 @@
  * Handlers access shared state via the AppContext object.
  */
 
-import { dialog, ipcMain, shell } from 'electron';
+import { app, dialog, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
+import path from 'node:path';
 import {
   saveConfig,
   createDefaultConfig,
@@ -15,13 +16,13 @@ import {
 } from '../backend/config';
 import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import { checkOllamaConnection } from '../backend/embedding';
-import { SiloManager } from '../backend/silo-manager';
-import { getBundledModelIds, getModelDefinition, resolveModelAlias } from '../backend/model-registry';
-import { calibrateAndMerge, type RawSiloResult } from '../backend/search-merge';
-import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings } from '../shared/types';
+import type { SiloManager } from '../backend/silo-manager';
+import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
+import { calibrateAndMerge, dispatchSearch } from '../backend/search-merge';
+import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings, SearchWeights } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import type { AppContext } from './context';
-import { sleepSilo, wakeSilo, registerManager } from './lifecycle';
-import { buildTrayMenu } from './tray';
+import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
 
 export function registerIpcHandlers(ctx: AppContext): void {
   // ── Dialog & Shell ──────────────────────────────────────────────────────
@@ -92,7 +93,6 @@ export function registerIpcHandlers(ctx: AppContext): void {
         errorMessage: status.errorMessage,
         reconcileProgress: status.reconcileProgress,
         modelMismatch: status.modelMismatch,
-        paused: status.paused,
         resolvedDbPath: status.resolvedDbPath,
         resolvedModel: cfg.model,
       });
@@ -100,62 +100,63 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return statuses;
   });
 
-  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string): Promise<SearchResult[]> => {
-    const managers = siloName
-      ? [[siloName, ctx.siloManagers.get(siloName)] as const].filter(([, m]) => m)
-      : Array.from(ctx.siloManagers.entries());
-
-    if (managers.length === 0) return [];
-
-    const byModel = new Map<string, Array<[string, SiloManager]>>();
-    for (const [name, manager] of managers) {
-      if (!manager || manager.isSleeping || manager.hasModelMismatch()) continue;
-      const model = manager.getConfig().model;
-      let group = byModel.get(model);
-      if (!group) {
-        group = [];
-        byModel.set(model, group);
-      }
-      group.push([name as string, manager]);
-    }
-
-    const raw: RawSiloResult[] = [];
-
-    for (const [model, group] of byModel) {
-      const service = ctx.embeddingServices.get(resolveModelAlias(model));
-      if (!service) continue;
-
-      const queryVector = await service.embed(query);
-
-      for (const [name, manager] of group) {
-        const siloResults = manager.searchWithVector(queryVector, query, 10);
-        for (const r of siloResults) {
-          raw.push({
-            filePath: r.filePath,
-            rrfScore: r.score,
-            bestCosineSimilarity: r.bestCosineSimilarity,
-            matchType: r.matchType,
-            chunks: r.chunks,
-            siloName: name,
-          });
-        }
+  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string, weights?: SearchWeights): Promise<SearchResult[]> => {
+    // Collect searchable managers — skip stopped and model-mismatched silos
+    const ready: [string, SiloManager][] = [];
+    if (siloName) {
+      const m = ctx.siloManagers.get(siloName);
+      if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([siloName, m]);
+    } else {
+      for (const [name, m] of ctx.siloManagers) {
+        if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
       }
     }
+
+    if (ready.length === 0) return [];
+
+    const effectiveWeights: SearchWeights = weights ?? ctx.config?.search.weights ?? DEFAULT_SEARCH_WEIGHTS;
+
+    const raw = await dispatchSearch(
+      query,
+      ready,
+      (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+      10,
+      effectiveWeights,
+    );
 
     const merged = calibrateAndMerge(raw);
-    merged.sort((a, b) => b.score - a.score);
+    merged.sort((a, b) => b.qualityScore - a.qualityScore);
 
     const results: SearchResult[] = merged.slice(0, 20).map((r) => ({
       filePath: r.filePath,
       score: r.score,
+      qualityScore: r.qualityScore,
       matchType: r.matchType,
-      chunks: r.chunks,
+      chunks: r.chunks.map((c) => ({
+        ...c,
+        breakdown: c.breakdown,
+      })),
       siloName: r.siloName,
       rrfScore: r.rrfScore,
       bestCosineSimilarity: r.bestCosineSimilarity,
+      weights: r.weights,
+      breakdown: r.breakdown,
     }));
 
     return results;
+  });
+
+  // ── Search Weights ──────────────────────────────────────────────────────
+
+  ipcMain.handle('search:getWeights', async (): Promise<SearchWeights> => {
+    return ctx.config?.search.weights ?? DEFAULT_SEARCH_WEIGHTS;
+  });
+
+  ipcMain.handle('search:updateWeights', async (_event, weights: SearchWeights): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+    ctx.config.search.weights = weights;
+    saveConfig(ctx.configPath(), ctx.config);
+    return { success: true };
   });
 
   // ── Activity ────────────────────────────────────────────────────────────
@@ -201,6 +202,10 @@ export function registerIpcHandlers(ctx: AppContext): void {
       models.push(...ollamaResult.models);
     }
 
+    const modelPathSafeIds = Object.fromEntries(
+      getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
+    );
+
     return {
       uptimeSeconds,
       ollamaState: ollamaResult ? 'connected' : 'disconnected',
@@ -208,6 +213,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       availableModels: models,
       defaultModel: resolveModelAlias(ctx.config?.embeddings.model ?? 'snowflake-arctic-embed-xs'),
       totalIndexedFiles: totalFiles,
+      modelPathSafeIds,
     };
   });
 
@@ -258,29 +264,87 @@ export function registerIpcHandlers(ctx: AppContext): void {
     },
   );
 
-  // ── Pause / Resume ────────────────────────────────────────────────────
+  ipcMain.handle('defaults:reset-all', async (): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
 
-  ipcMain.handle(
-    'silos:pause',
-    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
-      const manager = ctx.siloManagers.get(name);
-      if (!manager) return { success: false, error: `Silo "${name}" not found` };
-      manager.pause();
-      ctx.mainWindow?.webContents.send('silos:changed');
-      return { success: true };
-    },
-  );
+    // Stop all silo managers
+    for (const [name, manager] of ctx.siloManagers) {
+      try { await manager.stop(); } catch (err) {
+        console.error(`[main] Error stopping silo "${name}" during reset:`, err);
+      }
+      ctx.siloManagers.delete(name);
+    }
 
-  ipcMain.handle(
-    'silos:resume',
-    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
-      const manager = ctx.siloManagers.get(name);
-      if (!manager) return { success: false, error: `Silo "${name}" not found` };
-      manager.resume();
-      ctx.mainWindow?.webContents.send('silos:changed');
-      return { success: true };
-    },
-  );
+    // Replace config with clean defaults and persist
+    ctx.config = createDefaultConfig();
+    saveConfig(ctx.configPath(), ctx.config);
+    console.log('[main] All settings reset to defaults');
+
+    notifySilosChanged(ctx);
+    return { success: true };
+  });
+
+
+  // ── Claude Desktop Integration ──────────────────────────────────────────
+
+  function getClaudeDesktopConfigPath(): string {
+    return path.join(app.getPath('appData'), 'Claude', 'claude_desktop_config.json');
+  }
+
+  function getMcpWrapperPath(): string {
+    return app.isPackaged
+      ? path.join(process.resourcesPath, 'mcp-wrapper.js')
+      : path.join(app.getAppPath(), 'mcp-wrapper.js');
+  }
+
+  ipcMain.handle('mcp:getClaudeDesktopStatus', async (): Promise<{
+    configPath: string;
+    hasClaudeDesktop: boolean;
+    isConfigured: boolean;
+  }> => {
+    const configPath = getClaudeDesktopConfigPath();
+    const hasClaudeDesktop = fs.existsSync(path.dirname(configPath));
+    let isConfigured = false;
+    try {
+      if (fs.existsSync(configPath)) {
+        const raw = fs.readFileSync(configPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        isConfigured = !!parsed?.mcpServers?.lodestone;
+      }
+    } catch {
+      // Malformed JSON — treat as not configured
+    }
+    return { configPath, hasClaudeDesktop, isConfigured };
+  });
+
+  ipcMain.handle('mcp:configureClaudeDesktop', async (): Promise<{
+    success: boolean;
+    configPath: string;
+    error?: string;
+  }> => {
+    const configPath = getClaudeDesktopConfigPath();
+    const wrapperPath = getMcpWrapperPath();
+    try {
+      let config: Record<string, unknown> = {};
+      if (fs.existsSync(configPath)) {
+        try {
+          config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        } catch {
+          // Malformed JSON — start fresh
+        }
+      }
+      const mcpServers = (config.mcpServers as Record<string, unknown>) ?? {};
+      config.mcpServers = {
+        ...mcpServers,
+        lodestone: { command: 'node', args: [wrapperPath] },
+      };
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+      return { success: true, configPath };
+    } catch (err) {
+      return { success: false, configPath, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   // ── Silo CRUD ───────────────────────────────────────────────────────────
 
@@ -319,8 +383,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       saveConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" deleted from config`);
 
-      if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
-      ctx.mainWindow?.webContents.send('silos:changed');
+      notifySilosChanged(ctx);
 
       if (dbDeleteError) {
         return { success: false, error: `Silo removed but database file could not be deleted: ${dbDeleteError}` };
@@ -348,17 +411,16 @@ export function registerIpcHandlers(ctx: AppContext): void {
       saveConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" disconnected (database preserved on disk)`);
 
-      if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
-      ctx.mainWindow?.webContents.send('silos:changed');
+      notifySilosChanged(ctx);
 
       return { success: true };
     },
   );
 
   ipcMain.handle(
-    'silos:sleep',
+    'silos:stop',
     async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
-      return sleepSilo(ctx, name);
+      return stopSilo(ctx, name);
     },
   );
 
@@ -371,20 +433,20 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
   ipcMain.handle(
     'silos:rebuild',
-    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
+    (_event, name: string): { success: boolean; error?: string } => {
       const manager = ctx.siloManagers.get(name);
       if (!manager) return { success: false, error: `Silo "${name}" not found` };
-      try {
-        const embeddingService = ctx.getOrCreateEmbeddingService(manager.getConfig().model);
-        manager.updateEmbeddingService(embeddingService);
 
-        await manager.rebuild();
-        return { success: true };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+      const embeddingService = ctx.getOrCreateEmbeddingService(manager.getConfig().model);
+      manager.updateEmbeddingService(embeddingService);
+
+      // Fire and forget — rebuild() stops current work, then queues via the
+      // IndexingQueue. The silo's watcherState updates via silos:changed events.
+      manager.rebuild().catch((err) => {
         console.error(`[main] Failed to rebuild silo "${name}":`, err);
-        return { success: false, error: message };
-      }
+      });
+
+      return { success: true };
     },
   );
 
@@ -399,38 +461,30 @@ export function registerIpcHandlers(ctx: AppContext): void {
       const siloToml = ctx.config.silos[name];
       if (!siloToml) return { success: false, error: `Silo "${name}" not found` };
 
+      const manager = ctx.siloManagers.get(name);
+
       if (updates.description !== undefined) {
         siloToml.description = updates.description.trim() || undefined;
-        const manager = ctx.siloManagers.get(name);
-        if (manager) {
-          manager.updateDescription(updates.description.trim());
-        }
+        manager?.updateDescription(updates.description.trim());
       }
 
       if (updates.color !== undefined) {
         const validated = validateSiloColor(updates.color);
         siloToml.color = validated;
-        const manager = ctx.siloManagers.get(name);
-        if (manager) manager.updateColor(validated);
+        manager?.updateColor(validated);
       }
 
       if (updates.icon !== undefined) {
         const validated = validateSiloIcon(updates.icon);
         siloToml.icon = validated;
-        const manager = ctx.siloManagers.get(name);
-        if (manager) manager.updateIcon(validated);
+        manager?.updateIcon(validated);
       }
 
       if (updates.model !== undefined) {
         const resolvedDefault = resolveModelAlias(ctx.config.embeddings.model);
         const resolvedNew = resolveModelAlias(updates.model);
-
         siloToml.model = resolvedNew !== resolvedDefault ? resolvedNew : undefined;
-
-        const manager = ctx.siloManagers.get(name);
-        if (manager) {
-          manager.updateModel(resolvedNew);
-        }
+        manager?.updateModel(resolvedNew);
       }
 
       // Ignore pattern updates — empty array means "revert to defaults"
@@ -446,19 +500,13 @@ export function registerIpcHandlers(ctx: AppContext): void {
         siloToml.extensions = updates.extensions.length > 0 ? updates.extensions : undefined;
       }
 
-      // Hot-swap the watcher if ignore patterns changed
-      if (updates.ignore !== undefined || updates.ignoreFiles !== undefined) {
-        const manager = ctx.siloManagers.get(name);
-        if (manager) {
+      // Hot-swap the watcher if ignore patterns or extensions changed
+      if (manager) {
+        if (updates.ignore !== undefined || updates.ignoreFiles !== undefined) {
           const resolved = resolveSiloConfig(name, siloToml, ctx.config);
           await manager.updateIgnorePatterns(resolved.ignore, resolved.ignoreFiles);
         }
-      }
-
-      // Hot-swap the watcher if extensions changed
-      if (updates.extensions !== undefined) {
-        const manager = ctx.siloManagers.get(name);
-        if (manager) {
+        if (updates.extensions !== undefined) {
           const resolved = resolveSiloConfig(name, siloToml, ctx.config);
           await manager.updateExtensions(resolved.extensions);
         }
@@ -466,6 +514,45 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
       saveConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" updated`);
+      return { success: true };
+    },
+  );
+
+  ipcMain.handle(
+    'silos:rename',
+    async (_event, oldName: string, newName: string): Promise<{ success: boolean; error?: string }> => {
+      if (!ctx.config) return { success: false, error: 'Config not loaded' };
+
+      const trimmed = newName.trim();
+      if (!trimmed) return { success: false, error: 'Name cannot be empty' };
+
+      const newSlug = trimmed.toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+      if (!newSlug) return { success: false, error: 'Invalid name' };
+
+      const manager = ctx.siloManagers.get(oldName);
+      const siloToml = ctx.config.silos[oldName];
+      if (!manager || !siloToml) return { success: false, error: `Silo "${oldName}" not found` };
+
+      // No-op if the slug is unchanged
+      if (newSlug !== oldName) {
+        if (ctx.siloManagers.has(newSlug)) {
+          return { success: false, error: `A silo named "${newSlug}" already exists` };
+        }
+        // Move config entry
+        ctx.config.silos[newSlug] = siloToml;
+        delete ctx.config.silos[oldName];
+        // Move manager entry
+        ctx.siloManagers.set(newSlug, manager);
+        ctx.siloManagers.delete(oldName);
+      }
+
+      // Update the manager's internal config name to match the new slug
+      manager.updateName(newSlug);
+
+      saveConfig(ctx.configPath(), ctx.config);
+      console.log(`[main] Silo "${oldName}" renamed to "${trimmed}" (slug: "${newSlug}")`);
+
+      notifySilosChanged(ctx);
       return { success: true };
     },
   );
@@ -482,6 +569,16 @@ export function registerIpcHandlers(ctx: AppContext): void {
       if (slug.length === 0) return { success: false, error: 'Invalid silo name' };
       if (ctx.siloManagers.has(slug)) return { success: false, error: `Silo "${slug}" already exists` };
       if (opts.directories.length === 0) return { success: false, error: 'At least one directory is required' };
+
+      const resolvedDbPath = path.isAbsolute(opts.dbPath)
+        ? opts.dbPath
+        : path.join(ctx.getUserDataDir(), opts.dbPath);
+      if (fs.existsSync(resolvedDbPath)) {
+        return {
+          success: false,
+          error: `A database file already exists at that path. Use "Connect existing silo" to attach it, or choose a different path.`,
+        };
+      }
 
       const model = resolveModelAlias(opts.model.split(' — ')[0].trim());
 
@@ -507,7 +604,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
       registerManager(ctx, slug, siloToml);
 
-      if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
+      notifySilosChanged(ctx);
 
       return { success: true };
     },

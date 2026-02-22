@@ -36,6 +36,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   const [dbPath, setDbPath] = useState('');
   const [model, setModel] = useState('snowflake-arctic-embed-xs');
   const [availableModels, setAvailableModels] = useState<string[]>(['snowflake-arctic-embed-xs']);
+  const [modelPathSafeIds, setModelPathSafeIds] = useState<Record<string, string>>({});
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,6 +61,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
         setAvailableModels(status.availableModels);
       }
       setModel(status.defaultModel);
+      setModelPathSafeIds(status.modelPathSafeIds ?? {});
     });
     // Auto-assign a colour based on the number of existing silos
     window.electronAPI?.getSilos().then((silos) => {
@@ -71,9 +73,10 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   useEffect(() => {
     if (name.trim() && mode === 'new') {
       const slug = name.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
-      setDbPath(`silos/${slug}_${model}.db`);
+      const modelSlug = modelPathSafeIds[model] ?? model.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
+      setDbPath(`silos/${slug}_${modelSlug}.db`);
     }
-  }, [name, model, mode]);
+  }, [name, model, mode, modelPathSafeIds]);
 
   function reset() {
     setStepIndex(0);
@@ -428,7 +431,8 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
                 </div>
                 <Button variant="outline" size="sm" className="shrink-0" onClick={async () => {
                   const slug = name.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-') || 'silo';
-                  const chosen = await window.electronAPI?.saveDbFile(`${slug}_${model}.db`);
+                  const modelSlug = modelPathSafeIds[model] ?? model.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
+                  const chosen = await window.electronAPI?.saveDbFile(`${slug}_${modelSlug}.db`);
                   if (chosen) setDbPath(chosen);
                 }}>
                   <FolderOpen className="h-3.5 w-3.5" />

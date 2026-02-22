@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveModelAlias, DEFAULT_MODEL } from './model-registry';
 import { validateSiloColor, validateSiloIcon, type SiloColor, type SiloIconName } from '../shared/silo-appearance';
+import { type SearchWeights, DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 
 // ── Config Types ─────────────────────────────────────────────────────────────
 
@@ -43,7 +44,7 @@ export interface SiloTomlConfig {
   ignore?: string[];
   ignore_files?: string[];
   model?: string;
-  sleeping?: boolean;
+  stopped?: boolean;
   /** Human-readable description of what this silo contains (for MCP tool routing) */
   description?: string;
   /** Named colour key from the palette (e.g. 'blue', 'emerald') */
@@ -52,10 +53,15 @@ export interface SiloTomlConfig {
   icon?: string;
 }
 
+export interface SearchConfig {
+  weights: SearchWeights;
+}
+
 export interface LodestoneConfig {
   server: ServerConfig;
   embeddings: EmbeddingsConfig;
   defaults: DefaultsConfig;
+  search: SearchConfig;
   silos: Record<string, SiloTomlConfig>;
 }
 
@@ -70,7 +76,7 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     ollama_url: 'http://localhost:11434',
   },
   defaults: {
-    debounce: 2.0,
+    debounce: 10.0,
     extensions: [
       '.md', '.txt',
       '.ts', '.tsx', '.js', '.jsx',
@@ -80,6 +86,9 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     ],
     ignore: ['.git', '__pycache__', 'node_modules', '.obsidian', 'dist', 'build', '.next'],
     ignore_files: ['.DS_Store', 'Thumbs.db'],
+  },
+  search: {
+    weights: { ...DEFAULT_SEARCH_WEIGHTS },
   },
   silos: {},
 };
@@ -97,6 +106,8 @@ export function loadConfig(configPath: string): LodestoneConfig {
   const server = (parsed.server ?? {}) as Partial<ServerConfig>;
   const embeddings = (parsed.embeddings ?? {}) as Partial<EmbeddingsConfig>;
   const defaults = (parsed.defaults ?? {}) as Partial<DefaultsConfig>;
+  const searchRaw = (parsed.search ?? {}) as Record<string, unknown>;
+  const weightsRaw = (searchRaw.weights ?? {}) as Partial<SearchWeights>;
   const silos = (parsed.silos ?? {}) as Record<string, unknown>;
 
   // Validate silos — each must have directories and db_path
@@ -116,7 +127,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
       ignore: Array.isArray(silo.ignore) ? silo.ignore as string[] : undefined,
       ignore_files: Array.isArray(silo.ignore_files) ? silo.ignore_files as string[] : undefined,
       model: typeof silo.model === 'string' ? silo.model : undefined,
-      sleeping: silo.sleeping === true ? true : undefined,
+      stopped: silo.stopped === true ? true : undefined,
       description: typeof silo.description === 'string' ? silo.description : undefined,
       color: typeof silo.color === 'string' ? silo.color : undefined,
       icon: typeof silo.icon === 'string' ? silo.icon : undefined,
@@ -136,6 +147,15 @@ export function loadConfig(configPath: string): LodestoneConfig {
       extensions: Array.isArray(defaults.extensions) ? defaults.extensions as string[] : DEFAULT_CONFIG.defaults.extensions,
       ignore: Array.isArray(defaults.ignore) ? defaults.ignore as string[] : DEFAULT_CONFIG.defaults.ignore,
       ignore_files: Array.isArray(defaults.ignore_files) ? defaults.ignore_files as string[] : DEFAULT_CONFIG.defaults.ignore_files,
+    },
+    search: {
+      weights: {
+        semantic: typeof weightsRaw.semantic === 'number' ? weightsRaw.semantic : DEFAULT_SEARCH_WEIGHTS.semantic,
+        bm25: typeof weightsRaw.bm25 === 'number' ? weightsRaw.bm25 : DEFAULT_SEARCH_WEIGHTS.bm25,
+        trigram: typeof weightsRaw.trigram === 'number' ? weightsRaw.trigram : DEFAULT_SEARCH_WEIGHTS.trigram,
+        filepath: typeof weightsRaw.filepath === 'number' ? weightsRaw.filepath : DEFAULT_SEARCH_WEIGHTS.filepath,
+        tags: typeof weightsRaw.tags === 'number' ? weightsRaw.tags : DEFAULT_SEARCH_WEIGHTS.tags,
+      },
     },
     silos: validatedSilos,
   };
@@ -188,7 +208,7 @@ export interface ResolvedSiloConfig {
   ignoreFiles: string[];
   model: string;
   debounce: number;
-  sleeping: boolean;
+  stopped: boolean;
   /** Human-readable description for MCP tool routing */
   description: string;
   /** Palette colour for UI accent (validated, always present) */
@@ -217,7 +237,7 @@ export function resolveSiloConfig(
     ignoreFiles: silo.ignore_files ?? config.defaults.ignore_files,
     model: resolveModelAlias(rawModel),
     debounce: config.defaults.debounce,
-    sleeping: silo.sleeping === true,
+    stopped: silo.stopped === true,
     description: silo.description ?? '',
     color: validateSiloColor(silo.color),
     icon: validateSiloIcon(silo.icon),

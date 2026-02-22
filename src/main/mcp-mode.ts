@@ -1,11 +1,12 @@
 /**
  * Headless MCP mode — runs Lodestone without a window or tray.
  *
- * In this mode:
+ * In this mode the MCP process is a **pure protocol bridge**:
  * - No Electron window or tray is created
- * - Logging goes to stderr (stdout is unused — MCP traffic flows over a named pipe)
- * - The MCP pipe connects immediately; silos start in the background
- * - The process exits when the named pipe disconnects
+ * - No databases or config files are opened directly
+ * - All search and status requests are proxied to the GUI process
+ *   via a named pipe (\\.\pipe\lodestone-gui)
+ * - The GUI process must be running — if it isn't, MCP reports an error
  *
  * On Windows, Electron is a GUI app and cannot receive piped stdin
  * (electron/electron#4218). The mcp-wrapper.js proxy handles stdio with the
@@ -13,19 +14,98 @@
  */
 
 import { app } from 'electron';
-import {
-  loadConfig,
-  saveConfig,
-  createDefaultConfig,
-  configExists,
-} from '../backend/config';
+import { createConnection, type Socket } from 'node:net';
 import { startMcpServer } from '../backend/mcp-server';
+import type { SearchResult, SiloStatus } from '../shared/types';
 import type { AppContext } from './context';
-import { registerManager, shutdownBackend } from './lifecycle';
 
-export async function startMcpMode(ctx: AppContext): Promise<void> {
-  console.log('[main] Starting in MCP mode (headless)');
+/** Must match the pipe name in internal-api.ts (GUI side). */
+const GUI_PIPE_NAME = '\\\\.\\pipe\\lodestone-gui';
 
+// ── Line Buffer ─────────────────────────────────────────────────────────────
+
+/** Accumulates data chunks and splits on newline boundaries. */
+class LineBuffer {
+  private buffer = '';
+
+  push(chunk: string): string[] {
+    this.buffer += chunk;
+    const lines: string[] = [];
+    let idx: number;
+    while ((idx = this.buffer.indexOf('\n')) !== -1) {
+      lines.push(this.buffer.slice(0, idx));
+      this.buffer = this.buffer.slice(idx + 1);
+    }
+    return lines;
+  }
+}
+
+// ── GUI Pipe Client ─────────────────────────────────────────────────────────
+
+/**
+ * Client for the GUI process's internal API pipe.
+ * Sends JSON-RPC-style requests and receives responses.
+ */
+class GuiPipeClient {
+  private lineBuffer = new LineBuffer();
+  private nextId = 1;
+  private pending = new Map<number, {
+    resolve: (result: unknown) => void;
+    reject: (err: Error) => void;
+  }>();
+
+  constructor(private socket: Socket) {
+    socket.on('data', (data) => {
+      const lines = this.lineBuffer.push(data.toString('utf-8'));
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        this.handleMessage(line);
+      }
+    });
+  }
+
+  /** Send a request to the GUI and wait for the response. */
+  call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+    const id = this.nextId++;
+    const msg = JSON.stringify({ id, method, params }) + '\n';
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, {
+        resolve: resolve as (result: unknown) => void,
+        reject,
+      });
+      this.socket.write(msg);
+    });
+  }
+
+  private handleMessage(raw: string): void {
+    let msg: { id?: number; result?: unknown; error?: string };
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      console.error('[mcp] Invalid JSON from GUI pipe:', raw.slice(0, 200));
+      return;
+    }
+
+    if (msg.id === undefined) return;
+
+    const entry = this.pending.get(msg.id);
+    if (!entry) return;
+
+    this.pending.delete(msg.id);
+    if (msg.error) {
+      entry.reject(new Error(msg.error));
+    } else {
+      entry.resolve(msg.result);
+    }
+  }
+}
+
+// ── Entry Point ─────────────────────────────────────────────────────────────
+
+export async function startMcpMode(_ctx: AppContext): Promise<void> {
+  console.log('[main] Starting in MCP mode (headless proxy)');
+
+  // ── Parse wrapper pipe path ───────────────────────────────────────────
   const ipcPathArg = process.argv.find((a) => a.startsWith('--ipc-path='));
   const ipcPath = ipcPathArg?.split('=')[1];
 
@@ -35,66 +115,95 @@ export async function startMcpMode(ctx: AppContext): Promise<void> {
     return;
   }
 
-  // Load config
-  const configPath = ctx.configPath();
-  if (configExists(configPath)) {
-    try {
-      ctx.config = loadConfig(configPath);
-      console.log(`[main] Loaded config from ${configPath}`);
-    } catch (err) {
-      console.error('[main] Failed to load config:', err);
-      ctx.config = createDefaultConfig();
-    }
-  } else {
-    ctx.config = createDefaultConfig();
-    saveConfig(configPath, ctx.config);
-    console.log(`[main] Created default config at ${configPath}`);
+  // ── Connect to GUI pipe ───────────────────────────────────────────────
+  console.log('[main] Connecting to GUI pipe...');
+  let guiSocket: Socket;
+  try {
+    guiSocket = await connectToPipe(GUI_PIPE_NAME);
+    console.log('[main] Connected to GUI pipe');
+  } catch (err) {
+    console.error(
+      '[main] Failed to connect to Lodestone GUI. Is it running?\n' +
+      '  The MCP server requires the Lodestone GUI to be open.',
+      err,
+    );
+    app.quit();
+    return;
   }
 
-  // Register all silos — this creates managers and enqueues non-sleeping
-  // silos for sequential background startup via ctx.siloStartQueue.
-  // The MCP server will accept requests immediately; silos that haven't
-  // finished reconciliation yet will return partial results with warnings.
-  for (const [name, siloToml] of Object.entries(ctx.config.silos)) {
-    registerManager(ctx, name, siloToml);
-  }
+  const gui = new GuiPipeClient(guiSocket);
 
-  // Connect to the named pipe created by mcp-wrapper.js — before silos finish
-  console.log(`[main] Connecting to MCP pipe (silos starting in background)`);
-  const { createConnection } = await import('node:net');
-  const socket = createConnection(ipcPath);
+  // ── Connect to wrapper pipe ───────────────────────────────────────────
+  console.log('[main] Connecting to MCP wrapper pipe...');
+  const wrapperSocket = createConnection(ipcPath);
 
   await new Promise<void>((resolve, reject) => {
-    socket.once('connect', () => {
-      console.log(`[main] Connected to MCP pipe: ${ipcPath}`);
+    wrapperSocket.once('connect', () => {
+      console.log(`[main] Connected to MCP wrapper pipe: ${ipcPath}`);
       resolve();
     });
-    socket.once('error', (err) => {
-      console.error(`[main] Failed to connect to MCP pipe:`, err);
+    wrapperSocket.once('error', (err) => {
+      console.error('[main] Failed to connect to MCP wrapper pipe:', err);
       reject(err);
     });
   });
 
-  const stopMcp = await startMcpServer({
-    config: ctx.config,
-    siloManagers: ctx.siloManagers,
-    input: socket,
-    output: socket,
+  // ── Start MCP server (proxied through GUI pipe) ───────────────────────
+  const mcpHandle = await startMcpServer({
+    input: wrapperSocket,
+    output: wrapperSocket,
+    search: (params) => gui.call<{ results: SearchResult[]; warnings: string[] }>('search', params),
+    status: () => gui.call<{ silos: SiloStatus[] }>('status'),
   });
+
+  // ── Shutdown ──────────────────────────────────────────────────────────
 
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('[main] Shutting down MCP mode...');
-    await stopMcp();
-    socket.destroy();
-    await shutdownBackend(ctx);
+    clearInterval(parentPollTimer);
+    await mcpHandle.stop();
+    wrapperSocket.destroy();
+    guiSocket.destroy();
     app.quit();
   };
 
   process.on('SIGINT', () => shutdown());
   process.on('SIGTERM', () => shutdown());
 
-  socket.on('close', () => shutdown());
+  wrapperSocket.on('close', () => shutdown());
+  guiSocket.on('close', () => {
+    console.log('[main] GUI pipe disconnected — shutting down');
+    shutdown();
+  });
+
+  // ── Orphan Prevention ────────────────────────────────────────────────
+  // On Windows, if the parent wrapper process is killed via TerminateProcess()
+  // (which is how Task Manager, Claude Desktop, and child.kill() work), none
+  // of our signal handlers fire and the named pipe may not close promptly.
+  // Poll the parent PID to detect this and self-exit.
+  const parentPid = process.ppid;
+  const parentPollTimer = setInterval(() => {
+    try {
+      // process.kill(pid, 0) throws if the process no longer exists
+      process.kill(parentPid, 0);
+    } catch {
+      console.log(`[main] Parent process (PID ${parentPid}) gone — shutting down`);
+      shutdown();
+    }
+  }, 2000);
+  parentPollTimer.unref();
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Connect to a named pipe, returning the socket on success. */
+function connectToPipe(pipeName: string): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(pipeName);
+    socket.once('connect', () => resolve(socket));
+    socket.once('error', (err) => reject(err));
+  });
 }

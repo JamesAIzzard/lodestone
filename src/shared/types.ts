@@ -113,6 +113,12 @@ export interface SearchResult {
   filePath: string;
   /** Final score (RRF, or RRF × bestCosineSimilarity when merging across silos) */
   score: number;
+  /**
+   * Display-friendly "goodness of fit" score (0–1).
+   * Anchored on cosine similarity, boosted by keyword signal agreement.
+   * Use this for display and ordering; `score` (RRF) is the raw ranking signal.
+   */
+  qualityScore: number;
   matchType: MatchType;
   chunks: SearchResultChunk[];
   siloName: string;

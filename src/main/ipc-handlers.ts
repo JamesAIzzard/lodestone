@@ -149,11 +149,12 @@ export function registerIpcHandlers(ctx: AppContext): void {
     }
 
     const merged = calibrateAndMerge(raw);
-    merged.sort((a, b) => b.score - a.score);
+    merged.sort((a, b) => b.qualityScore - a.qualityScore);
 
     const results: SearchResult[] = merged.slice(0, 20).map((r) => ({
       filePath: r.filePath,
       score: r.score,
+      qualityScore: r.qualityScore,
       matchType: r.matchType,
       chunks: r.chunks.map((c) => ({
         ...c,

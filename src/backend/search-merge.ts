@@ -28,6 +28,30 @@ export interface RawSiloResult {
 /** Merged result with calibrated score. */
 export interface MergedResult extends RawSiloResult {
   score: number;
+  qualityScore: number;
+}
+
+// ── Quality score ───────────────────────────────────────────────────────────
+
+const SIGNAL_KEYS = ['semantic', 'bm25', 'trigram', 'filepath', 'tags'] as const;
+
+/**
+ * Compute a display-friendly "goodness of fit" quality score (0–0.99).
+ *
+ * Anchored on cosine similarity (a real 0-1 quality measure).
+ * Each additional matching signal adds an agreement bonus.
+ * For keyword-only results (no cosine) a moderate baseline is used.
+ */
+export function computeQualityScore(
+  bestCosine: number,
+  breakdown?: ScoreBreakdown,
+): number {
+  const matchCount = breakdown
+    ? SIGNAL_KEYS.filter((k) => (breakdown[k]?.rank ?? 0) > 0).length
+    : 0;
+  const base = bestCosine > 0 ? bestCosine : 0.35;
+  const agreementBonus = Math.max(0, matchCount - 1) * 0.05;
+  return Math.min(base + agreementBonus, 0.99);
 }
 
 // ── Calibration ──────────────────────────────────────────────────────────────
@@ -65,5 +89,6 @@ export function calibrateAndMerge(raw: RawSiloResult[]): MergedResult[] {
   return raw.map((r) => ({
     ...r,
     score: crossSilo ? r.rrfScore * (siloMeanCosine.get(r.siloName) ?? 0) : r.rrfScore,
+    qualityScore: computeQualityScore(r.bestCosineSimilarity, r.breakdown),
   }));
 }

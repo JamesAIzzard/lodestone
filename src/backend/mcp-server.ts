@@ -49,7 +49,7 @@ export interface McpServerDeps {
 function formatSearchResults(
   results: Array<{
     filePath: string;
-    score: number;
+    qualityScore: number;
     matchType: string;
     siloName: string;
     chunks: Array<{
@@ -71,7 +71,7 @@ function formatSearchResults(
     lines.push(`## ${result.filePath}`);
     const matchLabel = result.matchType === 'both' ? 'semantic + keyword'
       : result.matchType === 'keyword' ? 'keyword' : 'semantic';
-    lines.push(`Silo: ${result.siloName} | Score: ${result.score.toFixed(4)} | Match: ${matchLabel}`);
+    lines.push(`Silo: ${result.siloName} | Relevance: ${Math.round(result.qualityScore * 100)}% | Match: ${matchLabel}`);
     lines.push('');
 
     for (const chunk of result.chunks) {
@@ -273,9 +273,9 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
         }
       }
 
-      // Calibrate scores across silos and sort
+      // Calibrate scores across silos and sort by quality score
       const merged = calibrateAndMerge(raw);
-      merged.sort((a, b) => b.score - a.score);
+      merged.sort((a, b) => b.qualityScore - a.qualityScore);
       const topResults = merged.slice(0, limit);
 
       let text = formatSearchResults(topResults);

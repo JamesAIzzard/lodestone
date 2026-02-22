@@ -371,7 +371,7 @@ export default function SearchView() {
                       <div className="flex items-center gap-2 shrink-0">
                         <ScoreBar breakdown={result.breakdown} />
                         <span className="w-8 text-right text-xs text-muted-foreground">
-                          {scorePercent(result.score)}
+                          {scorePercent(result.qualityScore)}
                         </span>
                       </div>
 
@@ -389,9 +389,11 @@ export default function SearchView() {
                       <div className="ml-[26px] border-l-2 border-accent/40 pl-4 pb-2">
                         {/* File-level score info */}
                         <div className="mt-1.5 mb-1 flex items-center gap-1.5 text-[10px] text-muted-foreground/40">
-                          <span>RRF {scorePercent(result.rrfScore)}</span>
+                          <span>quality {scorePercent(result.qualityScore)}</span>
                           <span>·</span>
-                          <span>best cosine {scorePercent(result.bestCosineSimilarity)}</span>
+                          <span>cosine {scorePercent(result.bestCosineSimilarity)}</span>
+                          <span>·</span>
+                          <span>RRF {scorePercent(result.rrfScore)}</span>
                           {Math.abs(result.score - result.rrfScore) > 0.001 && (
                             <>
                               <span>·</span>

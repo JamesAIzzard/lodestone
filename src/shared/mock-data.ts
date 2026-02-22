@@ -107,6 +107,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/projects/lodestone/architecture.md',
     score: 0.94,
+    qualityScore: 0.96,
     rrfScore: 0.94,
     bestCosineSimilarity: 0.91,
     matchType: 'both',
@@ -127,6 +128,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-optimiser/src/solver/constraint_handler.py',
     score: 0.91,
+    qualityScore: 0.91,
     rrfScore: 0.91,
     bestCosineSimilarity: 0.91,
     matchType: 'semantic',
@@ -142,6 +144,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/notes/embedding-models-comparison.md',
     score: 0.89,
+    qualityScore: 0.92,
     rrfScore: 0.89,
     bestCosineSimilarity: 0.87,
     matchType: 'both',
@@ -162,6 +165,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-core/src/nutrients/calculator.py',
     score: 0.87,
+    qualityScore: 0.87,
     rrfScore: 0.87,
     bestCosineSimilarity: 0.87,
     matchType: 'semantic',
@@ -177,6 +181,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/papers/retrieval-augmented-generation-survey-2024.pdf',
     score: 0.85,
+    qualityScore: 0.35,
     rrfScore: 0.85,
     bestCosineSimilarity: 0,
     matchType: 'keyword',
@@ -202,6 +207,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/daily/2025-02-14.md',
     score: 0.82,
+    qualityScore: 0.82,
     rrfScore: 0.82,
     bestCosineSimilarity: 0.82,
     matchType: 'semantic',
@@ -217,6 +223,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-types/src/food_item.py',
     score: 0.80,
+    qualityScore: 0.80,
     rrfScore: 0.80,
     bestCosineSimilarity: 0.80,
     matchType: 'semantic',
@@ -232,6 +239,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/references/chokidar-watcher-patterns.md',
     score: 0.78,
+    qualityScore: 0.35,
     rrfScore: 0.78,
     bestCosineSimilarity: 0,
     matchType: 'keyword',
@@ -247,6 +255,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-data/seeds/usda_nutrients.toml',
     score: 0.75,
+    qualityScore: 0.75,
     rrfScore: 0.75,
     bestCosineSimilarity: 0.75,
     matchType: 'semantic',
@@ -262,6 +271,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/papers/dense-passage-retrieval-karpukhin-2020.pdf',
     score: 0.73,
+    qualityScore: 0.75,
     rrfScore: 0.73,
     bestCosineSimilarity: 0.70,
     matchType: 'both',
@@ -277,6 +287,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/vault/projects/lodestone/mcp-tool-design.md',
     score: 0.71,
+    qualityScore: 0.71,
     rrfScore: 0.71,
     bestCosineSimilarity: 0.71,
     matchType: 'semantic',
@@ -292,6 +303,7 @@ export const mockSearchResults: SearchResult[] = [
   {
     filePath: '/home/james/projects/codiet-optimiser/src/solver/objective.py',
     score: 0.68,
+    qualityScore: 0.68,
     rrfScore: 0.68,
     bestCosineSimilarity: 0.68,
     matchType: 'semantic',

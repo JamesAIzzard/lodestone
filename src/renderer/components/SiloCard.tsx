@@ -1,6 +1,7 @@
-import { FileText, Blocks, FolderOpen, Pause, Play, AlertTriangle } from 'lucide-react';
+import { FileText, Blocks, FolderOpen, Pause, Play, AlertTriangle, Database } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from './ui/badge';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { SILO_COLOR_MAP } from '../../shared/silo-appearance';
 import SiloIcon from './SiloIconComponent';
 import type { SiloStatus, WatcherState } from '../../shared/types';
@@ -18,29 +19,28 @@ function formatBytes(bytes: number): string {
 }
 
 const stateConfig: Record<WatcherState, { label: string; dotClass: string; badgeVariant: 'secondary' | 'default' | 'destructive' }> = {
-  idle: { label: 'Idle', dotClass: 'bg-emerald-500', badgeVariant: 'secondary' },
+  ready:    { label: 'Ready',    dotClass: 'bg-emerald-500',             badgeVariant: 'secondary' },
+  scanning: { label: 'Scanning', dotClass: 'bg-amber-500 animate-pulse', badgeVariant: 'default' },
   indexing: { label: 'Indexing', dotClass: 'bg-amber-500 animate-pulse', badgeVariant: 'default' },
-  error: { label: 'Error', dotClass: 'bg-red-500', badgeVariant: 'destructive' },
-  sleeping: { label: 'Sleeping', dotClass: 'bg-blue-400', badgeVariant: 'secondary' },
-  waiting: { label: 'Waiting', dotClass: 'bg-gray-400 animate-pulse', badgeVariant: 'secondary' },
+  error:    { label: 'Error',    dotClass: 'bg-red-500',                 badgeVariant: 'destructive' },
+  stopped:  { label: 'Stopped',  dotClass: 'bg-blue-400',                badgeVariant: 'secondary' },
+  waiting:  { label: 'Waiting',  dotClass: 'bg-gray-400 animate-pulse',  badgeVariant: 'secondary' },
 };
 
 interface SiloCardProps {
   silo: SiloStatus;
   onClick: () => void;
-  onSleepToggle?: () => void;
-  onPauseToggle?: () => void;
+  onStopToggle?: () => void;
 }
 
-export default function SiloCard({ silo, onClick, onSleepToggle, onPauseToggle }: SiloCardProps) {
+export default function SiloCard({ silo, onClick, onStopToggle }: SiloCardProps) {
   const { config, indexedFileCount, chunkCount, watcherState, reconcileProgress } = silo;
-  const isPaused = !!silo.paused;
   const state = stateConfig[watcherState];
   const colorClasses = SILO_COLOR_MAP[config.color];
   const hasModelOverride = config.modelOverride !== null;
-  const isIndexing = watcherState === 'indexing';
-  const isSleeping = watcherState === 'sleeping';
+  const isStopped = watcherState === 'stopped';
   const isWaiting = watcherState === 'waiting';
+  const isActive = watcherState === 'indexing' || watcherState === 'scanning';
   const progressPct = reconcileProgress && reconcileProgress.total > 0
     ? Math.round((reconcileProgress.current / reconcileProgress.total) * 100)
     : null;
@@ -67,52 +67,34 @@ export default function SiloCard({ silo, onClick, onSleepToggle, onPauseToggle }
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {/* Pause/resume button — shown while indexing */}
-          {onPauseToggle && isIndexing && (
+          {/* Stop/wake button — shown in all states except waiting */}
+          {onStopToggle && !isWaiting && (
             <span
               role="button"
               tabIndex={0}
-              title={isPaused ? 'Resume indexing' : 'Pause indexing'}
-              onClick={(e) => { e.stopPropagation(); onPauseToggle(); }}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onPauseToggle(); } }}
+              title={isStopped ? 'Wake silo' : 'Stop silo'}
+              onClick={(e) => { e.stopPropagation(); onStopToggle(); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onStopToggle(); } }}
               className="rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground hover:bg-accent/40"
             >
-              {isPaused
+              {isStopped
                 ? <Play className="h-3.5 w-3.5" />
                 : <Pause className="h-3.5 w-3.5" />
               }
             </span>
           )}
-          {/* Sleep/wake button — shown when not indexing/waiting */}
-          {onSleepToggle && !isIndexing && !isWaiting && (
-            <span
-              role="button"
-              tabIndex={0}
-              title={isSleeping ? 'Wake silo' : 'Sleep silo'}
-              onClick={(e) => { e.stopPropagation(); onSleepToggle(); }}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onSleepToggle(); } }}
-              className="rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground hover:bg-accent/40"
-            >
-              {isSleeping
-                ? <Play className="h-3.5 w-3.5" />
-                : <Pause className="h-3.5 w-3.5" />
-              }
-            </span>
-          )}
-          <Badge variant={isPaused ? 'secondary' : state.badgeVariant} className="gap-1.5 whitespace-nowrap">
-            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', isPaused ? 'bg-amber-500' : state.dotClass)} />
-            {isPaused
-              ? 'Paused'
-              : isIndexing && progressPct !== null
-                ? `Indexing ${progressPct}%`
-                : state.label}
+          <Badge variant={state.badgeVariant} className="gap-1.5 whitespace-nowrap">
+            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', state.dotClass)} />
+            {isActive && progressPct !== null
+              ? `Indexing ${progressPct}%`
+              : state.label}
           </Badge>
         </div>
       </div>
 
-      <div className={cn((isSleeping || isWaiting || isPaused) && 'opacity-50')}>
-        {/* Progress bar (shown while indexing) */}
-        {isIndexing && reconcileProgress && reconcileProgress.total > 0 && (
+      <div className={cn((isStopped || isWaiting) && 'opacity-50')}>
+        {/* Progress bar (shown while scanning or indexing) */}
+        {isActive && reconcileProgress && reconcileProgress.total > 0 && (
           <div className="flex flex-col gap-1">
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
               <div
@@ -128,16 +110,21 @@ export default function SiloCard({ silo, onClick, onSleepToggle, onPauseToggle }
 
         {/* Stats */}
         <div className="flex gap-4 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <FileText className="h-3.5 w-3.5" />
-            {indexedFileCount.toLocaleString()} files
-          </span>
-          <span className="flex items-center gap-1.5">
-            <Blocks className="h-3.5 w-3.5" />
-            {chunkCount.toLocaleString()} chunks
-          </span>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="flex items-center gap-1.5 cursor-default">
+                  <Database className="h-3.5 w-3.5" />
+                  {indexedFileCount.toLocaleString()} files · {chunkCount.toLocaleString()} chunks
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                Files and chunks indexed into database
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <span className="text-muted-foreground/60">
-            {isIndexing ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)}
+            {isActive ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)}
           </span>
         </div>
 

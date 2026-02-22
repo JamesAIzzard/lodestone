@@ -53,6 +53,7 @@
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "@radix-ui/react-tooltip": "^1.2.8",
     "better-sqlite3": "^12.6.2",
     "chokidar": "^5.0.0",
     "class-variance-authority": "^0.7.1",

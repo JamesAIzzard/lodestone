@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Loader2, CheckCircle2, XCircle, FileCode, TriangleAlert } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, FileCode, FolderOpen, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
@@ -17,6 +17,7 @@ export default function SettingsView() {
   const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
   const [fileIgnore, setFileIgnore] = useState<string[]>([]);
   const [debounce, setDebounce] = useState(10);
+  const [dataDir, setDataDir] = useState('');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [claudeStatus, setClaudeStatus] = useState<{ configPath: string; hasClaudeDesktop: boolean; isConfigured: boolean } | null>(null);
@@ -35,6 +36,7 @@ export default function SettingsView() {
       setFileIgnore(d.ignoreFiles);
       setDebounce(d.debounce);
     });
+    window.electronAPI?.getDataDir().then((dir) => setDataDir(dir));
     window.electronAPI?.getClaudeDesktopStatus().then(setClaudeStatus);
   }, []);
 
@@ -101,6 +103,10 @@ export default function SettingsView() {
   async function handleOpenConfig() {
     const configPath = await window.electronAPI?.getConfigPath();
     if (configPath) window.electronAPI?.openPath(configPath);
+  }
+
+  function handleOpenDataDir() {
+    if (dataDir) window.electronAPI?.openPath(dataDir);
   }
 
   // Build model list from server status + Ollama test results
@@ -276,6 +282,18 @@ export default function SettingsView() {
         {/* ── Advanced ─────────────────────────────────────────── */}
         <Section title="Advanced">
           <div className="flex flex-col gap-3">
+            <div>
+              <p className="mb-2 text-xs text-muted-foreground font-mono break-all">
+                {dataDir || '…'}
+              </p>
+              <Button variant="outline" size="sm" onClick={handleOpenDataDir} disabled={!dataDir}>
+                <FolderOpen className="h-3.5 w-3.5" />
+                Open Data Folder
+              </Button>
+              <p className="mt-2 text-xs text-muted-foreground/60">
+                All configuration, databases, and model cache are stored here.
+              </p>
+            </div>
             <div>
               <Button variant="outline" size="sm" onClick={handleOpenConfig}>
                 <FileCode className="h-3.5 w-3.5" />

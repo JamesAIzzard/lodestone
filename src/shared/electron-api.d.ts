@@ -71,6 +71,7 @@ export interface ElectronAPI {
   getServerStatus: () => Promise<ServerStatus>;
   testOllamaConnection: (url: string) => Promise<{ connected: boolean; models: string[] }>;
   getConfigPath: () => Promise<string>;
+  getDataDir: () => Promise<string>;
 
   // ── Claude Desktop Integration ────────────────────────────────────────────
   getClaudeDesktopStatus: () => Promise<{

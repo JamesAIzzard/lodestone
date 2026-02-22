@@ -14,6 +14,8 @@ import { createTray } from './main/tray';
 import { initializeBackend, shutdownBackend } from './main/lifecycle';
 import { registerIpcHandlers } from './main/ipc-handlers';
 import { startMcpMode } from './main/mcp-mode';
+import { detectExistingDataDir, runFirstRunSetup } from './main/portable';
+import { configExists, getDefaultConfigPath } from './backend/config';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -58,7 +60,24 @@ if (!isMcpMode) {
 
 // ── App Lifecycle ────────────────────────────────────────────────────────────
 
-app.on('ready', () => {
+app.on('ready', async () => {
+  // ── Portable / first-run data directory resolution ────────────────────────
+  // Must happen before any call to ctx.getUserDataDir() / app.getPath('userData').
+  // Skipped in MCP mode (no UI available) and in dev builds (app.isPackaged = false).
+  if (!isMcpMode && app.isPackaged) {
+    const existing = detectExistingDataDir();
+    if (existing) {
+      // Found a portable or custom data dir — redirect userData before backend starts
+      app.setPath('userData', existing);
+    } else if (!configExists(getDefaultConfigPath(app.getPath('userData')))) {
+      // No portable dir and no AppData config → true first run
+      const chosen = await runFirstRunSetup();
+      if (chosen !== app.getPath('userData')) {
+        app.setPath('userData', chosen);
+      }
+    }
+  }
+
   if (isMcpMode) {
     startMcpMode(ctx).catch((err) => {
       console.error('[main] MCP mode failed:', err);

@@ -24,7 +24,7 @@ export interface SiloConfig {
   icon: SiloIconName;
 }
 
-export type WatcherState = 'ready' | 'scanning' | 'indexing' | 'error' | 'stopped' | 'waiting';
+export type WatcherState = 'ready' | 'indexing' | 'error' | 'stopped' | 'waiting';
 
 export interface SiloStatus {
   config: SiloConfig;

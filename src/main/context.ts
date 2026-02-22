@@ -14,6 +14,7 @@ import { getDefaultConfigPath } from '../backend/config';
 import { createEmbeddingService, type EmbeddingService } from '../backend/embedding';
 import { resolveModelAlias } from '../backend/model-registry';
 import type { SiloManager } from '../backend/silo-manager';
+import { IndexingQueue } from '../backend/indexing-queue';
 
 export interface AppContext {
   config: LodestoneConfig | null;
@@ -25,7 +26,7 @@ export interface AppContext {
   isMcpMode: boolean;
   nextEventId: number;
   startTime: number;
-  siloStartQueue: Promise<void>;
+  indexingQueue: IndexingQueue;
 
   getOrCreateEmbeddingService(model: string): EmbeddingService;
   enqueueSiloStart(name: string, manager: SiloManager): void;
@@ -45,7 +46,7 @@ export function createAppContext(isMcpMode: boolean): AppContext {
     isMcpMode,
     nextEventId: 1,
     startTime: Date.now(),
-    siloStartQueue: Promise.resolve(),
+    indexingQueue: new IndexingQueue(),
 
     getOrCreateEmbeddingService(model: string): EmbeddingService {
       const modelId = resolveModelAlias(model);
@@ -63,13 +64,8 @@ export function createAppContext(isMcpMode: boolean): AppContext {
 
     enqueueSiloStart(name: string, manager: SiloManager): void {
       manager.loadWaitingStatus();
-      ctx.siloStartQueue = ctx.siloStartQueue.then(async () => {
-        try {
-          await manager.start();
-          console.log(`[main] Silo "${name}" started`);
-        } catch (err) {
-          console.error(`[main] Failed to start silo "${name}":`, err);
-        }
+      manager.start().catch((err) => {
+        console.error(`[main] Failed to start silo "${name}":`, err);
       });
     },
 

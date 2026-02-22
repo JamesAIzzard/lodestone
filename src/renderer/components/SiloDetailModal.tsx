@@ -278,9 +278,9 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
 
   const { config } = silo;
   const colorClasses = SILO_COLOR_MAP[siloColor];
-  // Disable destructive actions while the silo is actively scanning or indexing.
+  // Disable destructive actions while the silo is actively indexing.
   // The user must stop the silo first — stop() is always clean and safe.
-  const isActive = silo.watcherState === 'scanning' || silo.watcherState === 'indexing';
+  const isActive = silo.watcherState === 'indexing';
   const defaultModel = serverStatus?.defaultModel ?? 'snowflake-arctic-embed-xs';
   const effectiveModel = selectedModel || config.modelOverride || defaultModel;
   const isOverride = effectiveModel !== defaultModel;
@@ -558,10 +558,10 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
             variant="outline"
             size="sm"
             onClick={handleRebuild}
-            disabled={rebuilding || isActive}
+            disabled={rebuilding}
           >
             <RotateCcw className={cn('h-3.5 w-3.5', rebuilding && 'animate-spin')} />
-            {rebuilding ? 'Rebuilding...' : 'Rebuild Index'}
+            Rebuild Index
           </Button>
           {!confirmDelete && !confirmDisconnect && (
             <Button

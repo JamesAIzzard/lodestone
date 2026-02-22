@@ -33,10 +33,10 @@ export default function SilosView() {
     }
   }, [silos]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Poll while any silo is scanning, indexing, or waiting
+  // Poll while any silo is indexing or waiting
   useEffect(() => {
     const anyActive = silos.some((s) =>
-      s.watcherState === 'scanning' || s.watcherState === 'indexing' || s.watcherState === 'waiting'
+      s.watcherState === 'indexing' || s.watcherState === 'waiting'
     );
     if (anyActive && !pollRef.current) {
       pollRef.current = setInterval(fetchSilos, 2000);

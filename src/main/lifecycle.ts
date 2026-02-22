@@ -55,6 +55,7 @@ export function registerManager(
     resolved,
     embeddingService,
     ctx.getUserDataDir(),
+    ctx.indexingQueue,
   );
 
   ctx.siloManagers.set(name, manager);

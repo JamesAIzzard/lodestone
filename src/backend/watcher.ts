@@ -40,6 +40,7 @@ export class SiloWatcher {
   private processing = false;
   private queue: Array<{ absPath: string; storedKey: string; type: 'upsert' | 'delete' }> = [];
   private onEvent: WatcherEventHandler | null = null;
+  private onQueueFilled?: () => void;
 
   constructor(
     private readonly config: ResolvedSiloConfig,
@@ -50,6 +51,15 @@ export class SiloWatcher {
   /** Register a listener for watcher events (activity feed). */
   on(handler: WatcherEventHandler): void {
     this.onEvent = handler;
+  }
+
+  /**
+   * Register a callback that fires when items are added to the queue.
+   * SiloManager uses this to schedule a global-queue indexing run instead
+   * of processing immediately (which would allow concurrent indexing).
+   */
+  setQueueFilledHandler(fn: () => void): void {
+    this.onQueueFilled = fn;
   }
 
   /** Start watching the silo directories. */
@@ -132,10 +142,16 @@ export class SiloWatcher {
     // Deduplicate: remove any existing entry for this file
     this.queue = this.queue.filter((item) => item.storedKey !== storedKey);
     this.queue.push({ absPath, storedKey, type });
-    this.processQueue();
+    // Notify SiloManager to schedule a global-queue run rather than processing
+    // directly, so only one silo indexes at a time.
+    this.onQueueFilled?.();
   }
 
-  private async processQueue(): Promise<void> {
+  /**
+   * Drain the queue: prepare all queued files, flush to DB, emit events.
+   * Called by SiloManager when the global IndexingQueue grants this silo its turn.
+   */
+  async runQueue(): Promise<void> {
     if (this.processing) return;
     this.processing = true;
 
@@ -205,6 +221,12 @@ export class SiloWatcher {
     }
 
     this.processing = false;
+
+    // If more items arrived while we were processing, notify again so
+    // SiloManager can schedule another queue run via the IndexingQueue.
+    if (this.queue.length > 0) {
+      this.onQueueFilled?.();
+    }
   }
 
   private emit(event: WatcherEvent): void {

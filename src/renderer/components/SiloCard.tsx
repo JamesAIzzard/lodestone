@@ -20,7 +20,6 @@ function formatBytes(bytes: number): string {
 
 const stateConfig: Record<WatcherState, { label: string; dotClass: string; badgeVariant: 'secondary' | 'default' | 'destructive' }> = {
   ready:    { label: 'Ready',    dotClass: 'bg-emerald-500',             badgeVariant: 'secondary' },
-  scanning: { label: 'Scanning', dotClass: 'bg-amber-500 animate-pulse', badgeVariant: 'default' },
   indexing: { label: 'Indexing', dotClass: 'bg-amber-500 animate-pulse', badgeVariant: 'default' },
   error:    { label: 'Error',    dotClass: 'bg-red-500',                 badgeVariant: 'destructive' },
   stopped:  { label: 'Stopped',  dotClass: 'bg-blue-400',                badgeVariant: 'secondary' },
@@ -40,7 +39,7 @@ export default function SiloCard({ silo, onClick, onStopToggle }: SiloCardProps)
   const hasModelOverride = config.modelOverride !== null;
   const isStopped = watcherState === 'stopped';
   const isWaiting = watcherState === 'waiting';
-  const isActive = watcherState === 'indexing' || watcherState === 'scanning';
+  const isActive = watcherState === 'indexing';
   const progressPct = reconcileProgress && reconcileProgress.total > 0
     ? Math.round((reconcileProgress.current / reconcileProgress.total) * 100)
     : null;

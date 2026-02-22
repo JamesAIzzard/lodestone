@@ -11,10 +11,9 @@ export function buildTrayMenu(ctx: AppContext): Menu {
   const statusLabel = (state: string) =>
     state === 'stopped' ? '⏸ Stopped'
       : state === 'waiting' ? '⏳ Waiting'
-        : state === 'scanning' ? '⟳ Scanning'
-          : state === 'indexing' ? '⟳ Indexing'
-            : state === 'error' ? '✕ Error'
-              : '● Ready';
+        : state === 'indexing' ? '⟳ Indexing'
+          : state === 'error' ? '✕ Error'
+            : '● Ready';
 
   const siloItems = Array.from(ctx.siloManagers.entries()).map(([name, manager]) => ({
     label: `${name}  ${statusLabel(manager.getStatus().watcherState)}`,

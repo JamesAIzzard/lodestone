@@ -31,6 +31,7 @@ import {
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
 import type { WatcherState } from '../shared/types';
+import { IndexingQueue } from './indexing-queue';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -89,10 +90,16 @@ export class SiloManager {
   /** External listener for watcher events (used by main process for renderer forwarding). */
   private eventListener?: (event: WatcherEvent) => void;
 
+  /** Prevents duplicate enqueue for live watcher runs. */
+  private pendingWatcherEnqueue = false;
+  /** Cancel function for a pending live-watcher queue slot. */
+  private cancelWatcherEnqueue: (() => void) | null = null;
+
   constructor(
     private config: ResolvedSiloConfig,
     private sharedEmbeddingService: EmbeddingService,
     private readonly userDataDir: string,
+    private readonly indexingQueue: IndexingQueue,
   ) {}
 
   /** Register a listener for watcher events. Only one listener is supported. */
@@ -175,35 +182,46 @@ export class SiloManager {
     }
 
     if (this.embeddingService && this.db && !this.stopped) {
-      this.watcherState = 'scanning';
-      try {
-        const result = await reconcile(
-          this.config,
-          this.embeddingService,
-          this.db,
-          this.mtimes,
-          this.onReconcileProgress,
-          this.onReconcileEvent,
+      await new Promise<void>((resolve) => {
+        this.indexingQueue.enqueue(
+          this.config.name,
+          () => { if (!this.stopped) this.watcherState = 'waiting'; },
+          () => { if (!this.stopped) this.watcherState = 'indexing'; },
+          async () => {
+            if (this.stopped) { resolve(); return; }
+            try {
+              const result = await reconcile(
+                this.config,
+                this.embeddingService!,
+                this.db!,
+                this.mtimes,
+                this.onReconcileProgress,
+                this.onReconcileEvent,
+              );
+              const changes = [
+                result.filesAdded > 0 && `+${result.filesAdded}`,
+                result.filesRemoved > 0 && `-${result.filesRemoved}`,
+                result.filesUpdated > 0 && `~${result.filesUpdated}`,
+              ].filter(Boolean).join(' ');
+              if (changes) {
+                console.log(`[silo:${this.config.name}] ${reason} change: ${changes} files`);
+              }
+            } catch (err) {
+              if (!this.stopped) {
+                console.error(`[silo:${this.config.name}] Re-reconciliation after ${reason} change failed:`, err);
+              }
+            }
+            this.reconcileProgress = undefined;
+            resolve();
+          },
         );
-        const changes = [
-          result.filesAdded > 0 && `+${result.filesAdded}`,
-          result.filesRemoved > 0 && `-${result.filesRemoved}`,
-          result.filesUpdated > 0 && `~${result.filesUpdated}`,
-        ].filter(Boolean).join(' ');
-        if (changes) {
-          console.log(`[silo:${this.config.name}] ${reason} change: ${changes} files`);
-        }
-      } catch (err) {
-        if (!this.stopped) {
-          console.error(`[silo:${this.config.name}] Re-reconciliation after ${reason} change failed:`, err);
-        }
-      }
-      this.reconcileProgress = undefined;
+      });
 
       if (!this.stopped) {
         this.persistConfigBlob();
         this.watcherState = 'ready';
         this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db);
+        this.watcher.setQueueFilledHandler(() => this.scheduleWatcherIndexing());
         this.watcher.on((event) => this.handleWatcherEvent(event));
         this.watcher.start();
         console.log(`[silo:${this.config.name}] Watcher restarted after ${reason} change`);
@@ -276,31 +294,44 @@ export class SiloManager {
     // 4. Load file modification times for offline change detection
     this.mtimes = loadMtimes(this.db);
 
-    // 5. Run startup reconciliation
+    // 5. Run startup reconciliation via the global IndexingQueue so that
+    //    only one silo embeds/indexes at a time.
     if (this.stopped) return;
-    this.watcherState = 'scanning';
-    try {
-      const result = await reconcile(
-        this.config,
-        this.embeddingService,
-        this.db,
-        this.mtimes,
-        this.onReconcileProgress,
-        this.onReconcileEvent,
-        () => this.stopped,
+    await new Promise<void>((resolve) => {
+      this.indexingQueue.enqueue(
+        this.config.name,
+        () => { if (!this.stopped) this.watcherState = 'waiting'; },
+        () => { if (!this.stopped) this.watcherState = 'indexing'; },
+        async () => {
+          if (this.stopped) { resolve(); return; }
+          try {
+            const result = await reconcile(
+              this.config,
+              this.embeddingService!,
+              this.db!,
+              this.mtimes,
+              this.onReconcileProgress,
+              this.onReconcileEvent,
+              () => this.stopped,
+            );
+            if (result.filesAdded > 0 || result.filesRemoved > 0 || result.filesUpdated > 0) {
+              console.log(
+                `[silo:${this.config.name}] Reconciliation: +${result.filesAdded} -${result.filesRemoved} ~${result.filesUpdated} (${(result.durationMs / 1000).toFixed(1)}s)`,
+              );
+            } else {
+              console.log(`[silo:${this.config.name}] Reconciliation: index up to date`);
+            }
+          } catch (err) {
+            if (this.stopped) { resolve(); return; }
+            console.error(`[silo:${this.config.name}] Reconciliation failed:`, err);
+            this.watcherState = 'error';
+            this.errorMessage = err instanceof Error ? err.message : String(err);
+          }
+          this.reconcileProgress = undefined;
+          resolve();
+        },
       );
-      if (result.filesAdded > 0 || result.filesRemoved > 0 || result.filesUpdated > 0) {
-        console.log(
-          `[silo:${this.config.name}] Reconciliation: +${result.filesAdded} -${result.filesRemoved} ~${result.filesUpdated} (${(result.durationMs / 1000).toFixed(1)}s)`,
-        );
-      } else {
-        console.log(`[silo:${this.config.name}] Reconciliation: index up to date`);
-      }
-    } catch (err) {
-      if (this.stopped) return; // expected during shutdown
-      console.error(`[silo:${this.config.name}] Reconciliation failed:`, err);
-    }
-    this.reconcileProgress = undefined;
+    });
 
     // 6. Persist config blob for portable reconnection
     this.persistConfigBlob();
@@ -311,6 +342,7 @@ export class SiloManager {
 
     // 8. Create and start the file watcher
     this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db);
+    this.watcher.setQueueFilledHandler(() => this.scheduleWatcherIndexing());
     this.watcher.on((event) => this.handleWatcherEvent(event));
     this.watcher.start();
 
@@ -351,6 +383,12 @@ export class SiloManager {
 
   /** Stop the silo and mark it as stopped (persisted by the caller via config). */
   async freeze(): Promise<void> {
+    // Cancel any pending live-watcher queue slot so the IndexingQueue
+    // can move on to the next silo without waiting for us.
+    this.cancelWatcherEnqueue?.();
+    this.cancelWatcherEnqueue = null;
+    this.pendingWatcherEnqueue = false;
+
     // Cache stats before releasing resources
     this.cachedFileCount = this.mtimes.size;
     this.cachedChunkCount = this.db ? getChunkCount(this.db) : 0;
@@ -362,7 +400,9 @@ export class SiloManager {
 
   /** Restart a stopped silo: reload database, reconcile, start watching. */
   async wake(): Promise<void> {
-    this.watcherState = 'waiting';
+    // Load cached stats and set 'waiting' state so the card shows useful info
+    // while the silo waits in the IndexingQueue before reconciliation starts.
+    this.loadWaitingStatus();
     await this.start();
   }
 
@@ -528,24 +568,20 @@ export class SiloManager {
   // ── Internal ───────────────────────────────────────────────────────────────
 
   private onReconcileProgress: ReconcileProgressHandler = (progress) => {
-    if (progress.phase === 'scanning') {
-      // Surface the scanning phase as a distinct watcher state
-      if (this._watcherState !== 'scanning') {
-        this.watcherState = 'scanning';
-      }
-      return;
-    }
     if (progress.phase === 'done') {
       this.reconcileProgress = undefined;
       return;
     }
-    // indexing or removing — switch to indexing state and track progress
+    // scanning, indexing, or removing — all surface as 'indexing' in the UI
     if (this._watcherState !== 'indexing') {
       this.watcherState = 'indexing';
     }
-    this.reconcileProgress = { current: progress.current, total: progress.total };
-    if (progress.total > 0 && progress.current % 10 === 0) {
-      console.log(`[silo:${this.config.name}] Reconcile: ${progress.current}/${progress.total}`);
+    if (progress.phase !== 'scanning') {
+      // Only track numeric progress for indexing/removing phases
+      this.reconcileProgress = { current: progress.current, total: progress.total };
+      if (progress.total > 0 && progress.current % 10 === 0) {
+        console.log(`[silo:${this.config.name}] Reconcile: ${progress.current}/${progress.total}`);
+      }
     }
   };
 
@@ -602,19 +638,38 @@ export class SiloManager {
       }
     }
 
-    // Update watcher state.
-    // Note: check queueLength rather than isProcessing — the event is emitted
-    // from inside processQueue() while `processing` is still true, so for the
-    // last item isProcessing would incorrectly keep us in 'indexing'.
-    if (event.eventType === 'error') {
-      this.watcherState = 'error';
-      this.errorMessage = event.errorMessage;
-    } else if (this.watcher && this.watcher.queueLength > 0) {
-      this.watcherState = 'indexing';
-    } else {
-      this.watcherState = 'ready';
-      this.errorMessage = undefined;
-    }
+    // File-level errors (extraction failures, parse errors, etc.) are logged to
+    // the activity feed only — they don't change the silo's overall state.
+    // State transitions (indexing ↔ ready) are managed by scheduleWatcherIndexing().
+  }
+
+  /**
+   * Request a turn on the global IndexingQueue to drain the watcher's file queue.
+   * Deduplicates: if a turn is already queued, does nothing — items accumulate in
+   * the watcher's internal queue and will be processed when the turn arrives.
+   */
+  private scheduleWatcherIndexing(): void {
+    if (this.pendingWatcherEnqueue) return;
+    this.pendingWatcherEnqueue = true;
+
+    this.cancelWatcherEnqueue = this.indexingQueue.enqueue(
+      this.config.name,
+      () => { if (!this.stopped) this.watcherState = 'waiting'; },
+      () => { if (!this.stopped) this.watcherState = 'indexing'; },
+      async () => {
+        this.pendingWatcherEnqueue = false;
+        this.cancelWatcherEnqueue = null;
+        if (this.watcher && !this.stopped) {
+          await this.watcher.runQueue();
+        }
+        // runQueue() re-fires onQueueFilled if items arrived mid-run,
+        // which schedules another turn. Set ready only if truly idle.
+        if (!this.stopped && (!this.watcher || this.watcher.queueLength === 0)) {
+          this.watcherState = 'ready';
+          this.errorMessage = undefined;
+        }
+      },
+    );
   }
 
   private resolveDbPath(): string {

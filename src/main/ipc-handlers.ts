@@ -347,20 +347,20 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
   ipcMain.handle(
     'silos:rebuild',
-    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
+    (_event, name: string): { success: boolean; error?: string } => {
       const manager = ctx.siloManagers.get(name);
       if (!manager) return { success: false, error: `Silo "${name}" not found` };
-      try {
-        const embeddingService = ctx.getOrCreateEmbeddingService(manager.getConfig().model);
-        manager.updateEmbeddingService(embeddingService);
 
-        await manager.rebuild();
-        return { success: true };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+      const embeddingService = ctx.getOrCreateEmbeddingService(manager.getConfig().model);
+      manager.updateEmbeddingService(embeddingService);
+
+      // Fire and forget — rebuild() stops current work, then queues via the
+      // IndexingQueue. The silo's watcherState updates via silos:changed events.
+      manager.rebuild().catch((err) => {
         console.error(`[main] Failed to rebuild silo "${name}":`, err);
-        return { success: false, error: message };
-      }
+      });
+
+      return { success: true };
     },
   );
 

@@ -38,6 +38,7 @@ export interface ElectronAPI {
     description?: string;
     color?: string;
     icon?: string;
+    mode?: 'new' | 'existing';
   }) => Promise<{ success: boolean; error?: string }>;
   deleteSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   disconnectSilo: (name: string) => Promise<{ success: boolean; error?: string }>;

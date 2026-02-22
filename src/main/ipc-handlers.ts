@@ -561,7 +561,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     'silos:create',
     async (
       _event,
-      opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string },
+      opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string; mode?: 'new' | 'existing' },
     ): Promise<{ success: boolean; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
 
@@ -573,7 +573,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       const resolvedDbPath = path.isAbsolute(opts.dbPath)
         ? opts.dbPath
         : path.join(ctx.getUserDataDir(), opts.dbPath);
-      if (fs.existsSync(resolvedDbPath)) {
+      if (opts.mode !== 'existing' && fs.existsSync(resolvedDbPath)) {
         return {
           success: false,
           error: `A database file already exists at that path. Use "Connect existing silo" to attach it, or choose a different path.`,

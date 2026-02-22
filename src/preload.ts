@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Silos
   getSilos: (): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:list'),
-  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string }): Promise<unknown> =>
+  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string; mode?: 'new' | 'existing' }): Promise<unknown> =>
     ipcRenderer.invoke('silos:create', opts),
   deleteSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:delete', name),

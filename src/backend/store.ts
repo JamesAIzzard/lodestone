@@ -210,6 +210,7 @@ export function upsertFileChunks(
   filePath: string,
   chunks: ChunkRecord[],
   embeddings: number[][],
+  mtimeMs?: number,
 ): void {
   const transaction = db.transaction(() => {
     // 1. Fetch existing chunks for FTS5 sync (external content requires old text for delete)
@@ -268,6 +269,11 @@ export function upsertFileChunks(
       );
       insertFts.run(rowid, chunk.text);
     }
+
+    // Persist mtime inside the same transaction when provided (avoids a separate auto-commit)
+    if (mtimeMs !== undefined) {
+      db.prepare(`INSERT OR REPLACE INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`).run(filePath, mtimeMs);
+    }
   });
 
   transaction();
@@ -276,7 +282,7 @@ export function upsertFileChunks(
 /**
  * Remove all chunks belonging to a file.
  */
-export function deleteFileChunks(db: SiloDatabase, filePath: string): void {
+export function deleteFileChunks(db: SiloDatabase, filePath: string, deleteMtimeEntry?: boolean): void {
   const transaction = db.transaction(() => {
     // Fetch existing for FTS5 sync
     const existingRows = db.prepare(
@@ -299,6 +305,11 @@ export function deleteFileChunks(db: SiloDatabase, filePath: string): void {
 
     // Remove from chunks
     db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
+
+    // Remove mtime entry inside the same transaction when requested
+    if (deleteMtimeEntry) {
+      db.prepare(`DELETE FROM mtimes WHERE file_path = ?`).run(filePath);
+    }
   });
 
   transaction();

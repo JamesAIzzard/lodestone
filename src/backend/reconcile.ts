@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { indexFile, removeFile } from './pipeline';
-import { setMtime, deleteMtime, makeStoredKey, resolveStoredKey, type SiloDatabase } from './store';
+import { makeStoredKey, resolveStoredKey, type SiloDatabase } from './store';
 import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
@@ -92,16 +92,16 @@ export async function reconcile(
   const indexedKeys = new Set(mtimes.keys());
 
   // 4. Find files to add or update
-  const filesToIndex: Array<{ absPath: string; storedKey: string }> = [];
+  const filesToIndex: Array<{ absPath: string; storedKey: string; mtime: number }> = [];
   for (const [storedKey, { absPath, mtime }] of diskStored) {
     if (!indexedKeys.has(storedKey)) {
       // New file — not yet in the database
-      filesToIndex.push({ absPath, storedKey });
+      filesToIndex.push({ absPath, storedKey, mtime });
     } else {
       // Existing file — check if modified while app was closed
       const storedMtime = mtimes.get(storedKey)!;
       if (mtime !== storedMtime) {
-        filesToIndex.push({ absPath, storedKey });
+        filesToIndex.push({ absPath, storedKey, mtime });
       }
     }
   }
@@ -119,10 +119,19 @@ export async function reconcile(
   const alreadyDone = diskStored.size - filesToIndex.length;
   const totalWork = diskStored.size + filesToRemove.length;
 
+  // Yield to the event loop periodically so MCP and IPC can serve requests
+  // during long reconciliation runs. Every 10 files ≈ every 0.5–2s given ONNX
+  // inference time per file.
+  const YIELD_INTERVAL = 10;
+
   // 6. Index new and modified files
   let progress = alreadyDone;
-  for (const { absPath, storedKey } of filesToIndex) {
+  for (let i = 0; i < filesToIndex.length; i++) {
+    const { absPath, storedKey, mtime } = filesToIndex[i];
     if (pauseToken) await pauseToken.waitIfPaused();
+    if (i > 0 && i % YIELD_INTERVAL === 0) {
+      await new Promise<void>(r => setImmediate(r));
+    }
     onProgress?.({
       phase: 'indexing',
       current: ++progress,
@@ -130,7 +139,8 @@ export async function reconcile(
       filePath: absPath,
     });
     try {
-      await indexFile(absPath, storedKey, embeddingService, db);
+      // Pass mtime so it's persisted in the same transaction as the chunks
+      await indexFile(absPath, storedKey, embeddingService, db, mtime);
       const isUpdate = indexedKeys.has(storedKey);
       if (isUpdate) {
         filesUpdated++;
@@ -139,14 +149,8 @@ export async function reconcile(
       }
       // Resolve back to absolute path for UI display
       onEvent?.({ filePath: absPath, eventType: isUpdate ? 'reindexed' : 'indexed' });
-      // Record the current mtime so we detect future changes
-      try {
-        const stat = fs.statSync(absPath);
-        mtimes.set(storedKey, stat.mtimeMs);
-        setMtime(db, storedKey, stat.mtimeMs);
-      } catch {
-        // File vanished between indexing and stat — rare but possible
-      }
+      // Update in-memory mtime map (DB was already updated inside the transaction)
+      mtimes.set(storedKey, mtime);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[reconcile] Failed to index ${absPath}:`, message);
@@ -155,8 +159,12 @@ export async function reconcile(
   }
 
   // 7. Remove stale files
-  for (const storedKey of filesToRemove) {
+  for (let i = 0; i < filesToRemove.length; i++) {
+    const storedKey = filesToRemove[i];
     if (pauseToken) await pauseToken.waitIfPaused();
+    if (i > 0 && i % YIELD_INTERVAL === 0) {
+      await new Promise<void>(r => setImmediate(r));
+    }
     const absPath = resolveStoredKey(storedKey, config.directories);
     onProgress?.({
       phase: 'removing',
@@ -165,9 +173,8 @@ export async function reconcile(
       filePath: absPath,
     });
     try {
-      await removeFile(storedKey, db);
+      await removeFile(storedKey, db, true);
       mtimes.delete(storedKey);
-      deleteMtime(db, storedKey);
       filesRemoved++;
       onEvent?.({ filePath: absPath, eventType: 'deleted' });
     } catch (err) {

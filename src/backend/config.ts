@@ -70,7 +70,7 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     ollama_url: 'http://localhost:11434',
   },
   defaults: {
-    debounce: 2.0,
+    debounce: 10.0,
     extensions: [
       '.md', '.txt',
       '.ts', '.tsx', '.js', '.jsx',

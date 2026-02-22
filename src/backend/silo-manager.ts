@@ -144,6 +144,12 @@ export class SiloManager {
     this.persistConfigBlob();
   }
 
+  /** Update the silo display name and persist to DB config blob. */
+  updateName(name: string): void {
+    this.config = { ...this.config, name };
+    this.persistConfigBlob();
+  }
+
   /**
    * Replace the shared embedding service.
    * Call this before rebuild() when the configured model has changed,

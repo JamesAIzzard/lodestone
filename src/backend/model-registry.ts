@@ -38,6 +38,11 @@ export interface ModelDefinition {
   bundled: boolean;
   /** ONNX quantization level */
   dtype: string;
+  /**
+   * Concise, path-safe identifier used when auto-generating database filenames.
+   * Must contain only [a-z0-9-] characters. Kept short to produce readable filenames.
+   */
+  pathSafeId: string;
 }
 
 // ── Registry ─────────────────────────────────────────────────────────────────
@@ -59,6 +64,7 @@ export const MODEL_REGISTRY: Record<string, ModelDefinition> = {
     documentPrefix: '',
     bundled: true,
     dtype: 'q8',
+    pathSafeId: 'arctic-xs',
   },
   'nomic-embed-text-v1.5': {
     displayName: 'Nomic Embed v1.5 (131MB, 768-dim)',
@@ -70,6 +76,7 @@ export const MODEL_REGISTRY: Record<string, ModelDefinition> = {
     documentPrefix: 'search_document: ',
     bundled: true,
     dtype: 'q8',
+    pathSafeId: 'nomic-v1',
   },
 };
 
@@ -119,4 +126,15 @@ export function isBuiltInModel(modelId: string): boolean {
 export function resolveModelAlias(modelId: string): string {
   if (modelId === 'built-in') return DEFAULT_MODEL;
   return modelId;
+}
+
+/**
+ * Return the path-safe identifier for a model, used when auto-generating database filenames.
+ * For known registry models, returns the deliberate `pathSafeId`.
+ * For unknown models (e.g. Ollama), sanitizes the model ID to be path-safe.
+ */
+export function getModelPathSafeId(modelId: string): string {
+  const def = MODEL_REGISTRY[modelId];
+  if (def?.pathSafeId) return def.pathSafeId;
+  return modelId.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/(^-|-$)/g, '');
 }

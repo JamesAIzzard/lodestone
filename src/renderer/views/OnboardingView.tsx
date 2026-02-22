@@ -12,11 +12,10 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import ExtensionPicker from '@/components/ExtensionPicker';
 
 const STEPS = ['Ollama', 'Silo', 'Indexing'] as const;
 type Step = (typeof STEPS)[number];
-
-const COMMON_EXTENSIONS = ['.md', '.py', '.ts', '.js', '.toml', '.yaml', '.json', '.pdf'];
 
 export default function OnboardingView() {
   const navigate = useNavigate();
@@ -161,12 +160,6 @@ export default function OnboardingView() {
 
   function removeDirectory(dir: string) {
     setDirectories((prev) => prev.filter((d) => d !== dir));
-  }
-
-  function toggleExtension(ext: string) {
-    setExtensions((prev) =>
-      prev.includes(ext) ? prev.filter((e) => e !== ext) : [...prev, ext],
-    );
   }
 
   return (
@@ -327,22 +320,7 @@ export default function OnboardingView() {
               <label className="mt-4 mb-1.5 block text-xs text-muted-foreground">
                 File Extensions
               </label>
-              <div className="flex flex-wrap gap-1.5">
-                {COMMON_EXTENSIONS.map((ext) => (
-                  <button
-                    key={ext}
-                    onClick={() => toggleExtension(ext)}
-                    className={cn(
-                      'rounded-md border px-2 py-0.5 text-xs transition-colors',
-                      extensions.includes(ext)
-                        ? 'border-primary bg-primary/10 text-foreground'
-                        : 'border-border text-muted-foreground hover:border-foreground/20',
-                    )}
-                  >
-                    {ext}
-                  </button>
-                ))}
-              </div>
+              <ExtensionPicker extensions={extensions} onChange={setExtensions} />
 
               {/* Model */}
               <label className="mt-4 mb-1.5 block text-xs text-muted-foreground">

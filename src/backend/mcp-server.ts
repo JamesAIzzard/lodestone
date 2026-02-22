@@ -187,9 +187,43 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
         };
       }
 
+      // Check silo readiness — collect warnings for partial results
+      const warnings: string[] = [];
+      for (const [name, manager] of managersToSearch) {
+        const service = manager.getEmbeddingService();
+        const status = manager.getStatus();
+        if (!service) {
+          warnings.push(`Silo "${name}" is still initializing and not yet searchable.`);
+        } else if (status.watcherState === 'indexing') {
+          const prog = status.reconcileProgress;
+          if (prog) {
+            warnings.push(
+              `Silo "${name}" is indexing (${prog.current.toLocaleString()} / ${prog.total.toLocaleString()} files) — results may be incomplete.`,
+            );
+          } else {
+            warnings.push(`Silo "${name}" is indexing — results may be incomplete.`);
+          }
+        }
+      }
+
+      // Filter to silos that have an embedding service ready
+      const searchableManagers = managersToSearch.filter(
+        ([, m]) => m.getEmbeddingService() !== null,
+      );
+
+      if (searchableManagers.length === 0) {
+        const warningText = warnings.join('\n');
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `${warningText}\n\nNo silos are ready for search yet. Use lodestone_status to check progress.`,
+          }],
+        };
+      }
+
       // Group silos by embedding model so we only embed the query once per model
       const byModel = new Map<string, Array<[string, SiloManager]>>();
-      for (const [name, manager] of managersToSearch) {
+      for (const [name, manager] of searchableManagers) {
         const model = manager.getConfig().model;
         let group = byModel.get(model);
         if (!group) { group = []; byModel.set(model, group); }
@@ -200,9 +234,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
       const raw: RawSiloResult[] = [];
 
       for (const [, group] of byModel) {
-        const service = group[0][1].getEmbeddingService();
-        if (!service) continue;
-
+        const service = group[0][1].getEmbeddingService()!;
         const queryVector = await service.embed(query);
 
         for (const [name, manager] of group) {
@@ -229,7 +261,13 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
       merged.sort((a, b) => b.score - a.score);
       const topResults = merged.slice(0, limit);
 
-      const text = formatSearchResults(topResults);
+      let text = formatSearchResults(topResults);
+
+      // Prepend readiness warnings so the caller knows about partial results
+      if (warnings.length > 0) {
+        const warningBlock = warnings.map(w => `> ${w}`).join('\n');
+        text = `${warningBlock}\n\n${text}`;
+      }
 
       return {
         content: [{ type: 'text' as const, text }],
@@ -249,11 +287,19 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
       const lines: string[] = ['# Lodestone Status', ''];
 
       for (const [name, manager] of siloManagers) {
-        const status = await manager.getStatus();
+        const status = manager.getStatus();
         const cfg = manager.getConfig();
         lines.push(`## ${name}`);
         if (cfg.description) lines.push(`Description: ${cfg.description}`);
-        lines.push(`State: ${status.watcherState}`);
+
+        // Show reconciliation progress when indexing
+        if (status.watcherState === 'indexing' && status.reconcileProgress) {
+          const { current, total } = status.reconcileProgress;
+          lines.push(`State: indexing (${current.toLocaleString()} / ${total.toLocaleString()} files)`);
+        } else {
+          lines.push(`State: ${status.watcherState}`);
+        }
+
         lines.push(`Files: ${status.indexedFileCount.toLocaleString()}`);
         lines.push(`Chunks: ${status.chunkCount.toLocaleString()}`);
         lines.push(`Size: ${formatBytes(status.databaseSizeBytes)}`);

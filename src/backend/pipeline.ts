@@ -96,6 +96,7 @@ export async function indexFile(
   storedKey: string,
   embeddingService: EmbeddingService,
   db: SiloDatabase,
+  mtimeMs?: number,
 ): Promise<IndexFileResult> {
   const start = performance.now();
 
@@ -116,7 +117,7 @@ export async function indexFile(
 
   if (chunks.length === 0) {
     // Empty file or only metadata — remove any stale chunks
-    await deleteFileChunks(db, storedKey);
+    await deleteFileChunks(db, storedKey, mtimeMs !== undefined);
     return { filePath: storedKey, chunkCount: 0, durationMs: performance.now() - start };
   }
 
@@ -133,8 +134,8 @@ export async function indexFile(
     embeddings.push(...batchEmbeddings);
   }
 
-  // Store (atomic upsert: removes old chunks, inserts new)
-  await upsertFileChunks(db, storedKey, storedChunks, embeddings);
+  // Store (atomic upsert: removes old chunks, inserts new, persists mtime if provided)
+  await upsertFileChunks(db, storedKey, storedChunks, embeddings, mtimeMs);
 
   return {
     filePath: storedKey,
@@ -148,6 +149,6 @@ export async function indexFile(
 /**
  * Remove all chunks for a file from the store.
  */
-export async function removeFile(filePath: string, db: SiloDatabase): Promise<void> {
-  await deleteFileChunks(db, filePath);
+export async function removeFile(filePath: string, db: SiloDatabase, deleteMtimeEntry?: boolean): Promise<void> {
+  await deleteFileChunks(db, filePath, deleteMtimeEntry);
 }

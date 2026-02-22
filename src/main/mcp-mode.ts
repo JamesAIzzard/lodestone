@@ -4,7 +4,7 @@
  * In this mode:
  * - No Electron window or tray is created
  * - Logging goes to stderr (stdout is unused — MCP traffic flows over a named pipe)
- * - All silos are started and awaited before accepting MCP connections
+ * - The MCP pipe connects immediately; silos start in the background
  * - The process exits when the named pipe disconnects
  *
  * On Windows, Electron is a GUI app and cannot receive piped stdin
@@ -18,12 +18,10 @@ import {
   saveConfig,
   createDefaultConfig,
   configExists,
-  resolveSiloConfig,
 } from '../backend/config';
-import { SiloManager } from '../backend/silo-manager';
 import { startMcpServer } from '../backend/mcp-server';
 import type { AppContext } from './context';
-import { shutdownBackend } from './lifecycle';
+import { registerManager, shutdownBackend } from './lifecycle';
 
 export async function startMcpMode(ctx: AppContext): Promise<void> {
   console.log('[main] Starting in MCP mode (headless)');
@@ -53,38 +51,16 @@ export async function startMcpMode(ctx: AppContext): Promise<void> {
     console.log(`[main] Created default config at ${configPath}`);
   }
 
-  // Start all non-sleeping silos sequentially
-  const pendingManagers: Array<[string, SiloManager]> = [];
+  // Register all silos — this creates managers and enqueues non-sleeping
+  // silos for sequential background startup via ctx.siloStartQueue.
+  // The MCP server will accept requests immediately; silos that haven't
+  // finished reconciliation yet will return partial results with warnings.
   for (const [name, siloToml] of Object.entries(ctx.config.silos)) {
-    const resolved = resolveSiloConfig(name, siloToml, ctx.config);
-    const embeddingService = ctx.getOrCreateEmbeddingService(resolved.model);
-    const manager = new SiloManager(
-      resolved,
-      embeddingService,
-      ctx.getUserDataDir(),
-    );
-
-    ctx.siloManagers.set(name, manager);
-
-    if (resolved.sleeping) {
-      manager.loadSleepingStatus();
-      console.log(`[main] Silo "${name}" is sleeping`);
-    } else {
-      pendingManagers.push([name, manager]);
-    }
+    registerManager(ctx, name, siloToml);
   }
 
-  for (const [name, manager] of pendingManagers) {
-    try {
-      await manager.start();
-      console.log(`[main] Silo "${name}" ready`);
-    } catch (err) {
-      console.error(`[main] Failed to start silo "${name}":`, err);
-    }
-  }
-  console.log(`[main] All silos ready — connecting to MCP pipe`);
-
-  // Connect to the named pipe created by mcp-wrapper.js
+  // Connect to the named pipe created by mcp-wrapper.js — before silos finish
+  console.log(`[main] Connecting to MCP pipe (silos starting in background)`);
   const { createConnection } = await import('node:net');
   const socket = createConnection(ipcPath);
 

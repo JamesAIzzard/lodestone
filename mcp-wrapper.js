@@ -12,6 +12,15 @@
  *   3. Relays stdin/stdout (MCP protocol) ↔ named pipe (Electron)
  *   4. Electron's actual stdout/stderr go to the wrapper's stderr (debug logs)
  *
+ * Works in two modes:
+ *
+ *   Development — run from the project root:
+ *     Uses node_modules/electron and .vite/build/main.js
+ *
+ *   Production — run from an installed Squirrel app:
+ *     Finds the installed Lodestone.exe under %LOCALAPPDATA%\Lodestone\app-*\
+ *     (No entry path needed — the ASAR is loaded automatically by Electron)
+ *
  * Claude Desktop config (claude_desktop_config.json):
  *   {
  *     "mcpServers": {
@@ -25,11 +34,46 @@
 
 const net = require('net');
 const crypto = require('crypto');
+const fs = require('fs');
 const { spawn } = require('child_process');
 const path = require('path');
 
-const electronPath = path.join(__dirname, 'node_modules', 'electron', 'dist', 'electron.exe');
-const entryPath = path.join(__dirname, '.vite', 'build', 'main.js');
+// ── Resolve Electron binary ──────────────────────────────────────────────────
+// Try the installed Squirrel app first, fall back to the dev tree.
+
+function findInstalledElectron() {
+  const installDir = path.join(process.env.LOCALAPPDATA || '', 'Lodestone');
+  if (!fs.existsSync(installDir)) return null;
+
+  // Squirrel puts each version in app-x.x.x/ — find the latest one
+  const appDirs = fs.readdirSync(installDir)
+    .filter((d) => d.startsWith('app-'))
+    .sort();
+
+  if (appDirs.length === 0) return null;
+
+  const latestApp = appDirs[appDirs.length - 1];
+  const exePath = path.join(installDir, latestApp, 'Lodestone.exe');
+  return fs.existsSync(exePath) ? exePath : null;
+}
+
+const installedPath = findInstalledElectron();
+const devElectronPath = path.join(__dirname, 'node_modules', 'electron', 'dist', 'electron.exe');
+const devEntryPath = path.join(__dirname, '.vite', 'build', 'main.js');
+
+let electronPath, spawnArgs;
+
+if (installedPath) {
+  // Production: Electron loads app.asar automatically — no entry path needed
+  electronPath = installedPath;
+  spawnArgs = (pipePath) => ['--mcp', `--ipc-path=${pipePath}`];
+  process.stderr.write(`[mcp-wrapper] using installed: ${installedPath}\n`);
+} else {
+  // Development: use node_modules/electron with explicit entry
+  electronPath = devElectronPath;
+  spawnArgs = (pipePath) => [devEntryPath, '--mcp', `--ipc-path=${pipePath}`];
+  process.stderr.write(`[mcp-wrapper] using dev: ${devElectronPath}\n`);
+}
 
 // Generate a unique named pipe path for this session
 const pipeId = crypto.randomBytes(4).toString('hex');
@@ -65,7 +109,7 @@ ipcServer.listen(pipePath, () => {
   process.stderr.write(`[mcp-wrapper] listening on ${pipePath}\n`);
 
   // Spawn Electron — stdin is ignored (we use the named pipe instead)
-  child = spawn(electronPath, [entryPath, '--mcp', `--ipc-path=${pipePath}`], {
+  child = spawn(electronPath, spawnArgs(pipePath), {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

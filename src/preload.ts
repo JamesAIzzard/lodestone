@@ -68,4 +68,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('config:path'),
   getDataDir: (): Promise<string> =>
     ipcRenderer.invoke('data:dir'),
+
+  // Claude Desktop Integration
+  getClaudeDesktopStatus: (): Promise<unknown> =>
+    ipcRenderer.invoke('mcp:getClaudeDesktopStatus'),
+  configureClaudeDesktop: (): Promise<unknown> =>
+    ipcRenderer.invoke('mcp:configureClaudeDesktop'),
 });

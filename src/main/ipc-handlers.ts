@@ -5,7 +5,7 @@
  * Handlers access shared state via the AppContext object.
  */
 
-import { dialog, ipcMain, shell } from 'electron';
+import { app, dialog, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -288,6 +288,67 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return { success: true };
   });
 
+
+  // ── Claude Desktop Integration ──────────────────────────────────────────
+
+  function getClaudeDesktopConfigPath(): string {
+    return path.join(app.getPath('appData'), 'Claude', 'claude_desktop_config.json');
+  }
+
+  function getMcpWrapperPath(): string {
+    return app.isPackaged
+      ? path.join(process.resourcesPath, 'mcp-wrapper.js')
+      : path.join(app.getAppPath(), 'mcp-wrapper.js');
+  }
+
+  ipcMain.handle('mcp:getClaudeDesktopStatus', async (): Promise<{
+    configPath: string;
+    hasClaudeDesktop: boolean;
+    isConfigured: boolean;
+  }> => {
+    const configPath = getClaudeDesktopConfigPath();
+    const hasClaudeDesktop = fs.existsSync(path.dirname(configPath));
+    let isConfigured = false;
+    try {
+      if (fs.existsSync(configPath)) {
+        const raw = fs.readFileSync(configPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        isConfigured = !!parsed?.mcpServers?.lodestone;
+      }
+    } catch {
+      // Malformed JSON — treat as not configured
+    }
+    return { configPath, hasClaudeDesktop, isConfigured };
+  });
+
+  ipcMain.handle('mcp:configureClaudeDesktop', async (): Promise<{
+    success: boolean;
+    configPath: string;
+    error?: string;
+  }> => {
+    const configPath = getClaudeDesktopConfigPath();
+    const wrapperPath = getMcpWrapperPath();
+    try {
+      let config: Record<string, unknown> = {};
+      if (fs.existsSync(configPath)) {
+        try {
+          config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        } catch {
+          // Malformed JSON — start fresh
+        }
+      }
+      const mcpServers = (config.mcpServers as Record<string, unknown>) ?? {};
+      config.mcpServers = {
+        ...mcpServers,
+        lodestone: { command: 'node', args: [wrapperPath] },
+      };
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+      return { success: true, configPath };
+    } catch (err) {
+      return { success: false, configPath, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   // ── Silo CRUD ───────────────────────────────────────────────────────────
 

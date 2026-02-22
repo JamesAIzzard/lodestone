@@ -20,6 +20,9 @@ export default function SettingsView() {
   const [dataDir, setDataDir] = useState('');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [claudeStatus, setClaudeStatus] = useState<{ configPath: string; hasClaudeDesktop: boolean; isConfigured: boolean } | null>(null);
+  const [configuringClaude, setConfiguringClaude] = useState(false);
+  const [claudeConfigResult, setClaudeConfigResult] = useState<{ success: boolean; configPath: string; error?: string } | null>(null);
 
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((s) => {
@@ -34,6 +37,7 @@ export default function SettingsView() {
       setDebounce(d.debounce);
     });
     window.electronAPI?.getDataDir().then((dir) => setDataDir(dir));
+    window.electronAPI?.getClaudeDesktopStatus().then(setClaudeStatus);
   }, []);
 
   async function handleTestConnection() {
@@ -78,6 +82,21 @@ export default function SettingsView() {
     } finally {
       setResetting(false);
       setShowResetConfirm(false);
+    }
+  }
+
+  async function handleConfigureClaude() {
+    setConfiguringClaude(true);
+    setClaudeConfigResult(null);
+    try {
+      const result = await window.electronAPI?.configureClaudeDesktop();
+      setClaudeConfigResult(result ?? { success: false, configPath: '', error: 'Unknown error' });
+      if (result?.success) {
+        const status = await window.electronAPI?.getClaudeDesktopStatus();
+        setClaudeStatus(status ?? null);
+      }
+    } finally {
+      setConfiguringClaude(false);
     }
   }
 
@@ -209,6 +228,54 @@ export default function SettingsView() {
               className="h-9 w-24 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <span className="text-sm text-muted-foreground">seconds</span>
+          </div>
+        </Section>
+
+        {/* ── Claude Desktop Integration ───────────────────────── */}
+        <Section
+          title="Claude Desktop Integration"
+          description="Automatically register Lodestone as an MCP server in Claude Desktop."
+        >
+          <div className="flex flex-col gap-3">
+            {claudeStatus?.isConfigured && (
+              <div className="flex items-center gap-2 text-sm text-emerald-400">
+                <CheckCircle2 className="h-4 w-4" />
+                MCP server is configured
+              </div>
+            )}
+            {claudeStatus && !claudeStatus.isConfigured && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <XCircle className="h-4 w-4" />
+                Not yet configured
+              </div>
+            )}
+            <div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleConfigureClaude}
+                disabled={configuringClaude}
+              >
+                {configuringClaude && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {claudeStatus?.isConfigured ? 'Reconfigure' : 'Configure Claude Desktop'}
+              </Button>
+              <p className="mt-2 text-xs text-muted-foreground/60">
+                Writes the <code className="text-[10px]">lodestone</code> entry to{' '}
+                <code className="text-[10px]">{claudeStatus?.configPath ?? 'claude_desktop_config.json'}</code>.
+                Existing MCP servers are preserved. Restart Claude Desktop after configuring.
+              </p>
+            </div>
+            {claudeConfigResult?.success && (
+              <div className="flex items-center gap-2 text-sm text-emerald-400">
+                <CheckCircle2 className="h-4 w-4" />
+                Configured — restart Claude Desktop to apply
+              </div>
+            )}
+            {claudeConfigResult && !claudeConfigResult.success && (
+              <div className="text-sm text-red-400">
+                Error: {claudeConfigResult.error}
+              </div>
+            )}
           </div>
         </Section>
 

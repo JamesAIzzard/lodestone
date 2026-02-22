@@ -67,6 +67,18 @@ export interface ElectronAPI {
   testOllamaConnection: (url: string) => Promise<{ connected: boolean; models: string[] }>;
   getConfigPath: () => Promise<string>;
   getDataDir: () => Promise<string>;
+
+  // ── Claude Desktop Integration ────────────────────────────────────────────
+  getClaudeDesktopStatus: () => Promise<{
+    configPath: string;
+    hasClaudeDesktop: boolean;
+    isConfigured: boolean;
+  }>;
+  configureClaudeDesktop: () => Promise<{
+    success: boolean;
+    configPath: string;
+    error?: string;
+  }>;
 }
 
 declare global {

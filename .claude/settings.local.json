@@ -24,7 +24,11 @@
       "Bash(npx electron-forge package:*)",
       "Bash(npx vite build)",
       "Bash(python3:*)",
-      "Bash(npx shadcn@latest add:*)"
+      "Bash(npx shadcn@latest add:*)",
+      "Bash(git pull:*)",
+      "Bash(grep:*)",
+      "Bash(npx electron-forge make:*)",
+      "Bash(xargs basename:*)"
     ]
   }
 }

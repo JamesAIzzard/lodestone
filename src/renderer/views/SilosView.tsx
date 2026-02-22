@@ -19,17 +19,28 @@ export default function SilosView() {
 
   useEffect(() => {
     fetchSilos();
-    // Re-fetch when state changes externally (e.g. tray sleep/wake)
+    // Re-fetch when state changes externally (e.g. tray stop/wake)
     const unsub = window.electronAPI?.onSilosChanged(fetchSilos);
     return () => unsub?.();
   }, []);
 
-  // Poll while any silo is indexing
+  // Keep the selected silo in sync with the latest data so the
+  // detail modal reflects live stats (file count, chunks, progress, etc.)
   useEffect(() => {
-    const anyIndexing = silos.some((s) => s.watcherState === 'indexing' || s.watcherState === 'waiting');
-    if (anyIndexing && !pollRef.current) {
+    if (selectedSilo) {
+      const updated = silos.find((s) => s.config.name === selectedSilo.config.name);
+      if (updated) setSelectedSilo(updated);
+    }
+  }, [silos]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Poll while any silo is indexing or waiting
+  useEffect(() => {
+    const anyActive = silos.some((s) =>
+      s.watcherState === 'indexing' || s.watcherState === 'waiting'
+    );
+    if (anyActive && !pollRef.current) {
       pollRef.current = setInterval(fetchSilos, 2000);
-    } else if (!anyIndexing && pollRef.current) {
+    } else if (!anyActive && pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
@@ -46,11 +57,11 @@ export default function SilosView() {
     setDetailOpen(true);
   }
 
-  async function handleSleepToggle(silo: SiloStatus) {
-    if (silo.watcherState === 'sleeping') {
+  async function handleStopToggle(silo: SiloStatus) {
+    if (silo.watcherState === 'stopped') {
       await window.electronAPI?.wakeSilo(silo.config.name);
     } else {
-      await window.electronAPI?.sleepSilo(silo.config.name);
+      await window.electronAPI?.stopSilo(silo.config.name);
     }
     fetchSilos();
   }
@@ -76,7 +87,7 @@ export default function SilosView() {
               key={silo.config.name}
               silo={silo}
               onClick={() => handleCardClick(silo)}
-              onSleepToggle={() => handleSleepToggle(silo)}
+              onStopToggle={() => handleStopToggle(silo)}
             />
           ))}
         </div>
@@ -87,7 +98,7 @@ export default function SilosView() {
         open={detailOpen}
         onOpenChange={setDetailOpen}
         onDeleted={fetchSilos}
-        onSleepToggle={selectedSilo ? () => handleSleepToggle(selectedSilo) : undefined}
+        onStopToggle={selectedSilo ? () => handleStopToggle(selectedSilo) : undefined}
         onRebuilt={fetchSilos}
         onUpdated={fetchSilos}
       />

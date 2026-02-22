@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Search, FileText, ExternalLink, Loader2, ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
 import type { SiloStatus, SearchResult, MatchType } from '../../shared/types';
 
 function fileName(p: string): string {
@@ -49,6 +50,13 @@ export default function SearchView() {
     return () => unsub?.();
   }, []);
 
+  // Build silo name → colour lookup
+  const siloColorMap = useMemo(() => {
+    const map = new Map<string, SiloColor>();
+    for (const s of silos) map.set(s.config.name, s.config.color);
+    return map;
+  }, [silos]);
+
   async function handleSearch() {
     if (!query.trim() || searching) return;
     setHasSearched(true);
@@ -87,8 +95,8 @@ export default function SearchView() {
           >
             <option value="all">All Silos</option>
             {silos.map((s) => (
-              <option key={s.config.name} value={s.config.name} disabled={s.watcherState === 'sleeping'}>
-                {s.config.name}{s.watcherState === 'sleeping' ? ' (sleeping)' : ''}
+              <option key={s.config.name} value={s.config.name} disabled={s.watcherState === 'stopped'}>
+                {s.config.name}{s.watcherState === 'stopped' ? ' (stopped)' : ''}
               </option>
             ))}
           </select>
@@ -123,19 +131,19 @@ export default function SearchView() {
         )}
 
         {!searching && hasSearched && (() => {
-          const sleepingSilos = silos.filter((s) => s.watcherState === 'sleeping');
-          const sleepingSkipped = selectedSilo === 'all'
-            ? sleepingSilos
-            : sleepingSilos.filter((s) => s.config.name === selectedSilo);
-          const sleepingHint = sleepingSkipped.length > 0
-            ? `${sleepingSkipped.map((s) => s.config.name).join(', ')} ${sleepingSkipped.length === 1 ? 'is' : 'are'} sleeping and ${sleepingSkipped.length === 1 ? 'was' : 'were'} not searched.`
+          const stoppedSilos = silos.filter((s) => s.watcherState === 'stopped');
+          const stoppedSkipped = selectedSilo === 'all'
+            ? stoppedSilos
+            : stoppedSilos.filter((s) => s.config.name === selectedSilo);
+          const stoppedHint = stoppedSkipped.length > 0
+            ? `${stoppedSkipped.map((s) => s.config.name).join(', ')} ${stoppedSkipped.length === 1 ? 'is' : 'are'} stopped and ${stoppedSkipped.length === 1 ? 'was' : 'were'} not searched.`
             : null;
 
           return results.length === 0 ? (
             <div>
               <p className="text-sm text-muted-foreground">No results found.</p>
-              {sleepingHint && (
-                <p className="mt-1 text-xs text-muted-foreground/50">{sleepingHint}</p>
+              {stoppedHint && (
+                <p className="mt-1 text-xs text-muted-foreground/50">{stoppedHint}</p>
               )}
             </div>
           ) : (
@@ -144,8 +152,8 @@ export default function SearchView() {
                 <p className="text-xs text-muted-foreground">
                   {results.length} result{results.length !== 1 && 's'}
                 </p>
-                {sleepingHint && (
-                  <p className="mt-0.5 text-[10px] text-muted-foreground/50">{sleepingHint}</p>
+                {stoppedHint && (
+                  <p className="mt-0.5 text-[10px] text-muted-foreground/50">{stoppedHint}</p>
                 )}
               </div>
 
@@ -178,7 +186,14 @@ export default function SearchView() {
                       </div>
                       <div className="flex items-center gap-2 text-xs text-muted-foreground/50">
                         <span className="truncate">{dirPath(result.filePath)}</span>
-                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        <span className={cn(
+                          'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
+                          (() => {
+                            const c = siloColorMap.get(result.siloName) ?? DEFAULT_SILO_COLOR;
+                            const classes = SILO_COLOR_MAP[c];
+                            return `${classes.bgSoft} ${classes.text}`;
+                          })(),
+                        )}>
                           {result.siloName}
                         </span>
                         <span className={cn(
@@ -214,17 +229,42 @@ export default function SearchView() {
                   {/* Expanded chunks */}
                   {isExpanded && result.chunks.length > 0 && (
                     <div className="ml-[26px] border-l-2 border-accent/40 pl-4 pb-2">
+                      {/* File-level score breakdown */}
+                      <div className="mt-1.5 mb-1 flex items-center gap-1.5 text-[10px] text-muted-foreground/40">
+                        <span>RRF {scorePercent(result.rrfScore)}</span>
+                        <span>·</span>
+                        <span>best cosine {scorePercent(result.bestCosineSimilarity)}</span>
+                        {Math.abs(result.score - result.rrfScore) > 0.001 && (
+                          <>
+                            <span>·</span>
+                            <span>calibrated {scorePercent(result.score)}</span>
+                          </>
+                        )}
+                      </div>
                       {result.chunks.map((chunk, ci) => (
                         <div
                           key={ci}
                           className="mt-2 rounded-md bg-muted/30 px-3 py-2"
                         >
-                          <div className="flex items-center justify-between gap-2 mb-1">
-                            {chunk.sectionPath.length > 0 && (
-                              <span className="text-[11px] font-medium text-muted-foreground">
-                                {chunk.sectionPath.join(' > ')}
+                          <div className="flex items-start justify-between gap-2 mb-1">
+                            <div className="flex flex-wrap items-center gap-1 min-w-0">
+                              {chunk.sectionPath.length > 0 && (
+                                <span className="text-[11px] font-medium text-muted-foreground">
+                                  {chunk.sectionPath.join(' > ')}
+                                </span>
+                              )}
+                              <span className={cn(
+                                'rounded px-1 py-0.5 text-[9px]',
+                                matchTypeColor[chunk.matchType],
+                              )}>
+                                {matchTypeLabel[chunk.matchType]}
                               </span>
-                            )}
+                              {chunk.cosineSimilarity > 0 && (
+                                <span className="text-[10px] text-muted-foreground/40">
+                                  cos {scorePercent(chunk.cosineSimilarity)}
+                                </span>
+                              )}
+                            </div>
                             <span className="shrink-0 text-[10px] text-muted-foreground/50">
                               {scorePercent(chunk.score)}
                             </span>

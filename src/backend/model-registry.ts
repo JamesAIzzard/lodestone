@@ -22,8 +22,14 @@ export interface ModelDefinition {
   hfModelId: string;
   /** Vector dimensionality */
   dimensions: number;
-  /** Maximum tokens the model handles well */
+  /** Maximum tokens the model can technically process (used for max_length/truncation in ONNX) */
   maxTokens: number;
+  /**
+   * Target chunk size for the chunker pipeline. Typically much less than maxTokens —
+   * smaller chunks improve retrieval precision and reduce peak ONNX memory.
+   * For nomic-embed-text-v1.5, maxTokens is 8192 but 512-token chunks work better.
+   */
+  chunkTokens: number;
   /** Prefix to prepend to query text before encoding (empty string if none) */
   queryPrefix: string;
   /** Prefix to prepend to document text before encoding (empty string if none) */
@@ -48,6 +54,7 @@ export const MODEL_REGISTRY: Record<string, ModelDefinition> = {
     hfModelId: 'Snowflake/snowflake-arctic-embed-xs',
     dimensions: 384,
     maxTokens: 512,
+    chunkTokens: 512,
     queryPrefix: 'Represent this sentence for searching relevant passages: ',
     documentPrefix: '',
     bundled: true,
@@ -57,7 +64,8 @@ export const MODEL_REGISTRY: Record<string, ModelDefinition> = {
     displayName: 'Nomic Embed v1.5 (131MB, 768-dim)',
     hfModelId: 'nomic-ai/nomic-embed-text-v1.5',
     dimensions: 768,
-    maxTokens: 8192,
+    maxTokens: 8192,  // model's technical limit — kept for truncation safety
+    chunkTokens: 512, // target chunk size — 8192 causes huge ONNX tensors and poor retrieval precision
     queryPrefix: 'search_query: ',
     documentPrefix: 'search_document: ',
     bundled: true,
@@ -101,7 +109,7 @@ export function getBundledModelIds(): string[] {
  * Ollama models are not built-in.
  */
 export function isBuiltInModel(modelId: string): boolean {
-  return modelId in MODEL_REGISTRY;
+  return MODEL_REGISTRY[modelId]?.bundled === true;
 }
 
 /**

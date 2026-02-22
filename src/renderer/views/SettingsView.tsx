@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Loader2, CheckCircle2, XCircle, X, FileCode } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, FileCode } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
+import ExtensionPicker from '@/components/ExtensionPicker';
 import type { ServerStatus } from '../../shared/types';
 
 export default function SettingsView() {
@@ -10,16 +12,20 @@ export default function SettingsView() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ connected: boolean; models: string[] } | null>(null);
   const [selectedModel, setSelectedModel] = useState('');
-  const [extensions, setExtensions] = useState(['.md', '.py']);
-  const [extInput, setExtInput] = useState('');
-  const [ignorePatterns, setIgnorePatterns] = useState(['.git', '__pycache__', 'node_modules', '.obsidian']);
-  const [ignoreInput, setIgnoreInput] = useState('');
+  const [extensions, setExtensions] = useState<string[]>([]);
+  const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
+  const [fileIgnore, setFileIgnore] = useState<string[]>([]);
 
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((s) => {
       setStatus(s);
       setOllamaUrl(s.ollamaUrl);
       setSelectedModel(s.defaultModel);
+    });
+    window.electronAPI?.getDefaults().then((d) => {
+      setExtensions(d.extensions);
+      setFolderIgnore(d.ignore);
+      setFileIgnore(d.ignoreFiles);
     });
   }, []);
 
@@ -36,29 +42,19 @@ export default function SettingsView() {
     }
   }
 
-  function addExtension() {
-    const val = extInput.trim();
-    if (!val) return;
-    const ext = val.startsWith('.') ? val : `.${val}`;
-    if (!extensions.includes(ext)) {
-      setExtensions((prev) => [...prev, ext]);
-    }
-    setExtInput('');
+  function handleExtensionsChange(updated: string[]) {
+    setExtensions(updated);
+    window.electronAPI?.updateDefaults({ extensions: updated });
   }
 
-  function removeExtension(ext: string) {
-    setExtensions((prev) => prev.filter((e) => e !== ext));
+  function handleFolderIgnoreChange(patterns: string[]) {
+    setFolderIgnore(patterns);
+    window.electronAPI?.updateDefaults({ ignore: patterns });
   }
 
-  function addIgnorePattern() {
-    const val = ignoreInput.trim();
-    if (!val || ignorePatterns.includes(val)) return;
-    setIgnorePatterns((prev) => [...prev, val]);
-    setIgnoreInput('');
-  }
-
-  function removeIgnorePattern(pattern: string) {
-    setIgnorePatterns((prev) => prev.filter((p) => p !== pattern));
+  function handleFileIgnoreChange(patterns: string[]) {
+    setFileIgnore(patterns);
+    window.electronAPI?.updateDefaults({ ignoreFiles: patterns });
   }
 
   async function handleOpenConfig() {
@@ -72,14 +68,12 @@ export default function SettingsView() {
     availableModels.push(...status.availableModels);
   }
   if (testResult?.connected) {
-    // Add any Ollama models not already in the list
     for (const m of testResult.models) {
       if (!availableModels.includes(m)) {
         availableModels.push(m);
       }
     }
   }
-  // Fallback if nothing loaded yet
   if (availableModels.length === 0) {
     availableModels.push('snowflake-arctic-embed-xs');
   }
@@ -156,59 +150,20 @@ export default function SettingsView() {
           title="Default File Extensions"
           description="Extensions to index when creating new silos."
         >
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {extensions.map((ext) => (
-              <Badge key={ext} variant="secondary" className="gap-1 text-xs">
-                {ext}
-                <button onClick={() => removeExtension(ext)}>
-                  <X className="h-2.5 w-2.5" />
-                </button>
-              </Badge>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={extInput}
-              onChange={(e) => setExtInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && addExtension()}
-              placeholder="e.g. .ts"
-              className="h-8 w-32 rounded-md border border-input bg-background px-3 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-            <Button variant="outline" size="sm" onClick={addExtension}>
-              Add
-            </Button>
-          </div>
+          <ExtensionPicker extensions={extensions} onChange={handleExtensionsChange} />
         </Section>
 
         {/* ── Default Ignore Patterns ──────────────────────────── */}
         <Section
           title="Default Ignore Patterns"
-          description="Directories and patterns to exclude from indexing."
+          description="Patterns to exclude from indexing. Applied to newly created silos."
         >
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {ignorePatterns.map((pattern) => (
-              <Badge key={pattern} variant="secondary" className="gap-1 text-xs">
-                {pattern}
-                <button onClick={() => removeIgnorePattern(pattern)}>
-                  <X className="h-2.5 w-2.5" />
-                </button>
-              </Badge>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={ignoreInput}
-              onChange={(e) => setIgnoreInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && addIgnorePattern()}
-              placeholder="e.g. .venv"
-              className="h-8 w-32 rounded-md border border-input bg-background px-3 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-            <Button variant="outline" size="sm" onClick={addIgnorePattern}>
-              Add
-            </Button>
-          </div>
+          <IgnorePatternsEditor
+            folderPatterns={folderIgnore}
+            filePatterns={fileIgnore}
+            onFolderPatternsChange={handleFolderIgnoreChange}
+            onFilePatternsChange={handleFileIgnoreChange}
+          />
         </Section>
 
         {/* ── Advanced ─────────────────────────────────────────── */}

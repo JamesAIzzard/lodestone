@@ -4,23 +4,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Dialogs & Shell
   selectDirectories: (): Promise<string[]> =>
     ipcRenderer.invoke('dialog:selectDirectories'),
+  selectDbFile: (): Promise<string | null> =>
+    ipcRenderer.invoke('dialog:selectDbFile'),
+  saveDbFile: (defaultName: string): Promise<string | null> =>
+    ipcRenderer.invoke('dialog:saveDbFile', defaultName),
   openPath: (path: string): Promise<void> =>
     ipcRenderer.invoke('shell:openPath', path),
+  readDbConfig: (dbPath: string): Promise<unknown> =>
+    ipcRenderer.invoke('db:readConfig', dbPath),
 
   // Silos
   getSilos: (): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:list'),
-  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string }): Promise<unknown> =>
+  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string }): Promise<unknown> =>
     ipcRenderer.invoke('silos:create', opts),
   deleteSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:delete', name),
-  sleepSilo: (name: string): Promise<unknown> =>
-    ipcRenderer.invoke('silos:sleep', name),
+  disconnectSilo: (name: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:disconnect', name),
+  stopSilo: (name: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:stop', name),
   wakeSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:wake', name),
   rebuildSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:rebuild', name),
-  updateSilo: (name: string, updates: { description?: string; model?: string }): Promise<unknown> =>
+  updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string }): Promise<unknown> =>
     ipcRenderer.invoke('silos:update', name, updates),
   search: (query: string, siloName?: string): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:search', query, siloName),
@@ -40,6 +48,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('silos:changed', handler);
     return () => ipcRenderer.removeListener('silos:changed', handler);
   },
+
+  // Defaults
+  getDefaults: (): Promise<unknown> =>
+    ipcRenderer.invoke('defaults:get'),
+  updateDefaults: (updates: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke('defaults:update', updates),
 
   // Server / Settings
   getServerStatus: (): Promise<unknown> =>

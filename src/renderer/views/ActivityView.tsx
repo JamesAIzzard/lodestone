@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { AlertCircle, ChevronDown, FileMinus, RefreshCw, FilePlus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
+import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
 import type { SiloStatus, ActivityEvent, ActivityEventType } from '../../shared/types';
 
 function fileName(p: string): string {
@@ -38,6 +39,13 @@ export default function ActivityView() {
     new Set(ALL_EVENT_TYPES),
   );
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
+
+  // Build silo name → colour lookup
+  const siloColorMap = useMemo(() => {
+    const map = new Map<string, SiloColor>();
+    for (const s of silos) map.set(s.config.name, s.config.color);
+    return map;
+  }, [silos]);
 
   useEffect(() => {
     window.electronAPI?.getSilos().then(setSilos);
@@ -150,7 +158,17 @@ export default function ActivityView() {
                     {config.label}
                   </span>
 
-                  <Badge variant="secondary" className="shrink-0 text-[10px]">
+                  <Badge
+                    variant="secondary"
+                    className={cn(
+                      'shrink-0 text-[10px]',
+                      (() => {
+                        const c = siloColorMap.get(event.siloName) ?? DEFAULT_SILO_COLOR;
+                        const classes = SILO_COLOR_MAP[c];
+                        return `${classes.bgSoft} ${classes.text} border-0`;
+                      })(),
+                    )}
+                  >
                     {event.siloName}
                   </Badge>
 

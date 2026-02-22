@@ -18,6 +18,42 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ChunkRecord } from './pipeline-types';
 
+// ── Portable Path Utilities ──────────────────────────────────────────────────
+
+/**
+ * Convert an absolute file path to a portable stored key.
+ * Format: "{dirIndex}:{relPath}" with forward slashes.
+ * Throws if the path is not under any configured directory.
+ */
+export function makeStoredKey(absPath: string, directories: string[]): string {
+  for (let i = 0; i < directories.length; i++) {
+    const dir = directories[i];
+    const rel = path.relative(dir, absPath);
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+      return `${i}:${rel.replace(/\\/g, '/')}`;
+    }
+  }
+  throw new Error(`Path not under any silo directory: ${absPath}`);
+}
+
+/**
+ * Resolve a stored key back to an absolute path using the silo's configured directories.
+ */
+export function resolveStoredKey(storedKey: string, directories: string[]): string {
+  const colonIdx = storedKey.indexOf(':');
+  if (colonIdx === -1) {
+    console.warn(`[store] Legacy absolute path in stored key: ${storedKey}`);
+    return storedKey;
+  }
+  const dirIndex = parseInt(storedKey.slice(0, colonIdx), 10);
+  if (isNaN(dirIndex) || dirIndex < 0 || dirIndex >= directories.length) {
+    console.warn(`[store] Invalid dirIndex ${dirIndex} in stored key "${storedKey}" (${directories.length} directories)`);
+    return storedKey;
+  }
+  const relPath = storedKey.slice(colonIdx + 1);
+  return path.join(directories[dirIndex], relPath);
+}
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface SiloSearchResultChunk {
@@ -26,6 +62,10 @@ export interface SiloSearchResultChunk {
   startLine: number;
   endLine: number;
   score: number;
+  /** Whether this chunk was found by semantic, keyword, or both search paths */
+  matchType: MatchType;
+  /** Cosine similarity to the query (0 for keyword-only chunks) */
+  cosineSimilarity: number;
 }
 
 export type MatchType = 'semantic' | 'keyword' | 'both';
@@ -35,9 +75,24 @@ export interface SiloSearchResult {
   score: number;
   matchType: MatchType;
   chunks: SiloSearchResultChunk[];
+  /** Best raw cosine similarity (0–1) among the file's vector-matched chunks.
+   *  Used to calibrate RRF scores for cross-silo merging.
+   *  0 for results with no vector match (keyword-only). */
+  bestCosineSimilarity: number;
 }
 
 export type SiloDatabase = Database.Database;
+
+// ── Search Constants ─────────────────────────────────────────────────────────
+
+/** Reciprocal Rank Fusion smoothing constant (standard default from Cormack et al. 2009). */
+export const RRF_K = 60;
+
+/** Candidate fan-out: retrieve this many × maxResults chunks before aggregating by file. */
+export const CHUNK_FANOUT = 5;
+
+/** Maximum chunks returned per file in search results. */
+export const MAX_CHUNKS_PER_FILE = 5;
 
 // ── Silo Meta ────────────────────────────────────────────────────────────────
 
@@ -52,7 +107,26 @@ export interface SiloMeta {
   version: number;
 }
 
-const META_VERSION = 1;
+const META_VERSION = 2;
+
+// ── Stored Config Blob ──────────────────────────────────────────────────────
+
+/**
+ * Configuration snapshot stored inside the database for portable reconnection.
+ * When a user reconnects an existing .db file on a new machine, this blob
+ * provides the original silo settings so the wizard can pre-populate fields.
+ */
+export interface StoredSiloConfig {
+  name: string;
+  description?: string;
+  directories: string[];
+  extensions: string[];
+  ignore: string[];
+  ignoreFiles: string[];
+  model: string;
+  color?: string;
+  icon?: string;
+}
 
 // ── Create ───────────────────────────────────────────────────────────────────
 
@@ -65,7 +139,17 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
   fs.mkdirSync(dir, { recursive: true });
 
   const db = new Database(dbPath);
-  sqliteVec.load(db);
+
+  // sqlite-vec's getLoadablePath() computes a path via __dirname which, in a
+  // production ASAR build, points inside app.asar.  SQLite's loadExtension()
+  // calls the OS's LoadLibrary/dlopen which can't read from ASAR archives.
+  // The actual DLL/dylib/so is unpacked to app.asar.unpacked — rewrite the
+  // path so SQLite can find it.
+  const vecExtPath = sqliteVec.getLoadablePath().replace(
+    /app\.asar([\\/])/,
+    'app.asar.unpacked$1',
+  );
+  db.loadExtension(vecExtPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
@@ -118,106 +202,155 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
 // ── Upsert / Delete ──────────────────────────────────────────────────────────
 
 /**
+ * Inner upsert logic — runs inside a caller-provided transaction.
+ * Removes old chunks for the file, inserts new ones, and optionally persists mtime.
+ */
+function upsertFileInner(
+  db: SiloDatabase,
+  filePath: string,
+  chunks: ChunkRecord[],
+  embeddings: number[][],
+  mtimeMs?: number,
+): void {
+  // 1. Fetch existing chunks for FTS5 sync (external content requires old text for delete)
+  const existingRows = db.prepare(
+    `SELECT id, text FROM chunks WHERE file_path = ?`,
+  ).all(filePath) as Array<{ id: number; text: string }>;
+
+  // 2. Remove from FTS5 (external content: must supply old values)
+  const ftsDelete = db.prepare(
+    `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
+  );
+  for (const row of existingRows) {
+    ftsDelete.run(row.id, row.text);
+  }
+
+  // 3. Remove from vec_chunks
+  const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
+  for (const row of existingRows) {
+    vecDelete.run(row.id);
+  }
+
+  // 4. Remove from chunks
+  db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
+
+  // 5. Insert new chunks
+  //    Insert into vec_chunks first (auto-assigns rowid), then use that
+  //    rowid as the explicit id in the chunks and FTS5 tables.
+  //    This works around sqlite-vec not accepting explicit rowid on INSERT.
+  const insertVec = db.prepare(
+    `INSERT INTO vec_chunks(embedding) VALUES (?)`,
+  );
+  const insertChunk = db.prepare(`
+    INSERT INTO chunks (id, file_path, chunk_index, section_path, text, start_line, end_line, metadata, content_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertFts = db.prepare(
+    `INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)`,
+  );
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const vecResult = insertVec.run(float32Buffer(embeddings[i]));
+    const rowid = Number(vecResult.lastInsertRowid);
+    insertChunk.run(
+      rowid,
+      chunk.filePath,
+      chunk.chunkIndex,
+      JSON.stringify(chunk.sectionPath),
+      chunk.text,
+      chunk.startLine,
+      chunk.endLine,
+      JSON.stringify(chunk.metadata),
+      chunk.contentHash,
+    );
+    insertFts.run(rowid, chunk.text);
+  }
+
+  if (mtimeMs !== undefined) {
+    db.prepare(`INSERT OR REPLACE INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`).run(filePath, mtimeMs);
+  }
+}
+
+/**
+ * Inner delete logic — runs inside a caller-provided transaction.
+ */
+function deleteFileInner(db: SiloDatabase, filePath: string, deleteMtimeEntry?: boolean): void {
+  const existingRows = db.prepare(
+    `SELECT id, text FROM chunks WHERE file_path = ?`,
+  ).all(filePath) as Array<{ id: number; text: string }>;
+
+  const ftsDelete = db.prepare(
+    `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
+  );
+  for (const row of existingRows) {
+    ftsDelete.run(row.id, row.text);
+  }
+
+  const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
+  for (const row of existingRows) {
+    vecDelete.run(row.id);
+  }
+
+  db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
+
+  if (deleteMtimeEntry) {
+    db.prepare(`DELETE FROM mtimes WHERE file_path = ?`).run(filePath);
+  }
+}
+
+/**
  * Remove all existing chunks for a file and insert new ones.
- * Wraps the entire operation in a transaction for atomicity.
+ * Wraps the operation in a single transaction.
  */
 export function upsertFileChunks(
   db: SiloDatabase,
   filePath: string,
   chunks: ChunkRecord[],
   embeddings: number[][],
+  mtimeMs?: number,
 ): void {
-  const transaction = db.transaction(() => {
-    // 1. Fetch existing chunks for FTS5 sync (external content requires old text for delete)
-    const existingRows = db.prepare(
-      `SELECT id, text FROM chunks WHERE file_path = ?`,
-    ).all(filePath) as Array<{ id: number; text: string }>;
-
-    // 2. Remove from FTS5 (external content: must supply old values)
-    const ftsDelete = db.prepare(
-      `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
-    );
-    for (const row of existingRows) {
-      ftsDelete.run(row.id, row.text);
-    }
-
-    // 3. Remove from vec_chunks
-    const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
-    for (const row of existingRows) {
-      vecDelete.run(row.id);
-    }
-
-    // 4. Remove from chunks
-    db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
-
-    // 5. Insert new chunks
-    //    Insert into vec_chunks first (auto-assigns rowid), then use that
-    //    rowid as the explicit id in the chunks and FTS5 tables.
-    //    This works around sqlite-vec not accepting explicit rowid on INSERT.
-    const insertVec = db.prepare(
-      `INSERT INTO vec_chunks(embedding) VALUES (?)`,
-    );
-    const insertChunk = db.prepare(`
-      INSERT INTO chunks (id, file_path, chunk_index, section_path, text, start_line, end_line, metadata, content_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const insertFts = db.prepare(
-      `INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)`,
-    );
-
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      // Insert vector first to get the auto-assigned rowid
-      const vecResult = insertVec.run(float32Buffer(embeddings[i]));
-      const rowid = Number(vecResult.lastInsertRowid);
-      // Use that rowid as the chunk's explicit id
-      insertChunk.run(
-        rowid,
-        chunk.filePath,
-        chunk.chunkIndex,
-        JSON.stringify(chunk.sectionPath),
-        chunk.text,
-        chunk.startLine,
-        chunk.endLine,
-        JSON.stringify(chunk.metadata),
-        chunk.contentHash,
-      );
-      insertFts.run(rowid, chunk.text);
-    }
-  });
-
-  transaction();
+  db.transaction(() => upsertFileInner(db, filePath, chunks, embeddings, mtimeMs))();
 }
 
 /**
  * Remove all chunks belonging to a file.
  */
-export function deleteFileChunks(db: SiloDatabase, filePath: string): void {
-  const transaction = db.transaction(() => {
-    // Fetch existing for FTS5 sync
-    const existingRows = db.prepare(
-      `SELECT id, text FROM chunks WHERE file_path = ?`,
-    ).all(filePath) as Array<{ id: number; text: string }>;
+export function deleteFileChunks(db: SiloDatabase, filePath: string, deleteMtimeEntry?: boolean): void {
+  db.transaction(() => deleteFileInner(db, filePath, deleteMtimeEntry))();
+}
 
-    // Remove from FTS5
-    const ftsDelete = db.prepare(
-      `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
-    );
-    for (const row of existingRows) {
-      ftsDelete.run(row.id, row.text);
+/**
+ * Flush a batch of prepared files to the database in a single transaction.
+ *
+ * Files with chunks are upserted; files with empty chunks (no indexable content)
+ * have their stale chunks removed. Batching many files into one transaction
+ * avoids per-file WAL fsync overhead and reduces total main-thread blocking.
+ */
+export function flushPreparedFiles(
+  db: SiloDatabase,
+  upserts: Array<{
+    filePath: string;
+    chunks: ChunkRecord[];
+    embeddings: number[][];
+    mtimeMs?: number;
+  }>,
+  deletes?: Array<{ filePath: string; deleteMtime: boolean }>,
+): void {
+  db.transaction(() => {
+    for (const file of upserts) {
+      if (file.chunks.length === 0) {
+        deleteFileInner(db, file.filePath, file.mtimeMs !== undefined);
+      } else {
+        upsertFileInner(db, file.filePath, file.chunks, file.embeddings, file.mtimeMs);
+      }
     }
-
-    // Remove from vec_chunks
-    const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
-    for (const row of existingRows) {
-      vecDelete.run(row.id);
+    if (deletes) {
+      for (const entry of deletes) {
+        deleteFileInner(db, entry.filePath, entry.deleteMtime);
+      }
     }
-
-    // Remove from chunks
-    db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
-  });
-
-  transaction();
+  })();
 }
 
 // ── Search ───────────────────────────────────────────────────────────────────
@@ -231,7 +364,7 @@ export function searchSilo(
   queryVector: number[],
   maxResults: number = 10,
 ): SiloSearchResult[] {
-  const chunkLimit = maxResults * 5;
+  const chunkLimit = maxResults * CHUNK_FANOUT;
 
   const rows = db.prepare(`
     SELECT c.id, c.file_path, c.chunk_index, c.section_path, c.text,
@@ -268,8 +401,8 @@ export function hybridSearchSilo(
   maxResults: number = 10,
   vectorWeight: number = 0.5,
 ): SiloSearchResult[] {
-  const chunkLimit = maxResults * 5;
-  const k = 60; // RRF constant
+  const chunkLimit = maxResults * CHUNK_FANOUT;
+  const k = RRF_K;
 
   // 1. Vector search
   const vecRows = db.prepare(`
@@ -303,6 +436,13 @@ export function hybridSearchSilo(
   // 3. Build RRF scores
   const penaltyRank = chunkLimit + 1;
   const bm25Weight = 1 - vectorWeight;
+
+  // Map chunk ID → cosine similarity (for cross-silo score calibration)
+  const cosineSims = new Map<number, number>();
+  for (const row of vecRows) {
+    // sqlite-vec returns cosine distance (0 = identical, 2 = opposite)
+    cosineSims.set(row.rowid, 1 - row.distance / 2);
+  }
 
   // Map chunk ID → vector rank (1-based)
   const vecRankMap = new Map<number, number>();
@@ -366,7 +506,7 @@ export function hybridSearchSilo(
     rrf_score: number;
   }>;
 
-  return aggregateByFileRrf(rows, maxResults, new Set(vecRankMap.keys()), new Set(ftsRankMap.keys()));
+  return aggregateByFileRrf(rows, maxResults, new Set(vecRankMap.keys()), new Set(ftsRankMap.keys()), cosineSims);
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────
@@ -377,17 +517,6 @@ export function hybridSearchSilo(
 export function getChunkCount(db: SiloDatabase): number {
   const row = db.prepare(`SELECT COUNT(*) as cnt FROM chunks`).get() as { cnt: number };
   return row.cnt;
-}
-
-/**
- * Get the content hashes for a specific file's chunks.
- * Returns null if the file is not in the database.
- */
-export function getFileHashes(db: SiloDatabase, filePath: string): string[] | null {
-  const rows = db.prepare(
-    `SELECT content_hash FROM chunks WHERE file_path = ?`,
-  ).all(filePath) as Array<{ content_hash: string }>;
-  return rows.length > 0 ? rows.map((r) => r.content_hash) : null;
 }
 
 // ── Mtime Persistence ────────────────────────────────────────────────────────
@@ -401,20 +530,6 @@ export function loadMtimes(db: SiloDatabase): Map<string, number> {
     mtime_ms: number;
   }>;
   return new Map(rows.map((r) => [r.file_path, r.mtime_ms]));
-}
-
-/**
- * Bulk save mtimes (replace all entries).
- */
-export function saveMtimes(db: SiloDatabase, mtimes: Map<string, number>): void {
-  const transaction = db.transaction(() => {
-    db.prepare(`DELETE FROM mtimes`).run();
-    const insert = db.prepare(`INSERT INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`);
-    for (const [filePath, mtimeMs] of mtimes) {
-      insert.run(filePath, mtimeMs);
-    }
-  });
-  transaction();
 }
 
 /**
@@ -484,6 +599,53 @@ export function saveMeta(db: SiloDatabase, model: string, dimensions: number): v
   transaction();
 }
 
+// ── Config Blob ─────────────────────────────────────────────────────────────
+
+/**
+ * Save a silo configuration snapshot to the meta table as a JSON blob.
+ */
+export function saveConfigBlob(db: SiloDatabase, config: StoredSiloConfig): void {
+  db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+    .run('config', JSON.stringify(config));
+}
+
+/**
+ * Load the stored silo configuration from the meta table.
+ * Returns null if no config blob has been stored yet.
+ */
+export function loadConfigBlob(db: SiloDatabase): StoredSiloConfig | null {
+  const row = db.prepare(`SELECT value FROM meta WHERE key = 'config'`).get() as { value: string } | undefined;
+  if (!row) return null;
+  try {
+    return JSON.parse(row.value) as StoredSiloConfig;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Open a database file read-only, read the config blob and meta, then close it.
+ * Used by the wizard to peek at stored config when reconnecting an existing DB.
+ * Does not load sqlite-vec since we only read the meta table.
+ */
+export function readConfigFromDbFile(dbPath: string): {
+  config: StoredSiloConfig | null;
+  meta: SiloMeta | null;
+} | null {
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const config = loadConfigBlob(db);
+      const meta = loadMeta(db);
+      return { config, meta };
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
 // ── Internal Helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -524,7 +686,6 @@ function aggregateByFile(
   }>,
   maxResults: number,
 ): SiloSearchResult[] {
-  const maxChunksPerFile = 5;
   const fileMap = new Map<string, { bestScore: number; chunks: SiloSearchResultChunk[] }>();
 
   for (const row of rows) {
@@ -537,6 +698,8 @@ function aggregateByFile(
       startLine: row.start_line,
       endLine: row.end_line,
       score,
+      matchType: 'semantic',
+      cosineSimilarity: score,
     };
 
     const existing = fileMap.get(row.file_path);
@@ -550,12 +713,13 @@ function aggregateByFile(
 
   for (const entry of fileMap.values()) {
     entry.chunks.sort((a, b) => b.score - a.score);
-    if (entry.chunks.length > maxChunksPerFile) entry.chunks.length = maxChunksPerFile;
+    if (entry.chunks.length > MAX_CHUNKS_PER_FILE) entry.chunks.length = MAX_CHUNKS_PER_FILE;
   }
 
   return Array.from(fileMap.entries())
     .map(([filePath, { bestScore, chunks }]) => ({
-      filePath, score: bestScore, matchType: 'semantic' as MatchType, chunks,
+      filePath, score: bestScore, matchType: 'semantic' as MatchType,
+      bestCosineSimilarity: bestScore, chunks,
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults);
@@ -579,10 +743,11 @@ function aggregateByFileRrf(
   maxResults: number,
   vecIds: Set<number>,
   ftsIds: Set<number>,
+  cosineSims: Map<number, number>,
 ): SiloSearchResult[] {
-  const maxChunksPerFile = 5;
   const fileMap = new Map<string, {
     bestScore: number;
+    bestCosineSim: number;
     hasVec: boolean;
     hasFts: boolean;
     chunks: SiloSearchResultChunk[];
@@ -590,26 +755,35 @@ function aggregateByFileRrf(
 
   for (const row of rows) {
     const sectionPath: string[] = JSON.parse(row.section_path);
+    const inVec = vecIds.has(row.id);
+    const inFts = ftsIds.has(row.id);
+    const cosineSim = cosineSims.get(row.id) ?? 0;
+
+    let chunkMatchType: MatchType = 'semantic';
+    if (inVec && inFts) chunkMatchType = 'both';
+    else if (inFts) chunkMatchType = 'keyword';
+
     const chunk: SiloSearchResultChunk = {
       sectionPath,
       text: row.text,
       startLine: row.start_line,
       endLine: row.end_line,
       score: row.rrf_score,
+      matchType: chunkMatchType,
+      cosineSimilarity: cosineSim,
     };
-
-    const inVec = vecIds.has(row.id);
-    const inFts = ftsIds.has(row.id);
 
     const existing = fileMap.get(row.file_path);
     if (existing) {
       existing.chunks.push(chunk);
       if (row.rrf_score > existing.bestScore) existing.bestScore = row.rrf_score;
+      if (cosineSim > existing.bestCosineSim) existing.bestCosineSim = cosineSim;
       if (inVec) existing.hasVec = true;
       if (inFts) existing.hasFts = true;
     } else {
       fileMap.set(row.file_path, {
         bestScore: row.rrf_score,
+        bestCosineSim: cosineSim,
         hasVec: inVec,
         hasFts: inFts,
         chunks: [chunk],
@@ -619,15 +793,15 @@ function aggregateByFileRrf(
 
   for (const entry of fileMap.values()) {
     entry.chunks.sort((a, b) => b.score - a.score);
-    if (entry.chunks.length > maxChunksPerFile) entry.chunks.length = maxChunksPerFile;
+    if (entry.chunks.length > MAX_CHUNKS_PER_FILE) entry.chunks.length = MAX_CHUNKS_PER_FILE;
   }
 
   return Array.from(fileMap.entries())
-    .map(([filePath, { bestScore, hasVec, hasFts, chunks }]) => {
+    .map(([filePath, { bestScore, bestCosineSim, hasVec, hasFts, chunks }]) => {
       let matchType: MatchType = 'semantic';
       if (hasVec && hasFts) matchType = 'both';
       else if (hasFts) matchType = 'keyword';
-      return { filePath, score: bestScore, matchType, chunks };
+      return { filePath, score: bestScore, matchType, bestCosineSimilarity: bestCosineSim, chunks };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults);

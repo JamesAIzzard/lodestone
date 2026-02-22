@@ -3,15 +3,20 @@
  *
  * Walks the silo's directories, compares against the database,
  * and queues files for indexing or removal as needed.
+ *
+ * Database writes are batched: files are prepared (read, extracted, chunked,
+ * embedded) one at a time, then flushed to SQLite in bulk every BATCH_SIZE
+ * files. This dramatically reduces transaction overhead and main-thread blocking.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { indexFile, removeFile } from './pipeline';
-import { setMtime, deleteMtime, type SiloDatabase } from './store';
+import { prepareFile, type PreparedFile } from './pipeline';
+import { makeStoredKey, resolveStoredKey, flushPreparedFiles, type SiloDatabase } from './store';
 import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
+import { matchesAnyPattern } from './pattern-match';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +45,14 @@ export interface ReconcileResult {
   durationMs: number;
 }
 
+// ── Constants ────────────────────────────────────────────────────────────────
+
+/**
+ * Number of files to prepare before flushing to the database in one transaction.
+ * 50 files × ~10 chunks each ≈ 500 chunks ≈ 1,500 SQL statements per flush.
+ */
+const BATCH_SIZE = 50;
+
 // ── Reconcile ────────────────────────────────────────────────────────────────
 
 /**
@@ -60,6 +73,8 @@ export async function reconcile(
   mtimes: Map<string, number>,
   onProgress?: ReconcileProgressHandler,
   onEvent?: ReconcileEventHandler,
+  /** Return true to abort reconciliation early (e.g. silo stop/delete). */
+  shouldStop?: () => boolean,
 ): Promise<ReconcileResult> {
   const start = performance.now();
   let filesAdded = 0;
@@ -68,94 +83,152 @@ export async function reconcile(
 
   // 1. Scan disk for all matching files
   onProgress?.({ phase: 'scanning', current: 0, total: 0 });
-  const diskFiles = new Map<string, number>(); // filePath → mtimeMs
+  const diskAbsPaths = new Map<string, number>(); // absPath → mtimeMs
 
   for (const dir of config.directories) {
-    walkDirectory(dir, config.extensions, config.ignore, diskFiles);
+    walkDirectory(dir, config.extensions, config.ignore, config.ignoreFiles, diskAbsPaths);
   }
 
-  // 2. Determine which files are already indexed from the mtimes map
-  const indexedFiles = new Set(mtimes.keys());
+  // 2. Build storedKey → { absPath, mtime } map from disk scan
+  const diskStored = new Map<string, { absPath: string; mtime: number }>();
+  for (const [absPath, mtime] of diskAbsPaths) {
+    try {
+      const key = makeStoredKey(absPath, config.directories);
+      diskStored.set(key, { absPath, mtime });
+    } catch {
+      // path outside all directories — shouldn't happen with correct globs
+    }
+  }
 
-  // 3. Find files to add or update
-  const filesToIndex: string[] = [];
-  for (const [filePath, diskMtime] of diskFiles) {
-    if (!indexedFiles.has(filePath)) {
-      // New file — not yet in the database
-      filesToIndex.push(filePath);
+  // 3. Determine which files are already indexed from the mtimes map (keyed by stored keys)
+  const indexedKeys = new Set(mtimes.keys());
+
+  // 4. Find files to add or update
+  const filesToIndex: Array<{ absPath: string; storedKey: string; mtime: number }> = [];
+  for (const [storedKey, { absPath, mtime }] of diskStored) {
+    if (!indexedKeys.has(storedKey)) {
+      filesToIndex.push({ absPath, storedKey, mtime });
     } else {
-      // Existing file — check if modified while app was closed
-      const storedMtime = mtimes.get(filePath)!;
-      if (diskMtime !== storedMtime) {
-        filesToIndex.push(filePath);
+      const storedMtime = mtimes.get(storedKey)!;
+      if (mtime !== storedMtime) {
+        filesToIndex.push({ absPath, storedKey, mtime });
       }
     }
   }
 
-  // 4. Find files to remove (in mtimes but no longer on disk)
+  // 5. Find files to remove (in mtimes but no longer on disk)
   const filesToRemove: string[] = [];
-  for (const indexedPath of indexedFiles) {
-    if (!diskFiles.has(indexedPath)) {
-      filesToRemove.push(indexedPath);
+  for (const indexedKey of indexedKeys) {
+    if (!diskStored.has(indexedKey)) {
+      filesToRemove.push(indexedKey);
     }
   }
 
   // Total reflects all disk files so the UI shows overall progress,
   // not just remaining work.  Already-indexed files count as done.
-  const alreadyDone = diskFiles.size - filesToIndex.length;
-  const totalWork = diskFiles.size + filesToRemove.length;
+  const alreadyDone = diskStored.size - filesToIndex.length;
+  const totalWork = diskStored.size + filesToRemove.length;
 
-  // 5. Index new and modified files
+  // 6. Index new and modified files — prepare in a loop, flush in batches
   let progress = alreadyDone;
-  for (const filePath of filesToIndex) {
-    onProgress?.({
-      phase: 'indexing',
-      current: ++progress,
-      total: totalWork,
-      filePath,
-    });
-    try {
-      await indexFile(filePath, embeddingService, db);
-      const isUpdate = indexedFiles.has(filePath);
-      if (isUpdate) {
+
+  // Track prepared files and their metadata for the current batch
+  let batch: Array<{ prepared: PreparedFile; absPath: string; isUpdate: boolean }> = [];
+
+  const flushBatch = () => {
+    if (batch.length === 0) return;
+
+    flushPreparedFiles(
+      db,
+      batch.map((b) => ({
+        filePath: b.prepared.storedKey,
+        chunks: b.prepared.chunks,
+        embeddings: b.prepared.embeddings,
+        mtimeMs: b.prepared.mtimeMs,
+      })),
+    );
+
+    // Update in-memory mtime map and counters after successful flush
+    for (const b of batch) {
+      if (b.prepared.mtimeMs !== undefined) {
+        mtimes.set(b.prepared.storedKey, b.prepared.mtimeMs);
+      }
+      if (b.isUpdate) {
         filesUpdated++;
       } else {
         filesAdded++;
       }
-      onEvent?.({ filePath, eventType: isUpdate ? 'reindexed' : 'indexed' });
-      // Record the current mtime so we detect future changes
-      try {
-        const stat = fs.statSync(filePath);
-        mtimes.set(filePath, stat.mtimeMs);
-        setMtime(db, filePath, stat.mtimeMs);
-      } catch {
-        // File vanished between indexing and stat — rare but possible
+      onEvent?.({
+        filePath: b.absPath,
+        eventType: b.isUpdate ? 'reindexed' : 'indexed',
+      });
+    }
+
+    batch = [];
+  };
+
+  for (let i = 0; i < filesToIndex.length; i++) {
+    if (shouldStop?.()) {
+      // Flush any work already prepared, then bail out
+      flushBatch();
+      console.log(`[reconcile] Stopped early after ${i} / ${filesToIndex.length} files`);
+      break;
+    }
+
+    const { absPath, storedKey, mtime } = filesToIndex[i];
+
+    onProgress?.({
+      phase: 'indexing',
+      current: ++progress,
+      total: totalWork,
+      filePath: absPath,
+    });
+
+    try {
+      const prepared = await prepareFile(absPath, storedKey, embeddingService, mtime);
+      const isUpdate = indexedKeys.has(storedKey);
+      batch.push({ prepared, absPath, isUpdate });
+
+      if (batch.length >= BATCH_SIZE) {
+        flushBatch();
+        // Yield to the event loop after each flush so MCP/IPC can serve requests
+        await new Promise<void>((r) => setImmediate(r));
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[reconcile] Failed to index ${filePath}:`, message);
-      onEvent?.({ filePath, eventType: 'error', errorMessage: message });
+      console.error(`[reconcile] Failed to index ${absPath}:`, message);
+      onEvent?.({ filePath: absPath, eventType: 'error', errorMessage: message });
     }
   }
 
-  // 6. Remove stale files
-  for (const filePath of filesToRemove) {
-    onProgress?.({
-      phase: 'removing',
-      current: ++progress,
-      total: totalWork,
-      filePath,
-    });
-    try {
-      await removeFile(filePath, db);
-      mtimes.delete(filePath);
-      deleteMtime(db, filePath);
+  // Flush any remaining prepared files
+  flushBatch();
+
+  // 7. Remove stale files — batch all deletes into a single transaction
+  if (filesToRemove.length > 0 && !shouldStop?.()) {
+    const deleteEntries: Array<{ filePath: string; deleteMtime: boolean }> = [];
+
+    for (const storedKey of filesToRemove) {
+      const absPath = resolveStoredKey(storedKey, config.directories);
+      onProgress?.({
+        phase: 'removing',
+        current: ++progress,
+        total: totalWork,
+        filePath: absPath,
+      });
+      deleteEntries.push({ filePath: storedKey, deleteMtime: true });
+    }
+
+    flushPreparedFiles(db, [], deleteEntries);
+
+    // Update in-memory state after successful flush
+    for (const storedKey of filesToRemove) {
+      mtimes.delete(storedKey);
       filesRemoved++;
-      onEvent?.({ filePath, eventType: 'deleted' });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[reconcile] Failed to remove ${filePath}:`, message);
-      onEvent?.({ filePath, eventType: 'error', errorMessage: message });
+      onEvent?.({
+        filePath: resolveStoredKey(storedKey, config.directories),
+        eventType: 'deleted',
+      });
     }
   }
 
@@ -174,7 +247,8 @@ export async function reconcile(
 function walkDirectory(
   dir: string,
   extensions: string[],
-  ignore: string[],
+  ignoreFolders: string[],
+  ignoreFiles: string[],
   result: Map<string, number>,
 ): void {
   if (!fs.existsSync(dir)) return;
@@ -184,12 +258,11 @@ function walkDirectory(
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
 
-    // Check ignore patterns
-    if (ignore.some((pattern) => entry.name === pattern)) continue;
-
     if (entry.isDirectory()) {
-      walkDirectory(fullPath, extensions, ignore, result);
+      if (matchesAnyPattern(entry.name, ignoreFolders)) continue;
+      walkDirectory(fullPath, extensions, ignoreFolders, ignoreFiles, result);
     } else if (entry.isFile()) {
+      if (matchesAnyPattern(entry.name, ignoreFiles)) continue;
       const ext = path.extname(entry.name).toLowerCase();
       if (extensions.includes(ext)) {
         try {

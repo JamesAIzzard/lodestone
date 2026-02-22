@@ -23,25 +23,68 @@ export function hashText(text: string): string {
 
 /**
  * Split oversized text into smaller chunks.
- * Strategy: first try paragraph boundaries (blank lines), then sentence boundaries.
+ *
+ * Progressive strategy — each level handles text the previous level couldn't break:
+ *   1. Paragraph boundaries (\n\n)  — prose, markdown
+ *   2. Sentence boundaries (.!?)    — prose without paragraph breaks
+ *   3. Line boundaries (\n)         — JSON, code, structured data
+ *   4. Character boundaries         — minified files with no newlines at all
+ *
+ * Level 3 is critical: formats like JSON and minified code lack both paragraph
+ * breaks and sentence-ending punctuation, so without it the entire file becomes
+ * a single enormous chunk that crashes the ONNX tokenizer.
  */
 export function subSplitText(text: string, maxTokens: number): string[] {
   // Try paragraph-level splitting first
   const paragraphs = text.split(/\n\n+/);
   const chunks = mergeUpTo(paragraphs, maxTokens, '\n\n');
 
-  // If any chunk is still oversized, split on sentences
   const result: string[] = [];
   for (const chunk of chunks) {
     if (estimateTokens(chunk) <= maxTokens) {
       result.push(chunk);
-    } else {
-      const sentences = chunk.split(/(?<=[.!?])\s+/);
-      result.push(...mergeUpTo(sentences, maxTokens, ' '));
+      continue;
+    }
+
+    // Level 2: sentence boundaries
+    const sentences = chunk.split(/(?<=[.!?])\s+/);
+    const sentenceMerged = mergeUpTo(sentences, maxTokens, ' ');
+
+    for (const sc of sentenceMerged) {
+      if (estimateTokens(sc) <= maxTokens) {
+        result.push(sc);
+        continue;
+      }
+
+      // Level 3: single newlines — handles JSON, code, structured text
+      const lines = sc.split('\n');
+      const lineMerged = mergeUpTo(lines, maxTokens, '\n');
+
+      for (const lc of lineMerged) {
+        if (estimateTokens(lc) <= maxTokens) {
+          result.push(lc);
+        } else {
+          // Level 4: hard character split — last resort for very long single lines
+          result.push(...hardSplitByChars(lc, maxTokens));
+        }
+      }
     }
   }
 
   return result;
+}
+
+/**
+ * Hard-split text at character boundaries to fit within the token estimate.
+ * Last-resort fallback for text without any usable split points (e.g. minified JS).
+ */
+function hardSplitByChars(text: string, maxTokens: number): string[] {
+  const maxChars = maxTokens * 4; // matches estimateTokens heuristic (4 chars/token)
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += maxChars) {
+    chunks.push(text.slice(i, i + maxChars));
+  }
+  return chunks;
 }
 
 /**

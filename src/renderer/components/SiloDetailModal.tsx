@@ -8,10 +8,15 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play } from 'lucide-react';
+import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play, HardDrive, Unplug } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
-import type { SiloStatus, ActivityEvent, ServerStatus } from '../../shared/types';
+import IgnorePatternsEditor from './IgnorePatternsEditor';
+import ExtensionPicker from './ExtensionPicker';
+import SiloAppearancePicker from './SiloAppearancePicker';
+import SiloIcon from './SiloIconComponent';
+import { SILO_COLOR_MAP, type SiloColor, type SiloIconName } from '../../shared/silo-appearance';
+import type { SiloStatus, ActivityEvent, ServerStatus, DefaultSettings } from '../../shared/types';
 
 function abbreviatePath(p: string): string {
   return p
@@ -54,23 +59,41 @@ interface SiloDetailModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDeleted?: () => void;
-  onSleepToggle?: () => void;
+  onStopToggle?: () => void;
   onRebuilt?: () => void;
   /** Called after any update so the parent can refresh silo list */
   onUpdated?: () => void;
 }
 
-export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, onSleepToggle, onRebuilt, onUpdated }: SiloDetailModalProps) {
+export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, onStopToggle, onRebuilt, onUpdated }: SiloDetailModalProps) {
   const [siloEvents, setSiloEvents] = useState<ActivityEvent[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
   const [editDescription, setEditDescription] = useState('');
 
   // Model selector state
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
   const [selectedModel, setSelectedModel] = useState('');
+
+  // Ignore patterns state
+  const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
+  const [fileIgnore, setFileIgnore] = useState<string[]>([]);
+  const [ignoreOverridden, setIgnoreOverridden] = useState(false);
+  const [defaultFolderIgnore, setDefaultFolderIgnore] = useState<string[]>([]);
+  const [defaultFileIgnore, setDefaultFileIgnore] = useState<string[]>([]);
+
+  // Extension state
+  const [extensions, setExtensions] = useState<string[]>([]);
+  const [extensionOverridden, setExtensionOverridden] = useState(false);
+  const [defaultExtensions, setDefaultExtensions] = useState<string[]>([]);
+
+  // Appearance state
+  const [siloColor, setSiloColor] = useState<SiloColor>('blue');
+  const [siloIcon, setSiloIcon] = useState<SiloIconName>('database');
 
   // Sync description and model from silo prop when modal opens
   useEffect(() => {
@@ -84,6 +107,26 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
         const effective = silo.config.modelOverride ?? status.defaultModel;
         setSelectedModel(effective);
       });
+
+      // Load defaults for inheritance
+      window.electronAPI?.getDefaults().then((d) => {
+        setDefaultFolderIgnore(d.ignore);
+        setDefaultFileIgnore(d.ignoreFiles);
+        setDefaultExtensions(d.extensions);
+      });
+
+      // Set current ignore patterns
+      setFolderIgnore(silo.config.ignorePatterns);
+      setFileIgnore(silo.config.ignoreFilePatterns);
+      setIgnoreOverridden(silo.config.hasIgnoreOverride || silo.config.hasFileIgnoreOverride);
+
+      // Set current extensions
+      setExtensions(silo.config.extensions);
+      setExtensionOverridden(silo.config.hasExtensionOverride);
+
+      // Set current appearance
+      setSiloColor(silo.config.color);
+      setSiloIcon(silo.config.icon);
     }
   }, [open, silo]);
 
@@ -97,6 +140,8 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
       setConfirmDelete(false);
       setDeleting(false);
       setDeleteError(null);
+      setConfirmDisconnect(false);
+      setDisconnecting(false);
     }
   }, [open, silo]);
 
@@ -138,9 +183,104 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     }
   }
 
+  async function handleDisconnect() {
+    if (!silo) return;
+    setDisconnecting(true);
+    const result = await window.electronAPI?.disconnectSilo(silo.config.name);
+    if (result?.success) {
+      onOpenChange(false);
+      onDeleted?.();
+    } else {
+      setDisconnecting(false);
+    }
+  }
+
+  async function handleFolderIgnoreChange(patterns: string[]) {
+    if (!silo) return;
+    setFolderIgnore(patterns);
+    await window.electronAPI?.updateSilo(silo.config.name, { ignore: patterns });
+    onUpdated?.();
+  }
+
+  async function handleFileIgnoreChange(patterns: string[]) {
+    if (!silo) return;
+    setFileIgnore(patterns);
+    await window.electronAPI?.updateSilo(silo.config.name, { ignoreFiles: patterns });
+    onUpdated?.();
+  }
+
+  async function handleIgnoreOverride() {
+    setIgnoreOverridden(true);
+    // Copy defaults as starting point for customization
+    const folders = [...defaultFolderIgnore];
+    const files = [...defaultFileIgnore];
+    setFolderIgnore(folders);
+    setFileIgnore(files);
+    if (silo) {
+      await window.electronAPI?.updateSilo(silo.config.name, { ignore: folders, ignoreFiles: files });
+      onUpdated?.();
+    }
+  }
+
+  async function handleIgnoreRevert() {
+    setIgnoreOverridden(false);
+    setFolderIgnore(defaultFolderIgnore);
+    setFileIgnore(defaultFileIgnore);
+    if (silo) {
+      // Empty arrays signal "revert to defaults"
+      await window.electronAPI?.updateSilo(silo.config.name, { ignore: [], ignoreFiles: [] });
+      onUpdated?.();
+    }
+  }
+
+  async function handleExtensionsChange(exts: string[]) {
+    if (!silo) return;
+    setExtensions(exts);
+    await window.electronAPI?.updateSilo(silo.config.name, { extensions: exts });
+    onUpdated?.();
+  }
+
+  async function handleExtensionOverride() {
+    setExtensionOverridden(true);
+    const exts = [...defaultExtensions];
+    setExtensions(exts);
+    if (silo) {
+      await window.electronAPI?.updateSilo(silo.config.name, { extensions: exts });
+      onUpdated?.();
+    }
+  }
+
+  async function handleExtensionRevert() {
+    setExtensionOverridden(false);
+    setExtensions(defaultExtensions);
+    if (silo) {
+      // Empty array signals "revert to defaults"
+      await window.electronAPI?.updateSilo(silo.config.name, { extensions: [] });
+      onUpdated?.();
+    }
+  }
+
+  async function handleColorChange(newColor: SiloColor) {
+    if (!silo) return;
+    setSiloColor(newColor);
+    await window.electronAPI?.updateSilo(silo.config.name, { color: newColor });
+    onUpdated?.();
+  }
+
+  async function handleIconChange(newIcon: SiloIconName) {
+    if (!silo) return;
+    setSiloIcon(newIcon);
+    await window.electronAPI?.updateSilo(silo.config.name, { icon: newIcon });
+    onUpdated?.();
+  }
+
   if (!silo) return null;
 
   const { config } = silo;
+  const colorClasses = SILO_COLOR_MAP[siloColor];
+  // Disable destructive actions while the silo is actively indexing.
+  // The user must stop the silo first — stop() is always clean and safe.
+  const isActive = silo.watcherState === 'indexing';
   const defaultModel = serverStatus?.defaultModel ?? 'snowflake-arctic-embed-xs';
   const effectiveModel = selectedModel || config.modelOverride || defaultModel;
   const isOverride = effectiveModel !== defaultModel;
@@ -153,7 +293,10 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{config.name}</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <SiloIcon icon={siloIcon} className={cn('h-5 w-5', colorClasses.text)} />
+            {config.name}
+          </DialogTitle>
           <DialogDescription>Silo configuration and indexing statistics.</DialogDescription>
         </DialogHeader>
 
@@ -175,7 +318,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat icon={FileText} label="Files" value={silo.indexedFileCount.toLocaleString()} />
           <Stat icon={Blocks} label="Chunks" value={silo.chunkCount.toLocaleString()} />
-          <Stat label="DB Size" value={silo.watcherState === 'indexing' ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)} />
+          <Stat label="DB Size" value={isActive ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)} />
           <Stat label="Updated" value={formatTime(silo.lastUpdated)} />
         </div>
 
@@ -197,6 +340,14 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
                 placeholder="Describe what this silo contains..."
                 rows={2}
                 className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-ring resize-none"
+              />
+            </Row>
+            <Row label="Appearance">
+              <SiloAppearancePicker
+                color={siloColor}
+                icon={siloIcon}
+                onColorChange={handleColorChange}
+                onIconChange={handleIconChange}
               />
             </Row>
             <Row label="Model">
@@ -236,13 +387,26 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
               </div>
             </Row>
             <Row label="Extensions">
-              <div className="flex flex-wrap gap-1">
-                {config.extensions.map((ext) => (
-                  <Badge key={ext} variant="secondary" className="text-[10px]">
-                    {ext}
-                  </Badge>
-                ))}
-              </div>
+              <ExtensionPicker
+                extensions={extensions}
+                onChange={handleExtensionsChange}
+                inherited
+                isOverridden={extensionOverridden}
+                onOverride={handleExtensionOverride}
+                onRevertToDefaults={handleExtensionRevert}
+              />
+            </Row>
+            <Row label="Ignore">
+              <IgnorePatternsEditor
+                folderPatterns={folderIgnore}
+                filePatterns={fileIgnore}
+                onFolderPatternsChange={handleFolderIgnoreChange}
+                onFilePatternsChange={handleFileIgnoreChange}
+                inherited
+                isOverridden={ignoreOverridden}
+                onOverride={handleIgnoreOverride}
+                onRevertToDefaults={handleIgnoreRevert}
+              />
             </Row>
             <Row label="Directories">
               <div className="flex flex-col gap-1">
@@ -252,6 +416,25 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
                     {abbreviatePath(dir)}
                   </span>
                 ))}
+              </div>
+            </Row>
+            <Row label="Database">
+              <div className="flex items-center gap-2">
+                <HardDrive className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="text-xs text-muted-foreground font-mono truncate" title={silo.resolvedDbPath}>
+                  {abbreviatePath(silo.resolvedDbPath)}
+                </span>
+                <button
+                  onClick={() => {
+                    // Open the folder containing the DB file
+                    const dir = silo.resolvedDbPath.replace(/[/\\][^/\\]+$/, '');
+                    window.electronAPI?.openPath(dir);
+                  }}
+                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                  title="Reveal in file manager"
+                >
+                  <FolderOpen className="h-3 w-3" />
+                </button>
               </div>
             </Row>
           </div>
@@ -288,6 +471,39 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
             </div>
           )}
         </section>
+
+        {/* Disconnect confirmation */}
+        {confirmDisconnect && (
+          <div className="mt-4 rounded-md border border-amber-500/30 bg-amber-500/5 p-4">
+            <p className="text-sm text-foreground">
+              Disconnect <span className="font-semibold">{config.name}</span>?
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This will remove the silo from Lodestone but keep the database file on disk.
+              You can reconnect it later using &ldquo;Connect existing database&rdquo; when creating a new silo.
+            </p>
+            <div className="mt-3 flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmDisconnect(false)}
+                disabled={disconnecting}
+                autoFocus
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDisconnect}
+                disabled={disconnecting}
+              >
+                <Unplug className="h-3.5 w-3.5" />
+                {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Delete confirmation */}
         {confirmDelete && (
@@ -326,15 +542,15 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
         )}
 
         <DialogFooter>
-          {onSleepToggle && silo.watcherState !== 'indexing' && (
+          {onStopToggle && silo.watcherState !== 'waiting' && (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => { onSleepToggle(); onOpenChange(false); }}
+              onClick={() => { onStopToggle(); onOpenChange(false); }}
             >
-              {silo.watcherState === 'sleeping'
+              {silo.watcherState === 'stopped'
                 ? <><Play className="h-3.5 w-3.5" /> Wake</>
-                : <><Pause className="h-3.5 w-3.5" /> Sleep</>
+                : <><Pause className="h-3.5 w-3.5" /> Stop</>
               }
             </Button>
           )}
@@ -342,13 +558,31 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
             variant="outline"
             size="sm"
             onClick={handleRebuild}
-            disabled={rebuilding || silo.watcherState === 'indexing'}
+            disabled={rebuilding}
           >
             <RotateCcw className={cn('h-3.5 w-3.5', rebuilding && 'animate-spin')} />
-            {rebuilding ? 'Rebuilding...' : 'Rebuild Index'}
+            Rebuild Index
           </Button>
-          {!confirmDelete && (
-            <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)}>
+          {!confirmDelete && !confirmDisconnect && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmDisconnect(true)}
+              disabled={isActive}
+              title={isActive ? 'Stop the silo before disconnecting' : undefined}
+            >
+              <Unplug className="h-3.5 w-3.5" />
+              Disconnect
+            </Button>
+          )}
+          {!confirmDelete && !confirmDisconnect && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setConfirmDelete(true)}
+              disabled={isActive}
+              title={isActive ? 'Stop the silo before deleting' : undefined}
+            >
               <Trash2 className="h-3.5 w-3.5" />
               Delete Silo
             </Button>

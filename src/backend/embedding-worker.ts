@@ -56,6 +56,7 @@ async function processNext(): Promise<void> {
           dimensions: service.dimensions,
           modelName: service.modelName,
           maxTokens: service.maxTokens,
+          chunkTokens: service.chunkTokens,
         });
         break;
       }

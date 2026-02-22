@@ -109,4 +109,6 @@ export interface ServerStatus {
   availableModels: string[];
   defaultModel: string;
   totalIndexedFiles: number;
+  /** Maps model registry key → path-safe ID for use in auto-generated filenames */
+  modelPathSafeIds: Record<string, string>;
 }

@@ -8,7 +8,7 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play, HardDrive, Unplug } from 'lucide-react';
+import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play, HardDrive, Unplug, Pencil, Check, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
 import IgnorePatternsEditor from './IgnorePatternsEditor';
@@ -75,6 +75,13 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
   const [rebuilding, setRebuilding] = useState(false);
   const [editDescription, setEditDescription] = useState('');
 
+  // Rename state
+  const [siloName, setSiloName] = useState('');
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
+
   // Model selector state
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
   const [selectedModel, setSelectedModel] = useState('');
@@ -98,6 +105,10 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
   // Sync description and model from silo prop when modal opens
   useEffect(() => {
     if (open && silo) {
+      setSiloName(silo.config.name);
+      setIsEditingName(false);
+      setEditName('');
+      setRenameError(null);
       setEditDescription(silo.config.description || '');
 
       // Fetch server status for model list
@@ -145,10 +156,31 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     }
   }, [open, silo]);
 
+  async function handleRename() {
+    if (!silo || !editName.trim() || isRenaming) return;
+    setIsRenaming(true);
+    setRenameError(null);
+    try {
+      const result = await window.electronAPI?.renameSilo(siloName, editName.trim());
+      if (result?.success) {
+        const newSlug = editName.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+        setSiloName(newSlug);
+        setIsEditingName(false);
+        onUpdated?.();
+      } else {
+        setRenameError(result?.error ?? 'Rename failed');
+      }
+    } catch (err) {
+      setRenameError(String(err));
+    } finally {
+      setIsRenaming(false);
+    }
+  }
+
   async function handleModelChange(newModel: string) {
     if (!silo) return;
     setSelectedModel(newModel);
-    await window.electronAPI?.updateSilo(silo.config.name, { model: newModel });
+    await window.electronAPI?.updateSilo(siloName, { model: newModel });
     // Refresh silo list so mismatch status updates
     onUpdated?.();
   }
@@ -157,7 +189,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     if (!silo) return;
     setRebuilding(true);
     try {
-      const result = await window.electronAPI?.rebuildSilo(silo.config.name);
+      const result = await window.electronAPI?.rebuildSilo(siloName);
       if (result?.success) {
         onOpenChange(false);
         onRebuilt?.();
@@ -173,7 +205,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     if (!silo) return;
     setDeleting(true);
     setDeleteError(null);
-    const result = await window.electronAPI?.deleteSilo(silo.config.name);
+    const result = await window.electronAPI?.deleteSilo(siloName);
     if (result?.success) {
       onOpenChange(false);
       onDeleted?.();
@@ -186,7 +218,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
   async function handleDisconnect() {
     if (!silo) return;
     setDisconnecting(true);
-    const result = await window.electronAPI?.disconnectSilo(silo.config.name);
+    const result = await window.electronAPI?.disconnectSilo(siloName);
     if (result?.success) {
       onOpenChange(false);
       onDeleted?.();
@@ -198,14 +230,14 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
   async function handleFolderIgnoreChange(patterns: string[]) {
     if (!silo) return;
     setFolderIgnore(patterns);
-    await window.electronAPI?.updateSilo(silo.config.name, { ignore: patterns });
+    await window.electronAPI?.updateSilo(siloName, { ignore: patterns });
     onUpdated?.();
   }
 
   async function handleFileIgnoreChange(patterns: string[]) {
     if (!silo) return;
     setFileIgnore(patterns);
-    await window.electronAPI?.updateSilo(silo.config.name, { ignoreFiles: patterns });
+    await window.electronAPI?.updateSilo(siloName, { ignoreFiles: patterns });
     onUpdated?.();
   }
 
@@ -217,7 +249,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     setFolderIgnore(folders);
     setFileIgnore(files);
     if (silo) {
-      await window.electronAPI?.updateSilo(silo.config.name, { ignore: folders, ignoreFiles: files });
+      await window.electronAPI?.updateSilo(siloName, { ignore: folders, ignoreFiles: files });
       onUpdated?.();
     }
   }
@@ -228,7 +260,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     setFileIgnore(defaultFileIgnore);
     if (silo) {
       // Empty arrays signal "revert to defaults"
-      await window.electronAPI?.updateSilo(silo.config.name, { ignore: [], ignoreFiles: [] });
+      await window.electronAPI?.updateSilo(siloName, { ignore: [], ignoreFiles: [] });
       onUpdated?.();
     }
   }
@@ -236,7 +268,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
   async function handleExtensionsChange(exts: string[]) {
     if (!silo) return;
     setExtensions(exts);
-    await window.electronAPI?.updateSilo(silo.config.name, { extensions: exts });
+    await window.electronAPI?.updateSilo(siloName, { extensions: exts });
     onUpdated?.();
   }
 
@@ -245,7 +277,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     const exts = [...defaultExtensions];
     setExtensions(exts);
     if (silo) {
-      await window.electronAPI?.updateSilo(silo.config.name, { extensions: exts });
+      await window.electronAPI?.updateSilo(siloName, { extensions: exts });
       onUpdated?.();
     }
   }
@@ -255,7 +287,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     setExtensions(defaultExtensions);
     if (silo) {
       // Empty array signals "revert to defaults"
-      await window.electronAPI?.updateSilo(silo.config.name, { extensions: [] });
+      await window.electronAPI?.updateSilo(siloName, { extensions: [] });
       onUpdated?.();
     }
   }
@@ -263,14 +295,14 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
   async function handleColorChange(newColor: SiloColor) {
     if (!silo) return;
     setSiloColor(newColor);
-    await window.electronAPI?.updateSilo(silo.config.name, { color: newColor });
+    await window.electronAPI?.updateSilo(siloName, { color: newColor });
     onUpdated?.();
   }
 
   async function handleIconChange(newIcon: SiloIconName) {
     if (!silo) return;
     setSiloIcon(newIcon);
-    await window.electronAPI?.updateSilo(silo.config.name, { icon: newIcon });
+    await window.electronAPI?.updateSilo(siloName, { icon: newIcon });
     onUpdated?.();
   }
 
@@ -295,8 +327,50 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <SiloIcon icon={siloIcon} className={cn('h-5 w-5', colorClasses.text)} />
-            {config.name}
+            {isEditingName ? (
+              <div className="flex items-center gap-1.5 min-w-0">
+                <input
+                  autoFocus
+                  value={editName}
+                  onChange={(e) => { setEditName(e.target.value); setRenameError(null); }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleRename();
+                    if (e.key === 'Escape') { setIsEditingName(false); setRenameError(null); }
+                  }}
+                  className="h-7 rounded border border-input bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring w-40"
+                />
+                <button
+                  onClick={handleRename}
+                  disabled={isRenaming}
+                  className="p-1 rounded text-emerald-400 hover:bg-emerald-400/10 disabled:opacity-50"
+                  title="Save"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  onClick={() => { setIsEditingName(false); setRenameError(null); }}
+                  className="p-1 rounded text-muted-foreground hover:bg-muted"
+                  title="Cancel"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : (
+              <div className="group flex items-center gap-1.5">
+                <span>{siloName}</span>
+                <button
+                  onClick={() => { setEditName(siloName); setIsEditingName(true); }}
+                  className="p-1 rounded text-muted-foreground/40 hover:text-muted-foreground hover:bg-muted opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Rename silo"
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+              </div>
+            )}
           </DialogTitle>
+          {renameError && (
+            <p className="text-xs text-red-400 mt-1">{renameError}</p>
+          )}
           <DialogDescription>Silo configuration and indexing statistics.</DialogDescription>
         </DialogHeader>
 
@@ -334,7 +408,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
                 onChange={(e) => setEditDescription(e.target.value)}
                 onBlur={() => {
                   if (editDescription !== (config.description || '')) {
-                    window.electronAPI?.updateSilo(config.name, { description: editDescription });
+                    window.electronAPI?.updateSilo(siloName, { description: editDescription });
                   }
                 }}
                 placeholder="Describe what this silo contains..."

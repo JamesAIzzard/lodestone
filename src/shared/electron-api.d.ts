@@ -57,6 +57,10 @@ export interface ElectronAPI {
   // ── Defaults ──────────────────────────────────────────────────────────────
   getDefaults: () => Promise<DefaultSettings>;
   updateDefaults: (updates: Partial<DefaultSettings>) => Promise<{ success: boolean }>;
+  resetAllSettings: () => Promise<{ success: boolean }>;
+
+  // ── Silo rename ────────────────────────────────────────────────────────────
+  renameSilo: (oldName: string, newName: string) => Promise<{ success: boolean; error?: string }>;
 
   // ── Server / Settings ──────────────────────────────────────────────────────
   getServerStatus: () => Promise<ServerStatus>;

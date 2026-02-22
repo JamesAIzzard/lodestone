@@ -462,4 +462,5 @@ export const mockServerStatus: ServerStatus = {
   availableModels: ['nomic-embed-text', 'all-MiniLM-L6-v2', 'mxbai-embed-large'],
   defaultModel: DEFAULT_MODEL,
   totalIndexedFiles: mockSilos.reduce((sum, s) => sum + s.indexedFileCount, 0),
+  modelPathSafeIds: { 'snowflake-arctic-embed-xs': 'arctic-xs', 'nomic-embed-text-v1.5': 'nomic-v1' },
 };

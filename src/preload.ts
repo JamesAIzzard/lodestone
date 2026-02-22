@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('silos:rebuild', name),
   updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string }): Promise<unknown> =>
     ipcRenderer.invoke('silos:update', name, updates),
+  renameSilo: (oldName: string, newName: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:rename', oldName, newName),
   search: (query: string, siloName?: string): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:search', query, siloName),
 
@@ -54,6 +56,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('defaults:get'),
   updateDefaults: (updates: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('defaults:update', updates),
+  resetAllSettings: (): Promise<unknown> =>
+    ipcRenderer.invoke('defaults:reset-all'),
 
   // Server / Settings
   getServerStatus: (): Promise<unknown> =>

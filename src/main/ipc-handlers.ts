@@ -7,6 +7,7 @@
 
 import { dialog, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
+import path from 'node:path';
 import {
   saveConfig,
   createDefaultConfig,
@@ -16,7 +17,7 @@ import {
 import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import { checkOllamaConnection } from '../backend/embedding';
 import { SiloManager } from '../backend/silo-manager';
-import { getBundledModelIds, getModelDefinition, resolveModelAlias } from '../backend/model-registry';
+import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
 import { calibrateAndMerge, type RawSiloResult } from '../backend/search-merge';
 import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings } from '../shared/types';
 import type { AppContext } from './context';
@@ -200,6 +201,10 @@ export function registerIpcHandlers(ctx: AppContext): void {
       models.push(...ollamaResult.models);
     }
 
+    const modelPathSafeIds = Object.fromEntries(
+      getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
+    );
+
     return {
       uptimeSeconds,
       ollamaState: ollamaResult ? 'connected' : 'disconnected',
@@ -207,6 +212,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       availableModels: models,
       defaultModel: resolveModelAlias(ctx.config?.embeddings.model ?? 'snowflake-arctic-embed-xs'),
       totalIndexedFiles: totalFiles,
+      modelPathSafeIds,
     };
   });
 
@@ -256,6 +262,27 @@ export function registerIpcHandlers(ctx: AppContext): void {
       return { success: true };
     },
   );
+
+  ipcMain.handle('defaults:reset-all', async (): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+
+    // Stop all silo managers
+    for (const [name, manager] of ctx.siloManagers) {
+      try { await manager.stop(); } catch (err) {
+        console.error(`[main] Error stopping silo "${name}" during reset:`, err);
+      }
+      ctx.siloManagers.delete(name);
+    }
+
+    // Replace config with clean defaults and persist
+    ctx.config = createDefaultConfig();
+    saveConfig(ctx.configPath(), ctx.config);
+    console.log('[main] All settings reset to defaults');
+
+    if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
+    ctx.mainWindow?.webContents.send('silos:changed');
+    return { success: true };
+  });
 
 
   // ── Silo CRUD ───────────────────────────────────────────────────────────
@@ -447,6 +474,46 @@ export function registerIpcHandlers(ctx: AppContext): void {
   );
 
   ipcMain.handle(
+    'silos:rename',
+    async (_event, oldName: string, newName: string): Promise<{ success: boolean; error?: string }> => {
+      if (!ctx.config) return { success: false, error: 'Config not loaded' };
+
+      const trimmed = newName.trim();
+      if (!trimmed) return { success: false, error: 'Name cannot be empty' };
+
+      const newSlug = trimmed.toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+      if (!newSlug) return { success: false, error: 'Invalid name' };
+
+      const manager = ctx.siloManagers.get(oldName);
+      const siloToml = ctx.config.silos[oldName];
+      if (!manager || !siloToml) return { success: false, error: `Silo "${oldName}" not found` };
+
+      // No-op if the slug is unchanged
+      if (newSlug !== oldName) {
+        if (ctx.siloManagers.has(newSlug)) {
+          return { success: false, error: `A silo named "${newSlug}" already exists` };
+        }
+        // Move config entry
+        ctx.config.silos[newSlug] = siloToml;
+        delete ctx.config.silos[oldName];
+        // Move manager entry
+        ctx.siloManagers.set(newSlug, manager);
+        ctx.siloManagers.delete(oldName);
+      }
+
+      // Update the manager's internal config name to match the new slug
+      manager.updateName(newSlug);
+
+      saveConfig(ctx.configPath(), ctx.config);
+      console.log(`[main] Silo "${oldName}" renamed to "${trimmed}" (slug: "${newSlug}")`);
+
+      if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
+      ctx.mainWindow?.webContents.send('silos:changed');
+      return { success: true };
+    },
+  );
+
+  ipcMain.handle(
     'silos:create',
     async (
       _event,
@@ -458,6 +525,16 @@ export function registerIpcHandlers(ctx: AppContext): void {
       if (slug.length === 0) return { success: false, error: 'Invalid silo name' };
       if (ctx.siloManagers.has(slug)) return { success: false, error: `Silo "${slug}" already exists` };
       if (opts.directories.length === 0) return { success: false, error: 'At least one directory is required' };
+
+      const resolvedDbPath = path.isAbsolute(opts.dbPath)
+        ? opts.dbPath
+        : path.join(ctx.getUserDataDir(), opts.dbPath);
+      if (fs.existsSync(resolvedDbPath)) {
+        return {
+          success: false,
+          error: `A database file already exists at that path. Use "Connect existing silo" to attach it, or choose a different path.`,
+        };
+      }
 
       const model = resolveModelAlias(opts.model.split(' — ')[0].trim());
 

@@ -165,16 +165,16 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
             isError: true,
           };
         }
-        if (manager.isSleeping) {
+        if (manager.isStopped) {
           return {
-            content: [{ type: 'text' as const, text: `Error: silo "${silo}" is sleeping. Wake it first from the Lodestone dashboard.` }],
+            content: [{ type: 'text' as const, text: `Error: silo "${silo}" is stopped. Wake it first from the Lodestone dashboard.` }],
             isError: true,
           };
         }
         managersToSearch.push([silo, manager]);
       } else {
         for (const [name, manager] of siloManagers) {
-          if (!manager.isSleeping) {
+          if (!manager.isStopped) {
             managersToSearch.push([name, manager]);
           }
         }
@@ -182,7 +182,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
 
       if (managersToSearch.length === 0) {
         return {
-          content: [{ type: 'text' as const, text: 'No active silos available for search. All silos may be sleeping or none are configured.' }],
+          content: [{ type: 'text' as const, text: 'No active silos available for search. All silos may be stopped or none are configured.' }],
           isError: true,
         };
       }

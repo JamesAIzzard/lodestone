@@ -94,7 +94,7 @@ export default function OnboardingView() {
         setIndexProgress(silo.reconcileProgress);
       }
 
-      if (silo.watcherState === 'idle' && silo.indexedFileCount > 0) {
+      if (silo.watcherState === 'ready' && silo.indexedFileCount > 0) {
         setIndexDone(true);
         setIndexProgress({ current: silo.indexedFileCount, total: silo.indexedFileCount });
         if (pollRef.current) {

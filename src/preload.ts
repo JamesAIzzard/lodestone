@@ -22,18 +22,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('silos:delete', name),
   disconnectSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:disconnect', name),
-  sleepSilo: (name: string): Promise<unknown> =>
-    ipcRenderer.invoke('silos:sleep', name),
+  stopSilo: (name: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:stop', name),
   wakeSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:wake', name),
   rebuildSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:rebuild', name),
   updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string }): Promise<unknown> =>
     ipcRenderer.invoke('silos:update', name, updates),
-  pauseSilo: (name: string): Promise<unknown> =>
-    ipcRenderer.invoke('silos:pause', name),
-  resumeSilo: (name: string): Promise<unknown> =>
-    ipcRenderer.invoke('silos:resume', name),
   search: (query: string, siloName?: string): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:search', query, siloName),
 

@@ -43,7 +43,7 @@ export interface SiloTomlConfig {
   ignore?: string[];
   ignore_files?: string[];
   model?: string;
-  sleeping?: boolean;
+  stopped?: boolean;
   /** Human-readable description of what this silo contains (for MCP tool routing) */
   description?: string;
   /** Named colour key from the palette (e.g. 'blue', 'emerald') */
@@ -116,7 +116,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
       ignore: Array.isArray(silo.ignore) ? silo.ignore as string[] : undefined,
       ignore_files: Array.isArray(silo.ignore_files) ? silo.ignore_files as string[] : undefined,
       model: typeof silo.model === 'string' ? silo.model : undefined,
-      sleeping: silo.sleeping === true ? true : undefined,
+      stopped: silo.stopped === true ? true : undefined,
       description: typeof silo.description === 'string' ? silo.description : undefined,
       color: typeof silo.color === 'string' ? silo.color : undefined,
       icon: typeof silo.icon === 'string' ? silo.icon : undefined,
@@ -188,7 +188,7 @@ export interface ResolvedSiloConfig {
   ignoreFiles: string[];
   model: string;
   debounce: number;
-  sleeping: boolean;
+  stopped: boolean;
   /** Human-readable description for MCP tool routing */
   description: string;
   /** Palette colour for UI accent (validated, always present) */
@@ -217,7 +217,7 @@ export function resolveSiloConfig(
     ignoreFiles: silo.ignore_files ?? config.defaults.ignore_files,
     model: resolveModelAlias(rawModel),
     debounce: config.defaults.debounce,
-    sleeping: silo.sleeping === true,
+    stopped: silo.stopped === true,
     description: silo.description ?? '',
     color: validateSiloColor(silo.color),
     icon: validateSiloIcon(silo.icon),

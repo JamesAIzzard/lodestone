@@ -24,7 +24,7 @@ export interface SiloConfig {
   icon: SiloIconName;
 }
 
-export type WatcherState = 'idle' | 'indexing' | 'error' | 'sleeping' | 'waiting';
+export type WatcherState = 'ready' | 'scanning' | 'indexing' | 'error' | 'stopped' | 'waiting';
 
 export interface SiloStatus {
   config: SiloConfig;
@@ -41,8 +41,6 @@ export interface SiloStatus {
   };
   /** True when the configured model differs from the model that built the index */
   modelMismatch?: boolean;
-  /** True when indexing is paused */
-  paused?: boolean;
   /** Absolute path to the silo's SQLite database file */
   resolvedDbPath: string;
   /** The effective embedding model for this silo (global default or per-silo override) */

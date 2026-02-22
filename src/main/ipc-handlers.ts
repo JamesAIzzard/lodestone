@@ -20,7 +20,7 @@ import { getBundledModelIds, getModelDefinition, resolveModelAlias } from '../ba
 import { calibrateAndMerge, type RawSiloResult } from '../backend/search-merge';
 import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings } from '../shared/types';
 import type { AppContext } from './context';
-import { sleepSilo, wakeSilo, registerManager } from './lifecycle';
+import { stopSilo, wakeSilo, registerManager } from './lifecycle';
 import { buildTrayMenu } from './tray';
 
 export function registerIpcHandlers(ctx: AppContext): void {
@@ -92,7 +92,6 @@ export function registerIpcHandlers(ctx: AppContext): void {
         errorMessage: status.errorMessage,
         reconcileProgress: status.reconcileProgress,
         modelMismatch: status.modelMismatch,
-        paused: status.paused,
         resolvedDbPath: status.resolvedDbPath,
         resolvedModel: cfg.model,
       });
@@ -109,7 +108,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
     const byModel = new Map<string, Array<[string, SiloManager]>>();
     for (const [name, manager] of managers) {
-      if (!manager || manager.isSleeping || manager.hasModelMismatch()) continue;
+      if (!manager || manager.isStopped || manager.hasModelMismatch()) continue;
       const model = manager.getConfig().model;
       let group = byModel.get(model);
       if (!group) {
@@ -258,29 +257,6 @@ export function registerIpcHandlers(ctx: AppContext): void {
     },
   );
 
-  // ── Pause / Resume ────────────────────────────────────────────────────
-
-  ipcMain.handle(
-    'silos:pause',
-    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
-      const manager = ctx.siloManagers.get(name);
-      if (!manager) return { success: false, error: `Silo "${name}" not found` };
-      manager.pause();
-      ctx.mainWindow?.webContents.send('silos:changed');
-      return { success: true };
-    },
-  );
-
-  ipcMain.handle(
-    'silos:resume',
-    async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
-      const manager = ctx.siloManagers.get(name);
-      if (!manager) return { success: false, error: `Silo "${name}" not found` };
-      manager.resume();
-      ctx.mainWindow?.webContents.send('silos:changed');
-      return { success: true };
-    },
-  );
 
   // ── Silo CRUD ───────────────────────────────────────────────────────────
 
@@ -356,9 +332,9 @@ export function registerIpcHandlers(ctx: AppContext): void {
   );
 
   ipcMain.handle(
-    'silos:sleep',
+    'silos:stop',
     async (_event, name: string): Promise<{ success: boolean; error?: string }> => {
-      return sleepSilo(ctx, name);
+      return stopSilo(ctx, name);
     },
   );
 

@@ -17,7 +17,6 @@ import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
 import { matchesAnyPattern } from './pattern-match';
-import type { PauseToken } from './pause-token';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,7 +73,8 @@ export async function reconcile(
   mtimes: Map<string, number>,
   onProgress?: ReconcileProgressHandler,
   onEvent?: ReconcileEventHandler,
-  pauseToken?: PauseToken,
+  /** Return true to abort reconciliation early (e.g. silo stop/delete). */
+  shouldStop?: () => boolean,
 ): Promise<ReconcileResult> {
   const start = performance.now();
   let filesAdded = 0;
@@ -168,8 +168,14 @@ export async function reconcile(
   };
 
   for (let i = 0; i < filesToIndex.length; i++) {
+    if (shouldStop?.()) {
+      // Flush any work already prepared, then bail out
+      flushBatch();
+      console.log(`[reconcile] Stopped early after ${i} / ${filesToIndex.length} files`);
+      break;
+    }
+
     const { absPath, storedKey, mtime } = filesToIndex[i];
-    if (pauseToken) await pauseToken.waitIfPaused();
 
     onProgress?.({
       phase: 'indexing',
@@ -199,7 +205,7 @@ export async function reconcile(
   flushBatch();
 
   // 7. Remove stale files — batch all deletes into a single transaction
-  if (filesToRemove.length > 0) {
+  if (filesToRemove.length > 0 && !shouldStop?.()) {
     const deleteEntries: Array<{ filePath: string; deleteMtime: boolean }> = [];
 
     for (const storedKey of filesToRemove) {

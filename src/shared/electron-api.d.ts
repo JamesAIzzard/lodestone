@@ -41,12 +41,10 @@ export interface ElectronAPI {
   }) => Promise<{ success: boolean; error?: string }>;
   deleteSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   disconnectSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
-  sleepSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
+  stopSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   wakeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   rebuildSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string }) => Promise<{ success: boolean; error?: string }>;
-  pauseSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
-  resumeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   search: (query: string, siloName?: string) => Promise<SearchResult[]>;
 
   // ── Activity ───────────────────────────────────────────────────────────────

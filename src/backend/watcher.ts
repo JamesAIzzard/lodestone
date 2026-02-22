@@ -17,7 +17,6 @@ import { makeStoredKey, flushPreparedFiles, type SiloDatabase } from './store';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
 import { matchesAnyPattern } from './pattern-match';
-import type { PauseToken } from './pause-token';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,7 +45,6 @@ export class SiloWatcher {
     private readonly config: ResolvedSiloConfig,
     private readonly embeddingService: EmbeddingService,
     private readonly db: SiloDatabase,
-    private readonly pauseToken?: PauseToken,
   ) {}
 
   /** Register a listener for watcher events (activity feed). */
@@ -147,7 +145,6 @@ export class SiloWatcher {
     const errors: WatcherEvent[] = [];
 
     while (this.queue.length > 0) {
-      if (this.pauseToken) await this.pauseToken.waitIfPaused();
       const item = this.queue.shift()!;
 
       try {

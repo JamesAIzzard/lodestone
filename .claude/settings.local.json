@@ -23,7 +23,8 @@
       "Bash(npx electron-forge build:*)",
       "Bash(npx electron-forge package:*)",
       "Bash(npx vite build)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(npx shadcn@latest add:*)"
     ]
   }
 }

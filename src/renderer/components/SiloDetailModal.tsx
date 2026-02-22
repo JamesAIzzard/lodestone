@@ -59,13 +59,13 @@ interface SiloDetailModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDeleted?: () => void;
-  onSleepToggle?: () => void;
+  onStopToggle?: () => void;
   onRebuilt?: () => void;
   /** Called after any update so the parent can refresh silo list */
   onUpdated?: () => void;
 }
 
-export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, onSleepToggle, onRebuilt, onUpdated }: SiloDetailModalProps) {
+export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, onStopToggle, onRebuilt, onUpdated }: SiloDetailModalProps) {
   const [siloEvents, setSiloEvents] = useState<ActivityEvent[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -260,16 +260,6 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
     }
   }
 
-  async function handlePauseToggle() {
-    if (!silo) return;
-    if (silo.paused) {
-      await window.electronAPI?.resumeSilo(silo.config.name);
-    } else {
-      await window.electronAPI?.pauseSilo(silo.config.name);
-    }
-    onUpdated?.();
-  }
-
   async function handleColorChange(newColor: SiloColor) {
     if (!silo) return;
     setSiloColor(newColor);
@@ -288,6 +278,9 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
 
   const { config } = silo;
   const colorClasses = SILO_COLOR_MAP[siloColor];
+  // Disable destructive actions while the silo is actively scanning or indexing.
+  // The user must stop the silo first — stop() is always clean and safe.
+  const isActive = silo.watcherState === 'scanning' || silo.watcherState === 'indexing';
   const defaultModel = serverStatus?.defaultModel ?? 'snowflake-arctic-embed-xs';
   const effectiveModel = selectedModel || config.modelOverride || defaultModel;
   const isOverride = effectiveModel !== defaultModel;
@@ -325,7 +318,7 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat icon={FileText} label="Files" value={silo.indexedFileCount.toLocaleString()} />
           <Stat icon={Blocks} label="Chunks" value={silo.chunkCount.toLocaleString()} />
-          <Stat label="DB Size" value={silo.watcherState === 'indexing' ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)} />
+          <Stat label="DB Size" value={isActive ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)} />
           <Stat label="Updated" value={formatTime(silo.lastUpdated)} />
         </div>
 
@@ -549,23 +542,15 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
         )}
 
         <DialogFooter>
-          {silo.watcherState === 'indexing' && (
-            <Button variant="outline" size="sm" onClick={handlePauseToggle}>
-              {silo.paused
-                ? <><Play className="h-3.5 w-3.5" /> Resume</>
-                : <><Pause className="h-3.5 w-3.5" /> Pause</>
-              }
-            </Button>
-          )}
-          {onSleepToggle && silo.watcherState !== 'indexing' && (
+          {onStopToggle && silo.watcherState !== 'waiting' && (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => { onSleepToggle(); onOpenChange(false); }}
+              onClick={() => { onStopToggle(); onOpenChange(false); }}
             >
-              {silo.watcherState === 'sleeping'
+              {silo.watcherState === 'stopped'
                 ? <><Play className="h-3.5 w-3.5" /> Wake</>
-                : <><Pause className="h-3.5 w-3.5" /> Sleep</>
+                : <><Pause className="h-3.5 w-3.5" /> Stop</>
               }
             </Button>
           )}
@@ -573,19 +558,31 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
             variant="outline"
             size="sm"
             onClick={handleRebuild}
-            disabled={rebuilding || silo.watcherState === 'indexing'}
+            disabled={rebuilding || isActive}
           >
             <RotateCcw className={cn('h-3.5 w-3.5', rebuilding && 'animate-spin')} />
             {rebuilding ? 'Rebuilding...' : 'Rebuild Index'}
           </Button>
           {!confirmDelete && !confirmDisconnect && (
-            <Button variant="outline" size="sm" onClick={() => setConfirmDisconnect(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmDisconnect(true)}
+              disabled={isActive}
+              title={isActive ? 'Stop the silo before disconnecting' : undefined}
+            >
               <Unplug className="h-3.5 w-3.5" />
               Disconnect
             </Button>
           )}
           {!confirmDelete && !confirmDisconnect && (
-            <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)}>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setConfirmDelete(true)}
+              disabled={isActive}
+              title={isActive ? 'Stop the silo before deleting' : undefined}
+            >
               <Trash2 className="h-3.5 w-3.5" />
               Delete Silo
             </Button>

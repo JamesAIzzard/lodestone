@@ -42,7 +42,7 @@ export async function initializeBackend(ctx: AppContext): Promise<void> {
 
 /**
  * Create a SiloManager, register it in the context, wire up event forwarding,
- * and either load cached sleeping stats or enqueue startup.
+ * and either load cached stopped stats or enqueue startup.
  */
 export function registerManager(
   ctx: AppContext,
@@ -63,9 +63,9 @@ export function registerManager(
     ctx.mainWindow?.webContents.send('silos:changed');
   });
 
-  if (resolved.sleeping) {
-    manager.loadSleepingStatus();
-    console.log(`[main] Silo "${name}" is sleeping`);
+  if (resolved.stopped) {
+    manager.loadStoppedStatus();
+    console.log(`[main] Silo "${name}" is stopped`);
   } else {
     ctx.enqueueSiloStart(name, manager);
   }
@@ -75,20 +75,20 @@ export function registerManager(
 
 // ── Sleep / Wake ────────────────────────────────────────────────────────────
 
-export async function sleepSilo(
+export async function stopSilo(
   ctx: AppContext,
   name: string,
 ): Promise<{ success: boolean; error?: string }> {
   const manager = ctx.siloManagers.get(name);
   if (!manager) return { success: false, error: `Silo "${name}" not found` };
-  if (manager.isSleeping) return { success: true };
+  if (manager.isStopped) return { success: true };
 
-  await manager.sleep();
+  await manager.freeze();
 
   if (ctx.config) {
     const siloToml = ctx.config.silos[name];
     if (siloToml) {
-      siloToml.sleeping = true;
+      siloToml.stopped = true;
       saveConfig(ctx.configPath(), ctx.config);
     }
   }
@@ -103,12 +103,12 @@ export async function wakeSilo(
 ): Promise<{ success: boolean; error?: string }> {
   const manager = ctx.siloManagers.get(name);
   if (!manager) return { success: false, error: `Silo "${name}" not found` };
-  if (!manager.isSleeping) return { success: true };
+  if (!manager.isStopped) return { success: true };
 
   if (ctx.config) {
     const siloToml = ctx.config.silos[name];
     if (siloToml) {
-      delete siloToml.sleeping;
+      delete siloToml.stopped;
       saveConfig(ctx.configPath(), ctx.config);
     }
   }

@@ -5,24 +5,25 @@
 import { app, Menu, nativeImage, Tray } from 'electron';
 import type { AppContext } from './context';
 import { createWindow } from './window';
-import { sleepSilo, wakeSilo } from './lifecycle';
+import { stopSilo, wakeSilo } from './lifecycle';
 
 export function buildTrayMenu(ctx: AppContext): Menu {
   const statusLabel = (state: string) =>
-    state === 'sleeping' ? '⏸ Sleeping'
+    state === 'stopped' ? '⏸ Stopped'
       : state === 'waiting' ? '⏳ Waiting'
-        : state === 'indexing' ? '⟳ Indexing'
-          : state === 'error' ? '✕ Error'
-            : '● Idle';
+        : state === 'scanning' ? '⟳ Scanning'
+          : state === 'indexing' ? '⟳ Indexing'
+            : state === 'error' ? '✕ Error'
+              : '● Ready';
 
   const siloItems = Array.from(ctx.siloManagers.entries()).map(([name, manager]) => ({
     label: `${name}  ${statusLabel(manager.getStatus().watcherState)}`,
     enabled: false,
   }));
 
-  const allSleeping = ctx.siloManagers.size > 0 &&
-    Array.from(ctx.siloManagers.values()).every((m) => m.isSleeping);
-  const anySleeping = Array.from(ctx.siloManagers.values()).some((m) => m.isSleeping);
+  const allStopped = ctx.siloManagers.size > 0 &&
+    Array.from(ctx.siloManagers.values()).every((m) => m.isStopped);
+  const anyStopped = Array.from(ctx.siloManagers.values()).some((m) => m.isStopped);
 
   return Menu.buildFromTemplate([
     {
@@ -44,22 +45,22 @@ export function buildTrayMenu(ctx: AppContext): Menu {
         : [{ label: 'No silos configured', enabled: false }],
     },
     {
-      label: 'Sleep All',
-      enabled: !allSleeping,
+      label: 'Stop All',
+      enabled: !allStopped,
       click: async () => {
         for (const [name, manager] of ctx.siloManagers) {
-          if (!manager.isSleeping) {
-            await sleepSilo(ctx, name);
+          if (!manager.isStopped) {
+            await stopSilo(ctx, name);
           }
         }
       },
     },
     {
       label: 'Wake All',
-      enabled: anySleeping,
+      enabled: anyStopped,
       click: async () => {
         for (const [name, manager] of ctx.siloManagers) {
-          if (manager.isSleeping) {
+          if (manager.isStopped) {
             await wakeSilo(ctx, name);
           }
         }

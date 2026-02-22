@@ -95,8 +95,8 @@ export default function SearchView() {
           >
             <option value="all">All Silos</option>
             {silos.map((s) => (
-              <option key={s.config.name} value={s.config.name} disabled={s.watcherState === 'sleeping'}>
-                {s.config.name}{s.watcherState === 'sleeping' ? ' (sleeping)' : ''}
+              <option key={s.config.name} value={s.config.name} disabled={s.watcherState === 'stopped'}>
+                {s.config.name}{s.watcherState === 'stopped' ? ' (stopped)' : ''}
               </option>
             ))}
           </select>
@@ -131,19 +131,19 @@ export default function SearchView() {
         )}
 
         {!searching && hasSearched && (() => {
-          const sleepingSilos = silos.filter((s) => s.watcherState === 'sleeping');
-          const sleepingSkipped = selectedSilo === 'all'
-            ? sleepingSilos
-            : sleepingSilos.filter((s) => s.config.name === selectedSilo);
-          const sleepingHint = sleepingSkipped.length > 0
-            ? `${sleepingSkipped.map((s) => s.config.name).join(', ')} ${sleepingSkipped.length === 1 ? 'is' : 'are'} sleeping and ${sleepingSkipped.length === 1 ? 'was' : 'were'} not searched.`
+          const stoppedSilos = silos.filter((s) => s.watcherState === 'stopped');
+          const stoppedSkipped = selectedSilo === 'all'
+            ? stoppedSilos
+            : stoppedSilos.filter((s) => s.config.name === selectedSilo);
+          const stoppedHint = stoppedSkipped.length > 0
+            ? `${stoppedSkipped.map((s) => s.config.name).join(', ')} ${stoppedSkipped.length === 1 ? 'is' : 'are'} stopped and ${stoppedSkipped.length === 1 ? 'was' : 'were'} not searched.`
             : null;
 
           return results.length === 0 ? (
             <div>
               <p className="text-sm text-muted-foreground">No results found.</p>
-              {sleepingHint && (
-                <p className="mt-1 text-xs text-muted-foreground/50">{sleepingHint}</p>
+              {stoppedHint && (
+                <p className="mt-1 text-xs text-muted-foreground/50">{stoppedHint}</p>
               )}
             </div>
           ) : (
@@ -152,8 +152,8 @@ export default function SearchView() {
                 <p className="text-xs text-muted-foreground">
                   {results.length} result{results.length !== 1 && 's'}
                 </p>
-                {sleepingHint && (
-                  <p className="mt-0.5 text-[10px] text-muted-foreground/50">{sleepingHint}</p>
+                {stoppedHint && (
+                  <p className="mt-0.5 text-[10px] text-muted-foreground/50">{stoppedHint}</p>
                 )}
               </div>
 

@@ -35,6 +35,27 @@ if (isMcpMode) {
 
 const ctx = createAppContext(isMcpMode);
 
+// ── Single-Instance Lock (GUI only) ──────────────────────────────────────────
+// Prevent duplicate GUI instances. MCP mode is exempt — it coexists with the
+// GUI and its lifecycle is managed by the MCP client + parent PID polling.
+
+if (!isMcpMode) {
+  const gotLock = app.requestSingleInstanceLock();
+
+  if (!gotLock) {
+    console.log('[main] Another GUI instance is already running — exiting');
+    app.quit();
+  } else {
+    app.on('second-instance', () => {
+      if (ctx.mainWindow) {
+        if (ctx.mainWindow.isMinimized()) ctx.mainWindow.restore();
+        ctx.mainWindow.show();
+        ctx.mainWindow.focus();
+      }
+    });
+  }
+}
+
 // ── App Lifecycle ────────────────────────────────────────────────────────────
 
 app.on('ready', () => {
@@ -65,9 +86,20 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', (event) => {
-  if (ctx.siloManagers.size > 0) {
+  if (ctx.siloManagers.size > 0 || ctx.embeddingServices.size > 0) {
     event.preventDefault();
-    shutdownBackend(ctx).finally(() => app.quit());
+
+    // Race shutdown against a hard timeout so a stuck silo can't keep the
+    // process alive forever.
+    const SHUTDOWN_TIMEOUT_MS = 5000;
+    const timeout = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        console.warn('[main] Shutdown timed out after 5 s — force-quitting');
+        resolve();
+      }, SHUTDOWN_TIMEOUT_MS).unref();
+    });
+
+    Promise.race([shutdownBackend(ctx), timeout]).finally(() => app.quit());
   }
 });
 

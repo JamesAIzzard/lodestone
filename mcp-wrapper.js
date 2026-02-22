@@ -146,6 +146,23 @@ function cleanup() {
   ipcServer.close();
   if (child && !child.killed) {
     child.kill();
+
+    // On Windows, child.kill() sends SIGTERM which may not terminate a GUI
+    // process promptly. If the child is still alive after 3 s, force-kill it.
+    setTimeout(() => {
+      try {
+        process.kill(child.pid, 0); // throws if already dead
+        process.stderr.write(`[mcp-wrapper] Electron still alive — force-killing PID ${child.pid}\n`);
+        process.kill(child.pid, 'SIGKILL');
+      } catch {
+        // Already exited — nothing to do
+      }
+      process.exit(0);
+    }, 3000).unref();
+
+    // Exit immediately once the child exits (don't wait for the full 3 s)
+    child.once('exit', () => process.exit(0));
+    return;
   }
   process.exit(0);
 }
@@ -153,3 +170,11 @@ function cleanup() {
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
 process.stdin.on('end', cleanup);
+
+// Ensure cleanup runs even if the process is about to exit without an explicit
+// cleanup trigger (e.g. parent terminated us and Node is winding down).
+process.on('exit', () => {
+  if (!exiting && child && !child.killed) {
+    try { child.kill(); } catch { /* best-effort */ }
+  }
+});

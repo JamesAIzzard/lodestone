@@ -87,6 +87,7 @@ export async function startMcpMode(ctx: AppContext): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log('[main] Shutting down MCP mode...');
+    clearInterval(parentPollTimer);
     await stopMcp();
     socket.destroy();
     await shutdownBackend(ctx);
@@ -97,4 +98,21 @@ export async function startMcpMode(ctx: AppContext): Promise<void> {
   process.on('SIGTERM', () => shutdown());
 
   socket.on('close', () => shutdown());
+
+  // ── Orphan Prevention ────────────────────────────────────────────────────
+  // On Windows, if the parent wrapper process is killed via TerminateProcess()
+  // (which is how Task Manager, Claude Desktop, and child.kill() work), none
+  // of our signal handlers fire and the named pipe may not close promptly.
+  // Poll the parent PID to detect this and self-exit.
+  const parentPid = process.ppid;
+  const parentPollTimer = setInterval(() => {
+    try {
+      // process.kill(pid, 0) throws if the process no longer exists
+      process.kill(parentPid, 0);
+    } catch {
+      console.log(`[main] Parent process (PID ${parentPid}) gone — shutting down`);
+      shutdown();
+    }
+  }, 2000);
+  parentPollTimer.unref();
 }

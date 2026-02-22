@@ -52,6 +52,11 @@ function ensureSharedWorker(): Worker {
     const workerPath = path.join(__dirname, 'embedding-worker.js');
     sharedWorker = new Worker(workerPath);
 
+    // Don't let the worker thread prevent the process from exiting.
+    // Graceful shutdown is handled by terminateSharedWorker(); this just
+    // ensures the process can exit even if disposal is skipped.
+    sharedWorker.unref();
+
     sharedWorker.on('message', (msg: WorkerResponse) => {
       const entry = sharedPending.get(msg.id);
       if (!entry) return;

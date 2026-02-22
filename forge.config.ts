@@ -30,6 +30,7 @@ const EXTERNAL_MODULES = [
 
 const config: ForgeConfig = {
   packagerConfig: {
+    extraResource: ['mcp-wrapper.js'],
     asar: {
       // AutoUnpackNativesPlugin handles .node files.  We additionally need
       // .dll/.dylib/.so for sqlite-vec and .wasm for tree-sitter — these are

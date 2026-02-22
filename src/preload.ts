@@ -66,4 +66,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('ollama:test', url),
   getConfigPath: (): Promise<string> =>
     ipcRenderer.invoke('config:path'),
+
+  // Claude Desktop Integration
+  getClaudeDesktopStatus: (): Promise<unknown> =>
+    ipcRenderer.invoke('mcp:getClaudeDesktopStatus'),
+  configureClaudeDesktop: (): Promise<unknown> =>
+    ipcRenderer.invoke('mcp:configureClaudeDesktop'),
 });

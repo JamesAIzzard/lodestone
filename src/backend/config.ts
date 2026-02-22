@@ -84,8 +84,8 @@ const DEFAULT_CONFIG: LodestoneConfig = {
       '.c', '.h', '.cpp', '.hpp',
       '.cs', '.rb', '.swift', '.kt',
     ],
-    ignore: ['.git', '__pycache__', 'node_modules', '.obsidian', 'dist', 'build', '.next'],
-    ignore_files: ['.DS_Store', 'Thumbs.db'],
+    ignore: ['.*', '_*', 'node_modules', 'dist', 'build'],
+    ignore_files: ['.*', 'Thumbs.db'],
   },
   search: {
     weights: { ...DEFAULT_SEARCH_WEIGHTS },

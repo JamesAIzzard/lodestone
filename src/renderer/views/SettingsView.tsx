@@ -2,9 +2,9 @@ import { useState, useEffect } from 'react';
 import { Loader2, CheckCircle2, XCircle, FileCode } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { X } from 'lucide-react';
 import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
-import type { ServerStatus, DefaultSettings } from '../../shared/types';
+import ExtensionPicker from '@/components/ExtensionPicker';
+import type { ServerStatus } from '../../shared/types';
 
 export default function SettingsView() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -13,7 +13,6 @@ export default function SettingsView() {
   const [testResult, setTestResult] = useState<{ connected: boolean; models: string[] } | null>(null);
   const [selectedModel, setSelectedModel] = useState('');
   const [extensions, setExtensions] = useState<string[]>([]);
-  const [extInput, setExtInput] = useState('');
   const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
   const [fileIgnore, setFileIgnore] = useState<string[]>([]);
 
@@ -43,20 +42,7 @@ export default function SettingsView() {
     }
   }
 
-  function addExtension() {
-    const val = extInput.trim();
-    if (!val) return;
-    const ext = val.startsWith('.') ? val : `.${val}`;
-    if (!extensions.includes(ext)) {
-      const updated = [...extensions, ext];
-      setExtensions(updated);
-      window.electronAPI?.updateDefaults({ extensions: updated });
-    }
-    setExtInput('');
-  }
-
-  function removeExtension(ext: string) {
-    const updated = extensions.filter((e) => e !== ext);
+  function handleExtensionsChange(updated: string[]) {
     setExtensions(updated);
     window.electronAPI?.updateDefaults({ extensions: updated });
   }
@@ -164,29 +150,7 @@ export default function SettingsView() {
           title="Default File Extensions"
           description="Extensions to index when creating new silos."
         >
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {extensions.map((ext) => (
-              <Badge key={ext} variant="secondary" className="gap-1 text-xs">
-                {ext}
-                <button onClick={() => removeExtension(ext)}>
-                  <X className="h-2.5 w-2.5" />
-                </button>
-              </Badge>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={extInput}
-              onChange={(e) => setExtInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && addExtension()}
-              placeholder="e.g. .ts"
-              className="h-8 w-32 rounded-md border border-input bg-background px-3 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-            <Button variant="outline" size="sm" onClick={addExtension}>
-              Add
-            </Button>
-          </div>
+          <ExtensionPicker extensions={extensions} onChange={handleExtensionsChange} />
         </Section>
 
         {/* ── Default Ignore Patterns ──────────────────────────── */}

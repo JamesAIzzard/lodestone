@@ -23,19 +23,18 @@ export interface AppContext {
   mainWindow: BrowserWindow | null;
   tray: Tray | null;
   isQuitting: boolean;
-  isMcpMode: boolean;
+  shuttingDown: boolean;
   nextEventId: number;
   startTime: number;
   indexingQueue: IndexingQueue;
 
   getOrCreateEmbeddingService(model: string): EmbeddingService;
-  enqueueSiloStart(name: string, manager: SiloManager): void;
   getUserDataDir(): string;
   getModelCacheDir(): string;
   configPath(): string;
 }
 
-export function createAppContext(isMcpMode: boolean): AppContext {
+export function createAppContext(): AppContext {
   const ctx: AppContext = {
     config: null,
     siloManagers: new Map(),
@@ -43,7 +42,7 @@ export function createAppContext(isMcpMode: boolean): AppContext {
     mainWindow: null,
     tray: null,
     isQuitting: false,
-    isMcpMode,
+    shuttingDown: false,
     nextEventId: 1,
     startTime: Date.now(),
     indexingQueue: new IndexingQueue(),
@@ -60,13 +59,6 @@ export function createAppContext(isMcpMode: boolean): AppContext {
         ctx.embeddingServices.set(modelId, service);
       }
       return service;
-    },
-
-    enqueueSiloStart(name: string, manager: SiloManager): void {
-      manager.loadWaitingStatus();
-      manager.start().catch((err) => {
-        console.error(`[main] Failed to start silo "${name}":`, err);
-      });
     },
 
     getUserDataDir(): string {

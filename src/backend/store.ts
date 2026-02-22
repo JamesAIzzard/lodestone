@@ -771,6 +771,25 @@ export function countMtimes(db: SiloDatabase): number {
   return row.cnt;
 }
 
+/**
+ * Peek at the file count in a silo database without fully opening it.
+ * Opens a lightweight readonly connection — no sqlite-vec extension needed.
+ * Returns 0 if the database doesn't exist or the table is missing.
+ */
+export function peekFileCount(dbPath: string): number {
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const row = db.prepare('SELECT COUNT(*) as cnt FROM mtimes').get() as { cnt: number };
+      return row.cnt;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return 0;
+  }
+}
+
 // ── Meta Persistence ─────────────────────────────────────────────────────────
 
 /**

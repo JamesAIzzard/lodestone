@@ -22,7 +22,7 @@ import type { Readable, Writable } from 'node:stream';
 import type { SiloManager } from './silo-manager';
 import type { LodestoneConfig } from './config';
 import { resolveModelAlias } from './model-registry';
-import { calibrateAndMerge, type RawSiloResult } from './search-merge';
+import { calibrateAndMerge, dispatchSearch } from './search-merge';
 import type { SearchWeights, SearchPreset } from '../shared/types';
 import { DEFAULT_SEARCH_WEIGHTS, SEARCH_PRESETS } from '../shared/types';
 
@@ -233,45 +233,23 @@ export async function startMcpServer(deps: McpServerDeps): Promise<() => Promise
         };
       }
 
-      // Group silos by embedding model so we only embed the query once per model
-      const byModel = new Map<string, Array<[string, SiloManager]>>();
-      for (const [name, manager] of searchableManagers) {
-        const model = manager.getConfig().model;
-        let group = byModel.get(model);
-        if (!group) { group = []; byModel.set(model, group); }
-        group.push([name, manager]);
-      }
-
       // Resolve weights from preset, defaulting to balanced
       const weights: SearchWeights = SEARCH_PRESETS[preset ?? 'balanced'];
 
-      // Run search: embed once per model, then search all silos sharing that model
-      const raw: RawSiloResult[] = [];
-
-      for (const [, group] of byModel) {
-        const service = group[0][1].getEmbeddingService()!;
-        const queryVector = await service.embed(query);
-
-        for (const [name, manager] of group) {
-          try {
-            const siloResults = manager.searchWithVector(queryVector, query, limit, weights);
-            for (const r of siloResults) {
-              raw.push({
-                filePath: r.filePath,
-                rrfScore: r.score,
-                bestCosineSimilarity: r.bestCosineSimilarity,
-                matchType: r.matchType,
-                siloName: name,
-                chunks: r.chunks,
-                weights: r.weights,
-                breakdown: r.breakdown,
-              });
-            }
-          } catch (err) {
-            console.error(`[mcp] Search error in silo "${name}":`, err);
+      const raw = await dispatchSearch(
+        query,
+        searchableManagers,
+        (model) => {
+          // In MCP mode, get the embedding service from the first manager
+          // sharing this model (all share the same service instance).
+          for (const [, m] of searchableManagers) {
+            if (m.getConfig().model === model) return m.getEmbeddingService();
           }
-        }
-      }
+          return null;
+        },
+        limit,
+        weights,
+      );
 
       // Calibrate scores across silos and sort by quality score
       const merged = calibrateAndMerge(raw);

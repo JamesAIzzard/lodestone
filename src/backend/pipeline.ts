@@ -36,10 +36,8 @@ const processors = new Map<string, FileProcessor>([
 ]);
 
 // Code files — Tree-sitter AST-based chunking (async)
-// The dummy sync chunker is never called because asyncChunker takes priority.
 const codeProcessor: FileProcessor = {
   extractor: extractCode,
-  chunker: chunkPlaintext, // sync fallback (not used when asyncChunker is present)
   asyncChunker: chunkCodeAsync,
 };
 
@@ -105,9 +103,13 @@ export async function prepareFile(
   const { extractor, chunker, asyncChunker } = getProcessor(absolutePath);
   const extraction = extractor(content);
 
+  if (!asyncChunker && !chunker) {
+    return { storedKey, chunks: [], embeddings: [], mtimeMs };
+  }
+
   const chunks = asyncChunker
     ? await asyncChunker(absolutePath, extraction, embeddingService.chunkTokens)
-    : chunker(absolutePath, extraction, embeddingService.chunkTokens);
+    : chunker!(absolutePath, extraction, embeddingService.chunkTokens);
 
   if (chunks.length === 0) {
     return { storedKey, chunks: [], embeddings: [], mtimeMs };
@@ -121,6 +123,11 @@ export async function prepareFile(
     const batch = texts.slice(i, i + MAX_EMBED_BATCH_SIZE);
     const batchEmbeddings = await embeddingService.embedBatch(batch);
     embeddings.push(...batchEmbeddings);
+    // Yield to the event loop between embedding batches so IPC,
+    // rendering, and other async work can progress.
+    if (i + MAX_EMBED_BATCH_SIZE < texts.length) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
   }
 
   return { storedKey, chunks: storedChunks, embeddings, mtimeMs };

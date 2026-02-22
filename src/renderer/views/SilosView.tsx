@@ -11,6 +11,7 @@ export default function SilosView() {
   const [selectedSilo, setSelectedSilo] = useState<SiloStatus | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [stoppingName, setStoppingName] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   function fetchSilos() {
@@ -58,12 +59,18 @@ export default function SilosView() {
   }
 
   async function handleStopToggle(silo: SiloStatus) {
-    if (silo.watcherState === 'stopped') {
-      await window.electronAPI?.wakeSilo(silo.config.name);
-    } else {
-      await window.electronAPI?.stopSilo(silo.config.name);
+    const isStop = silo.watcherState !== 'stopped';
+    if (isStop) setStoppingName(silo.config.name);
+    try {
+      if (silo.watcherState === 'stopped') {
+        await window.electronAPI?.wakeSilo(silo.config.name);
+      } else {
+        await window.electronAPI?.stopSilo(silo.config.name);
+      }
+      fetchSilos();
+    } finally {
+      if (isStop) setStoppingName(null);
     }
-    fetchSilos();
   }
 
   return (
@@ -88,6 +95,7 @@ export default function SilosView() {
               silo={silo}
               onClick={() => handleCardClick(silo)}
               onStopToggle={() => handleStopToggle(silo)}
+              isStopping={stoppingName === silo.config.name}
             />
           ))}
         </div>
@@ -99,6 +107,7 @@ export default function SilosView() {
         onOpenChange={setDetailOpen}
         onDeleted={fetchSilos}
         onStopToggle={selectedSilo ? () => handleStopToggle(selectedSilo) : undefined}
+        isStopping={selectedSilo ? stoppingName === selectedSilo.config.name : false}
         onRebuilt={fetchSilos}
         onUpdated={fetchSilos}
       />

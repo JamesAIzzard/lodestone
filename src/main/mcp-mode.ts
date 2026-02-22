@@ -13,16 +13,10 @@
  */
 
 import { app } from 'electron';
-import {
-  loadConfig,
-  saveConfig,
-  createDefaultConfig,
-  configExists,
-} from '../backend/config';
 import { startMcpServer } from '../backend/mcp-server';
 import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import type { AppContext } from './context';
-import { registerManager, shutdownBackend } from './lifecycle';
+import { loadOrInitConfig, registerManager, shutdownBackend } from './lifecycle';
 
 export async function startMcpMode(ctx: AppContext): Promise<void> {
   console.log('[main] Starting in MCP mode (headless)');
@@ -36,21 +30,7 @@ export async function startMcpMode(ctx: AppContext): Promise<void> {
     return;
   }
 
-  // Load config
-  const configPath = ctx.configPath();
-  if (configExists(configPath)) {
-    try {
-      ctx.config = loadConfig(configPath);
-      console.log(`[main] Loaded config from ${configPath}`);
-    } catch (err) {
-      console.error('[main] Failed to load config:', err);
-      ctx.config = createDefaultConfig();
-    }
-  } else {
-    ctx.config = createDefaultConfig();
-    saveConfig(configPath, ctx.config);
-    console.log(`[main] Created default config at ${configPath}`);
-  }
+  loadOrInitConfig(ctx);
 
   // Register all silos — this creates managers and enqueues non-sleeping
   // silos for sequential background startup via ctx.siloStartQueue.
@@ -81,7 +61,7 @@ export async function startMcpMode(ctx: AppContext): Promise<void> {
     siloManagers: ctx.siloManagers,
     input: socket,
     output: socket,
-    getWeights: () => ctx.config?.search?.weights ?? DEFAULT_SEARCH_WEIGHTS,
+    getWeights: () => ctx.config?.search.weights ?? DEFAULT_SEARCH_WEIGHTS,
   });
 
   let shuttingDown = false;

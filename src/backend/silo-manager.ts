@@ -6,7 +6,6 @@
  * with this class for all silo operations.
  */
 
-import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ResolvedSiloConfig } from './config';
@@ -24,6 +23,7 @@ import {
   saveConfigBlob,
   makeStoredKey,
   resolveStoredKey,
+  peekFileCount,
   type SiloDatabase,
   type SiloSearchResult,
   type StoredSiloConfig,
@@ -275,8 +275,9 @@ export class SiloManager {
   }
 
   private async doStart(): Promise<void> {
-    // 1. Use the shared embedding service
+    // 1. Use the shared embedding service and ensure it's ready
     this.embeddingService = this.sharedEmbeddingService;
+    await this.embeddingService.ensureReady();
 
     // 2. Open or create the SQLite database
     const dbPath = this.resolveDbPath();
@@ -464,22 +465,7 @@ export class SiloManager {
   private loadOfflineStatus(state: 'stopped' | 'waiting'): void {
     this.watcherState = state;
     this.cachedSizeBytes = this.readFileSizeFromDisk();
-
-    const dbPath = this.resolveDbPath();
-    if (fs.existsSync(dbPath)) {
-      try {
-        const db = new Database(dbPath, { readonly: true });
-        try {
-          const row = db.prepare(`SELECT COUNT(*) as cnt FROM mtimes`).get() as { cnt: number };
-          this.cachedFileCount = row.cnt;
-        } catch {
-          this.cachedFileCount = 0;
-        }
-        db.close();
-      } catch {
-        this.cachedFileCount = 0;
-      }
-    }
+    this.cachedFileCount = peekFileCount(this.resolveDbPath());
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -562,12 +548,7 @@ export class SiloManager {
     return this.config;
   }
 
-  /** Get the underlying database (for reconciliation). */
-  getDatabase(): SiloDatabase | null {
-    return this.db;
-  }
-
-  /** Get the embedding service (for reconciliation). */
+  /** Get the embedding service (used by MCP mode for search dispatch). */
   getEmbeddingService(): EmbeddingService | null {
     return this.embeddingService;
   }

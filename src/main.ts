@@ -33,7 +33,7 @@ if (isMcpMode) {
   console.log = (...args: unknown[]) => console.error(...args);
 }
 
-const ctx = createAppContext(isMcpMode);
+const ctx = createAppContext();
 
 // ── Single-Instance Lock (GUI only) ──────────────────────────────────────────
 // Prevent duplicate GUI instances. MCP mode is exempt — it coexists with the
@@ -86,7 +86,12 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', (event) => {
+  // Prevent re-entrant quit loop: once async shutdown has started, let the
+  // process exit without re-entering the shutdown sequence.
+  if (ctx.shuttingDown) return;
+
   if (ctx.siloManagers.size > 0 || ctx.embeddingServices.size > 0) {
+    ctx.shuttingDown = true;
     event.preventDefault();
 
     // Race shutdown against a hard timeout so a stuck silo can't keep the

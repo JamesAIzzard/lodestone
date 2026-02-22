@@ -9,6 +9,8 @@
 
 import type { MatchType, SearchWeights, ScoreBreakdown } from '../shared/types';
 import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
+import type { EmbeddingService } from './embedding';
+import type { SiloManager } from './silo-manager';
 import type { SiloSearchResultChunk } from './store';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -52,6 +54,61 @@ export function computeQualityScore(
   const base = bestCosine > 0 ? bestCosine : 0.35;
   const agreementBonus = Math.max(0, matchCount - 1) * 0.05;
   return Math.min(base + agreementBonus, 0.99);
+}
+
+// ── Dispatch ─────────────────────────────────────────────────────────────────
+
+/**
+ * Run a search query across multiple silos, grouping by embedding model
+ * so the query is only embedded once per model.
+ *
+ * Callers provide their own embedding service resolver so this works in
+ * both the IPC context (services on AppContext) and MCP context (services
+ * on each SiloManager).
+ */
+export async function dispatchSearch(
+  query: string,
+  managers: Iterable<[string, SiloManager]>,
+  resolveService: (model: string) => EmbeddingService | null,
+  limit: number,
+  weights: SearchWeights,
+): Promise<RawSiloResult[]> {
+  const byModel = new Map<string, Array<[string, SiloManager]>>();
+  for (const [name, manager] of managers) {
+    const model = manager.getConfig().model;
+    let group = byModel.get(model);
+    if (!group) { group = []; byModel.set(model, group); }
+    group.push([name, manager]);
+  }
+
+  const raw: RawSiloResult[] = [];
+  for (const [model, group] of byModel) {
+    const service = resolveService(model);
+    if (!service) continue;
+
+    const queryVector = await service.embed(query);
+    for (const [name, manager] of group) {
+      try {
+        const siloResults = manager.searchWithVector(queryVector, query, limit, weights);
+        for (const r of siloResults) {
+          raw.push({
+            filePath: r.filePath,
+            rrfScore: r.score,
+            bestCosineSimilarity: r.bestCosineSimilarity,
+            matchType: r.matchType,
+            siloName: name,
+            chunks: r.chunks,
+            weights: r.weights,
+            breakdown: r.breakdown,
+          });
+        }
+      } catch (err) {
+        console.error(`[search] Error in silo "${name}":`, err);
+      }
+    }
+  }
+
+  return raw;
 }
 
 // ── Calibration ──────────────────────────────────────────────────────────────

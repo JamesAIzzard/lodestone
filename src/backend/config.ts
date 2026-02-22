@@ -61,7 +61,7 @@ export interface LodestoneConfig {
   server: ServerConfig;
   embeddings: EmbeddingsConfig;
   defaults: DefaultsConfig;
-  search?: SearchConfig;
+  search: SearchConfig;
   silos: Record<string, SiloTomlConfig>;
 }
 
@@ -86,6 +86,9 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     ],
     ignore: ['.git', '__pycache__', 'node_modules', '.obsidian', 'dist', 'build', '.next'],
     ignore_files: ['.DS_Store', 'Thumbs.db'],
+  },
+  search: {
+    weights: { ...DEFAULT_SEARCH_WEIGHTS },
   },
   silos: {},
 };

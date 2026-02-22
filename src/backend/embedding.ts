@@ -31,6 +31,12 @@ export interface EmbeddingService {
   readonly maxTokens: number;
   /** Target chunk size for the pipeline chunkers — typically much smaller than maxTokens */
   readonly chunkTokens: number;
+  /**
+   * Ensure the service is ready for use (dimensions are known, model is loaded, etc.).
+   * Callers should await this before reading `dimensions`.
+   * Built-in models resolve immediately; Ollama probes the server to learn dimensions.
+   */
+  ensureReady(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -183,6 +189,10 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
 
   // ── EmbeddingService implementation ──────────────────────────────────────
 
+  async ensureReady(): Promise<void> {
+    await this.ensureInit();
+  }
+
   async embed(text: string): Promise<number[]> {
     await this.ensureInit();
     const response = await postToSharedWorker<{ vector: number[] }>({
@@ -238,6 +248,12 @@ export class OllamaEmbeddingService implements EmbeddingService {
       throw new Error('Ollama dimensions unknown — call embed() at least once first');
     }
     return this._dimensions;
+  }
+
+  async ensureReady(): Promise<void> {
+    if (this._dimensions === null) {
+      await this.callOllama(['.']);
+    }
   }
 
   async embed(text: string): Promise<number[]> {

@@ -8,7 +8,7 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { FileText, Blocks, FolderOpen, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play, HardDrive, Unplug, Pencil, Check, X } from 'lucide-react';
+import { FileText, Blocks, FolderOpen, Loader2, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play, HardDrive, Unplug, Pencil, Check, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
 import IgnorePatternsEditor from './IgnorePatternsEditor';
@@ -60,12 +60,13 @@ interface SiloDetailModalProps {
   onOpenChange: (open: boolean) => void;
   onDeleted?: () => void;
   onStopToggle?: () => void;
+  isStopping?: boolean;
   onRebuilt?: () => void;
   /** Called after any update so the parent can refresh silo list */
   onUpdated?: () => void;
 }
 
-export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, onStopToggle, onRebuilt, onUpdated }: SiloDetailModalProps) {
+export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, onStopToggle, isStopping, onRebuilt, onUpdated }: SiloDetailModalProps) {
   const [siloEvents, setSiloEvents] = useState<ActivityEvent[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -620,11 +621,14 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
             <Button
               variant="outline"
               size="sm"
-              onClick={() => { onStopToggle(); onOpenChange(false); }}
+              disabled={isStopping}
+              onClick={() => { onStopToggle(); }}
             >
-              {silo.watcherState === 'stopped'
-                ? <><Play className="h-3.5 w-3.5" /> Wake</>
-                : <><Pause className="h-3.5 w-3.5" /> Stop</>
+              {isStopping
+                ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Stopping…</>
+                : silo.watcherState === 'stopped'
+                  ? <><Play className="h-3.5 w-3.5" /> Wake</>
+                  : <><Pause className="h-3.5 w-3.5" /> Stop</>
               }
             </Button>
           )}

@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Parser from 'web-tree-sitter';
 import type { ExtractionResult, ChunkRecord } from '../pipeline-types';
-import { estimateTokens, hashText } from '../chunk-utils';
+import { estimateTokens, hashText, mergeUpTo } from '../chunk-utils';
 import { chunkPlaintext } from './plaintext';
 
 // ── Language Registry ────────────────────────────────────────────────────────
@@ -214,20 +214,6 @@ async function loadGrammar(grammarName: string): Promise<Parser.Language | null>
 // ── Chunker ──────────────────────────────────────────────────────────────────
 
 /**
- * Sync chunker fallback — delegates to plaintext chunking.
- * The real implementation is async (chunkCodeAsync). This sync version exists
- * only to satisfy the FileProcessor type; it is never called when asyncChunker
- * is present on the FileProcessor.
- */
-export function chunkCode(
-  filePath: string,
-  extraction: ExtractionResult,
-  maxChunkTokens: number,
-): ChunkRecord[] {
-  return chunkPlaintext(filePath, extraction, maxChunkTokens);
-}
-
-/**
  * Async code chunker — the real implementation.
  * Parses source code with Tree-sitter and splits by top-level definitions.
  */
@@ -380,14 +366,6 @@ function buildSegments(
         startLine,
         endLine,
         isDefinition: true,
-      });
-    } else if (nodeType === 'comment') {
-      segments.push({
-        text,
-        sectionPath: [filename],
-        startLine,
-        endLine,
-        isDefinition: false,
       });
     } else {
       segments.push({
@@ -573,33 +551,7 @@ function getNodeName(node: Parser.SyntaxNode): string | null {
  */
 function subSplitCode(text: string, maxTokens: number): string[] {
   const lines = text.split('\n');
-  return mergeLines(lines, maxTokens);
-}
-
-/**
- * Greedily merge lines into chunks that fit within maxTokens.
- */
-function mergeLines(lines: string[], maxTokens: number): string[] {
-  const chunks: string[] = [];
-  let current = '';
-
-  for (const line of lines) {
-    const candidate = current.length > 0 ? current + '\n' + line : line;
-    if (estimateTokens(candidate) <= maxTokens && current.length > 0) {
-      current = candidate;
-    } else if (current.length > 0) {
-      chunks.push(current);
-      current = line;
-    } else {
-      current = line;
-    }
-  }
-
-  if (current.length > 0) {
-    chunks.push(current);
-  }
-
-  return chunks;
+  return mergeUpTo(lines, maxTokens, '\n');
 }
 
 // ── Exports ──────────────────────────────────────────────────────────────────

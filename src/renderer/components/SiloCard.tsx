@@ -1,4 +1,4 @@
-import { FileText, Blocks, FolderOpen, Pause, Play, AlertTriangle, Database } from 'lucide-react';
+import { FileText, Blocks, FolderOpen, Loader2, Pause, Play, AlertTriangle, Database } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from './ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
@@ -30,9 +30,10 @@ interface SiloCardProps {
   silo: SiloStatus;
   onClick: () => void;
   onStopToggle?: () => void;
+  isStopping?: boolean;
 }
 
-export default function SiloCard({ silo, onClick, onStopToggle }: SiloCardProps) {
+export default function SiloCard({ silo, onClick, onStopToggle, isStopping }: SiloCardProps) {
   const { config, indexedFileCount, chunkCount, watcherState, reconcileProgress } = silo;
   const state = stateConfig[watcherState];
   const colorClasses = SILO_COLOR_MAP[config.color];
@@ -71,14 +72,21 @@ export default function SiloCard({ silo, onClick, onStopToggle }: SiloCardProps)
             <span
               role="button"
               tabIndex={0}
-              title={isStopped ? 'Wake silo' : 'Stop silo'}
-              onClick={(e) => { e.stopPropagation(); onStopToggle(); }}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onStopToggle(); } }}
-              className="rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground hover:bg-accent/40"
+              title={isStopping ? 'Stopping…' : isStopped ? 'Wake silo' : 'Stop silo'}
+              onClick={(e) => { e.stopPropagation(); if (!isStopping) onStopToggle(); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); if (!isStopping) onStopToggle(); } }}
+              className={cn(
+                'rounded p-0.5 transition-colors',
+                isStopping
+                  ? 'text-muted-foreground/50'
+                  : 'text-muted-foreground/50 hover:text-foreground hover:bg-accent/40',
+              )}
             >
-              {isStopped
-                ? <Play className="h-3.5 w-3.5" />
-                : <Pause className="h-3.5 w-3.5" />
+              {isStopping
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : isStopped
+                  ? <Play className="h-3.5 w-3.5" />
+                  : <Pause className="h-3.5 w-3.5" />
               }
             </span>
           )}

@@ -4,13 +4,16 @@
  * Watches configured directories for file changes, debounces events,
  * and dispatches to the indexing pipeline. Files are processed sequentially
  * to avoid overwhelming the embedding service.
+ *
+ * Database writes are batched: all queued files are prepared first, then
+ * flushed to SQLite in a single transaction when the queue drains.
  */
 
 import { watch, type FSWatcher } from 'chokidar';
 import path from 'node:path';
 import type { EmbeddingService } from './embedding';
-import { indexFile, removeFile } from './pipeline';
-import { makeStoredKey, type SiloDatabase } from './store';
+import { prepareFile, type PreparedFile } from './pipeline';
+import { makeStoredKey, flushPreparedFiles, type SiloDatabase } from './store';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
 import { matchesAnyPattern } from './pattern-match';
@@ -138,34 +141,27 @@ export class SiloWatcher {
     if (this.processing) return;
     this.processing = true;
 
+    // Prepare all queued files, accumulating results for a single batched flush
+    const upserts: Array<{ prepared: PreparedFile; absPath: string; durationMs: number }> = [];
+    const deletes: Array<{ storedKey: string; absPath: string }> = [];
+    const errors: WatcherEvent[] = [];
+
     while (this.queue.length > 0) {
       if (this.pauseToken) await this.pauseToken.waitIfPaused();
       const item = this.queue.shift()!;
 
       try {
         if (item.type === 'delete') {
-          await removeFile(item.storedKey, this.db);
-          this.emit({
-            timestamp: new Date(),
-            siloName: this.config.name,
-            filePath: item.absPath,
-            eventType: 'deleted',
-          });
+          deletes.push({ storedKey: item.storedKey, absPath: item.absPath });
         } else {
-          const result = await indexFile(item.absPath, item.storedKey, this.embeddingService, this.db);
-          this.emit({
-            timestamp: new Date(),
-            siloName: this.config.name,
-            filePath: item.absPath,
-            eventType: 'indexed',
-            chunkCount: result.chunkCount,
-            durationMs: result.durationMs,
-          });
+          const start = performance.now();
+          const prepared = await prepareFile(item.absPath, item.storedKey, this.embeddingService);
+          upserts.push({ prepared, absPath: item.absPath, durationMs: performance.now() - start });
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[watcher] Error processing ${item.absPath}:`, message);
-        this.emit({
+        errors.push({
           timestamp: new Date(),
           siloName: this.config.name,
           filePath: item.absPath,
@@ -173,6 +169,42 @@ export class SiloWatcher {
           errorMessage: message,
         });
       }
+    }
+
+    // Flush all prepared files + deletes in one transaction
+    if (upserts.length > 0 || deletes.length > 0) {
+      flushPreparedFiles(
+        this.db,
+        upserts.map((u) => ({
+          filePath: u.prepared.storedKey,
+          chunks: u.prepared.chunks,
+          embeddings: u.prepared.embeddings,
+        })),
+        deletes.map((d) => ({ filePath: d.storedKey, deleteMtime: false })),
+      );
+    }
+
+    // Emit events after the flush succeeds
+    for (const u of upserts) {
+      this.emit({
+        timestamp: new Date(),
+        siloName: this.config.name,
+        filePath: u.absPath,
+        eventType: 'indexed',
+        chunkCount: u.prepared.chunks.length,
+        durationMs: u.durationMs,
+      });
+    }
+    for (const d of deletes) {
+      this.emit({
+        timestamp: new Date(),
+        siloName: this.config.name,
+        filePath: d.absPath,
+        eventType: 'deleted',
+      });
+    }
+    for (const e of errors) {
+      this.emit(e);
     }
 
     this.processing = false;

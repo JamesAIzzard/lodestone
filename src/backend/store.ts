@@ -202,8 +202,106 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
 // ── Upsert / Delete ──────────────────────────────────────────────────────────
 
 /**
+ * Inner upsert logic — runs inside a caller-provided transaction.
+ * Removes old chunks for the file, inserts new ones, and optionally persists mtime.
+ */
+function upsertFileInner(
+  db: SiloDatabase,
+  filePath: string,
+  chunks: ChunkRecord[],
+  embeddings: number[][],
+  mtimeMs?: number,
+): void {
+  // 1. Fetch existing chunks for FTS5 sync (external content requires old text for delete)
+  const existingRows = db.prepare(
+    `SELECT id, text FROM chunks WHERE file_path = ?`,
+  ).all(filePath) as Array<{ id: number; text: string }>;
+
+  // 2. Remove from FTS5 (external content: must supply old values)
+  const ftsDelete = db.prepare(
+    `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
+  );
+  for (const row of existingRows) {
+    ftsDelete.run(row.id, row.text);
+  }
+
+  // 3. Remove from vec_chunks
+  const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
+  for (const row of existingRows) {
+    vecDelete.run(row.id);
+  }
+
+  // 4. Remove from chunks
+  db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
+
+  // 5. Insert new chunks
+  //    Insert into vec_chunks first (auto-assigns rowid), then use that
+  //    rowid as the explicit id in the chunks and FTS5 tables.
+  //    This works around sqlite-vec not accepting explicit rowid on INSERT.
+  const insertVec = db.prepare(
+    `INSERT INTO vec_chunks(embedding) VALUES (?)`,
+  );
+  const insertChunk = db.prepare(`
+    INSERT INTO chunks (id, file_path, chunk_index, section_path, text, start_line, end_line, metadata, content_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertFts = db.prepare(
+    `INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)`,
+  );
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const vecResult = insertVec.run(float32Buffer(embeddings[i]));
+    const rowid = Number(vecResult.lastInsertRowid);
+    insertChunk.run(
+      rowid,
+      chunk.filePath,
+      chunk.chunkIndex,
+      JSON.stringify(chunk.sectionPath),
+      chunk.text,
+      chunk.startLine,
+      chunk.endLine,
+      JSON.stringify(chunk.metadata),
+      chunk.contentHash,
+    );
+    insertFts.run(rowid, chunk.text);
+  }
+
+  if (mtimeMs !== undefined) {
+    db.prepare(`INSERT OR REPLACE INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`).run(filePath, mtimeMs);
+  }
+}
+
+/**
+ * Inner delete logic — runs inside a caller-provided transaction.
+ */
+function deleteFileInner(db: SiloDatabase, filePath: string, deleteMtimeEntry?: boolean): void {
+  const existingRows = db.prepare(
+    `SELECT id, text FROM chunks WHERE file_path = ?`,
+  ).all(filePath) as Array<{ id: number; text: string }>;
+
+  const ftsDelete = db.prepare(
+    `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
+  );
+  for (const row of existingRows) {
+    ftsDelete.run(row.id, row.text);
+  }
+
+  const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
+  for (const row of existingRows) {
+    vecDelete.run(row.id);
+  }
+
+  db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
+
+  if (deleteMtimeEntry) {
+    db.prepare(`DELETE FROM mtimes WHERE file_path = ?`).run(filePath);
+  }
+}
+
+/**
  * Remove all existing chunks for a file and insert new ones.
- * Wraps the entire operation in a transaction for atomicity.
+ * Wraps the operation in a single transaction.
  */
 export function upsertFileChunks(
   db: SiloDatabase,
@@ -212,107 +310,47 @@ export function upsertFileChunks(
   embeddings: number[][],
   mtimeMs?: number,
 ): void {
-  const transaction = db.transaction(() => {
-    // 1. Fetch existing chunks for FTS5 sync (external content requires old text for delete)
-    const existingRows = db.prepare(
-      `SELECT id, text FROM chunks WHERE file_path = ?`,
-    ).all(filePath) as Array<{ id: number; text: string }>;
-
-    // 2. Remove from FTS5 (external content: must supply old values)
-    const ftsDelete = db.prepare(
-      `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
-    );
-    for (const row of existingRows) {
-      ftsDelete.run(row.id, row.text);
-    }
-
-    // 3. Remove from vec_chunks
-    const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
-    for (const row of existingRows) {
-      vecDelete.run(row.id);
-    }
-
-    // 4. Remove from chunks
-    db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
-
-    // 5. Insert new chunks
-    //    Insert into vec_chunks first (auto-assigns rowid), then use that
-    //    rowid as the explicit id in the chunks and FTS5 tables.
-    //    This works around sqlite-vec not accepting explicit rowid on INSERT.
-    const insertVec = db.prepare(
-      `INSERT INTO vec_chunks(embedding) VALUES (?)`,
-    );
-    const insertChunk = db.prepare(`
-      INSERT INTO chunks (id, file_path, chunk_index, section_path, text, start_line, end_line, metadata, content_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const insertFts = db.prepare(
-      `INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)`,
-    );
-
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      // Insert vector first to get the auto-assigned rowid
-      const vecResult = insertVec.run(float32Buffer(embeddings[i]));
-      const rowid = Number(vecResult.lastInsertRowid);
-      // Use that rowid as the chunk's explicit id
-      insertChunk.run(
-        rowid,
-        chunk.filePath,
-        chunk.chunkIndex,
-        JSON.stringify(chunk.sectionPath),
-        chunk.text,
-        chunk.startLine,
-        chunk.endLine,
-        JSON.stringify(chunk.metadata),
-        chunk.contentHash,
-      );
-      insertFts.run(rowid, chunk.text);
-    }
-
-    // Persist mtime inside the same transaction when provided (avoids a separate auto-commit)
-    if (mtimeMs !== undefined) {
-      db.prepare(`INSERT OR REPLACE INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`).run(filePath, mtimeMs);
-    }
-  });
-
-  transaction();
+  db.transaction(() => upsertFileInner(db, filePath, chunks, embeddings, mtimeMs))();
 }
 
 /**
  * Remove all chunks belonging to a file.
  */
 export function deleteFileChunks(db: SiloDatabase, filePath: string, deleteMtimeEntry?: boolean): void {
-  const transaction = db.transaction(() => {
-    // Fetch existing for FTS5 sync
-    const existingRows = db.prepare(
-      `SELECT id, text FROM chunks WHERE file_path = ?`,
-    ).all(filePath) as Array<{ id: number; text: string }>;
+  db.transaction(() => deleteFileInner(db, filePath, deleteMtimeEntry))();
+}
 
-    // Remove from FTS5
-    const ftsDelete = db.prepare(
-      `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
-    );
-    for (const row of existingRows) {
-      ftsDelete.run(row.id, row.text);
+/**
+ * Flush a batch of prepared files to the database in a single transaction.
+ *
+ * Files with chunks are upserted; files with empty chunks (no indexable content)
+ * have their stale chunks removed. Batching many files into one transaction
+ * avoids per-file WAL fsync overhead and reduces total main-thread blocking.
+ */
+export function flushPreparedFiles(
+  db: SiloDatabase,
+  upserts: Array<{
+    filePath: string;
+    chunks: ChunkRecord[];
+    embeddings: number[][];
+    mtimeMs?: number;
+  }>,
+  deletes?: Array<{ filePath: string; deleteMtime: boolean }>,
+): void {
+  db.transaction(() => {
+    for (const file of upserts) {
+      if (file.chunks.length === 0) {
+        deleteFileInner(db, file.filePath, file.mtimeMs !== undefined);
+      } else {
+        upsertFileInner(db, file.filePath, file.chunks, file.embeddings, file.mtimeMs);
+      }
     }
-
-    // Remove from vec_chunks
-    const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
-    for (const row of existingRows) {
-      vecDelete.run(row.id);
+    if (deletes) {
+      for (const entry of deletes) {
+        deleteFileInner(db, entry.filePath, entry.deleteMtime);
+      }
     }
-
-    // Remove from chunks
-    db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
-
-    // Remove mtime entry inside the same transaction when requested
-    if (deleteMtimeEntry) {
-      db.prepare(`DELETE FROM mtimes WHERE file_path = ?`).run(filePath);
-    }
-  });
-
-  transaction();
+  })();
 }
 
 // ── Search ───────────────────────────────────────────────────────────────────

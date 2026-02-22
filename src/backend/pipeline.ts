@@ -19,7 +19,8 @@ import { chunkByHeading } from './chunkers/heading';
 import { chunkPlaintext } from './chunkers/plaintext';
 import { chunkCodeAsync, CODE_EXTENSIONS } from './chunkers/code';
 import type { EmbeddingService } from './embedding';
-import { upsertFileChunks, deleteFileChunks, type SiloDatabase } from './store';
+import type { ChunkRecord } from './pipeline-types';
+import { upsertFileChunks, deleteFileChunks, flushPreparedFiles, type SiloDatabase } from './store';
 
 // ── Processor Registry ───────────────────────────────────────────────────────
 
@@ -76,20 +77,63 @@ export interface IndexFileResult {
   durationMs: number;
 }
 
+/** Result of preparing a file for storage (everything except the DB write). */
+export interface PreparedFile {
+  storedKey: string;
+  chunks: ChunkRecord[];
+  embeddings: number[][];
+  mtimeMs?: number;
+}
+
+// ── Prepare ──────────────────────────────────────────────────────────────────
+
+/**
+ * Read, extract, chunk, and embed a single file — without writing to the database.
+ *
+ * Returns the prepared chunks and embeddings so the caller can batch multiple
+ * files into a single database transaction. An empty `chunks` array means the
+ * file had no indexable content (empty file or metadata only).
+ */
+export async function prepareFile(
+  absolutePath: string,
+  storedKey: string,
+  embeddingService: EmbeddingService,
+  mtimeMs?: number,
+): Promise<PreparedFile> {
+  const content = fs.readFileSync(absolutePath, 'utf-8');
+
+  const { extractor, chunker, asyncChunker } = getProcessor(absolutePath);
+  const extraction = extractor(content);
+
+  const chunks = asyncChunker
+    ? await asyncChunker(absolutePath, extraction, embeddingService.chunkTokens)
+    : chunker(absolutePath, extraction, embeddingService.chunkTokens);
+
+  if (chunks.length === 0) {
+    return { storedKey, chunks: [], embeddings: [], mtimeMs };
+  }
+
+  const storedChunks = chunks.map((c) => ({ ...c, filePath: storedKey }));
+
+  const texts = storedChunks.map((c) => c.text);
+  const embeddings: number[][] = [];
+  for (let i = 0; i < texts.length; i += MAX_EMBED_BATCH_SIZE) {
+    const batch = texts.slice(i, i + MAX_EMBED_BATCH_SIZE);
+    const batchEmbeddings = await embeddingService.embedBatch(batch);
+    embeddings.push(...batchEmbeddings);
+  }
+
+  return { storedKey, chunks: storedChunks, embeddings, mtimeMs };
+}
+
 // ── Index ────────────────────────────────────────────────────────────────────
 
 /**
  * Index a single file: read, extract, chunk, embed, and store.
  *
- * @param absolutePath — on-disk path used for file I/O and processor dispatch
- * @param storedKey — portable key ("{dirIndex}:{relPath}") used in the database
- *
- * Dispatches to the appropriate extractor + chunker based on file extension.
- * Supports both sync and async chunkers (async chunkers are used for
- * Tree-sitter code parsing which requires WASM grammar loading).
- *
- * Returns the number of chunks produced.
- * Throws on unrecoverable errors (file not readable, embedding service down).
+ * Convenience wrapper around prepareFile() + single-file DB write. Prefer
+ * prepareFile() + flushPreparedFiles() when processing multiple files so
+ * writes can be batched into fewer transactions.
  */
 export async function indexFile(
   absolutePath: string,
@@ -100,46 +144,18 @@ export async function indexFile(
 ): Promise<IndexFileResult> {
   const start = performance.now();
 
-  // Read the file
-  const content = fs.readFileSync(absolutePath, 'utf-8');
+  const prepared = await prepareFile(absolutePath, storedKey, embeddingService, mtimeMs);
 
-  // Dispatch to the right extractor + chunker
-  const { extractor, chunker, asyncChunker } = getProcessor(absolutePath);
-  const extraction = extractor(content);
-
-  // Use async chunker if available, otherwise sync.
-  // Use chunkTokens (not maxTokens) — the chunker target size is intentionally
-  // smaller than the model's technical context window for better retrieval precision
-  // and lower ONNX peak memory.
-  const chunks = asyncChunker
-    ? await asyncChunker(absolutePath, extraction, embeddingService.chunkTokens)
-    : chunker(absolutePath, extraction, embeddingService.chunkTokens);
-
-  if (chunks.length === 0) {
-    // Empty file or only metadata — remove any stale chunks
-    await deleteFileChunks(db, storedKey, mtimeMs !== undefined);
+  if (prepared.chunks.length === 0) {
+    deleteFileChunks(db, storedKey, mtimeMs !== undefined);
     return { filePath: storedKey, chunkCount: 0, durationMs: performance.now() - start };
   }
 
-  // Rewrite chunk filePaths to stored key before persisting
-  const storedChunks = chunks.map((c) => ({ ...c, filePath: storedKey }));
-
-  // Embed chunks in capped batches — avoids unbounded peak ONNX memory
-  // for files with many chunks, and lets GC reclaim between batches.
-  const texts = storedChunks.map((c) => c.text);
-  const embeddings: number[][] = [];
-  for (let i = 0; i < texts.length; i += MAX_EMBED_BATCH_SIZE) {
-    const batch = texts.slice(i, i + MAX_EMBED_BATCH_SIZE);
-    const batchEmbeddings = await embeddingService.embedBatch(batch);
-    embeddings.push(...batchEmbeddings);
-  }
-
-  // Store (atomic upsert: removes old chunks, inserts new, persists mtime if provided)
-  await upsertFileChunks(db, storedKey, storedChunks, embeddings, mtimeMs);
+  upsertFileChunks(db, storedKey, prepared.chunks, prepared.embeddings, mtimeMs);
 
   return {
     filePath: storedKey,
-    chunkCount: storedChunks.length,
+    chunkCount: prepared.chunks.length,
     durationMs: performance.now() - start,
   };
 }
@@ -149,6 +165,9 @@ export async function indexFile(
 /**
  * Remove all chunks for a file from the store.
  */
-export async function removeFile(filePath: string, db: SiloDatabase, deleteMtimeEntry?: boolean): Promise<void> {
-  await deleteFileChunks(db, filePath, deleteMtimeEntry);
+export function removeFile(filePath: string, db: SiloDatabase, deleteMtimeEntry?: boolean): void {
+  deleteFileChunks(db, filePath, deleteMtimeEntry);
 }
+
+// Re-export for convenience
+export { flushPreparedFiles } from './store';

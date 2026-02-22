@@ -3,12 +3,16 @@
  *
  * Walks the silo's directories, compares against the database,
  * and queues files for indexing or removal as needed.
+ *
+ * Database writes are batched: files are prepared (read, extracted, chunked,
+ * embedded) one at a time, then flushed to SQLite in bulk every BATCH_SIZE
+ * files. This dramatically reduces transaction overhead and main-thread blocking.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { indexFile, removeFile } from './pipeline';
-import { makeStoredKey, resolveStoredKey, type SiloDatabase } from './store';
+import { prepareFile, type PreparedFile } from './pipeline';
+import { makeStoredKey, resolveStoredKey, flushPreparedFiles, type SiloDatabase } from './store';
 import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
@@ -41,6 +45,14 @@ export interface ReconcileResult {
   filesUpdated: number;
   durationMs: number;
 }
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+/**
+ * Number of files to prepare before flushing to the database in one transaction.
+ * 50 files × ~10 chunks each ≈ 500 chunks ≈ 1,500 SQL statements per flush.
+ */
+const BATCH_SIZE = 50;
 
 // ── Reconcile ────────────────────────────────────────────────────────────────
 
@@ -95,10 +107,8 @@ export async function reconcile(
   const filesToIndex: Array<{ absPath: string; storedKey: string; mtime: number }> = [];
   for (const [storedKey, { absPath, mtime }] of diskStored) {
     if (!indexedKeys.has(storedKey)) {
-      // New file — not yet in the database
       filesToIndex.push({ absPath, storedKey, mtime });
     } else {
-      // Existing file — check if modified while app was closed
       const storedMtime = mtimes.get(storedKey)!;
       if (mtime !== storedMtime) {
         filesToIndex.push({ absPath, storedKey, mtime });
@@ -119,38 +129,65 @@ export async function reconcile(
   const alreadyDone = diskStored.size - filesToIndex.length;
   const totalWork = diskStored.size + filesToRemove.length;
 
-  // Yield to the event loop periodically so MCP and IPC can serve requests
-  // during long reconciliation runs. Every 10 files ≈ every 0.5–2s given ONNX
-  // inference time per file.
-  const YIELD_INTERVAL = 10;
-
-  // 6. Index new and modified files
+  // 6. Index new and modified files — prepare in a loop, flush in batches
   let progress = alreadyDone;
+
+  // Track prepared files and their metadata for the current batch
+  let batch: Array<{ prepared: PreparedFile; absPath: string; isUpdate: boolean }> = [];
+
+  const flushBatch = () => {
+    if (batch.length === 0) return;
+
+    flushPreparedFiles(
+      db,
+      batch.map((b) => ({
+        filePath: b.prepared.storedKey,
+        chunks: b.prepared.chunks,
+        embeddings: b.prepared.embeddings,
+        mtimeMs: b.prepared.mtimeMs,
+      })),
+    );
+
+    // Update in-memory mtime map and counters after successful flush
+    for (const b of batch) {
+      if (b.prepared.mtimeMs !== undefined) {
+        mtimes.set(b.prepared.storedKey, b.prepared.mtimeMs);
+      }
+      if (b.isUpdate) {
+        filesUpdated++;
+      } else {
+        filesAdded++;
+      }
+      onEvent?.({
+        filePath: b.absPath,
+        eventType: b.isUpdate ? 'reindexed' : 'indexed',
+      });
+    }
+
+    batch = [];
+  };
+
   for (let i = 0; i < filesToIndex.length; i++) {
     const { absPath, storedKey, mtime } = filesToIndex[i];
     if (pauseToken) await pauseToken.waitIfPaused();
-    if (i > 0 && i % YIELD_INTERVAL === 0) {
-      await new Promise<void>(r => setImmediate(r));
-    }
+
     onProgress?.({
       phase: 'indexing',
       current: ++progress,
       total: totalWork,
       filePath: absPath,
     });
+
     try {
-      // Pass mtime so it's persisted in the same transaction as the chunks
-      await indexFile(absPath, storedKey, embeddingService, db, mtime);
+      const prepared = await prepareFile(absPath, storedKey, embeddingService, mtime);
       const isUpdate = indexedKeys.has(storedKey);
-      if (isUpdate) {
-        filesUpdated++;
-      } else {
-        filesAdded++;
+      batch.push({ prepared, absPath, isUpdate });
+
+      if (batch.length >= BATCH_SIZE) {
+        flushBatch();
+        // Yield to the event loop after each flush so MCP/IPC can serve requests
+        await new Promise<void>((r) => setImmediate(r));
       }
-      // Resolve back to absolute path for UI display
-      onEvent?.({ filePath: absPath, eventType: isUpdate ? 'reindexed' : 'indexed' });
-      // Update in-memory mtime map (DB was already updated inside the transaction)
-      mtimes.set(storedKey, mtime);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[reconcile] Failed to index ${absPath}:`, message);
@@ -158,29 +195,34 @@ export async function reconcile(
     }
   }
 
-  // 7. Remove stale files
-  for (let i = 0; i < filesToRemove.length; i++) {
-    const storedKey = filesToRemove[i];
-    if (pauseToken) await pauseToken.waitIfPaused();
-    if (i > 0 && i % YIELD_INTERVAL === 0) {
-      await new Promise<void>(r => setImmediate(r));
+  // Flush any remaining prepared files
+  flushBatch();
+
+  // 7. Remove stale files — batch all deletes into a single transaction
+  if (filesToRemove.length > 0) {
+    const deleteEntries: Array<{ filePath: string; deleteMtime: boolean }> = [];
+
+    for (const storedKey of filesToRemove) {
+      const absPath = resolveStoredKey(storedKey, config.directories);
+      onProgress?.({
+        phase: 'removing',
+        current: ++progress,
+        total: totalWork,
+        filePath: absPath,
+      });
+      deleteEntries.push({ filePath: storedKey, deleteMtime: true });
     }
-    const absPath = resolveStoredKey(storedKey, config.directories);
-    onProgress?.({
-      phase: 'removing',
-      current: ++progress,
-      total: totalWork,
-      filePath: absPath,
-    });
-    try {
-      await removeFile(storedKey, db, true);
+
+    flushPreparedFiles(db, [], deleteEntries);
+
+    // Update in-memory state after successful flush
+    for (const storedKey of filesToRemove) {
       mtimes.delete(storedKey);
       filesRemoved++;
-      onEvent?.({ filePath: absPath, eventType: 'deleted' });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[reconcile] Failed to remove ${absPath}:`, message);
-      onEvent?.({ filePath: absPath, eventType: 'error', errorMessage: message });
+      onEvent?.({
+        filePath: resolveStoredKey(storedKey, config.directories),
+        eventType: 'deleted',
+      });
     }
   }
 

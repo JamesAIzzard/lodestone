@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Silos
   getSilos: (): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:list'),
-  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string }): Promise<unknown> =>
+  createSilo: (opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string; mode?: 'new' | 'existing' }): Promise<unknown> =>
     ipcRenderer.invoke('silos:create', opts),
   deleteSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:delete', name),
@@ -32,8 +32,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('silos:update', name, updates),
   renameSilo: (oldName: string, newName: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:rename', oldName, newName),
-  search: (query: string, siloName?: string): Promise<unknown[]> =>
-    ipcRenderer.invoke('silos:search', query, siloName),
+  search: (query: string, siloName?: string, weights?: unknown, startPath?: string): Promise<unknown[]> =>
+    ipcRenderer.invoke('silos:search', query, siloName, weights, startPath),
+  explore: (params: unknown): Promise<unknown[]> =>
+    ipcRenderer.invoke('silos:explore', params),
 
   // Activity
   getActivity: (limit?: number): Promise<unknown[]> =>
@@ -50,6 +52,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('silos:changed', handler);
     return () => ipcRenderer.removeListener('silos:changed', handler);
   },
+
+  // Search weights
+  getSearchWeights: (): Promise<unknown> =>
+    ipcRenderer.invoke('search:getWeights'),
+  updateSearchWeights: (weights: unknown): Promise<unknown> =>
+    ipcRenderer.invoke('search:updateWeights', weights),
 
   // Defaults
   getDefaults: (): Promise<unknown> =>

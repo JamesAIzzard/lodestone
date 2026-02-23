@@ -2,8 +2,12 @@
  * Per-silo vector store using SQLite + sqlite-vec + FTS5.
  *
  * Each silo has its own SQLite database file with:
- *   - `chunks` table for chunk data
- *   - `chunks_fts` FTS5 virtual table for BM25 keyword search
+ *   - `chunks` table for chunk data (with heading_depth and tags_text columns)
+ *   - `chunks_fts` FTS5 virtual table for BM25 keyword search (unicode61)
+ *   - `chunks_trigram` FTS5 virtual table for trigram substring search
+ *   - `chunks_meta_fts` FTS5 virtual table for tags/metadata keyword search
+ *   - `files` table tracking indexed file paths and basenames
+ *   - `files_fts` FTS5 virtual table for filepath/filename trigram search
  *   - `vec_chunks` sqlite-vec virtual table for vector similarity search
  *   - `mtimes` table for file modification times
  *   - `meta` table for silo metadata
@@ -17,6 +21,8 @@ import * as sqliteVec from 'sqlite-vec';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ChunkRecord } from './pipeline-types';
+import type { SearchWeights, ScoreBreakdown } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 
 // ── Portable Path Utilities ──────────────────────────────────────────────────
 
@@ -34,6 +40,59 @@ export function makeStoredKey(absPath: string, directories: string[]): string {
     }
   }
   throw new Error(`Path not under any silo directory: ${absPath}`);
+}
+
+/**
+ * Convert an absolute directory path to a stored dir-key (like makeStoredKey but with trailing '/').
+ * Returns null if the path is not under any configured directory or is a silo root itself.
+ */
+export function makeStoredDirKey(absDirPath: string, directories: string[]): string | null {
+  for (let i = 0; i < directories.length; i++) {
+    const dir = directories[i];
+    if (absDirPath === dir) return null; // silo root — not tracked individually
+    const rel = path.relative(dir, absDirPath);
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+      return `${i}:${rel.replace(/\\/g, '/')}/`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Insert a single directory entry (by stored dir-key) if it doesn't already exist.
+ * Extracts dirName and depth from the stored key.
+ */
+/**
+ * Returns true if the row was newly inserted, false if it already existed.
+ */
+export function insertDirEntry(db: SiloDatabase, dirPath: string): boolean {
+  // dirPath looks like "0:src/backend/" — derive name and depth
+  const colonIdx = dirPath.indexOf(':');
+  if (colonIdx === -1) return false;
+  const rel = dirPath.slice(colonIdx + 1, -1); // strip trailing '/'
+  const segments = rel.split('/').filter(Boolean);
+  if (segments.length === 0) return false;
+  const dirName = segments[segments.length - 1];
+  const depth = segments.length;
+  const result = db.prepare(
+    `INSERT OR IGNORE INTO directories (dir_path, dir_name, depth, file_count, subdir_count) VALUES (?, ?, ?, 0, 0)`,
+  ).run(dirPath, dirName, depth);
+  return result.changes > 0;
+}
+
+/**
+ * Delete a single directory entry (and its vec/fts rows) by stored dir-key.
+ * Returns the deleted directory id, or null if not found.
+ */
+export function deleteDirEntry(db: SiloDatabase, dirPath: string): number | null {
+  const row = db.prepare(`SELECT id FROM directories WHERE dir_path = ?`).get(dirPath) as { id: number } | undefined;
+  if (!row) return null;
+  db.transaction(() => {
+    try { db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`).run(row.id); } catch { /* ignore */ }
+    try { db.prepare(`DELETE FROM dirs_vec WHERE rowid = ?`).run(row.id); } catch { /* ignore */ }
+    db.prepare(`DELETE FROM directories WHERE id = ?`).run(row.id);
+  })();
+  return row.id;
 }
 
 /**
@@ -56,6 +115,8 @@ export function resolveStoredKey(storedKey: string, directories: string[]): stri
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+export type MatchType = 'semantic' | 'keyword' | 'both';
+
 export interface SiloSearchResultChunk {
   sectionPath: string[];
   text: string;
@@ -66,19 +127,21 @@ export interface SiloSearchResultChunk {
   matchType: MatchType;
   /** Cosine similarity to the query (0 for keyword-only chunks) */
   cosineSimilarity: number;
+  /** Per-signal score breakdown */
+  breakdown: ScoreBreakdown;
 }
-
-export type MatchType = 'semantic' | 'keyword' | 'both';
 
 export interface SiloSearchResult {
   filePath: string;
   score: number;
   matchType: MatchType;
   chunks: SiloSearchResultChunk[];
-  /** Best raw cosine similarity (0–1) among the file's vector-matched chunks.
-   *  Used to calibrate RRF scores for cross-silo merging.
-   *  0 for results with no vector match (keyword-only). */
+  /** Best raw cosine similarity (0–1) among the file's vector-matched chunks. */
   bestCosineSimilarity: number;
+  /** The search weights used for this result */
+  weights: SearchWeights;
+  /** Best chunk's score breakdown */
+  breakdown: ScoreBreakdown;
 }
 
 export type SiloDatabase = Database.Database;
@@ -128,6 +191,17 @@ export interface StoredSiloConfig {
   icon?: string;
 }
 
+// ── sqlite-vec extension path ─────────────────────────────────────────────────
+// sqlite-vec's getLoadablePath() computes a path via __dirname which, in a
+// production ASAR build, points inside app.asar.  SQLite's loadExtension()
+// calls the OS's LoadLibrary/dlopen which can't read from ASAR archives.
+// The actual DLL/dylib/so is unpacked to app.asar.unpacked — rewrite the
+// path so SQLite can find it.
+const vecExtPath = sqliteVec.getLoadablePath().replace(
+  /app\.asar([\\/])/,
+  'app.asar.unpacked$1',
+);
+
 // ── Create ───────────────────────────────────────────────────────────────────
 
 /**
@@ -139,40 +213,64 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
   fs.mkdirSync(dir, { recursive: true });
 
   const db = new Database(dbPath);
-
-  // sqlite-vec's getLoadablePath() computes a path via __dirname which, in a
-  // production ASAR build, points inside app.asar.  SQLite's loadExtension()
-  // calls the OS's LoadLibrary/dlopen which can't read from ASAR archives.
-  // The actual DLL/dylib/so is unpacked to app.asar.unpacked — rewrite the
-  // path so SQLite can find it.
-  const vecExtPath = sqliteVec.getLoadablePath().replace(
-    /app\.asar([\\/])/,
-    'app.asar.unpacked$1',
-  );
   db.loadExtension(vecExtPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS chunks (
-      id          INTEGER PRIMARY KEY,
-      file_path   TEXT    NOT NULL,
-      chunk_index INTEGER NOT NULL,
-      section_path TEXT   NOT NULL,
-      text        TEXT    NOT NULL,
-      start_line  INTEGER NOT NULL,
-      end_line    INTEGER NOT NULL,
-      metadata    TEXT    NOT NULL DEFAULT '{}',
-      content_hash TEXT   NOT NULL
+      id            INTEGER PRIMARY KEY,
+      file_path     TEXT    NOT NULL,
+      chunk_index   INTEGER NOT NULL,
+      section_path  TEXT    NOT NULL,
+      text          TEXT    NOT NULL,
+      start_line    INTEGER NOT NULL,
+      end_line      INTEGER NOT NULL,
+      metadata      TEXT    NOT NULL DEFAULT '{}',
+      content_hash  TEXT    NOT NULL,
+      heading_depth INTEGER NOT NULL DEFAULT 0,
+      tags_text     TEXT    NOT NULL DEFAULT ''
     );
 
     CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON chunks(file_path);
+
+    CREATE TABLE IF NOT EXISTS files (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_path TEXT UNIQUE NOT NULL,
+      file_name TEXT NOT NULL
+    );
 
     CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
       text,
       content=chunks,
       content_rowid=id
     );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_trigram USING fts5(
+      text,
+      tokenize='trigram'
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+      file_path,
+      file_name,
+      tokenize='trigram'
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_meta_fts USING fts5(
+      tags_text
+    );
+
+    CREATE TABLE IF NOT EXISTS directories (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      dir_path     TEXT UNIQUE NOT NULL,
+      dir_name     TEXT NOT NULL,
+      depth        INTEGER NOT NULL,
+      file_count   INTEGER NOT NULL DEFAULT 0,
+      subdir_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_directories_depth ON directories(depth);
 
     CREATE TABLE IF NOT EXISTS mtimes (
       file_path TEXT PRIMARY KEY,
@@ -185,6 +283,21 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
     );
   `);
 
+  // Add new columns to existing databases that predate this schema version.
+  const hasHeadingDepth = db.prepare(
+    `SELECT 1 FROM pragma_table_info('chunks') WHERE name='heading_depth'`,
+  ).get();
+  if (!hasHeadingDepth) {
+    db.exec(`ALTER TABLE chunks ADD COLUMN heading_depth INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  const hasTagsText = db.prepare(
+    `SELECT 1 FROM pragma_table_info('chunks') WHERE name='tags_text'`,
+  ).get();
+  if (!hasTagsText) {
+    db.exec(`ALTER TABLE chunks ADD COLUMN tags_text TEXT NOT NULL DEFAULT ''`);
+  }
+
   // sqlite-vec virtual table — must be created separately because
   // CREATE VIRTUAL TABLE IF NOT EXISTS doesn't work reliably for vec0.
   // Check if it exists first.
@@ -194,6 +307,22 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
 
   if (!vecTableExists) {
     db.exec(`CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[${dimensions}])`);
+  }
+
+  // dirs_fts: trigram search on directory paths and names
+  const dirsFtsExists = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='dirs_fts'`,
+  ).get();
+  if (!dirsFtsExists) {
+    db.exec(`CREATE VIRTUAL TABLE dirs_fts USING fts5(dir_path, dir_name, tokenize='trigram')`);
+  }
+
+  // dirs_vec: vector search on directory embeddings
+  const dirsVecExists = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='dirs_vec'`,
+  ).get();
+  if (!dirsVecExists) {
+    db.exec(`CREATE VIRTUAL TABLE dirs_vec USING vec0(embedding float[${dimensions}])`);
   }
 
   return db;
@@ -217,7 +346,7 @@ function upsertFileInner(
     `SELECT id, text FROM chunks WHERE file_path = ?`,
   ).all(filePath) as Array<{ id: number; text: string }>;
 
-  // 2. Remove from FTS5 (external content: must supply old values)
+  // 2. Remove from chunks_fts (external content: must supply old values)
   const ftsDelete = db.prepare(
     `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
   );
@@ -225,28 +354,51 @@ function upsertFileInner(
     ftsDelete.run(row.id, row.text);
   }
 
-  // 3. Remove from vec_chunks
+  // 3. Remove from contentless FTS5 tables (chunks_trigram, chunks_meta_fts)
+  const trigramDelete = db.prepare(`DELETE FROM chunks_trigram WHERE rowid = ?`);
+  const metaFtsDelete = db.prepare(`DELETE FROM chunks_meta_fts WHERE rowid = ?`);
+  for (const row of existingRows) {
+    trigramDelete.run(row.id);
+    metaFtsDelete.run(row.id);
+  }
+
+  // 4. Remove from vec_chunks
   const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
   for (const row of existingRows) {
     vecDelete.run(row.id);
   }
 
-  // 4. Remove from chunks
+  // 5. Remove from chunks
   db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
 
-  // 5. Insert new chunks
+  // 6. Ensure file entry exists in files table (insert once per unique path)
+  const fileResult = db.prepare(
+    `INSERT OR IGNORE INTO files (file_path, file_name) VALUES (?, ?)`,
+  ).run(filePath, fileBasename(filePath));
+  if (fileResult.changes > 0) {
+    const fileRow = db.prepare(`SELECT id FROM files WHERE file_path = ?`).get(filePath) as { id: number };
+    db.prepare(`INSERT INTO files_fts(rowid, file_path, file_name) VALUES(?, ?, ?)`)
+      .run(fileRow.id, filePath, fileBasename(filePath));
+  }
+
+  // 7. Insert new chunks
   //    Insert into vec_chunks first (auto-assigns rowid), then use that
   //    rowid as the explicit id in the chunks and FTS5 tables.
-  //    This works around sqlite-vec not accepting explicit rowid on INSERT.
   const insertVec = db.prepare(
     `INSERT INTO vec_chunks(embedding) VALUES (?)`,
   );
   const insertChunk = db.prepare(`
-    INSERT INTO chunks (id, file_path, chunk_index, section_path, text, start_line, end_line, metadata, content_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO chunks (id, file_path, chunk_index, section_path, text, start_line, end_line, metadata, content_hash, heading_depth, tags_text)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertFts = db.prepare(
     `INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)`,
+  );
+  const insertTrigram = db.prepare(
+    `INSERT INTO chunks_trigram(rowid, text) VALUES (?, ?)`,
+  );
+  const insertMetaFts = db.prepare(
+    `INSERT INTO chunks_meta_fts(rowid, tags_text) VALUES (?, ?)`,
   );
 
   for (let i = 0; i < chunks.length; i++) {
@@ -263,13 +415,22 @@ function upsertFileInner(
       chunk.endLine,
       JSON.stringify(chunk.metadata),
       chunk.contentHash,
+      chunk.headingDepth,
+      chunk.tagsText,
     );
     insertFts.run(rowid, chunk.text);
+    insertTrigram.run(rowid, chunk.text);
+    if (chunk.tagsText) {
+      insertMetaFts.run(rowid, chunk.tagsText);
+    }
   }
 
   if (mtimeMs !== undefined) {
     db.prepare(`INSERT OR REPLACE INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`).run(filePath, mtimeMs);
   }
+
+  // 8. Maintain directories table (insert new dirs, recompute counts)
+  maintainDirectoriesOnUpsert(db, filePath);
 }
 
 /**
@@ -287,6 +448,13 @@ function deleteFileInner(db: SiloDatabase, filePath: string, deleteMtimeEntry?: 
     ftsDelete.run(row.id, row.text);
   }
 
+  const trigramDelete = db.prepare(`DELETE FROM chunks_trigram WHERE rowid = ?`);
+  const metaFtsDelete = db.prepare(`DELETE FROM chunks_meta_fts WHERE rowid = ?`);
+  for (const row of existingRows) {
+    trigramDelete.run(row.id);
+    metaFtsDelete.run(row.id);
+  }
+
   const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
   for (const row of existingRows) {
     vecDelete.run(row.id);
@@ -294,8 +462,21 @@ function deleteFileInner(db: SiloDatabase, filePath: string, deleteMtimeEntry?: 
 
   db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
 
+  // Remove file entry from files + files_fts
+  const fileRow = db.prepare(`SELECT id FROM files WHERE file_path = ?`).get(filePath) as { id: number } | undefined;
+  if (fileRow) {
+    db.prepare(`DELETE FROM files_fts WHERE rowid = ?`).run(fileRow.id);
+    db.prepare(`DELETE FROM files WHERE file_path = ?`).run(filePath);
+  }
+
   if (deleteMtimeEntry) {
     db.prepare(`DELETE FROM mtimes WHERE file_path = ?`).run(filePath);
+  }
+
+  // Recompute directory counts (never remove dirs — lifecycle driven by reconciliation)
+  const dirPaths = extractDirectoryPaths(filePath);
+  if (dirPaths.length > 0) {
+    updateDirectoryCounts(db, dirPaths);
   }
 }
 
@@ -391,82 +572,206 @@ export function searchSilo(
 }
 
 /**
- * Hybrid search: combines vector similarity (sqlite-vec) and BM25 keyword search (FTS5)
- * using Reciprocal Rank Fusion (RRF).
+ * Hybrid search: combines 5 signals via Reciprocal Rank Fusion (RRF).
+ *
+ * Signals:
+ *   1. Semantic   — sqlite-vec cosine similarity (vector search)
+ *   2. BM25       — FTS5 unicode61 full-text keyword search
+ *   3. Trigram    — FTS5 trigram substring search on chunk text
+ *   4. Filepath   — FTS5 trigram search on file_path + file_name
+ *   5. Tags       — FTS5 unicode61 search on tags/metadata text
+ *
+ * BM25 and trigram contributions are boosted by heading depth:
+ *   boost = depth === 0 ? 1.0 : 1.0 + 0.1 * (7 - depth)
+ *   (h1 → 1.6×, h2 → 1.5×, ..., h6 → 1.1×, no heading → 1.0×)
  */
 export function hybridSearchSilo(
   db: SiloDatabase,
   queryVector: number[],
   queryText: string,
   maxResults: number = 10,
-  vectorWeight: number = 0.5,
+  weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS,
+  startPath?: string,
 ): SiloSearchResult[] {
   const chunkLimit = maxResults * CHUNK_FANOUT;
   const k = RRF_K;
+  const w = normalizeWeights(weights);
 
-  // 1. Vector search
+  // 1. Semantic: sqlite-vec cosine search
   const vecRows = db.prepare(`
     SELECT v.rowid, v.distance
     FROM vec_chunks v
     WHERE v.embedding MATCH ?
       AND k = ?
     ORDER BY v.distance
-  `).all(float32Buffer(queryVector), chunkLimit) as Array<{
-    rowid: number;
-    distance: number;
-  }>;
+  `).all(float32Buffer(queryVector), chunkLimit) as Array<{ rowid: number; distance: number }>;
 
-  // 2. BM25 keyword search
-  const sanitised = sanitiseFtsQuery(queryText);
-  let ftsRows: Array<{ rowid: number; rank: number }> = [];
-  if (sanitised.length > 0) {
+  // 2. BM25: FTS5 unicode61 full-text search
+  const sanitisedBm25 = sanitiseFtsQuery(queryText);
+  let bm25Rows: Array<{ rowid: number; rank: number }> = [];
+  if (sanitisedBm25.length > 0) {
     try {
-      ftsRows = db.prepare(`
-        SELECT rowid, rank
-        FROM chunks_fts
+      bm25Rows = db.prepare(`
+        SELECT rowid, rank FROM chunks_fts
         WHERE chunks_fts MATCH ?
-        ORDER BY rank
-        LIMIT ?
-      `).all(sanitised, chunkLimit) as Array<{ rowid: number; rank: number }>;
+        ORDER BY rank LIMIT ?
+      `).all(sanitisedBm25, chunkLimit) as Array<{ rowid: number; rank: number }>;
     } catch {
-      // FTS5 query syntax error — fall back to vector-only
+      // FTS5 query syntax error — skip signal
     }
   }
 
-  // 3. Build RRF scores
-  const penaltyRank = chunkLimit + 1;
-  const bm25Weight = 1 - vectorWeight;
+  // 3. Trigram: FTS5 trigram substring search on chunk text
+  const sanitisedTrigram = sanitiseTrigramQuery(queryText);
+  let trigramRows: Array<{ rowid: number; rank: number }> = [];
+  if (sanitisedTrigram.length > 0) {
+    try {
+      trigramRows = db.prepare(`
+        SELECT rowid, rank FROM chunks_trigram
+        WHERE chunks_trigram MATCH ?
+        ORDER BY rank LIMIT ?
+      `).all(sanitisedTrigram, chunkLimit) as Array<{ rowid: number; rank: number }>;
+    } catch {
+      // Trigram query error — skip signal
+    }
+  }
 
-  // Map chunk ID → cosine similarity (for cross-silo score calibration)
+  // 4. Filepath/filename: FTS5 trigram search; map matching file paths to chunk rowids
+  let filepathChunkIds: number[] = [];
+  if (sanitisedTrigram.length > 0) {
+    try {
+      const matchingFiles = db.prepare(`
+        SELECT f.file_path FROM files f
+        JOIN files_fts ON files_fts.rowid = f.id
+        WHERE files_fts MATCH ?
+        LIMIT ?
+      `).all(sanitisedTrigram, chunkLimit) as Array<{ file_path: string }>;
+
+      if (matchingFiles.length > 0) {
+        const filePaths = matchingFiles.map((r) => r.file_path);
+        const placeholders = filePaths.map(() => '?').join(',');
+        const chunkIdRows = db.prepare(
+          `SELECT id FROM chunks WHERE file_path IN (${placeholders}) LIMIT ?`,
+        ).all(...filePaths, chunkLimit) as Array<{ id: number }>;
+        filepathChunkIds = chunkIdRows.map((r) => r.id);
+      }
+    } catch {
+      // Skip filepath signal on error
+    }
+  }
+
+  // 5. Tags/metadata: FTS5 unicode61 search on tags_text
+  let tagsRows: Array<{ rowid: number; rank: number }> = [];
+  if (sanitisedBm25.length > 0) {
+    try {
+      tagsRows = db.prepare(`
+        SELECT rowid, rank FROM chunks_meta_fts
+        WHERE chunks_meta_fts MATCH ?
+        ORDER BY rank LIMIT ?
+      `).all(sanitisedBm25, chunkLimit) as Array<{ rowid: number; rank: number }>;
+    } catch {
+      // Skip tags signal on error
+    }
+  }
+
+  // Build rank maps (1-based) and raw score maps
   const cosineSims = new Map<number, number>();
-  for (const row of vecRows) {
-    // sqlite-vec returns cosine distance (0 = identical, 2 = opposite)
-    cosineSims.set(row.rowid, 1 - row.distance / 2);
-  }
-
-  // Map chunk ID → vector rank (1-based)
   const vecRankMap = new Map<number, number>();
+  const vecRawScores = new Map<number, number>();
   for (let i = 0; i < vecRows.length; i++) {
+    const cosine = 1 - vecRows[i].distance / 2;
+    cosineSims.set(vecRows[i].rowid, cosine);
     vecRankMap.set(vecRows[i].rowid, i + 1);
+    vecRawScores.set(vecRows[i].rowid, cosine);
   }
 
-  // Map chunk ID → BM25 rank (1-based)
-  const ftsRankMap = new Map<number, number>();
-  for (let i = 0; i < ftsRows.length; i++) {
-    ftsRankMap.set(ftsRows[i].rowid, i + 1);
+  const bm25RankMap = new Map<number, number>();
+  const bm25RawScores = new Map<number, number>();
+  for (let i = 0; i < bm25Rows.length; i++) {
+    bm25RankMap.set(bm25Rows[i].rowid, i + 1);
+    bm25RawScores.set(bm25Rows[i].rowid, bm25Rows[i].rank);
+  }
+
+  const trigramRankMap = new Map<number, number>();
+  const trigramRawScores = new Map<number, number>();
+  for (let i = 0; i < trigramRows.length; i++) {
+    trigramRankMap.set(trigramRows[i].rowid, i + 1);
+    trigramRawScores.set(trigramRows[i].rowid, trigramRows[i].rank);
+  }
+
+  // Filepath signal: assign rank by order of appearance (all chunks of matched files)
+  const filepathRankMap = new Map<number, number>();
+  for (let i = 0; i < filepathChunkIds.length; i++) {
+    const id = filepathChunkIds[i];
+    if (!filepathRankMap.has(id)) {
+      filepathRankMap.set(id, i + 1);
+    }
+  }
+
+  const tagsRankMap = new Map<number, number>();
+  const tagsRawScores = new Map<number, number>();
+  for (let i = 0; i < tagsRows.length; i++) {
+    tagsRankMap.set(tagsRows[i].rowid, i + 1);
+    tagsRawScores.set(tagsRows[i].rowid, tagsRows[i].rank);
   }
 
   // Union of all chunk IDs
-  const allIds = new Set([...vecRankMap.keys(), ...ftsRankMap.keys()]);
+  const allIds = new Set([
+    ...vecRankMap.keys(),
+    ...bm25RankMap.keys(),
+    ...trigramRankMap.keys(),
+    ...filepathRankMap.keys(),
+    ...tagsRankMap.keys(),
+  ]);
 
-  // Compute RRF scores, normalized so rank-1-in-both = 1.0
-  const maxRrf = vectorWeight / (k + 1) + bm25Weight / (k + 1); // theoretical best
-  const rrfScores = new Map<number, number>();
+  if (allIds.size === 0) return [];
+
+  // Fetch heading_depth for all candidate chunks (needed for boosting BM25/trigram)
+  db.exec(`CREATE TEMP TABLE IF NOT EXISTS _hybrid_ids (id INTEGER PRIMARY KEY)`);
+  db.exec(`DELETE FROM _hybrid_ids`);
+  const insertHybridId = db.prepare(`INSERT OR IGNORE INTO _hybrid_ids (id) VALUES (?)`);
   for (const id of allIds) {
-    const vr = vecRankMap.get(id) ?? penaltyRank;
-    const fr = ftsRankMap.get(id) ?? penaltyRank;
-    const raw = vectorWeight / (k + vr) + bm25Weight / (k + fr);
-    rrfScores.set(id, raw / maxRrf);
+    insertHybridId.run(id);
+  }
+  const headingDepthRows = db.prepare(`
+    SELECT c.id, c.heading_depth FROM chunks c
+    JOIN _hybrid_ids h ON h.id = c.id
+  `).all() as Array<{ id: number; heading_depth: number }>;
+  const headingDepths = new Map<number, number>();
+  for (const row of headingDepthRows) {
+    headingDepths.set(row.id, row.heading_depth);
+  }
+
+  // Compute RRF scores per chunk, applying heading depth boost to BM25 and trigram
+  const penaltyRank = chunkLimit + 1;
+  const rrfScores = new Map<number, number>();
+  const breakdowns = new Map<number, ScoreBreakdown>();
+
+  for (const id of allIds) {
+    const depth = headingDepths.get(id) ?? 0;
+    const headingBoost = depth === 0 ? 1.0 : 1.0 + 0.1 * (7 - depth);
+
+    const vecRank = vecRankMap.get(id) ?? penaltyRank;
+    const bm25Rank = bm25RankMap.get(id) ?? penaltyRank;
+    const trigramRank = trigramRankMap.get(id) ?? penaltyRank;
+    const filepathRank = filepathRankMap.get(id) ?? penaltyRank;
+    const tagsRank = tagsRankMap.get(id) ?? penaltyRank;
+
+    const semanticContrib = w.semantic / (k + vecRank);
+    const bm25Contrib = (w.bm25 / (k + bm25Rank)) * headingBoost;
+    const trigramContrib = (w.trigram / (k + trigramRank)) * headingBoost;
+    const filepathContrib = w.filepath / (k + filepathRank);
+    const tagsContrib = w.tags / (k + tagsRank);
+
+    const rrf = semanticContrib + bm25Contrib + trigramContrib + filepathContrib + tagsContrib;
+    rrfScores.set(id, rrf);
+    breakdowns.set(id, {
+      semantic:  { rank: vecRankMap.get(id) ?? 0,      rawScore: vecRawScores.get(id) ?? 0,      rrfContribution: semanticContrib },
+      bm25:      { rank: bm25RankMap.get(id) ?? 0,     rawScore: bm25RawScores.get(id) ?? 0,     rrfContribution: bm25Contrib },
+      trigram:   { rank: trigramRankMap.get(id) ?? 0,  rawScore: trigramRawScores.get(id) ?? 0,  rrfContribution: trigramContrib },
+      filepath:  { rank: filepathRankMap.get(id) ?? 0, rawScore: 0,                              rrfContribution: filepathContrib },
+      tags:      { rank: tagsRankMap.get(id) ?? 0,     rawScore: tagsRawScores.get(id) ?? 0,     rrfContribution: tagsContrib },
+    });
   }
 
   // Sort by RRF score descending, take top chunks
@@ -477,36 +782,45 @@ export function hybridSearchSilo(
 
   if (sortedIds.length === 0) return [];
 
-  // 4. Fetch chunk data for the top IDs
-  // Use a temp table to batch fetch
-  db.exec(`CREATE TEMP TABLE IF NOT EXISTS _rrf_ids (id INTEGER PRIMARY KEY, score REAL)`);
-  db.exec(`DELETE FROM _rrf_ids`);
-  const insertId = db.prepare(`INSERT INTO _rrf_ids (id, score) VALUES (?, ?)`);
+  // Fetch chunk data for the top IDs using the existing temp table
+  db.exec(`DELETE FROM _hybrid_ids`);
   for (const id of sortedIds) {
-    insertId.run(id, rrfScores.get(id)!);
+    insertHybridId.run(id);
   }
 
-  const rows = db.prepare(`
-    SELECT c.id, c.file_path, c.chunk_index, c.section_path, c.text,
-           c.start_line, c.end_line, c.metadata, c.content_hash,
-           r.score as rrf_score
+  let rows = db.prepare(`
+    SELECT c.id, c.file_path, c.section_path, c.text,
+           c.start_line, c.end_line
     FROM chunks c
-    JOIN _rrf_ids r ON r.id = c.id
-    ORDER BY r.score DESC
+    JOIN _hybrid_ids h ON h.id = c.id
   `).all() as Array<{
     id: number;
     file_path: string;
-    chunk_index: number;
     section_path: string;
     text: string;
     start_line: number;
     end_line: number;
-    metadata: string;
-    content_hash: string;
-    rrf_score: number;
   }>;
 
-  return aggregateByFileRrf(rows, maxResults, new Set(vecRankMap.keys()), new Set(ftsRankMap.keys()), cosineSims);
+  // Filter to startPath prefix if specified (stored-key prefix match)
+  if (startPath) {
+    rows = rows.filter((r) => r.file_path.startsWith(startPath));
+    if (rows.length === 0) return [];
+  }
+
+  return aggregateByFileRrf(
+    rows,
+    maxResults,
+    vecRankMap,
+    bm25RankMap,
+    trigramRankMap,
+    filepathRankMap,
+    tagsRankMap,
+    cosineSims,
+    rrfScores,
+    breakdowns,
+    weights,
+  );
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────
@@ -552,6 +866,25 @@ export function deleteMtime(db: SiloDatabase, filePath: string): void {
 export function countMtimes(db: SiloDatabase): number {
   const row = db.prepare(`SELECT COUNT(*) as cnt FROM mtimes`).get() as { cnt: number };
   return row.cnt;
+}
+
+/**
+ * Peek at the file count in a silo database without fully opening it.
+ * Opens a lightweight readonly connection — no sqlite-vec extension needed.
+ * Returns 0 if the database doesn't exist or the table is missing.
+ */
+export function peekFileCount(dbPath: string): number {
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const row = db.prepare('SELECT COUNT(*) as cnt FROM mtimes').get() as { cnt: number };
+      return row.cnt;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return 0;
+  }
 }
 
 // ── Meta Persistence ─────────────────────────────────────────────────────────
@@ -658,7 +991,224 @@ function float32Buffer(vec: number[]): Buffer {
 }
 
 /**
- * Sanitise a user query for FTS5 MATCH.
+ * Extract the filename from a stored key (format: "{dirIndex}:{relPath}")
+ * or a plain path. Uses forward-slash splitting since stored keys use forward slashes.
+ */
+function fileBasename(filePath: string): string {
+  return filePath.split('/').pop() ?? filePath;
+}
+
+// ── Directory Helpers ────────────────────────────────────────────────────────
+
+/**
+ * Extract all ancestor directory paths from a stored key.
+ * e.g. "0:src/backend/chunkers/foo.ts" → [
+ *   { dirPath: "0:src/", dirName: "src", depth: 1 },
+ *   { dirPath: "0:src/backend/", dirName: "backend", depth: 2 },
+ *   { dirPath: "0:src/backend/chunkers/", dirName: "chunkers", depth: 3 },
+ * ]
+ */
+export function extractDirectoryPaths(storedKey: string): Array<{ dirPath: string; dirName: string; depth: number }> {
+  const colonIdx = storedKey.indexOf(':');
+  if (colonIdx === -1) return [];
+
+  const prefix = storedKey.slice(0, colonIdx + 1); // e.g. "0:"
+  const relPath = storedKey.slice(colonIdx + 1);    // e.g. "src/backend/chunkers/foo.ts"
+  const parts = relPath.split('/');
+
+  // Remove the filename (last part)
+  parts.pop();
+  if (parts.length === 0) return [];
+
+  const dirs: Array<{ dirPath: string; dirName: string; depth: number }> = [];
+  for (let i = 0; i < parts.length; i++) {
+    const dirPath = prefix + parts.slice(0, i + 1).join('/') + '/';
+    const dirName = parts[i];
+    dirs.push({ dirPath, dirName, depth: i + 1 });
+  }
+  return dirs;
+}
+
+/**
+ * Generate embedding text for a directory path.
+ * Path separators become spaces, leaf name is repeated for emphasis.
+ * e.g. "0:src/backend/chunkers/" → "src backend chunkers chunkers"
+ */
+export function directoryEmbeddingText(dirPath: string): string {
+  const colonIdx = dirPath.indexOf(':');
+  const rel = colonIdx >= 0 ? dirPath.slice(colonIdx + 1) : dirPath;
+  const segments = rel.replace(/\/$/, '').split('/').filter(Boolean);
+  const leaf = segments[segments.length - 1] ?? '';
+  return [...segments, leaf].join(' ');
+}
+
+/**
+ * Maintain the directories table after a file upsert.
+ * Ensures all ancestor directories exist and recomputes their counts.
+ * Runs inside the caller's transaction.
+ */
+function maintainDirectoriesOnUpsert(db: SiloDatabase, filePath: string): void {
+  const dirPaths = extractDirectoryPaths(filePath);
+  if (dirPaths.length === 0) return;
+
+  const insertDir = db.prepare(
+    `INSERT OR IGNORE INTO directories (dir_path, dir_name, depth, file_count, subdir_count) VALUES (?, ?, ?, 0, 0)`,
+  );
+  for (const d of dirPaths) {
+    insertDir.run(d.dirPath, d.dirName, d.depth);
+  }
+
+  updateDirectoryCounts(db, dirPaths);
+}
+
+/**
+ * Recompute file_count and subdir_count for a set of directory paths.
+ * Does NOT remove empty directories — lifecycle is driven by disk presence during reconciliation.
+ */
+function updateDirectoryCounts(
+  db: SiloDatabase,
+  dirPaths: Array<{ dirPath: string; depth: number }>,
+): void {
+  const updateFileCount = db.prepare(`
+    UPDATE directories SET file_count = (
+      SELECT COUNT(*) FROM files
+      WHERE file_path LIKE ? || '%'
+        AND file_path NOT LIKE ? || '%/%'
+    ) WHERE dir_path = ?
+  `);
+  const updateSubdirCount = db.prepare(`
+    UPDATE directories SET subdir_count = (
+      SELECT COUNT(*) FROM directories
+      WHERE dir_path LIKE ? || '%'
+        AND dir_path != ?
+        AND depth = ?
+    ) WHERE dir_path = ?
+  `);
+
+  for (const d of dirPaths) {
+    updateFileCount.run(d.dirPath, d.dirPath, d.dirPath);
+    updateSubdirCount.run(d.dirPath, d.dirPath, d.depth + 1, d.dirPath);
+  }
+}
+
+// ── Directory Embedding Helpers ─────────────────────────────────────────────
+
+/**
+ * Find directories that exist in the directories table but have no embedding.
+ * Returns entries needing embedding generation.
+ */
+export function getDirectoriesNeedingEmbeddings(db: SiloDatabase): Array<{
+  id: number;
+  dirPath: string;
+  dirName: string;
+}> {
+  // Avoid LEFT JOIN on the vec0 virtual table — sqlite-vec may not support
+  // standard JOIN semantics reliably. Instead, collect existing vec rowids
+  // and filter in application code.
+  const allDirs = db.prepare(
+    `SELECT id, dir_path, dir_name FROM directories`,
+  ).all() as Array<{ id: number; dir_path: string; dir_name: string }>;
+
+  // vec0 rowid lookups: fetch IDs one at a time (vec0 doesn't support
+  // SELECT rowid FROM dirs_vec without a MATCH clause on some builds).
+  const checkVec = db.prepare(`SELECT rowid FROM dirs_vec WHERE rowid = ?`);
+  const rows = allDirs.filter((d) => {
+    try {
+      return !checkVec.get(d.id);
+    } catch {
+      // If the vec0 table doesn't support this query, assume the dir needs embedding
+      return true;
+    }
+  });
+  return rows.map((r) => ({ id: r.id, dirPath: r.dir_path, dirName: r.dir_name }));
+}
+
+/**
+ * Write directory embeddings and FTS entries for a batch of directories.
+ * Called after embedding generation completes.
+ */
+export function flushDirectoryEmbeddings(
+  db: SiloDatabase,
+  entries: Array<{ id: number; dirPath: string; dirName: string; embedding: number[] }>,
+): void {
+  if (entries.length === 0) return;
+
+  db.transaction(() => {
+    // Use OR REPLACE to handle cases where the directory already has an embedding
+    // (e.g. vec0 LEFT JOIN returned stale results, or re-embed after a failure).
+    const insertVec = db.prepare(`INSERT OR REPLACE INTO dirs_vec(rowid, embedding) VALUES (?, ?)`);
+    const deleteOldFts = db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`);
+    const insertFts = db.prepare(`INSERT INTO dirs_fts(rowid, dir_path, dir_name) VALUES (?, ?, ?)`);
+
+    for (const entry of entries) {
+      insertVec.run(entry.id, float32Buffer(entry.embedding));
+      // FTS5 doesn't support OR REPLACE, so delete+re-insert
+      deleteOldFts.run(entry.id);
+      insertFts.run(entry.id, entry.dirPath, entry.dirName);
+    }
+  })();
+}
+
+/**
+ * Sync the directories table with a set of directory paths found on disk.
+ * - Inserts any new directories not yet in the table
+ * - Removes directories no longer present on disk
+ * - Recomputes all counts
+ * Returns the list of removed directory stored-key paths (for activity event emission).
+ */
+export function syncDirectoriesWithDisk(
+  db: SiloDatabase,
+  diskDirPaths: Array<{ dirPath: string; dirName: string; depth: number }>,
+): string[] {
+  const diskSet = new Set(diskDirPaths.map((d) => d.dirPath));
+
+  return db.transaction(() => {
+    // Insert any new directories
+    const insertDir = db.prepare(
+      `INSERT OR IGNORE INTO directories (dir_path, dir_name, depth, file_count, subdir_count) VALUES (?, ?, ?, 0, 0)`,
+    );
+    for (const d of diskDirPaths) {
+      insertDir.run(d.dirPath, d.dirName, d.depth);
+    }
+
+    // Find directories in DB but not on disk
+    const allDbDirs = db.prepare(`SELECT id, dir_path FROM directories`).all() as Array<{
+      id: number;
+      dir_path: string;
+    }>;
+    const toRemove = allDbDirs.filter((d) => !diskSet.has(d.dir_path));
+
+    // Remove orphaned directories
+    for (const d of toRemove) {
+      db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`).run(d.id);
+      db.prepare(`DELETE FROM dirs_vec WHERE rowid = ?`).run(d.id);
+      db.prepare(`DELETE FROM directories WHERE id = ?`).run(d.id);
+    }
+
+    // Recompute all counts in one pass
+    db.prepare(`
+      UPDATE directories SET file_count = (
+        SELECT COUNT(*) FROM files
+        WHERE file_path LIKE directories.dir_path || '%'
+          AND file_path NOT LIKE directories.dir_path || '%/%'
+      )
+    `).run();
+
+    db.prepare(`
+      UPDATE directories SET subdir_count = (
+        SELECT COUNT(*) FROM directories d2
+        WHERE d2.dir_path LIKE directories.dir_path || '%'
+          AND d2.dir_path != directories.dir_path
+          AND d2.depth = directories.depth + 1
+      )
+    `).run();
+
+    return toRemove.map((d) => d.dir_path);
+  })();
+}
+
+/**
+ * Sanitise a user query for FTS5 unicode61 MATCH.
  * Wraps each term in double quotes for safe phrase matching.
  */
 function sanitiseFtsQuery(query: string): string {
@@ -668,6 +1218,37 @@ function sanitiseFtsQuery(query: string): string {
     .filter(Boolean)
     .map((term) => `"${term}"`)
     .join(' ');
+}
+
+/**
+ * Sanitise a user query for FTS5 trigram MATCH.
+ * Trigram requires terms of at least 3 characters; shorter terms are dropped.
+ * Each qualifying term is wrapped in double quotes.
+ */
+function sanitiseTrigramQuery(query: string): string {
+  return query
+    .replace(/"/g, '""')
+    .split(/\s+/)
+    .filter((term) => term.length >= 3)
+    .map((term) => `"${term}"`)
+    .join(' ');
+}
+
+/**
+ * Normalise search weights so they sum to 1.0.
+ * Falls back to DEFAULT_SEARCH_WEIGHTS if all weights are zero.
+ */
+function normalizeWeights(weights: SearchWeights): SearchWeights {
+  const total = weights.semantic + weights.bm25 + weights.trigram + weights.filepath + weights.tags;
+  if (total === 0) return DEFAULT_SEARCH_WEIGHTS;
+  if (Math.abs(total - 1.0) < 1e-6) return weights;
+  return {
+    semantic: weights.semantic / total,
+    bm25: weights.bm25 / total,
+    trigram: weights.trigram / total,
+    filepath: weights.filepath / total,
+    tags: weights.tags / total,
+  };
 }
 
 /**
@@ -686,10 +1267,17 @@ function aggregateByFile(
   }>,
   maxResults: number,
 ): SiloSearchResult[] {
+  const zeroBreakdown: ScoreBreakdown = {
+    semantic:  { rank: 0, rawScore: 0, rrfContribution: 0 },
+    bm25:      { rank: 0, rawScore: 0, rrfContribution: 0 },
+    trigram:   { rank: 0, rawScore: 0, rrfContribution: 0 },
+    filepath:  { rank: 0, rawScore: 0, rrfContribution: 0 },
+    tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
+  };
+
   const fileMap = new Map<string, { bestScore: number; chunks: SiloSearchResultChunk[] }>();
 
   for (const row of rows) {
-    // Convert cosine distance (0 = identical, 2 = opposite) to similarity score
     const score = 1 - row.distance / 2;
     const sectionPath: string[] = JSON.parse(row.section_path);
     const chunk: SiloSearchResultChunk = {
@@ -700,6 +1288,7 @@ function aggregateByFile(
       score,
       matchType: 'semantic',
       cosineSimilarity: score,
+      breakdown: { ...zeroBreakdown, semantic: { rank: 1, rawScore: score, rrfContribution: score } },
     };
 
     const existing = fileMap.get(row.file_path);
@@ -718,17 +1307,21 @@ function aggregateByFile(
 
   return Array.from(fileMap.entries())
     .map(([filePath, { bestScore, chunks }]) => ({
-      filePath, score: bestScore, matchType: 'semantic' as MatchType,
-      bestCosineSimilarity: bestScore, chunks,
+      filePath,
+      score: bestScore,
+      matchType: 'semantic' as MatchType,
+      bestCosineSimilarity: bestScore,
+      chunks,
+      weights: DEFAULT_SEARCH_WEIGHTS,
+      breakdown: chunks[0]?.breakdown ?? zeroBreakdown,
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults);
 }
 
 /**
- * Aggregate hybrid search rows by file (for hybridSearchSilo).
- * RRF scores are already computed — just aggregate.
- * vecIds/ftsIds track which chunks were found by each method.
+ * Aggregate hybrid search rows by file.
+ * RRF scores and breakdowns are already computed.
  */
 function aggregateByFileRrf(
   rows: Array<{
@@ -738,16 +1331,30 @@ function aggregateByFileRrf(
     text: string;
     start_line: number;
     end_line: number;
-    rrf_score: number;
   }>,
   maxResults: number,
-  vecIds: Set<number>,
-  ftsIds: Set<number>,
+  vecRankMap: Map<number, number>,
+  bm25RankMap: Map<number, number>,
+  trigramRankMap: Map<number, number>,
+  filepathRankMap: Map<number, number>,
+  tagsRankMap: Map<number, number>,
   cosineSims: Map<number, number>,
+  rrfScores: Map<number, number>,
+  breakdowns: Map<number, ScoreBreakdown>,
+  weights: SearchWeights,
 ): SiloSearchResult[] {
+  const zeroBreakdown: ScoreBreakdown = {
+    semantic:  { rank: 0, rawScore: 0, rrfContribution: 0 },
+    bm25:      { rank: 0, rawScore: 0, rrfContribution: 0 },
+    trigram:   { rank: 0, rawScore: 0, rrfContribution: 0 },
+    filepath:  { rank: 0, rawScore: 0, rrfContribution: 0 },
+    tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
+  };
+
   const fileMap = new Map<string, {
     bestScore: number;
     bestCosineSim: number;
+    bestBreakdown: ScoreBreakdown;
     hasVec: boolean;
     hasFts: boolean;
     chunks: SiloSearchResultChunk[];
@@ -755,35 +1362,42 @@ function aggregateByFileRrf(
 
   for (const row of rows) {
     const sectionPath: string[] = JSON.parse(row.section_path);
-    const inVec = vecIds.has(row.id);
-    const inFts = ftsIds.has(row.id);
+    const inVec = vecRankMap.has(row.id);
+    const inFts = bm25RankMap.has(row.id) || trigramRankMap.has(row.id) || filepathRankMap.has(row.id) || tagsRankMap.has(row.id);
     const cosineSim = cosineSims.get(row.id) ?? 0;
+    const rrfScore = rrfScores.get(row.id) ?? 0;
+    const breakdown = breakdowns.get(row.id) ?? zeroBreakdown;
 
     let chunkMatchType: MatchType = 'semantic';
     if (inVec && inFts) chunkMatchType = 'both';
-    else if (inFts) chunkMatchType = 'keyword';
+    else if (inFts && !inVec) chunkMatchType = 'keyword';
 
     const chunk: SiloSearchResultChunk = {
       sectionPath,
       text: row.text,
       startLine: row.start_line,
       endLine: row.end_line,
-      score: row.rrf_score,
+      score: rrfScore,
       matchType: chunkMatchType,
       cosineSimilarity: cosineSim,
+      breakdown,
     };
 
     const existing = fileMap.get(row.file_path);
     if (existing) {
       existing.chunks.push(chunk);
-      if (row.rrf_score > existing.bestScore) existing.bestScore = row.rrf_score;
+      if (rrfScore > existing.bestScore) {
+        existing.bestScore = rrfScore;
+        existing.bestBreakdown = breakdown;
+      }
       if (cosineSim > existing.bestCosineSim) existing.bestCosineSim = cosineSim;
       if (inVec) existing.hasVec = true;
       if (inFts) existing.hasFts = true;
     } else {
       fileMap.set(row.file_path, {
-        bestScore: row.rrf_score,
+        bestScore: rrfScore,
         bestCosineSim: cosineSim,
+        bestBreakdown: breakdown,
         hasVec: inVec,
         hasFts: inFts,
         chunks: [chunk],
@@ -797,11 +1411,19 @@ function aggregateByFileRrf(
   }
 
   return Array.from(fileMap.entries())
-    .map(([filePath, { bestScore, bestCosineSim, hasVec, hasFts, chunks }]) => {
+    .map(([filePath, { bestScore, bestCosineSim, bestBreakdown, hasVec, hasFts, chunks }]) => {
       let matchType: MatchType = 'semantic';
       if (hasVec && hasFts) matchType = 'both';
-      else if (hasFts) matchType = 'keyword';
-      return { filePath, score: bestScore, matchType, bestCosineSimilarity: bestCosineSim, chunks };
+      else if (hasFts && !hasVec) matchType = 'keyword';
+      return {
+        filePath,
+        score: bestScore,
+        matchType,
+        bestCosineSimilarity: bestCosineSim,
+        chunks,
+        weights,
+        breakdown: bestBreakdown,
+      };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults);

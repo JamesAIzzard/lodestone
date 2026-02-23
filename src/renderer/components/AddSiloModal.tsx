@@ -132,6 +132,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
           description: description.trim() || undefined,
           color: siloColor,
           icon: siloIcon,
+          mode: mode ?? 'new',
         });
         if (result && !result.success) {
           setError(result.error ?? 'Unknown error');

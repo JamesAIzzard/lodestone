@@ -6,7 +6,6 @@
  * with this class for all silo operations.
  */
 
-import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ResolvedSiloConfig } from './config';
@@ -24,13 +23,16 @@ import {
   saveConfigBlob,
   makeStoredKey,
   resolveStoredKey,
+  peekFileCount,
   type SiloDatabase,
   type SiloSearchResult,
   type StoredSiloConfig,
 } from './store';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
-import type { WatcherState } from '../shared/types';
+import type { WatcherState, SearchWeights, DirectoryTreeNode } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS, ZERO_SCORE_BREAKDOWN } from '../shared/types';
+import { directorySearchSilo, expandTree, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -74,7 +76,11 @@ export class SiloManager {
   private set watcherState(value: WatcherState) {
     if (this._watcherState !== value) {
       this._watcherState = value;
-      this.stateChangeListener?.();
+      try {
+        this.stateChangeListener?.();
+      } catch (err) {
+        console.error(`[silo:${this.config.name}] Error in state change listener:`, err);
+      }
     }
   }
 
@@ -274,8 +280,9 @@ export class SiloManager {
   }
 
   private async doStart(): Promise<void> {
-    // 1. Use the shared embedding service
+    // 1. Use the shared embedding service and ensure it's ready
     this.embeddingService = this.sharedEmbeddingService;
+    await this.embeddingService.ensureReady();
 
     // 2. Open or create the SQLite database
     const dbPath = this.resolveDbPath();
@@ -463,22 +470,7 @@ export class SiloManager {
   private loadOfflineStatus(state: 'stopped' | 'waiting'): void {
     this.watcherState = state;
     this.cachedSizeBytes = this.readFileSizeFromDisk();
-
-    const dbPath = this.resolveDbPath();
-    if (fs.existsSync(dbPath)) {
-      try {
-        const db = new Database(dbPath, { readonly: true });
-        try {
-          const row = db.prepare(`SELECT COUNT(*) as cnt FROM mtimes`).get() as { cnt: number };
-          this.cachedFileCount = row.cnt;
-        } catch {
-          this.cachedFileCount = 0;
-        }
-        db.close();
-      } catch {
-        this.cachedFileCount = 0;
-      }
-    }
+    this.cachedFileCount = peekFileCount(this.resolveDbPath());
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -489,10 +481,10 @@ export class SiloManager {
   }
 
   /** Embed a query and search the silo database using hybrid search. */
-  async search(query: string, maxResults: number = 10): Promise<SiloSearchResult[]> {
+  async search(query: string, maxResults: number = 10, weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS, startPath?: string): Promise<SiloSearchResult[]> {
     if (!this.embeddingService || !this.db) return [];
     const queryVector = await this.embeddingService.embed(query);
-    const results = hybridSearchSilo(this.db, queryVector, query, maxResults);
+    const results = hybridSearchSilo(this.db, queryVector, query, maxResults, weights, startPath);
     return this.resolveResultPaths(results);
   }
 
@@ -501,10 +493,58 @@ export class SiloManager {
    * Used by the main process to embed the query once and share the
    * vector across all silos, avoiding redundant ONNX inference calls.
    */
-  searchWithVector(queryVector: number[], queryText: string, maxResults: number = 10): SiloSearchResult[] {
+  searchWithVector(queryVector: number[], queryText: string, maxResults: number = 10, weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS, startPath?: string): SiloSearchResult[] {
     if (!this.db) return [];
-    const results = hybridSearchSilo(this.db, queryVector, queryText, maxResults);
+    const results = hybridSearchSilo(this.db, queryVector, queryText, maxResults, weights, startPath);
     return this.resolveResultPaths(results);
+  }
+
+  /**
+   * Explore directory structure with a pre-computed query vector.
+   * Used by the main process to embed the query once and share the
+   * vector across all silos.
+   */
+  exploreDirectories(params: DirectorySearchParams, queryEmbedding?: number[]): SiloDirectorySearchResult[] {
+    if (!this.db) return [];
+    const isEmptyQuery = !params.query || params.query.trim().length === 0;
+    // Empty query with no startPath → return the silo's configured root directories directly
+    if (isEmptyQuery && !params.startPath) {
+      return this.exploreRootDirectories(params.maxDepth ?? 2);
+    }
+    const raw = directorySearchSilo(this.db, params, queryEmbedding);
+    return this.resolveDirectoryPaths(raw);
+  }
+
+  /** Synthesise explore results for the silo's configured root directories. */
+  private exploreRootDirectories(maxDepth: number): SiloDirectorySearchResult[] {
+    const db = this.db!;
+
+    // Prepare once — these run once per configured root directory
+    const countFiles = db.prepare(
+      `SELECT COUNT(*) as count FROM files WHERE file_path LIKE ?`,
+    );
+    const countSubdirs = db.prepare(
+      `SELECT COUNT(*) as count FROM directories WHERE dir_path LIKE ? AND depth = 1`,
+    );
+
+    return this.config.directories.map((absPath, i) => {
+      const prefix = `${i}:`;
+      const { count: fileCount }   = countFiles.get(prefix + '%') as { count: number };
+      const { count: subdirCount } = countSubdirs.get(prefix + '%') as { count: number };
+      const rawChildren = expandTree(db, prefix, 0, maxDepth);
+
+      return {
+        dirPath: absPath,
+        dirName: path.basename(absPath),
+        score: 1.0,
+        bestCosineSimilarity: 0,
+        breakdown: ZERO_SCORE_BREAKDOWN,
+        fileCount,
+        subdirCount,
+        depth: 0,
+        children: resolveTreeNodes(rawChildren, this.config.directories),
+      };
+    });
   }
 
   /** Resolve stored keys in search results back to absolute file paths. */
@@ -512,6 +552,16 @@ export class SiloManager {
     return results.map((r) => ({
       ...r,
       filePath: resolveStoredKey(r.filePath, this.config.directories),
+    }));
+  }
+
+  /** Resolve stored-key dir paths in explore results back to absolute filesystem paths. */
+  private resolveDirectoryPaths(results: SiloDirectorySearchResult[]): SiloDirectorySearchResult[] {
+    const dirs = this.config.directories;
+    return results.map((r) => ({
+      ...r,
+      dirPath: resolveStoredKey(r.dirPath, dirs),
+      children: resolveTreeNodes(r.children, dirs),
     }));
   }
 
@@ -561,12 +611,7 @@ export class SiloManager {
     return this.config;
   }
 
-  /** Get the underlying database (for reconciliation). */
-  getDatabase(): SiloDatabase | null {
-    return this.db;
-  }
-
-  /** Get the embedding service (for reconciliation). */
+  /** Get the embedding service (used by MCP mode for search dispatch). */
   getEmbeddingService(): EmbeddingService | null {
     return this.embeddingService;
   }
@@ -665,8 +710,13 @@ export class SiloManager {
       async () => {
         this.pendingWatcherEnqueue = false;
         this.cancelWatcherEnqueue = null;
-        if (this.watcher && !this.stopped) {
-          await this.watcher.runQueue();
+        try {
+          if (this.watcher && !this.stopped) {
+            await this.watcher.runQueue();
+          }
+        } catch (err) {
+          // Log but don't propagate — ensures we always reach the state-recovery below
+          console.error(`[silo:${this.config.name}] Watcher runQueue error:`, err);
         }
         // runQueue() re-fires onQueueFilled if items arrived mid-run,
         // which schedules another turn. Set ready only if truly idle.
@@ -702,4 +752,15 @@ export class SiloManager {
       return 0;
     }
   }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Recursively resolve stored-key paths in a directory tree to absolute paths. */
+function resolveTreeNodes(nodes: DirectoryTreeNode[], directories: string[]): DirectoryTreeNode[] {
+  return nodes.map((n) => ({
+    ...n,
+    path: resolveStoredKey(n.path, directories),
+    children: resolveTreeNodes(n.children, directories),
+  }));
 }

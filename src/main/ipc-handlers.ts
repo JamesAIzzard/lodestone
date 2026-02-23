@@ -16,13 +16,13 @@ import {
 } from '../backend/config';
 import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import { checkOllamaConnection } from '../backend/embedding';
-import { SiloManager } from '../backend/silo-manager';
+import type { SiloManager } from '../backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
-import { calibrateAndMerge, type RawSiloResult } from '../backend/search-merge';
-import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings } from '../shared/types';
+import { calibrateAndMerge, calibrateAndMergeDirectories, dispatchSearch, dispatchExplore } from '../backend/search-merge';
+import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, SearchWeights, ExploreParams } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS, DEFAULT_EXPLORE_WEIGHTS } from '../shared/types';
 import type { AppContext } from './context';
-import { stopSilo, wakeSilo, registerManager } from './lifecycle';
-import { buildTrayMenu } from './tray';
+import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
 
 export function registerIpcHandlers(ctx: AppContext): void {
   // ── Dialog & Shell ──────────────────────────────────────────────────────
@@ -100,62 +100,103 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return statuses;
   });
 
-  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string): Promise<SearchResult[]> => {
-    const managers = siloName
-      ? [[siloName, ctx.siloManagers.get(siloName)] as const].filter(([, m]) => m)
-      : Array.from(ctx.siloManagers.entries());
-
-    if (managers.length === 0) return [];
-
-    const byModel = new Map<string, Array<[string, SiloManager]>>();
-    for (const [name, manager] of managers) {
-      if (!manager || manager.isStopped || manager.hasModelMismatch()) continue;
-      const model = manager.getConfig().model;
-      let group = byModel.get(model);
-      if (!group) {
-        group = [];
-        byModel.set(model, group);
-      }
-      group.push([name as string, manager]);
-    }
-
-    const raw: RawSiloResult[] = [];
-
-    for (const [model, group] of byModel) {
-      const service = ctx.embeddingServices.get(resolveModelAlias(model));
-      if (!service) continue;
-
-      const queryVector = await service.embed(query);
-
-      for (const [name, manager] of group) {
-        const siloResults = manager.searchWithVector(queryVector, query, 10);
-        for (const r of siloResults) {
-          raw.push({
-            filePath: r.filePath,
-            rrfScore: r.score,
-            bestCosineSimilarity: r.bestCosineSimilarity,
-            matchType: r.matchType,
-            chunks: r.chunks,
-            siloName: name,
-          });
-        }
+  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string, weights?: SearchWeights, startPath?: string): Promise<SearchResult[]> => {
+    // Collect searchable managers — skip stopped and model-mismatched silos
+    const ready: [string, SiloManager][] = [];
+    if (siloName) {
+      const m = ctx.siloManagers.get(siloName);
+      if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([siloName, m]);
+    } else {
+      for (const [name, m] of ctx.siloManagers) {
+        if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
       }
     }
+
+    if (ready.length === 0) return [];
+
+    const effectiveWeights: SearchWeights = weights ?? ctx.config?.search.weights ?? DEFAULT_SEARCH_WEIGHTS;
+
+    const raw = await dispatchSearch(
+      query,
+      ready,
+      (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+      10,
+      effectiveWeights,
+      startPath,
+    );
 
     const merged = calibrateAndMerge(raw);
-    merged.sort((a, b) => b.score - a.score);
+    merged.sort((a, b) => b.qualityScore - a.qualityScore);
 
     const results: SearchResult[] = merged.slice(0, 20).map((r) => ({
       filePath: r.filePath,
       score: r.score,
+      qualityScore: r.qualityScore,
       matchType: r.matchType,
-      chunks: r.chunks,
+      chunks: r.chunks.map((c) => ({
+        ...c,
+        breakdown: c.breakdown,
+      })),
       siloName: r.siloName,
       rrfScore: r.rrfScore,
       bestCosineSimilarity: r.bestCosineSimilarity,
+      weights: r.weights,
+      breakdown: r.breakdown,
     }));
 
     return results;
+  });
+
+  ipcMain.handle('silos:explore', async (_event, params: ExploreParams): Promise<DirectoryResult[]> => {
+    // Collect searchable managers — skip stopped and model-mismatched silos
+    const ready: [string, SiloManager][] = [];
+    if (params.silo) {
+      const m = ctx.siloManagers.get(params.silo);
+      if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([params.silo, m]);
+    } else {
+      for (const [name, m] of ctx.siloManagers) {
+        if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+      }
+    }
+
+    if (ready.length === 0) return [];
+
+    const effectiveWeights = params.weights ?? DEFAULT_EXPLORE_WEIGHTS;
+
+    const raw = await dispatchExplore(
+      { ...params, weights: effectiveWeights },
+      ready,
+      (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+    );
+
+    const merged = calibrateAndMergeDirectories(raw);
+    merged.sort((a, b) => b.qualityScore - a.qualityScore);
+
+    return merged.slice(0, params.maxResults ?? 10).map((r) => ({
+      dirPath: r.dirPath,
+      dirName: r.dirName,
+      siloName: r.siloName,
+      score: r.score,
+      qualityScore: r.qualityScore,
+      breakdown: r.breakdown,
+      fileCount: r.fileCount,
+      subdirCount: r.subdirCount,
+      depth: r.depth,
+      children: r.children,
+    }));
+  });
+
+  // ── Search Weights ──────────────────────────────────────────────────────
+
+  ipcMain.handle('search:getWeights', async (): Promise<SearchWeights> => {
+    return ctx.config?.search.weights ?? DEFAULT_SEARCH_WEIGHTS;
+  });
+
+  ipcMain.handle('search:updateWeights', async (_event, weights: SearchWeights): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+    ctx.config.search.weights = weights;
+    saveConfig(ctx.configPath(), ctx.config);
+    return { success: true };
   });
 
   // ── Activity ────────────────────────────────────────────────────────────
@@ -283,8 +324,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     saveConfig(ctx.configPath(), ctx.config);
     console.log('[main] All settings reset to defaults');
 
-    if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
-    ctx.mainWindow?.webContents.send('silos:changed');
+    notifySilosChanged(ctx);
     return { success: true };
   });
 
@@ -387,8 +427,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       saveConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" deleted from config`);
 
-      if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
-      ctx.mainWindow?.webContents.send('silos:changed');
+      notifySilosChanged(ctx);
 
       if (dbDeleteError) {
         return { success: false, error: `Silo removed but database file could not be deleted: ${dbDeleteError}` };
@@ -416,8 +455,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       saveConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" disconnected (database preserved on disk)`);
 
-      if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
-      ctx.mainWindow?.webContents.send('silos:changed');
+      notifySilosChanged(ctx);
 
       return { success: true };
     },
@@ -467,38 +505,30 @@ export function registerIpcHandlers(ctx: AppContext): void {
       const siloToml = ctx.config.silos[name];
       if (!siloToml) return { success: false, error: `Silo "${name}" not found` };
 
+      const manager = ctx.siloManagers.get(name);
+
       if (updates.description !== undefined) {
         siloToml.description = updates.description.trim() || undefined;
-        const manager = ctx.siloManagers.get(name);
-        if (manager) {
-          manager.updateDescription(updates.description.trim());
-        }
+        manager?.updateDescription(updates.description.trim());
       }
 
       if (updates.color !== undefined) {
         const validated = validateSiloColor(updates.color);
         siloToml.color = validated;
-        const manager = ctx.siloManagers.get(name);
-        if (manager) manager.updateColor(validated);
+        manager?.updateColor(validated);
       }
 
       if (updates.icon !== undefined) {
         const validated = validateSiloIcon(updates.icon);
         siloToml.icon = validated;
-        const manager = ctx.siloManagers.get(name);
-        if (manager) manager.updateIcon(validated);
+        manager?.updateIcon(validated);
       }
 
       if (updates.model !== undefined) {
         const resolvedDefault = resolveModelAlias(ctx.config.embeddings.model);
         const resolvedNew = resolveModelAlias(updates.model);
-
         siloToml.model = resolvedNew !== resolvedDefault ? resolvedNew : undefined;
-
-        const manager = ctx.siloManagers.get(name);
-        if (manager) {
-          manager.updateModel(resolvedNew);
-        }
+        manager?.updateModel(resolvedNew);
       }
 
       // Ignore pattern updates — empty array means "revert to defaults"
@@ -514,19 +544,13 @@ export function registerIpcHandlers(ctx: AppContext): void {
         siloToml.extensions = updates.extensions.length > 0 ? updates.extensions : undefined;
       }
 
-      // Hot-swap the watcher if ignore patterns changed
-      if (updates.ignore !== undefined || updates.ignoreFiles !== undefined) {
-        const manager = ctx.siloManagers.get(name);
-        if (manager) {
+      // Hot-swap the watcher if ignore patterns or extensions changed
+      if (manager) {
+        if (updates.ignore !== undefined || updates.ignoreFiles !== undefined) {
           const resolved = resolveSiloConfig(name, siloToml, ctx.config);
           await manager.updateIgnorePatterns(resolved.ignore, resolved.ignoreFiles);
         }
-      }
-
-      // Hot-swap the watcher if extensions changed
-      if (updates.extensions !== undefined) {
-        const manager = ctx.siloManagers.get(name);
-        if (manager) {
+        if (updates.extensions !== undefined) {
           const resolved = resolveSiloConfig(name, siloToml, ctx.config);
           await manager.updateExtensions(resolved.extensions);
         }
@@ -572,8 +596,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       saveConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${oldName}" renamed to "${trimmed}" (slug: "${newSlug}")`);
 
-      if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
-      ctx.mainWindow?.webContents.send('silos:changed');
+      notifySilosChanged(ctx);
       return { success: true };
     },
   );
@@ -582,7 +605,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     'silos:create',
     async (
       _event,
-      opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string },
+      opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string; mode?: 'new' | 'existing' },
     ): Promise<{ success: boolean; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
 
@@ -594,7 +617,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       const resolvedDbPath = path.isAbsolute(opts.dbPath)
         ? opts.dbPath
         : path.join(ctx.getUserDataDir(), opts.dbPath);
-      if (fs.existsSync(resolvedDbPath)) {
+      if (opts.mode !== 'existing' && fs.existsSync(resolvedDbPath)) {
         return {
           success: false,
           error: `A database file already exists at that path. Use "Connect existing silo" to attach it, or choose a different path.`,
@@ -625,7 +648,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
       registerManager(ctx, slug, siloToml);
 
-      if (ctx.tray) ctx.tray.setContextMenu(buildTrayMenu(ctx));
+      notifySilosChanged(ctx);
 
       return { success: true };
     },

@@ -35,7 +35,7 @@ if (isMcpMode) {
   console.log = (...args: unknown[]) => console.error(...args);
 }
 
-const ctx = createAppContext(isMcpMode);
+const ctx = createAppContext();
 
 // ── Single-Instance Lock (GUI only) ──────────────────────────────────────────
 // Prevent duplicate GUI instances. MCP mode is exempt — it coexists with the
@@ -93,10 +93,18 @@ app.on('ready', async () => {
 
   // Defer backend init until the renderer has loaded so that heavy
   // reconciliation / ONNX embedding work doesn't starve the event loop.
-  ctx.mainWindow!.webContents.once('did-finish-load', () => {
-    initializeBackend(ctx).catch((err) => {
+  ctx.mainWindow!.webContents.once('did-finish-load', async () => {
+    try {
+      await initializeBackend(ctx);
+
+      // Start the internal API pipe server so MCP processes can connect.
+      // Must happen after initializeBackend so silos are registered.
+      const { InternalApi } = await import('./main/internal-api');
+      ctx.internalApi = new InternalApi(ctx);
+      ctx.internalApi.start();
+    } catch (err) {
       console.error('[main] Backend initialization error:', err);
-    });
+    }
   });
 });
 
@@ -105,7 +113,12 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', (event) => {
+  // Prevent re-entrant quit loop: once async shutdown has started, let the
+  // process exit without re-entering the shutdown sequence.
+  if (ctx.shuttingDown) return;
+
   if (ctx.siloManagers.size > 0 || ctx.embeddingServices.size > 0) {
+    ctx.shuttingDown = true;
     event.preventDefault();
 
     // Race shutdown against a hard timeout so a stuck silo can't keep the
@@ -117,6 +130,10 @@ app.on('will-quit', (event) => {
         resolve();
       }, SHUTDOWN_TIMEOUT_MS).unref();
     });
+
+    // Stop the internal API pipe server before shutting down backends
+    ctx.internalApi?.stop();
+    ctx.internalApi = null;
 
     Promise.race([shutdownBackend(ctx), timeout]).finally(() => app.quit());
   }

@@ -44,6 +44,10 @@ export interface ChunkRecord {
   metadata: Record<string, unknown>;
   /** SHA-256 hash of the chunk text (for change detection) */
   contentHash: string;
+  /** Heading depth of the section this chunk belongs to (1–6 for h1–h6, 0 for no heading) */
+  headingDepth: number;
+  /** Flattened tags/aliases/title for metadata FTS indexing */
+  tagsText: string;
 }
 
 // ── Pluggable interfaces ─────────────────────────────────────────────────────
@@ -78,13 +82,11 @@ export type AsyncChunker = (
  * A file processor pairs an extractor with a chunker.
  * The pipeline registry maps file extensions to these pairs.
  *
- * Processors can provide either a sync `chunker` or an async `asyncChunker`.
- * If `asyncChunker` is present, it takes priority. The sync `chunker` is
- * optional when an async chunker is provided (set to a dummy that throws).
+ * Provide either `chunker` (sync) or `asyncChunker` (async).
+ * When both are present, `asyncChunker` takes priority.
  */
 export interface FileProcessor {
   extractor: Extractor;
-  chunker: Chunker;
-  /** Async chunker — takes priority over sync chunker when present. */
+  chunker?: Chunker;
   asyncChunker?: AsyncChunker;
 }

@@ -30,9 +30,9 @@ import {
 } from './store';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
-import type { WatcherState, SearchWeights } from '../shared/types';
+import type { WatcherState, SearchWeights, DirectoryTreeNode, ScoreBreakdown } from '../shared/types';
 import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
-import { directorySearchSilo, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
+import { directorySearchSilo, expandTree, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -506,7 +506,56 @@ export class SiloManager {
    */
   exploreDirectories(params: DirectorySearchParams, queryEmbedding?: number[]): SiloDirectorySearchResult[] {
     if (!this.db) return [];
-    return directorySearchSilo(this.db, params, queryEmbedding);
+    const isEmptyQuery = !params.query || params.query.trim().length === 0;
+    // Empty query with no startPath → return the silo's configured root directories directly
+    if (isEmptyQuery && !params.startPath) {
+      return this.exploreRootDirectories(params.maxDepth ?? 2);
+    }
+    const raw = directorySearchSilo(this.db, params, queryEmbedding);
+    return this.resolveDirectoryPaths(raw);
+  }
+
+  /** Synthesise explore results for the silo's configured root directories. */
+  private exploreRootDirectories(maxDepth: number): SiloDirectorySearchResult[] {
+    const db = this.db!;
+    const zeroBreakdown: ScoreBreakdown = {
+      semantic:  { rank: 0, rawScore: 0, rrfContribution: 0 },
+      bm25:      { rank: 0, rawScore: 0, rrfContribution: 0 },
+      trigram:   { rank: 0, rawScore: 0, rrfContribution: 0 },
+      filepath:  { rank: 0, rawScore: 0, rrfContribution: 0 },
+      tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
+    };
+
+    return this.config.directories.map((absPath, i) => {
+      const prefix = `${i}:`;
+      const dirName = path.basename(absPath);
+
+      // Total files in this root (recursive)
+      const { count: fileCount } = db.prepare(
+        `SELECT COUNT(*) as count FROM files WHERE file_path LIKE ?`,
+      ).get(prefix + '%') as { count: number };
+
+      // Immediate subdirectory count (depth = 1 under this root)
+      const { count: subdirCount } = db.prepare(
+        `SELECT COUNT(*) as count FROM directories WHERE dir_path LIKE ? AND depth = 1`,
+      ).get(prefix + '%') as { count: number };
+
+      // Children tree — raw stored-key paths, resolved below
+      const rawChildren = expandTree(db, prefix, 0, maxDepth);
+      const children = resolveTreeNodes(rawChildren, this.config.directories);
+
+      return {
+        dirPath: absPath,
+        dirName,
+        score: 1.0,
+        bestCosineSimilarity: 0,
+        breakdown: zeroBreakdown,
+        fileCount,
+        subdirCount,
+        depth: 0,
+        children,
+      };
+    });
   }
 
   /** Resolve stored keys in search results back to absolute file paths. */
@@ -514,6 +563,16 @@ export class SiloManager {
     return results.map((r) => ({
       ...r,
       filePath: resolveStoredKey(r.filePath, this.config.directories),
+    }));
+  }
+
+  /** Resolve stored-key dir paths in explore results back to absolute filesystem paths. */
+  private resolveDirectoryPaths(results: SiloDirectorySearchResult[]): SiloDirectorySearchResult[] {
+    const dirs = this.config.directories;
+    return results.map((r) => ({
+      ...r,
+      dirPath: resolveStoredKey(r.dirPath, dirs),
+      children: resolveTreeNodes(r.children, dirs),
     }));
   }
 
@@ -704,4 +763,15 @@ export class SiloManager {
       return 0;
     }
   }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Recursively resolve stored-key paths in a directory tree to absolute paths. */
+function resolveTreeNodes(nodes: DirectoryTreeNode[], directories: string[]): DirectoryTreeNode[] {
+  return nodes.map((n) => ({
+    ...n,
+    path: resolveStoredKey(n.path, directories),
+    children: resolveTreeNodes(n.children, directories),
+  }));
 }

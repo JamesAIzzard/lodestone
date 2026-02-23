@@ -135,7 +135,7 @@ function renderTree(
     const node = nodes[i];
     const isLast = i === nodes.length - 1;
     const connector = isLast ? '\u2514\u2500' : '\u251C\u2500';
-    const stats = `${node.fileCount} files`;
+    const stats = `${node.fileCount} files · ${node.subdirCount} subdirs`;
     lines.push(`${prefix}${connector} ${node.name}/ (${stats})`);
 
     if (node.children.length > 0) {
@@ -280,7 +280,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     'Explore the directory structure of locally indexed silos.',
     'Returns ranked directories with nested tree views showing file/subdirectory counts.',
     '',
-    'Use without a query for a structural overview (top directories by file count).',
+    'Use without a query to browse the top-level directories of a silo (ordered by depth then file count).',
+    'Results are capped at maxResults — increase it if you need to see more top-level directories.',
     'Use with a query to find directories by name or path.',
     '',
     'Search presets (controls how signals are weighted):',
@@ -300,7 +301,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       silo: z.string().optional().describe('Restrict to a specific silo name (omit to explore all)'),
       startPath: z.string().optional().describe('Filter to directories under this path'),
       maxDepth: z.number().min(1).max(5).optional().describe('Depth of directory tree expansion (default: 2)'),
-      maxResults: z.number().min(1).max(20).optional().describe('Maximum directory results to return (default: 10)'),
+      maxResults: z.number().min(1).max(50).optional().describe('Maximum directory results to return (default: 20). Increase when browsing without a query to see more top-level directories.'),
       preset: z.enum(['balanced', 'semantic', 'keyword', 'code']).optional()
         .describe('Search weight preset (default: balanced). Use "code" for path-heavy, "semantic" for conceptual queries.'),
     },
@@ -311,7 +312,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           silo,
           startPath,
           maxDepth: maxDepth ?? 2,
-          maxResults: maxResults ?? 10,
+          maxResults: maxResults ?? 20,
           preset,
         });
 

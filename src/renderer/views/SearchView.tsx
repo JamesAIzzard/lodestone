@@ -719,7 +719,7 @@ function DirectoryTreeNodeRow({ node, isLast }: { node: DirectoryTreeNode; isLas
         <Folder className="h-3 w-3 shrink-0 text-muted-foreground/50" />
         <span className="text-xs text-muted-foreground">{node.name}/</span>
         <span className="text-[10px] text-muted-foreground/30">
-          {node.fileCount} file{node.fileCount !== 1 ? 's' : ''}
+          {node.fileCount} file{node.fileCount !== 1 ? 's' : ''} · {node.subdirCount} dir{node.subdirCount !== 1 ? 's' : ''}
         </span>
       </div>
       {node.children.length > 0 && (

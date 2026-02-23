@@ -48,7 +48,7 @@ export function directorySearchSilo(
     query,
     startPath,
     maxDepth = 2,
-    maxResults = 5,
+    maxResults = 20,
     weights = DEFAULT_EXPLORE_WEIGHTS,
   } = params;
 
@@ -227,14 +227,14 @@ function broadQueryFallback(
       SELECT id, dir_path, dir_name, depth, file_count, subdir_count
       FROM directories
       WHERE dir_path LIKE ? || '%'
-      ORDER BY file_count DESC
+      ORDER BY depth ASC, file_count DESC
       LIMIT ?
     `).all(startPath, fetchLimit);
   } else {
     rows = db.prepare(`
       SELECT id, dir_path, dir_name, depth, file_count, subdir_count
       FROM directories
-      ORDER BY file_count DESC
+      ORDER BY depth ASC, file_count DESC
       LIMIT ?
     `).all(fetchLimit);
   }
@@ -296,7 +296,7 @@ function deduplicateAncestors(
  * Expand a directory's children tree to maxDepth levels below the root.
  * Queries the directories table and assembles into a nested tree.
  */
-function expandTree(
+export function expandTree(
   db: SiloDatabase,
   rootPath: string,
   rootDepth: number,

@@ -137,7 +137,7 @@ export interface SearchResult {
 export interface DirectoryTreeNode {
   /** Leaf directory name */
   name: string;
-  /** Full relative path (stored-key style, e.g. "0:src/backend/chunkers/") */
+  /** Absolute filesystem path of this directory */
   path: string;
   /** Files directly in this directory */
   fileCount: number;
@@ -148,7 +148,7 @@ export interface DirectoryTreeNode {
 }
 
 export interface DirectoryResult {
-  /** Full relative path of the matched directory */
+  /** Absolute filesystem path of the matched directory */
   dirPath: string;
   /** Leaf directory name */
   dirName: string;

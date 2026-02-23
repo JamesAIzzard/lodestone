@@ -267,7 +267,7 @@ export class InternalApi {
     const silo = params.silo as string | undefined;
     const startPath = params.startPath as string | undefined;
     const maxDepth = (params.maxDepth as number) ?? 2;
-    const maxResults = (params.maxResults as number) ?? 10;
+    const maxResults = (params.maxResults as number) ?? 20;
     const preset = params.preset as string | undefined;
 
     // Notify renderer that an MCP explore is happening

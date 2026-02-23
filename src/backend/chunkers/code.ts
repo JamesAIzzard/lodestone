@@ -308,8 +308,6 @@ function parseAndChunk(
         endLine: seg.endLine + metadataLineCount,
         metadata,
         contentHash: hashText(text),
-        headingDepth: 0,
-        tagsText: '',
       });
     } else {
       // Sub-split oversized definitions on line boundaries.
@@ -326,8 +324,6 @@ function parseAndChunk(
           endLine: seg.endLine + metadataLineCount,
           metadata,
           contentHash: hashText(sub),
-          headingDepth: 0,
-          tagsText: '',
         });
       }
     }

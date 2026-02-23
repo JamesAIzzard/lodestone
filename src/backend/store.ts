@@ -1,11 +1,9 @@
 /**
- * Per-silo vector store using SQLite + sqlite-vec + FTS5.
+ * Per-silo vector store using SQLite + sqlite-vec.
  *
  * Each silo has its own SQLite database file with:
- *   - `chunks` table for chunk data (with heading_depth and tags_text columns)
- *   - `chunks_fts` FTS5 virtual table for BM25 keyword search (unicode61)
- *   - `chunks_trigram` FTS5 virtual table for trigram substring search
- *   - `chunks_meta_fts` FTS5 virtual table for tags/metadata keyword search
+ *   - `chunks` table for chunk data
+ *   - `terms` / `postings` tables for hand-rolled BM25 scoring
  *   - `files` table tracking indexed file paths and basenames
  *   - `files_fts` FTS5 virtual table for filepath/filename trigram search
  *   - `vec_chunks` sqlite-vec virtual table for vector similarity search
@@ -21,8 +19,6 @@ import * as sqliteVec from 'sqlite-vec';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ChunkRecord } from './pipeline-types';
-import type { SearchWeights, ScoreBreakdown, ScoreSource } from '../shared/types';
-import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import { tokenise } from './tokeniser';
 import { scoreBm25 } from './scorers/bm25';
 import { scoreFilenames } from './scorers/filename';
@@ -115,48 +111,12 @@ export function resolveStoredKey(storedKey: string, directories: string[]): stri
   return path.join(directories[dirIndex], relPath);
 }
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
-export type MatchType = 'semantic' | 'keyword' | 'both';
-
-export interface SiloSearchResultChunk {
-  sectionPath: string[];
-  text: string;
-  startLine: number;
-  endLine: number;
-  score: number;
-  /** Whether this chunk was found by semantic, keyword, or both search paths */
-  matchType: MatchType;
-  /** Cosine similarity to the query (0 for keyword-only chunks) */
-  cosineSimilarity: number;
-  /** Per-signal score breakdown */
-  breakdown: ScoreBreakdown;
-}
-
-export interface SiloSearchResult {
-  filePath: string;
-  score: number;
-  /** Whether the file's score was driven by a filename/path match or content signals */
-  scoreSource: ScoreSource;
-  matchType: MatchType;
-  chunks: SiloSearchResultChunk[];
-  /** Best raw cosine similarity (0–1) among the file's vector-matched chunks. */
-  bestCosineSimilarity: number;
-  /** The search weights used for this result */
-  weights: SearchWeights;
-  /** Best chunk's score breakdown */
-  breakdown: ScoreBreakdown;
-}
-
 export type SiloDatabase = Database.Database;
 
 // ── Search Constants ─────────────────────────────────────────────────────────
 
-/** Reciprocal Rank Fusion smoothing constant (standard default from Cormack et al. 2009). */
-export const RRF_K = 60;
-
 /** Candidate fan-out: retrieve this many × maxResults chunks before aggregating by file. */
-export const CHUNK_FANOUT = 5;
+const CHUNK_FANOUT = 5;
 
 /** Maximum chunks returned per file in search results. */
 export const MAX_CHUNKS_PER_FILE = 5;
@@ -232,8 +192,6 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
       end_line      INTEGER NOT NULL,
       metadata      TEXT    NOT NULL DEFAULT '{}',
       content_hash  TEXT    NOT NULL,
-      heading_depth INTEGER NOT NULL DEFAULT 0,
-      tags_text     TEXT    NOT NULL DEFAULT '',
       token_count   INTEGER NOT NULL DEFAULT 0
     );
 
@@ -245,25 +203,10 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
       file_name TEXT NOT NULL
     );
 
-    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-      text,
-      content=chunks,
-      content_rowid=id
-    );
-
-    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_trigram USING fts5(
-      text,
-      tokenize='trigram'
-    );
-
     CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
       file_path,
       file_name,
       tokenize='trigram'
-    );
-
-    CREATE VIRTUAL TABLE IF NOT EXISTS chunks_meta_fts USING fts5(
-      tags_text
     );
 
     CREATE TABLE IF NOT EXISTS directories (
@@ -304,20 +247,6 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
   `);
 
   // Add new columns to existing databases that predate this schema version.
-  const hasHeadingDepth = db.prepare(
-    `SELECT 1 FROM pragma_table_info('chunks') WHERE name='heading_depth'`,
-  ).get();
-  if (!hasHeadingDepth) {
-    db.exec(`ALTER TABLE chunks ADD COLUMN heading_depth INTEGER NOT NULL DEFAULT 0`);
-  }
-
-  const hasTagsText = db.prepare(
-    `SELECT 1 FROM pragma_table_info('chunks') WHERE name='tags_text'`,
-  ).get();
-  if (!hasTagsText) {
-    db.exec(`ALTER TABLE chunks ADD COLUMN tags_text TEXT NOT NULL DEFAULT ''`);
-  }
-
   const hasTokenCount = db.prepare(
     `SELECT 1 FROM pragma_table_info('chunks') WHERE name='token_count'`,
   ).get();
@@ -368,42 +297,26 @@ function upsertFileInner(
   embeddings: number[][],
   mtimeMs?: number,
 ): void {
-  // 1. Fetch existing chunks for FTS5 sync (external content requires old text for delete)
-  const existingRows = db.prepare(
-    `SELECT id, text FROM chunks WHERE file_path = ?`,
-  ).all(filePath) as Array<{ id: number; text: string }>;
+  // 1. Fetch existing chunk IDs for cleanup
+  const existingIds = db.prepare(
+    `SELECT id FROM chunks WHERE file_path = ?`,
+  ).all(filePath) as Array<{ id: number }>;
 
-  // 2. Remove from chunks_fts (external content: must supply old values)
-  const ftsDelete = db.prepare(
-    `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
-  );
-  for (const row of existingRows) {
-    ftsDelete.run(row.id, row.text);
+  // 2. Remove from inverted index (postings + terms.doc_freq)
+  if (existingIds.length > 0) {
+    removeFromInvertedIndex(db, existingIds.map((r) => r.id));
   }
 
-  // 3. Remove from contentless FTS5 tables (chunks_trigram, chunks_meta_fts)
-  const trigramDelete = db.prepare(`DELETE FROM chunks_trigram WHERE rowid = ?`);
-  const metaFtsDelete = db.prepare(`DELETE FROM chunks_meta_fts WHERE rowid = ?`);
-  for (const row of existingRows) {
-    trigramDelete.run(row.id);
-    metaFtsDelete.run(row.id);
-  }
-
-  // 3b. Remove from inverted index (postings + terms.doc_freq)
-  if (existingRows.length > 0) {
-    removeFromInvertedIndex(db, existingRows.map((r) => r.id));
-  }
-
-  // 4. Remove from vec_chunks
+  // 3. Remove from vec_chunks
   const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
-  for (const row of existingRows) {
+  for (const row of existingIds) {
     vecDelete.run(row.id);
   }
 
-  // 5. Remove from chunks
+  // 4. Remove from chunks
   db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
 
-  // 6. Ensure file entry exists in files table (insert once per unique path)
+  // 5. Ensure file entry exists in files table (insert once per unique path)
   const fileResult = db.prepare(
     `INSERT OR IGNORE INTO files (file_path, file_name) VALUES (?, ?)`,
   ).run(filePath, fileBasename(filePath));
@@ -413,25 +326,16 @@ function upsertFileInner(
       .run(fileRow.id, filePath, fileBasename(filePath));
   }
 
-  // 7. Insert new chunks
+  // 6. Insert new chunks
   //    Insert into vec_chunks first (auto-assigns rowid), then use that
-  //    rowid as the explicit id in the chunks and FTS5 tables.
+  //    rowid as the explicit id in the chunks table.
   const insertVec = db.prepare(
     `INSERT INTO vec_chunks(embedding) VALUES (?)`,
   );
   const insertChunk = db.prepare(`
-    INSERT INTO chunks (id, file_path, chunk_index, section_path, text, start_line, end_line, metadata, content_hash, heading_depth, tags_text)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO chunks (id, file_path, chunk_index, section_path, text, start_line, end_line, metadata, content_hash, token_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const insertFts = db.prepare(
-    `INSERT INTO chunks_fts(rowid, text) VALUES (?, ?)`,
-  );
-  const insertTrigram = db.prepare(
-    `INSERT INTO chunks_trigram(rowid, text) VALUES (?, ?)`,
-  );
-  const insertMetaFts = db.prepare(
-    `INSERT INTO chunks_meta_fts(rowid, tags_text) VALUES (?, ?)`,
-  );
 
   const insertPosting = db.prepare(
     `INSERT OR REPLACE INTO postings (term, chunk_id, term_freq) VALUES (?, ?, ?)`,
@@ -457,17 +361,8 @@ function upsertFileInner(
       chunk.endLine,
       JSON.stringify(chunk.metadata),
       chunk.contentHash,
-      chunk.headingDepth,
-      chunk.tagsText,
+      tokenCount,
     );
-    // Store token count on the chunk row
-    db.prepare(`UPDATE chunks SET token_count = ? WHERE id = ?`).run(tokenCount, rowid);
-
-    insertFts.run(rowid, chunk.text);
-    insertTrigram.run(rowid, chunk.text);
-    if (chunk.tagsText) {
-      insertMetaFts.run(rowid, chunk.tagsText);
-    }
 
     // Build inverted index: compute term frequencies and write postings
     const termFreqs = new Map<string, number>();
@@ -487,7 +382,7 @@ function upsertFileInner(
     db.prepare(`INSERT OR REPLACE INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`).run(filePath, mtimeMs);
   }
 
-  // 8. Maintain directories table (insert new dirs, recompute counts)
+  // 7. Maintain directories table (insert new dirs, recompute counts)
   maintainDirectoriesOnUpsert(db, filePath);
 }
 
@@ -495,31 +390,17 @@ function upsertFileInner(
  * Inner delete logic — runs inside a caller-provided transaction.
  */
 function deleteFileInner(db: SiloDatabase, filePath: string, deleteMtimeEntry?: boolean): void {
-  const existingRows = db.prepare(
-    `SELECT id, text FROM chunks WHERE file_path = ?`,
-  ).all(filePath) as Array<{ id: number; text: string }>;
-
-  const ftsDelete = db.prepare(
-    `INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete', ?, ?)`,
-  );
-  for (const row of existingRows) {
-    ftsDelete.run(row.id, row.text);
-  }
-
-  const trigramDelete = db.prepare(`DELETE FROM chunks_trigram WHERE rowid = ?`);
-  const metaFtsDelete = db.prepare(`DELETE FROM chunks_meta_fts WHERE rowid = ?`);
-  for (const row of existingRows) {
-    trigramDelete.run(row.id);
-    metaFtsDelete.run(row.id);
-  }
+  const existingIds = db.prepare(
+    `SELECT id FROM chunks WHERE file_path = ?`,
+  ).all(filePath) as Array<{ id: number }>;
 
   // Remove from inverted index (postings + terms.doc_freq)
-  if (existingRows.length > 0) {
-    removeFromInvertedIndex(db, existingRows.map((r) => r.id));
+  if (existingIds.length > 0) {
+    removeFromInvertedIndex(db, existingIds.map((r) => r.id));
   }
 
   const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
-  for (const row of existingRows) {
+  for (const row of existingIds) {
     vecDelete.run(row.id);
   }
 
@@ -600,314 +481,7 @@ export function flushPreparedFiles(
   })();
 }
 
-// ── Search ───────────────────────────────────────────────────────────────────
-
-/**
- * Search the silo database with a query vector (vector-only search).
- * Results are aggregated by file — each file's score is its best chunk score.
- */
-export function searchSilo(
-  db: SiloDatabase,
-  queryVector: number[],
-  maxResults: number = 10,
-): SiloSearchResult[] {
-  const chunkLimit = maxResults * CHUNK_FANOUT;
-
-  const rows = db.prepare(`
-    SELECT c.id, c.file_path, c.chunk_index, c.section_path, c.text,
-           c.start_line, c.end_line, c.metadata, c.content_hash, v.distance
-    FROM vec_chunks v
-    JOIN chunks c ON c.id = v.rowid
-    WHERE v.embedding MATCH ?
-      AND k = ?
-    ORDER BY v.distance
-  `).all(float32Buffer(queryVector), chunkLimit) as Array<{
-    id: number;
-    file_path: string;
-    chunk_index: number;
-    section_path: string;
-    text: string;
-    start_line: number;
-    end_line: number;
-    metadata: string;
-    content_hash: string;
-    distance: number;
-  }>;
-
-  return aggregateByFile(rows, maxResults);
-}
-
-/**
- * Hybrid search: combines 5 signals via Reciprocal Rank Fusion (RRF).
- *
- * Signals:
- *   1. Semantic   — sqlite-vec cosine similarity (vector search)
- *   2. BM25       — FTS5 unicode61 full-text keyword search
- *   3. Trigram    — FTS5 trigram substring search on chunk text
- *   4. Filepath   — FTS5 trigram search on file_path + file_name
- *   5. Tags       — FTS5 unicode61 search on tags/metadata text
- *
- * BM25 and trigram contributions are boosted by heading depth:
- *   boost = depth === 0 ? 1.0 : 1.0 + 0.1 * (7 - depth)
- *   (h1 → 1.6×, h2 → 1.5×, ..., h6 → 1.1×, no heading → 1.0×)
- */
-export function hybridSearchSilo(
-  db: SiloDatabase,
-  queryVector: number[],
-  queryText: string,
-  maxResults: number = 10,
-  weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS,
-  startPath?: string,
-): SiloSearchResult[] {
-  const chunkLimit = maxResults * CHUNK_FANOUT;
-  const k = RRF_K;
-  const w = normalizeWeights(weights);
-
-  // 1. Semantic: sqlite-vec cosine search
-  const vecRows = db.prepare(`
-    SELECT v.rowid, v.distance
-    FROM vec_chunks v
-    WHERE v.embedding MATCH ?
-      AND k = ?
-    ORDER BY v.distance
-  `).all(float32Buffer(queryVector), chunkLimit) as Array<{ rowid: number; distance: number }>;
-
-  // 2. BM25: FTS5 unicode61 full-text search
-  const sanitisedBm25 = sanitiseFtsQuery(queryText);
-  let bm25Rows: Array<{ rowid: number; rank: number }> = [];
-  if (sanitisedBm25.length > 0) {
-    try {
-      bm25Rows = db.prepare(`
-        SELECT rowid, rank FROM chunks_fts
-        WHERE chunks_fts MATCH ?
-        ORDER BY rank LIMIT ?
-      `).all(sanitisedBm25, chunkLimit) as Array<{ rowid: number; rank: number }>;
-    } catch {
-      // FTS5 query syntax error — skip signal
-    }
-  }
-
-  // 3. Trigram: FTS5 trigram substring search on chunk text
-  const sanitisedTrigram = sanitiseTrigramQuery(queryText);
-  let trigramRows: Array<{ rowid: number; rank: number }> = [];
-  if (sanitisedTrigram.length > 0) {
-    try {
-      trigramRows = db.prepare(`
-        SELECT rowid, rank FROM chunks_trigram
-        WHERE chunks_trigram MATCH ?
-        ORDER BY rank LIMIT ?
-      `).all(sanitisedTrigram, chunkLimit) as Array<{ rowid: number; rank: number }>;
-    } catch {
-      // Trigram query error — skip signal
-    }
-  }
-
-  // 4. Filepath/filename: FTS5 trigram search ordered by relevance.
-  //    Each matched file gets a 1-based rank; all chunks from that file inherit
-  //    the file's rank so a strong filename match boosts every chunk equally,
-  //    letting the content signals (semantic, BM25) pick the best chunk within it.
-  const filepathFileRanks = new Map<string, number>(); // file_path → 1-based file rank
-  if (sanitisedTrigram.length > 0) {
-    try {
-      const matchingFiles = db.prepare(`
-        SELECT f.file_path FROM files f
-        JOIN files_fts ON files_fts.rowid = f.id
-        WHERE files_fts MATCH ?
-        ORDER BY files_fts.rank
-        LIMIT ?
-      `).all(sanitisedTrigram, chunkLimit) as Array<{ file_path: string }>;
-
-      for (let i = 0; i < matchingFiles.length; i++) {
-        filepathFileRanks.set(matchingFiles[i].file_path, i + 1);
-      }
-    } catch {
-      // Skip filepath signal on error
-    }
-  }
-
-  // 5. Tags/metadata: FTS5 unicode61 search on tags_text
-  let tagsRows: Array<{ rowid: number; rank: number }> = [];
-  if (sanitisedBm25.length > 0) {
-    try {
-      tagsRows = db.prepare(`
-        SELECT rowid, rank FROM chunks_meta_fts
-        WHERE chunks_meta_fts MATCH ?
-        ORDER BY rank LIMIT ?
-      `).all(sanitisedBm25, chunkLimit) as Array<{ rowid: number; rank: number }>;
-    } catch {
-      // Skip tags signal on error
-    }
-  }
-
-  // Build rank maps (1-based) and raw score maps
-  const cosineSims = new Map<number, number>();
-  const vecRankMap = new Map<number, number>();
-  const vecRawScores = new Map<number, number>();
-  for (let i = 0; i < vecRows.length; i++) {
-    const cosine = 1 - vecRows[i].distance / 2;
-    cosineSims.set(vecRows[i].rowid, cosine);
-    vecRankMap.set(vecRows[i].rowid, i + 1);
-    vecRawScores.set(vecRows[i].rowid, cosine);
-  }
-
-  const bm25RankMap = new Map<number, number>();
-  const bm25RawScores = new Map<number, number>();
-  for (let i = 0; i < bm25Rows.length; i++) {
-    bm25RankMap.set(bm25Rows[i].rowid, i + 1);
-    bm25RawScores.set(bm25Rows[i].rowid, bm25Rows[i].rank);
-  }
-
-  const trigramRankMap = new Map<number, number>();
-  const trigramRawScores = new Map<number, number>();
-  for (let i = 0; i < trigramRows.length; i++) {
-    trigramRankMap.set(trigramRows[i].rowid, i + 1);
-    trigramRawScores.set(trigramRows[i].rowid, trigramRows[i].rank);
-  }
-
-  // Filepath signal: fetch all chunks from filepath-matched files and assign each
-  // chunk its file's rank. Chunks from the best-matching file all get rank 1, so
-  // the filepath signal correctly represents "this file's name/path matches",
-  // rather than unfairly penalising later chunks within the same file.
-  const filepathRankMap = new Map<number, number>();
-  if (filepathFileRanks.size > 0) {
-    try {
-      const filePaths = Array.from(filepathFileRanks.keys());
-      const placeholders = filePaths.map(() => '?').join(',');
-      const chunkRows = db.prepare(
-        `SELECT id, file_path FROM chunks WHERE file_path IN (${placeholders})`,
-      ).all(...filePaths) as Array<{ id: number; file_path: string }>;
-      for (const { id, file_path } of chunkRows) {
-        const fileRank = filepathFileRanks.get(file_path);
-        if (fileRank !== undefined) filepathRankMap.set(id, fileRank);
-      }
-    } catch {
-      // Skip on error
-    }
-  }
-
-  const tagsRankMap = new Map<number, number>();
-  const tagsRawScores = new Map<number, number>();
-  for (let i = 0; i < tagsRows.length; i++) {
-    tagsRankMap.set(tagsRows[i].rowid, i + 1);
-    tagsRawScores.set(tagsRows[i].rowid, tagsRows[i].rank);
-  }
-
-  // Union of all chunk IDs
-  const allIds = new Set([
-    ...vecRankMap.keys(),
-    ...bm25RankMap.keys(),
-    ...trigramRankMap.keys(),
-    ...filepathRankMap.keys(),
-    ...tagsRankMap.keys(),
-  ]);
-
-  if (allIds.size === 0) return [];
-
-  // Fetch heading_depth for all candidate chunks (needed for boosting BM25/trigram)
-  db.exec(`CREATE TEMP TABLE IF NOT EXISTS _hybrid_ids (id INTEGER PRIMARY KEY)`);
-  db.exec(`DELETE FROM _hybrid_ids`);
-  const insertHybridId = db.prepare(`INSERT OR IGNORE INTO _hybrid_ids (id) VALUES (?)`);
-  for (const id of allIds) {
-    insertHybridId.run(id);
-  }
-  const headingDepthRows = db.prepare(`
-    SELECT c.id, c.heading_depth FROM chunks c
-    JOIN _hybrid_ids h ON h.id = c.id
-  `).all() as Array<{ id: number; heading_depth: number }>;
-  const headingDepths = new Map<number, number>();
-  for (const row of headingDepthRows) {
-    headingDepths.set(row.id, row.heading_depth);
-  }
-
-  // Compute RRF scores per chunk, applying heading depth boost to BM25 and trigram.
-  // contentRrf excludes the filepath signal so we can compute file-level scores
-  // independently from content signals (see aggregateByFileRrf for usage).
-  const penaltyRank = chunkLimit + 1;
-  const rrfScores = new Map<number, number>();
-  const contentRrfScores = new Map<number, number>();
-  const breakdowns = new Map<number, ScoreBreakdown>();
-
-  for (const id of allIds) {
-    const depth = headingDepths.get(id) ?? 0;
-    const headingBoost = depth === 0 ? 1.0 : 1.0 + 0.1 * (7 - depth);
-
-    const vecRank = vecRankMap.get(id) ?? penaltyRank;
-    const bm25Rank = bm25RankMap.get(id) ?? penaltyRank;
-    const trigramRank = trigramRankMap.get(id) ?? penaltyRank;
-    const filepathRank = filepathRankMap.get(id) ?? penaltyRank;
-    const tagsRank = tagsRankMap.get(id) ?? penaltyRank;
-
-    const semanticContrib = w.semantic / (k + vecRank);
-    const bm25Contrib = (w.bm25 / (k + bm25Rank)) * headingBoost;
-    const trigramContrib = (w.trigram / (k + trigramRank)) * headingBoost;
-    const filepathContrib = w.filepath / (k + filepathRank);
-    const tagsContrib = w.tags / (k + tagsRank);
-
-    const contentRrf = semanticContrib + bm25Contrib + trigramContrib + tagsContrib;
-    const rrf = contentRrf + filepathContrib;
-    rrfScores.set(id, rrf);
-    contentRrfScores.set(id, contentRrf);
-    breakdowns.set(id, {
-      semantic:  { rank: vecRankMap.get(id) ?? 0,      rawScore: vecRawScores.get(id) ?? 0,      rrfContribution: semanticContrib },
-      bm25:      { rank: bm25RankMap.get(id) ?? 0,     rawScore: bm25RawScores.get(id) ?? 0,     rrfContribution: bm25Contrib },
-      trigram:   { rank: trigramRankMap.get(id) ?? 0,  rawScore: trigramRawScores.get(id) ?? 0,  rrfContribution: trigramContrib },
-      filepath:  { rank: filepathRankMap.get(id) ?? 0, rawScore: 0,                              rrfContribution: filepathContrib },
-      tags:      { rank: tagsRankMap.get(id) ?? 0,     rawScore: tagsRawScores.get(id) ?? 0,     rrfContribution: tagsContrib },
-    });
-  }
-
-  // Sort by RRF score descending, take top chunks
-  const sortedIds = Array.from(rrfScores.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, chunkLimit)
-    .map(([id]) => id);
-
-  if (sortedIds.length === 0) return [];
-
-  // Fetch chunk data for the top IDs using the existing temp table
-  db.exec(`DELETE FROM _hybrid_ids`);
-  for (const id of sortedIds) {
-    insertHybridId.run(id);
-  }
-
-  let rows = db.prepare(`
-    SELECT c.id, c.file_path, c.section_path, c.text,
-           c.start_line, c.end_line
-    FROM chunks c
-    JOIN _hybrid_ids h ON h.id = c.id
-  `).all() as Array<{
-    id: number;
-    file_path: string;
-    section_path: string;
-    text: string;
-    start_line: number;
-    end_line: number;
-  }>;
-
-  // Filter to startPath prefix if specified (stored-key prefix match)
-  if (startPath) {
-    rows = rows.filter((r) => r.file_path.startsWith(startPath));
-    if (rows.length === 0) return [];
-  }
-
-  return aggregateByFileRrf(
-    rows,
-    maxResults,
-    vecRankMap,
-    bm25RankMap,
-    trigramRankMap,
-    filepathRankMap,
-    tagsRankMap,
-    cosineSims,
-    rrfScores,
-    contentRrfScores,
-    breakdowns,
-    weights,
-    k,
-  );
-}
-
-// ── Two-Axis Search ─────────────────────────────────────────────────────────
+// ── Search ─────────────────────────────────────────────────────────
 
 export interface TwoAxisChunkScore {
   /** Cosine similarity to query vector (0 if chunk not in semantic results). */
@@ -1479,243 +1053,3 @@ export function syncDirectoriesWithDisk(
   })();
 }
 
-/**
- * Sanitise a user query for FTS5 unicode61 MATCH.
- * Wraps each term in double quotes for safe phrase matching.
- */
-function sanitiseFtsQuery(query: string): string {
-  return query
-    .replace(/"/g, '""')
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((term) => `"${term}"`)
-    .join(' ');
-}
-
-/**
- * Sanitise a user query for FTS5 trigram MATCH.
- * Trigram requires terms of at least 3 characters; shorter terms are dropped.
- * Each qualifying term is wrapped in double quotes.
- */
-function sanitiseTrigramQuery(query: string): string {
-  return query
-    .replace(/"/g, '""')
-    .split(/\s+/)
-    .filter((term) => term.length >= 3)
-    .map((term) => `"${term}"`)
-    .join(' ');
-}
-
-/**
- * Normalise search weights so they sum to 1.0.
- * Falls back to DEFAULT_SEARCH_WEIGHTS if all weights are zero.
- */
-function normalizeWeights(weights: SearchWeights): SearchWeights {
-  const total = weights.semantic + weights.bm25 + weights.trigram + weights.filepath + weights.tags;
-  if (total === 0) return DEFAULT_SEARCH_WEIGHTS;
-  if (Math.abs(total - 1.0) < 1e-6) return weights;
-  return {
-    semantic: weights.semantic / total,
-    bm25: weights.bm25 / total,
-    trigram: weights.trigram / total,
-    filepath: weights.filepath / total,
-    tags: weights.tags / total,
-  };
-}
-
-/**
- * Aggregate vector search rows by file (for searchSilo).
- * Converts cosine distance to similarity score (higher = better).
- */
-function aggregateByFile(
-  rows: Array<{
-    id: number;
-    file_path: string;
-    section_path: string;
-    text: string;
-    start_line: number;
-    end_line: number;
-    distance: number;
-  }>,
-  maxResults: number,
-): SiloSearchResult[] {
-  const zeroBreakdown: ScoreBreakdown = {
-    semantic:  { rank: 0, rawScore: 0, rrfContribution: 0 },
-    bm25:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-    trigram:   { rank: 0, rawScore: 0, rrfContribution: 0 },
-    filepath:  { rank: 0, rawScore: 0, rrfContribution: 0 },
-    tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-  };
-
-  const fileMap = new Map<string, { bestScore: number; chunks: SiloSearchResultChunk[] }>();
-
-  for (const row of rows) {
-    const score = 1 - row.distance / 2;
-    const sectionPath: string[] = JSON.parse(row.section_path);
-    const chunk: SiloSearchResultChunk = {
-      sectionPath,
-      text: row.text,
-      startLine: row.start_line,
-      endLine: row.end_line,
-      score,
-      matchType: 'semantic',
-      cosineSimilarity: score,
-      breakdown: { ...zeroBreakdown, semantic: { rank: 1, rawScore: score, rrfContribution: score } },
-    };
-
-    const existing = fileMap.get(row.file_path);
-    if (existing) {
-      existing.chunks.push(chunk);
-      if (score > existing.bestScore) existing.bestScore = score;
-    } else {
-      fileMap.set(row.file_path, { bestScore: score, chunks: [chunk] });
-    }
-  }
-
-  for (const entry of fileMap.values()) {
-    entry.chunks.sort((a, b) => b.score - a.score);
-    if (entry.chunks.length > MAX_CHUNKS_PER_FILE) entry.chunks.length = MAX_CHUNKS_PER_FILE;
-  }
-
-  return Array.from(fileMap.entries())
-    .map(([filePath, { bestScore, chunks }]) => ({
-      filePath,
-      score: bestScore,
-      scoreSource: 'content' as ScoreSource,
-      matchType: 'semantic' as MatchType,
-      bestCosineSimilarity: bestScore,
-      chunks,
-      weights: DEFAULT_SEARCH_WEIGHTS,
-      breakdown: chunks[0]?.breakdown ?? zeroBreakdown,
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, maxResults);
-}
-
-/**
- * Aggregate hybrid search rows by file.
- * RRF scores and breakdowns are already computed.
- */
-function aggregateByFileRrf(
-  rows: Array<{
-    id: number;
-    file_path: string;
-    section_path: string;
-    text: string;
-    start_line: number;
-    end_line: number;
-  }>,
-  maxResults: number,
-  vecRankMap: Map<number, number>,
-  bm25RankMap: Map<number, number>,
-  trigramRankMap: Map<number, number>,
-  filepathRankMap: Map<number, number>,
-  tagsRankMap: Map<number, number>,
-  cosineSims: Map<number, number>,
-  rrfScores: Map<number, number>,
-  contentRrfScores: Map<number, number>,
-  breakdowns: Map<number, ScoreBreakdown>,
-  weights: SearchWeights,
-  k: number,
-): SiloSearchResult[] {
-  const zeroBreakdown: ScoreBreakdown = {
-    semantic:  { rank: 0, rawScore: 0, rrfContribution: 0 },
-    bm25:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-    trigram:   { rank: 0, rawScore: 0, rrfContribution: 0 },
-    filepath:  { rank: 0, rawScore: 0, rrfContribution: 0 },
-    tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-  };
-
-  const fileMap = new Map<string, {
-    bestContentScore: number;
-    bestFilepathRank: number;   // 1-based; 0 = no filepath match
-    bestCosineSim: number;
-    bestBreakdown: ScoreBreakdown;
-    hasVec: boolean;
-    hasFts: boolean;
-    chunks: SiloSearchResultChunk[];
-  }>();
-
-  for (const row of rows) {
-    const sectionPath: string[] = JSON.parse(row.section_path);
-    const inVec = vecRankMap.has(row.id);
-    const inFts = bm25RankMap.has(row.id) || trigramRankMap.has(row.id) || filepathRankMap.has(row.id) || tagsRankMap.has(row.id);
-    const cosineSim = cosineSims.get(row.id) ?? 0;
-    const rrfScore = rrfScores.get(row.id) ?? 0;
-    const contentScore = contentRrfScores.get(row.id) ?? 0;
-    const breakdown = breakdowns.get(row.id) ?? zeroBreakdown;
-    const chunkFilepathRank = filepathRankMap.get(row.id) ?? 0;
-
-    let chunkMatchType: MatchType = 'semantic';
-    if (inVec && inFts) chunkMatchType = 'both';
-    else if (inFts && !inVec) chunkMatchType = 'keyword';
-
-    const chunk: SiloSearchResultChunk = {
-      sectionPath,
-      text: row.text,
-      startLine: row.start_line,
-      endLine: row.end_line,
-      score: rrfScore,
-      matchType: chunkMatchType,
-      cosineSimilarity: cosineSim,
-      breakdown,
-    };
-
-    const existing = fileMap.get(row.file_path);
-    if (existing) {
-      existing.chunks.push(chunk);
-      if (contentScore > existing.bestContentScore) {
-        existing.bestContentScore = contentScore;
-        existing.bestBreakdown = breakdown;
-      }
-      if (cosineSim > existing.bestCosineSim) existing.bestCosineSim = cosineSim;
-      if (chunkFilepathRank > 0 && (existing.bestFilepathRank === 0 || chunkFilepathRank < existing.bestFilepathRank)) {
-        existing.bestFilepathRank = chunkFilepathRank;
-      }
-      if (inVec) existing.hasVec = true;
-      if (inFts) existing.hasFts = true;
-    } else {
-      fileMap.set(row.file_path, {
-        bestContentScore: contentScore,
-        bestFilepathRank: chunkFilepathRank,
-        bestCosineSim: cosineSim,
-        bestBreakdown: breakdown,
-        hasVec: inVec,
-        hasFts: inFts,
-        chunks: [chunk],
-      });
-    }
-  }
-
-  for (const entry of fileMap.values()) {
-    entry.chunks.sort((a, b) => b.score - a.score);
-    if (entry.chunks.length > MAX_CHUNKS_PER_FILE) entry.chunks.length = MAX_CHUNKS_PER_FILE;
-  }
-
-  return Array.from(fileMap.entries())
-    .map(([filePath, { bestContentScore, bestFilepathRank, bestCosineSim, bestBreakdown, hasVec, hasFts, chunks }]) => {
-      // Filepath signal treated as an independent composite: if the filename is a
-      // strong match, the file should surface even if content signals are weak.
-      // Filepath score uses weight 1.0 (sole signal), so it's directly comparable
-      // to the content-only composite (which also sums to ~1.0 across its signals).
-      const filepathScore = bestFilepathRank > 0 ? 1.0 / (k + bestFilepathRank) : 0;
-      const scoreSource: ScoreSource = filepathScore > bestContentScore ? 'filename' : 'content';
-      const score = Math.max(bestContentScore, filepathScore);
-
-      let matchType: MatchType = 'semantic';
-      if (hasVec && hasFts) matchType = 'both';
-      else if (hasFts && !hasVec) matchType = 'keyword';
-      return {
-        filePath,
-        score,
-        scoreSource,
-        matchType,
-        bestCosineSimilarity: bestCosineSim,
-        chunks,
-        weights,
-        breakdown: bestBreakdown,
-      };
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, maxResults);
-}

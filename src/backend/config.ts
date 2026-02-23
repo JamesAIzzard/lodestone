@@ -10,7 +10,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveModelAlias, DEFAULT_MODEL } from './model-registry';
 import { validateSiloColor, validateSiloIcon, type SiloColor, type SiloIconName } from '../shared/silo-appearance';
-// SearchWeights import removed — two-axis model has no configurable weights
 
 // ── Config Types ─────────────────────────────────────────────────────────────
 

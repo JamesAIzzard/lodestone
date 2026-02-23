@@ -47,59 +47,6 @@ export interface SiloStatus {
   resolvedModel: string;
 }
 
-// ── Search Weights ────────────────────────────────────────────────────────────
-
-export interface SearchWeights {
-  semantic: number;
-  bm25: number;
-  trigram: number;
-  filepath: number;
-  tags: number;
-}
-
-export const DEFAULT_SEARCH_WEIGHTS: SearchWeights = {
-  semantic: 0.35,
-  bm25: 0.25,
-  trigram: 0.15,
-  filepath: 0.15,
-  tags: 0.10,
-};
-
-export type SearchPreset = 'balanced' | 'semantic' | 'keyword' | 'code';
-
-export const SEARCH_PRESETS: Record<SearchPreset, SearchWeights> = {
-  balanced: DEFAULT_SEARCH_WEIGHTS,
-  semantic: { semantic: 0.90, bm25: 0.04, trigram: 0.03, filepath: 0.02, tags: 0.01 },
-  keyword:  { semantic: 0.05, bm25: 0.44, trigram: 0.28, filepath: 0.10, tags: 0.13 },
-  code:     { semantic: 0.05, bm25: 0.10, trigram: 0.42, filepath: 0.38, tags: 0.05 },
-};
-
-export interface SignalContribution {
-  /** 1-based rank in this signal's list (0 = not found) */
-  rank: number;
-  /** Signal-specific raw score (cosine sim for semantic, FTS5 rank for others) */
-  rawScore: number;
-  /** w_i * boost / (k + rank_i) normalised — the actual RRF contribution */
-  rrfContribution: number;
-}
-
-export interface ScoreBreakdown {
-  semantic?: SignalContribution;
-  bm25?: SignalContribution;
-  trigram?: SignalContribution;
-  filepath?: SignalContribution;
-  tags?: SignalContribution;
-}
-
-/** A breakdown where every signal contributed nothing — used for structural/fallback results. */
-export const ZERO_SCORE_BREAKDOWN: ScoreBreakdown = {
-  semantic:  { rank: 0, rawScore: 0, rrfContribution: 0 },
-  bm25:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-  trigram:   { rank: 0, rawScore: 0, rrfContribution: 0 },
-  filepath:  { rank: 0, rawScore: 0, rrfContribution: 0 },
-  tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-};
-
 // ── Search (Two-Axis Model) ──────────────────────────────────────────────────
 
 /** Per-chunk score breakdown: semantic and BM25 sub-scores, plus the winning scorer. */
@@ -140,10 +87,6 @@ export interface SearchResult {
   /** Top chunks sorted by content score descending. */
   chunks: SearchResultChunk[];
 }
-
-// Legacy types — still used by old code paths (directory search, store.ts internals).
-// Will be removed once all consumers are migrated.
-export type MatchType = 'semantic' | 'keyword' | 'both';
 
 // ── Directory Exploration ────────────────────────────────────────────────
 

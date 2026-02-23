@@ -13,7 +13,6 @@ import { validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import type { EmbeddingService } from './embedding';
 import {
   createSiloDatabase,
-  hybridSearchSilo,
   twoAxisSearch,
   getChunkCount,
   loadMtimes,
@@ -26,14 +25,12 @@ import {
   resolveStoredKey,
   peekFileCount,
   type SiloDatabase,
-  type SiloSearchResult,
   type TwoAxisFileResult,
   type StoredSiloConfig,
 } from './store';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
-import type { WatcherState, SearchWeights, DirectoryTreeNode } from '../shared/types';
-import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
+import type { WatcherState, DirectoryTreeNode } from '../shared/types';
 import { directorySearchSilo, expandTree, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
 
@@ -482,25 +479,6 @@ export class SiloManager {
     return this.watcherState === 'stopped';
   }
 
-  /** Embed a query and search the silo database using hybrid search. */
-  async search(query: string, maxResults: number = 10, weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS, startPath?: string): Promise<SiloSearchResult[]> {
-    if (!this.embeddingService || !this.db) return [];
-    const queryVector = await this.embeddingService.embed(query);
-    const results = hybridSearchSilo(this.db, queryVector, query, maxResults, weights, startPath);
-    return this.resolveResultPaths(results);
-  }
-
-  /**
-   * Search with a pre-computed query vector.
-   * Used by the main process to embed the query once and share the
-   * vector across all silos, avoiding redundant ONNX inference calls.
-   */
-  searchWithVector(queryVector: number[], queryText: string, maxResults: number = 10, weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS, startPath?: string): SiloSearchResult[] {
-    if (!this.db) return [];
-    const results = hybridSearchSilo(this.db, queryVector, queryText, maxResults, weights, startPath);
-    return this.resolveResultPaths(results);
-  }
-
   /** Two-axis search with a pre-computed query vector. */
   searchTwoAxis(queryVector: number[], queryText: string, maxResults: number = 10, startPath?: string): TwoAxisFileResult[] {
     if (!this.db) return [];
@@ -554,14 +532,6 @@ export class SiloManager {
         children: resolveTreeNodes(rawChildren, this.config.directories),
       };
     });
-  }
-
-  /** Resolve stored keys in search results back to absolute file paths. */
-  private resolveResultPaths(results: SiloSearchResult[]): SiloSearchResult[] {
-    return results.map((r) => ({
-      ...r,
-      filePath: resolveStoredKey(r.filePath, this.config.directories),
-    }));
   }
 
   /** Resolve stored keys in two-axis search results back to absolute file paths. */

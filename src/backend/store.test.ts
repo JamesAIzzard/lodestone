@@ -3,8 +3,7 @@ import {
   createSiloDatabase,
   upsertFileChunks,
   deleteFileChunks,
-  searchSilo,
-  hybridSearchSilo,
+  twoAxisSearch,
   getChunkCount,
   loadMtimes,
   setMtime,
@@ -33,8 +32,6 @@ function makeChunk(filePath: string, index: number, text: string): ChunkRecord {
     endLine: 5,
     metadata: {},
     contentHash: `hash-${filePath}-${index}`,
-    headingDepth: 0,
-    tagsText: '',
   };
 }
 
@@ -94,9 +91,9 @@ describe('store', () => {
     expect(remaining.map((r) => r.file_path)).toEqual(['/b.md']);
   });
 
-  // ── Vector Search ───────────────────────────────────────────────────────
+  // ── Two-Axis Search ─────────────────────────────────────────────────────
 
-  it('searches and aggregates by file', () => {
+  it('twoAxisSearch returns results aggregated by file', () => {
     upsertFileChunks(
       db, '/close.md',
       [makeChunk('/close.md', 0, 'Close match')],
@@ -109,7 +106,7 @@ describe('store', () => {
     );
 
     // Search with vector identical to makeVector(1) — /close.md should rank higher
-    const results = searchSilo(db, makeVector(1), 10);
+    const results = twoAxisSearch(db, makeVector(1), 'close', 10);
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0].filePath).toBe('/close.md');
 
@@ -123,7 +120,7 @@ describe('store', () => {
     chunk.sectionPath = ['Architecture', 'Pipeline'];
     upsertFileChunks(db, '/a.md', [chunk], [makeVector(1)]);
 
-    const results = searchSilo(db, makeVector(1), 10);
+    const results = twoAxisSearch(db, makeVector(1), 'test', 10);
     expect(results[0].chunks[0].sectionPath).toEqual(['Architecture', 'Pipeline']);
   });
 
@@ -137,71 +134,36 @@ describe('store', () => {
     }
     upsertFileChunks(db, '/many.md', chunks, embeddings);
 
-    const results = searchSilo(db, makeVector(1), 10);
+    const results = twoAxisSearch(db, makeVector(1), 'chunk', 10);
     expect(results.length).toBe(1);
     expect(results[0].chunks.length).toBeLessThanOrEqual(5);
   });
 
-  // ── Hybrid Search ───────────────────────────────────────────────────────
+  // ── Inverted Index ─────────────────────────────────────────────────────
 
-  it('hybrid search returns results from both vector and keyword matches', () => {
-    // Semantically close to query vector
-    upsertFileChunks(
-      db, '/semantic.md',
-      [makeChunk('/semantic.md', 0, 'general information about the world')],
-      [makeVector(1)],
-    );
-    // Contains exact keyword match
-    upsertFileChunks(
-      db, '/keyword.md',
-      [makeChunk('/keyword.md', 0, 'specific keyword xylophone target')],
-      [makeVector(100)], // Very different vector
-    );
-
-    const results = hybridSearchSilo(db, makeVector(1), 'xylophone', 10);
-    const filePaths = results.map((r) => r.filePath);
-
-    // Both files should appear — one via vector, one via keyword
-    expect(filePaths).toContain('/semantic.md');
-    expect(filePaths).toContain('/keyword.md');
-  });
-
-  it('hybrid search with empty query text falls back to vector-only', () => {
-    upsertFileChunks(
-      db, '/a.md',
-      [makeChunk('/a.md', 0, 'Test content')],
-      [makeVector(1)],
-    );
-
-    const results = hybridSearchSilo(db, makeVector(1), '', 10);
-    expect(results.length).toBe(1);
-    expect(results[0].filePath).toBe('/a.md');
-  });
-
-  // ── FTS5 ────────────────────────────────────────────────────────────────
-
-  it('FTS5 index is synced after upsert and delete', () => {
+  it('inverted index is synced after upsert and delete', () => {
     upsertFileChunks(
       db, '/a.md',
       [makeChunk('/a.md', 0, 'uniqueword alpha')],
       [makeVector(1)],
     );
 
-    // FTS5 should find the keyword
-    const ftsResult = db.prepare(
-      `SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH '"uniqueword"'`,
-    ).all();
-    expect(ftsResult.length).toBe(1);
+    // The inverted index should have the term
+    const termResult = db.prepare(
+      `SELECT doc_freq FROM terms WHERE term = ?`,
+    ).get('uniqueword') as { doc_freq: number } | undefined;
+    expect(termResult).toBeDefined();
+    expect(termResult!.doc_freq).toBe(1);
 
-    // After delete, FTS5 should be empty for that term
+    // After delete, the term should be gone
     deleteFileChunks(db, '/a.md');
-    const ftsAfter = db.prepare(
-      `SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH '"uniqueword"'`,
-    ).all();
-    expect(ftsAfter.length).toBe(0);
+    const termAfter = db.prepare(
+      `SELECT doc_freq FROM terms WHERE term = ?`,
+    ).get('uniqueword');
+    expect(termAfter).toBeUndefined();
   });
 
-  it('FTS5 is synced correctly after upsert replaces content', () => {
+  it('inverted index is synced correctly after upsert replaces content', () => {
     upsertFileChunks(
       db, '/a.md',
       [makeChunk('/a.md', 0, 'oldterm specialword')],
@@ -217,15 +179,16 @@ describe('store', () => {
 
     // Old term should not be findable
     const oldResult = db.prepare(
-      `SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH '"oldterm"'`,
-    ).all();
-    expect(oldResult.length).toBe(0);
+      `SELECT doc_freq FROM terms WHERE term = ?`,
+    ).get('oldterm');
+    expect(oldResult).toBeUndefined();
 
     // New term should be findable
     const newResult = db.prepare(
-      `SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH '"newterm"'`,
-    ).all();
-    expect(newResult.length).toBe(1);
+      `SELECT doc_freq FROM terms WHERE term = ?`,
+    ).get('newterm') as { doc_freq: number } | undefined;
+    expect(newResult).toBeDefined();
+    expect(newResult!.doc_freq).toBe(1);
   });
 
   // ── Mtime Persistence ──────────────────────────────────────────────────
@@ -312,7 +275,7 @@ describe('store', () => {
     expect(loadMtimes(db2).get('/a.md')).toBe(1234);
     expect(loadMeta(db2)!.model).toBe('test-model');
 
-    const results = searchSilo(db2, makeVector(1), 10);
+    const results = twoAxisSearch(db2, makeVector(1), 'persisted', 10);
     expect(results.length).toBe(1);
     expect(results[0].filePath).toBe('/a.md');
 

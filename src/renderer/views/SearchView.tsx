@@ -1,9 +1,8 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, FileText, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, SlidersHorizontal, X } from 'lucide-react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import { Search, FileText, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
-import type { SiloStatus, SearchResult, DirectoryResult, DirectoryTreeNode, MatchType, SearchWeights, ScoreBreakdown, ExploreParams } from '../../shared/types';
-import { DEFAULT_SEARCH_WEIGHTS, DEFAULT_EXPLORE_WEIGHTS, SEARCH_PRESETS, EXPLORE_PRESETS } from '../../shared/types';
+import type { SiloStatus, SearchResult, DirectoryResult, DirectoryTreeNode, ExploreParams } from '../../shared/types';
 
 function fileName(p: string): string {
   return p.split(/[/\\]/).pop() ?? p;
@@ -23,80 +22,24 @@ function handleOpenFile(filePath: string) {
   window.electronAPI?.openPath(filePath);
 }
 
-// ── Signal badge colours ───────────────────────────────────────────────────
+// ── Score source colours ──────────────────────────────────────────────────────
 
-const SIGNAL_COLORS = {
-  semantic: 'bg-blue-500/15 text-blue-400',
-  bm25:     'bg-amber-500/15 text-amber-400',
-  trigram:  'bg-purple-500/15 text-purple-400',
-  filepath: 'bg-cyan-500/15 text-cyan-400',
-  tags:     'bg-pink-500/15 text-pink-400',
+const SOURCE_COLORS = {
+  content:  { bar: 'bg-blue-400', badge: 'bg-blue-500/15 text-blue-400', label: 'content' },
+  filename: { bar: 'bg-cyan-400', badge: 'bg-cyan-500/15 text-cyan-400', label: 'filename' },
 } as const;
 
-const SIGNAL_BAR_COLORS = {
-  semantic: 'bg-blue-400',
-  bm25:     'bg-amber-400',
-  trigram:  'bg-purple-400',
-  filepath: 'bg-cyan-400',
-  tags:     'bg-pink-400',
+const SCORER_COLORS = {
+  semantic: 'text-blue-400',
+  bm25:     'text-amber-400',
 } as const;
 
-const SIGNAL_LABELS = {
-  semantic: 'semantic',
-  bm25:     'keyword',
-  trigram:  'substring',
-  filepath: 'filepath',
-  tags:     'tags',
+const DIR_SOURCE_COLORS = {
+  segment: { bar: 'bg-purple-400', label: 'segment' },
+  keyword: { bar: 'bg-amber-400', label: 'keyword' },
 } as const;
 
-type SignalKey = keyof typeof SIGNAL_LABELS;
-
-const SIGNAL_KEYS: SignalKey[] = ['semantic', 'bm25', 'trigram', 'filepath', 'tags'];
-
-// Determine which signals contributed to a chunk's score
-function activeSignals(breakdown: ScoreBreakdown): SignalKey[] {
-  return SIGNAL_KEYS.filter((k) => (breakdown[k]?.rank ?? 0) > 0);
-}
-
-// ── Weight presets ─────────────────────────────────────────────────────────
-
-const FILE_WEIGHT_PRESETS: Array<{ label: string; weights: SearchWeights }> = [
-  { label: 'Balanced', weights: SEARCH_PRESETS.balanced },
-  { label: 'Semantic', weights: SEARCH_PRESETS.semantic },
-  { label: 'Keyword',  weights: SEARCH_PRESETS.keyword },
-  { label: 'Code',     weights: SEARCH_PRESETS.code },
-];
-
-const DIR_WEIGHT_PRESETS: Array<{ label: string; weights: SearchWeights }> = [
-  { label: 'Balanced', weights: EXPLORE_PRESETS.balanced },
-  { label: 'Semantic', weights: EXPLORE_PRESETS.semantic },
-  { label: 'Keyword',  weights: EXPLORE_PRESETS.keyword },
-  { label: 'Code',     weights: EXPLORE_PRESETS.code },
-];
-
-// Convert normalised [0,1] weights to integer slider values (0–100)
-function weightsToSliders(w: SearchWeights): Record<SignalKey, number> {
-  return {
-    semantic: Math.round(w.semantic * 100),
-    bm25:     Math.round(w.bm25 * 100),
-    trigram:  Math.round(w.trigram * 100),
-    filepath: Math.round(w.filepath * 100),
-    tags:     Math.round(w.tags * 100),
-  };
-}
-
-// Normalise raw slider values (0–100) to weights that sum to 1.0
-function slidersToWeights(sliders: Record<SignalKey, number>): SearchWeights {
-  const total = SIGNAL_KEYS.reduce((s, k) => s + sliders[k], 0);
-  if (total === 0) return DEFAULT_SEARCH_WEIGHTS;
-  return {
-    semantic: sliders.semantic / total,
-    bm25:     sliders.bm25 / total,
-    trigram:  sliders.trigram / total,
-    filepath: sliders.filepath / total,
-    tags:     sliders.tags / total,
-  };
-}
+// ── Component ─────────────────────────────────────────────────────────────────
 
 type SearchMode = 'file' | 'directory';
 
@@ -109,18 +52,9 @@ export default function SearchView() {
   const [hasSearched, setHasSearched] = useState(false);
   const [searching, setSearching] = useState(false);
   const [expandedResults, setExpandedResults] = useState<Set<number>>(new Set());
-  const [tuningOpen, setTuningOpen] = useState(false);
   const [searchMode, setSearchMode] = useState<SearchMode>('file');
   const [startPath, setStartPath] = useState('');
   const [depthSetting, setDepthSetting] = useState(2);
-
-  // Raw slider values (integers 0–100), kept in sync with config
-  const [sliders, setSliders] = useState<Record<SignalKey, number>>(weightsToSliders(DEFAULT_SEARCH_WEIGHTS));
-
-  // Debounce save timer ref
-  const savePendingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Debounce re-search timer ref
-  const researchPendingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const fetch = () => window.electronAPI?.getSilos().then(setSilos);
@@ -129,29 +63,19 @@ export default function SearchView() {
     return () => unsub?.();
   }, []);
 
-  // Load weights from config on mount
-  useEffect(() => {
-    window.electronAPI?.getSearchWeights().then((w) => {
-      if (w) setSliders(weightsToSliders(w));
-    });
-  }, []);
-
-  // Build silo name → colour lookup
   const siloColorMap = useMemo(() => {
     const map = new Map<string, SiloColor>();
     for (const s of silos) map.set(s.config.name, s.config.color);
     return map;
   }, [silos]);
 
-  const effectiveWeights = useMemo(() => slidersToWeights(sliders), [sliders]);
-
-  const runSearch = useCallback(async (q: string, silo: string | undefined, w: SearchWeights, sp?: string) => {
+  const runSearch = useCallback(async (q: string, silo: string | undefined, sp?: string) => {
     if (!q.trim()) return;
     setHasSearched(true);
     setSearching(true);
     setExpandedResults(new Set());
     try {
-      const res = await window.electronAPI?.search(q, silo, w, sp || undefined) ?? [];
+      const res = await window.electronAPI?.search(q, silo, sp || undefined) ?? [];
       setResults(res);
       setDirectoryResults([]);
     } finally {
@@ -159,7 +83,7 @@ export default function SearchView() {
     }
   }, []);
 
-  const runExplore = useCallback(async (q: string, silo: string | undefined, w: SearchWeights, sp?: string, depth?: number) => {
+  const runExplore = useCallback(async (q: string, silo: string | undefined, sp?: string, depth?: number) => {
     setHasSearched(true);
     setSearching(true);
     setExpandedResults(new Set());
@@ -169,7 +93,6 @@ export default function SearchView() {
         silo,
         startPath: sp || undefined,
         maxDepth: depth ?? 2,
-        weights: w,
       };
       const res = await window.electronAPI?.explore(params) ?? [];
       setDirectoryResults(res);
@@ -184,9 +107,9 @@ export default function SearchView() {
     if (searching) return;
     const silo = selectedSilo === 'all' ? undefined : selectedSilo;
     if (searchMode === 'directory') {
-      await runExplore(query, silo, effectiveWeights, startPath, depthSetting);
+      await runExplore(query, silo, startPath, depthSetting);
     } else {
-      await runSearch(query, silo, effectiveWeights, startPath);
+      await runSearch(query, silo, startPath);
     }
   }
 
@@ -196,58 +119,6 @@ export default function SearchView() {
     setResults([]);
     setDirectoryResults([]);
     setExpandedResults(new Set());
-    // Switch sliders to appropriate defaults
-    if (mode === 'directory') {
-      setSliders(weightsToSliders(DEFAULT_EXPLORE_WEIGHTS));
-    } else {
-      // Reload file search weights from config
-      window.electronAPI?.getSearchWeights().then((w) => {
-        if (w) setSliders(weightsToSliders(w));
-      });
-    }
-  }
-
-  function handleSliderChange(key: SignalKey, value: number) {
-    const next = { ...sliders, [key]: value };
-    setSliders(next);
-
-    // Only save file-mode weights to config
-    if (searchMode === 'file') {
-      if (savePendingRef.current) clearTimeout(savePendingRef.current);
-      savePendingRef.current = setTimeout(() => {
-        window.electronAPI?.updateSearchWeights(slidersToWeights(next));
-      }, 600);
-    }
-
-    // Debounce re-search if there are existing results
-    if (hasSearched && (searchMode === 'directory' || query.trim())) {
-      if (researchPendingRef.current) clearTimeout(researchPendingRef.current);
-      researchPendingRef.current = setTimeout(() => {
-        const silo = selectedSilo === 'all' ? undefined : selectedSilo;
-        const w = slidersToWeights(next);
-        if (searchMode === 'directory') {
-          runExplore(query, silo, w, startPath, depthSetting);
-        } else {
-          runSearch(query, silo, w, startPath);
-        }
-      }, 300);
-    }
-  }
-
-  function applyPreset(preset: SearchWeights) {
-    const next = weightsToSliders(preset);
-    setSliders(next);
-    if (searchMode === 'file') {
-      window.electronAPI?.updateSearchWeights(preset);
-    }
-    if (hasSearched && (searchMode === 'directory' || query.trim())) {
-      const silo = selectedSilo === 'all' ? undefined : selectedSilo;
-      if (searchMode === 'directory') {
-        runExplore(query, silo, preset, startPath, depthSetting);
-      } else {
-        runSearch(query, silo, preset, startPath);
-      }
-    }
   }
 
   function toggleExpand(index: number) {
@@ -259,32 +130,14 @@ export default function SearchView() {
     });
   }
 
-  const activePresets = searchMode === 'directory' ? DIR_WEIGHT_PRESETS : FILE_WEIGHT_PRESETS;
   const isDirectoryMode = searchMode === 'directory';
-
-  function isActivePreset(weights: SearchWeights): boolean {
-    const p = weightsToSliders(weights);
-    return SIGNAL_KEYS.every((k) => sliders[k] === p[k]);
-  }
 
   return (
     <div>
       {/* Sticky header */}
       <div className="sticky top-0 z-10 bg-background px-6 pt-6 pb-4">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4">
           <h1 className="text-lg font-semibold text-foreground">Search</h1>
-          <button
-            onClick={() => setTuningOpen((o) => !o)}
-            className={cn(
-              'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors',
-              tuningOpen
-                ? 'bg-accent text-foreground'
-                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-            )}
-          >
-            <SlidersHorizontal className="h-3.5 w-3.5" />
-            Tuning
-          </button>
         </div>
 
         {/* Search controls */}
@@ -343,89 +196,40 @@ export default function SearchView() {
           </div>
         </div>
 
-        {/* Start path filter */}
-        <div className="mt-2 relative">
-          <input
-            type="text"
-            value={startPath}
-            onChange={(e) => setStartPath(e.target.value)}
-            placeholder="Filter to path (optional)"
-            className="h-7 w-full rounded-md border border-input bg-background px-3 pr-7 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-2 focus:ring-ring"
-          />
-          {startPath && (
-            <button
-              onClick={() => setStartPath('')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          )}
-        </div>
-
-        {/* Tuning panel */}
-        {tuningOpen && (
-          <div className="mt-3 rounded-md border border-border bg-card p-4">
-            <div className="mb-3 flex flex-wrap gap-1.5">
-              {activePresets.map((p) => (
-                <button
-                  key={p.label}
-                  onClick={() => applyPreset(p.weights)}
-                  className={cn(
-                    'rounded px-2.5 py-1 text-xs border transition-colors',
-                    isActivePreset(p.weights)
-                      ? 'bg-accent text-foreground border-border'
-                      : 'text-muted-foreground border-border hover:bg-accent/50 hover:text-foreground',
-                  )}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            <div className="space-y-2.5">
-              {SIGNAL_KEYS.map((key) => {
-                const isDisabled = isDirectoryMode && (key === 'bm25' || key === 'tags');
-                return (
-                  <div key={key} className={cn('flex items-center gap-3', isDisabled && 'opacity-30')}>
-                    <span className={cn('shrink-0 w-18 rounded px-1.5 py-0.5 text-[10px]', SIGNAL_COLORS[key])}>
-                      {SIGNAL_LABELS[key]}
-                    </span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={sliders[key]}
-                      onChange={(e) => handleSliderChange(key, parseInt(e.target.value, 10))}
-                      disabled={isDisabled}
-                      className="flex-1 h-1.5 accent-foreground"
-                    />
-                    <span className="shrink-0 w-7 text-right text-[10px] text-muted-foreground">
-                      {sliders[key]}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-            {/* Depth slider for directory mode */}
-            {isDirectoryMode && (
-              <div className="mt-3 pt-3 border-t border-border flex items-center gap-3">
-                <span className="shrink-0 w-18 rounded px-1.5 py-0.5 text-[10px] bg-muted text-muted-foreground">
-                  depth
-                </span>
-                <input
-                  type="range"
-                  min={1}
-                  max={5}
-                  value={depthSetting}
-                  onChange={(e) => setDepthSetting(parseInt(e.target.value, 10))}
-                  className="flex-1 h-1.5 accent-foreground"
-                />
-                <span className="shrink-0 w-7 text-right text-[10px] text-muted-foreground">
-                  {depthSetting}
-                </span>
-              </div>
+        {/* Start path filter + depth (directory mode) */}
+        <div className="mt-2 flex items-center gap-2">
+          <div className="relative flex-1">
+            <input
+              type="text"
+              value={startPath}
+              onChange={(e) => setStartPath(e.target.value)}
+              placeholder="Filter to path (optional)"
+              className="h-7 w-full rounded-md border border-input bg-background px-3 pr-7 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+            {startPath && (
+              <button
+                onClick={() => setStartPath('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
+              >
+                <X className="h-3 w-3" />
+              </button>
             )}
           </div>
-        )}
+          {isDirectoryMode && (
+            <>
+              <span className="text-[10px] text-muted-foreground/50 shrink-0">depth</span>
+              <input
+                type="range"
+                min={1}
+                max={5}
+                value={depthSetting}
+                onChange={(e) => setDepthSetting(parseInt(e.target.value, 10))}
+                className="w-16 h-1.5 accent-foreground shrink-0"
+              />
+              <span className="text-[10px] text-muted-foreground/50 w-3 shrink-0">{depthSetting}</span>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Results */}
@@ -484,11 +288,11 @@ export default function SearchView() {
 
               {results.map((result, i) => {
                 const isExpanded = expandedResults.has(i);
-                const signals = activeSignals(result.breakdown);
+                const source = SOURCE_COLORS[result.scoreSource];
 
                 return (
                   <div key={`${result.filePath}-${i}`}>
-                    {/* Result row */}
+                    {/* Collapsed result row */}
                     <button
                       onClick={() => toggleExpand(i)}
                       className={cn(
@@ -527,20 +331,19 @@ export default function SearchView() {
                           )}>
                             {result.siloName}
                           </span>
-                          {/* Per-signal contribution badges */}
-                          {signals.map((sig) => (
-                            <span key={sig} className={cn('shrink-0 rounded px-1 py-0.5 text-[9px]', SIGNAL_COLORS[sig])}>
-                              {SIGNAL_LABELS[sig]}
-                            </span>
-                          ))}
                         </div>
                       </div>
 
-                      {/* Score bar */}
+                      {/* Score bar + percentage */}
                       <div className="flex items-center gap-2 shrink-0">
-                        <ScoreBar breakdown={result.breakdown} />
+                        <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+                          <div
+                            className={cn('h-full rounded-full', source.bar)}
+                            style={{ width: `${Math.round(result.score * 100)}%` }}
+                          />
+                        </div>
                         <span className="w-8 text-right text-xs text-muted-foreground">
-                          {scorePercent(result.qualityScore)}
+                          {scorePercent(result.score)}
                         </span>
                       </div>
 
@@ -553,50 +356,53 @@ export default function SearchView() {
                       />
                     </button>
 
-                    {/* Expanded chunks */}
-                    {isExpanded && result.chunks.length > 0 && (
+                    {/* Expanded view */}
+                    {isExpanded && (
                       <div className="ml-[26px] border-l-2 border-accent/40 pl-4 pb-2">
-                        {/* File-level score info */}
-                        <div className="mt-1.5 mb-1 flex items-center gap-1.5 text-[10px] text-muted-foreground/40">
-                          <span>quality {scorePercent(result.qualityScore)}</span>
-                          <span>·</span>
-                          <span>cosine {scorePercent(result.bestCosineSimilarity)}</span>
-                          <span>·</span>
-                          <span>RRF {scorePercent(result.rrfScore)}</span>
-                          {Math.abs(result.score - result.rrfScore) > 0.001 && (
-                            <>
-                              <span>·</span>
-                              <span>calibrated {scorePercent(result.score)}</span>
-                            </>
-                          )}
+                        {/* Two-axis score summary */}
+                        <div className="mt-1.5 mb-1 flex items-center gap-2 text-[10px]">
+                          <span className={cn(
+                            result.scoreSource === 'content' ? 'text-blue-400' : 'text-muted-foreground/40',
+                          )}>
+                            content {scorePercent(result.contentScore)}
+                          </span>
+                          <span className="text-muted-foreground/20">·</span>
+                          <span className={cn(
+                            result.scoreSource === 'filename' ? 'text-cyan-400' : 'text-muted-foreground/40',
+                          )}>
+                            filename {scorePercent(result.filenameScore)}
+                          </span>
                         </div>
 
+                        {/* Chunks */}
                         {result.chunks.map((chunk, ci) => (
                           <div
                             key={ci}
                             className="mt-2 rounded-md bg-muted/30 px-3 py-2"
                           >
                             <div className="flex items-start justify-between gap-2 mb-1">
-                              <div className="flex flex-wrap items-center gap-1 min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5 min-w-0">
                                 {chunk.sectionPath.length > 0 && (
                                   <span className="text-[11px] font-medium text-muted-foreground">
                                     {chunk.sectionPath.join(' > ')}
                                   </span>
                                 )}
-                                {/* Per-signal badges for chunk */}
-                                {activeSignals(chunk.breakdown).map((sig) => (
-                                  <span key={sig} className={cn('rounded px-1 py-0.5 text-[9px]', SIGNAL_COLORS[sig])}>
-                                    {SIGNAL_LABELS[sig]}
-                                  </span>
-                                ))}
-                                {chunk.cosineSimilarity > 0 && (
-                                  <span className="text-[10px] text-muted-foreground/40">
-                                    cos {scorePercent(chunk.cosineSimilarity)}
-                                  </span>
-                                )}
+                                {/* Per-scorer badges */}
+                                <span className={cn(
+                                  'text-[10px]',
+                                  chunk.scores.bestScorer === 'semantic' ? SCORER_COLORS.semantic : 'text-muted-foreground/30',
+                                )}>
+                                  sem {scorePercent(chunk.scores.semantic)}
+                                </span>
+                                <span className={cn(
+                                  'text-[10px]',
+                                  chunk.scores.bestScorer === 'bm25' ? SCORER_COLORS.bm25 : 'text-muted-foreground/30',
+                                )}>
+                                  bm25 {scorePercent(chunk.scores.bm25)}
+                                </span>
                               </div>
                               <span className="shrink-0 text-[10px] text-muted-foreground/50">
-                                {scorePercent(chunk.score)}
+                                {scorePercent(chunk.scores.best)}
                               </span>
                             </div>
                             <p className="whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/70">
@@ -646,7 +452,7 @@ function DirectoryResultsView({
 
       {results.map((result, i) => {
         const isExpanded = expandedResults.has(i);
-        const signals = activeSignals(result.breakdown);
+        const dirSource = DIR_SOURCE_COLORS[result.scoreSource];
 
         return (
           <div key={`${result.dirPath}-${i}`}>
@@ -686,26 +492,41 @@ function DirectoryResultsView({
                   <span className="text-[10px] text-muted-foreground/40">
                     {result.fileCount} file{result.fileCount !== 1 ? 's' : ''} · {result.subdirCount} dir{result.subdirCount !== 1 ? 's' : ''}
                   </span>
-                  {signals.map((sig) => (
-                    <span key={sig} className={cn('shrink-0 rounded px-1 py-0.5 text-[9px]', SIGNAL_COLORS[sig])}>
-                      {SIGNAL_LABELS[sig]}
-                    </span>
-                  ))}
                 </div>
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                <ScoreBar breakdown={result.breakdown} />
+                <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className={cn('h-full rounded-full', dirSource.bar)}
+                    style={{ width: `${Math.round(result.score * 100)}%` }}
+                  />
+                </div>
                 <span className="w-8 text-right text-xs text-muted-foreground">
-                  {scorePercent(result.qualityScore)}
+                  {scorePercent(result.score)}
                 </span>
               </div>
             </button>
 
-            {/* Expanded tree */}
-            {isExpanded && result.children.length > 0 && (
+            {/* Expanded: score breakdown + tree */}
+            {isExpanded && (
               <div className="ml-[26px] border-l-2 border-accent/20 pl-4 pb-2 mt-1">
-                <DirectoryTree nodes={result.children} />
+                <div className="mb-1 flex items-center gap-2 text-[10px]">
+                  <span className={cn(
+                    result.scoreSource === 'segment' ? 'text-purple-400' : 'text-muted-foreground/40',
+                  )}>
+                    segment {scorePercent(result.segmentScore)}
+                  </span>
+                  <span className="text-muted-foreground/20">·</span>
+                  <span className={cn(
+                    result.scoreSource === 'keyword' ? 'text-amber-400' : 'text-muted-foreground/40',
+                  )}>
+                    keyword {scorePercent(result.keywordScore)}
+                  </span>
+                </div>
+                {result.children.length > 0 && (
+                  <DirectoryTree nodes={result.children} />
+                )}
               </div>
             )}
           </div>
@@ -746,31 +567,3 @@ function DirectoryTreeNodeRow({ node, isLast }: { node: DirectoryTreeNode; isLas
   );
 }
 
-// ── ScoreBar ─────────────────────────────────────────────────────────────────
-
-/**
- * Segmented bar showing relative contribution of each signal to the RRF score.
- */
-function ScoreBar({ breakdown }: { breakdown: ScoreBreakdown }) {
-  const total = SIGNAL_KEYS.reduce((s, k) => s + (breakdown[k]?.rrfContribution ?? 0), 0);
-  if (total === 0) {
-    return <div className="w-16 h-1.5 rounded-full bg-muted/50" />;
-  }
-
-  return (
-    <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden flex">
-      {SIGNAL_KEYS.map((key) => {
-        const contrib = breakdown[key]?.rrfContribution ?? 0;
-        if (contrib <= 0) return null;
-        const pct = (contrib / total) * 100;
-        return (
-          <div
-            key={key}
-            className={SIGNAL_BAR_COLORS[key]}
-            style={{ width: `${pct}%` }}
-          />
-        );
-      })}
-    </div>
-  );
-}

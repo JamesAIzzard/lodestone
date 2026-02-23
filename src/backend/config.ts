@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { resolveModelAlias, DEFAULT_MODEL } from './model-registry';
 import { validateSiloColor, validateSiloIcon, type SiloColor, type SiloIconName } from '../shared/silo-appearance';
-import { type SearchWeights, DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
+// SearchWeights import removed — two-axis model has no configurable weights
 
 // ── Config Types ─────────────────────────────────────────────────────────────
 
@@ -54,7 +54,8 @@ export interface SiloTomlConfig {
 }
 
 export interface SearchConfig {
-  weights: SearchWeights;
+  // Reserved for future search configuration. Weights were removed in the
+  // two-axis model — all scores are now transparent [0,1] values.
 }
 
 export interface LodestoneConfig {
@@ -87,9 +88,7 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     ignore: ['.*', '_*', 'node_modules', 'dist', 'build'],
     ignore_files: ['.*', 'Thumbs.db'],
   },
-  search: {
-    weights: { ...DEFAULT_SEARCH_WEIGHTS },
-  },
+  search: {},
   silos: {},
 };
 
@@ -106,8 +105,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
   const server = (parsed.server ?? {}) as Partial<ServerConfig>;
   const embeddings = (parsed.embeddings ?? {}) as Partial<EmbeddingsConfig>;
   const defaults = (parsed.defaults ?? {}) as Partial<DefaultsConfig>;
-  const searchRaw = (parsed.search ?? {}) as Record<string, unknown>;
-  const weightsRaw = (searchRaw.weights ?? {}) as Partial<SearchWeights>;
+  // search section is reserved but currently empty (weights removed in two-axis model)
   const silos = (parsed.silos ?? {}) as Record<string, unknown>;
 
   // Validate silos — each must have directories and db_path
@@ -148,15 +146,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
       ignore: Array.isArray(defaults.ignore) ? defaults.ignore as string[] : DEFAULT_CONFIG.defaults.ignore,
       ignore_files: Array.isArray(defaults.ignore_files) ? defaults.ignore_files as string[] : DEFAULT_CONFIG.defaults.ignore_files,
     },
-    search: {
-      weights: {
-        semantic: typeof weightsRaw.semantic === 'number' ? weightsRaw.semantic : DEFAULT_SEARCH_WEIGHTS.semantic,
-        bm25: typeof weightsRaw.bm25 === 'number' ? weightsRaw.bm25 : DEFAULT_SEARCH_WEIGHTS.bm25,
-        trigram: typeof weightsRaw.trigram === 'number' ? weightsRaw.trigram : DEFAULT_SEARCH_WEIGHTS.trigram,
-        filepath: typeof weightsRaw.filepath === 'number' ? weightsRaw.filepath : DEFAULT_SEARCH_WEIGHTS.filepath,
-        tags: typeof weightsRaw.tags === 'number' ? weightsRaw.tags : DEFAULT_SEARCH_WEIGHTS.tags,
-      },
-    },
+    search: {},
     silos: validatedSilos,
   };
 }

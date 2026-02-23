@@ -15,6 +15,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import fs from 'node:fs';
 import type { Readable, Writable } from 'node:stream';
 import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
 
@@ -30,7 +31,6 @@ export interface McpServerDeps {
     query: string;
     silo?: string;
     maxResults?: number;
-    preset?: string;
     startPath?: string;
   }) => Promise<{ results: SearchResult[]; warnings: string[] }>;
   /** Proxy directory exploration through the GUI process. */
@@ -40,7 +40,6 @@ export interface McpServerDeps {
     startPath?: string;
     maxDepth?: number;
     maxResults?: number;
-    preset?: string;
   }) => Promise<{ results: DirectoryResult[]; warnings: string[] }>;
   /** Proxy status through the GUI process. */
   status: () => Promise<{ silos: SiloStatus[] }>;
@@ -52,12 +51,41 @@ export interface McpServerHandle {
   stop: () => Promise<void>;
 }
 
+// ── Puid tracking ────────────────────────────────────────────────────────────
+
+/**
+ * Session-scoped puid (persistent unique ID) tracking.
+ *
+ * Each search assigns sequential puids (r1, r2, r3...) to results.
+ * The puid namespace resets on every new search so references stay fresh.
+ * The lodestone_read tool resolves puids back to absolute file paths.
+ */
+let puidCounter = 0;
+const puidMap = new Map<string, string>(); // puid → absolute file path
+
+function resetPuids(): void {
+  puidCounter = 0;
+  puidMap.clear();
+}
+
+function assignPuid(filePath: string): string {
+  puidCounter++;
+  const puid = `r${puidCounter}`;
+  puidMap.set(puid, filePath);
+  return puid;
+}
+
+function resolvePuid(id: string): string {
+  return puidMap.get(id) ?? id; // fall back to treating id as a file path
+}
+
 // ── Formatting ───────────────────────────────────────────────────────────────
 
 /**
  * Format search results into a readable text block for the MCP tool response.
- * Each result shows the file path, silo name, relevance score, and top chunks
- * with their section headings and line ranges.
+ *
+ * Each result is prefixed with a puid (r1, r2, ...) for use with lodestone_read,
+ * followed by the full absolute file path, silo name, and score breakdown.
  */
 function formatSearchResults(results: SearchResult[]): string {
   if (results.length === 0) {
@@ -67,18 +95,21 @@ function formatSearchResults(results: SearchResult[]): string {
   const lines: string[] = [];
 
   for (const result of results) {
-    lines.push(`## ${result.filePath}`);
-    const matchLabel = result.matchType === 'both' ? 'semantic + keyword'
-      : result.matchType === 'keyword' ? 'keyword' : 'semantic';
-    const sourceLabel = result.scoreSource === 'filename' ? 'filename match' : 'content match';
-    lines.push(`Silo: ${result.siloName} | Relevance: ${Math.round(result.qualityScore * 100)}% | Match: ${matchLabel} | Ranked by: ${sourceLabel}`);
+    const puid = assignPuid(result.filePath);
+    lines.push(`## ${puid}: ${result.filePath}`);
+    const pct = Math.round(result.score * 100);
+    const sourceLabel = result.scoreSource === 'filename' ? 'filename' : 'content';
+    const scorerLabel = result.scoreSource === 'filename'
+      ? 'levenshtein'
+      : (result.chunks[0]?.scores.bestScorer ?? 'semantic');
+    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${sourceLabel}, ${scorerLabel})`);
     lines.push('');
 
     for (const chunk of result.chunks) {
       const section = chunk.sectionPath.length > 0
         ? chunk.sectionPath.join(' > ')
         : '(top-level)';
-      lines.push(`### ${section} (lines ${chunk.startLine}–${chunk.endLine})`);
+      lines.push(`### ${section} (lines ${chunk.startLine}\u2013${chunk.endLine})`);
       lines.push('```');
       lines.push(chunk.text.trim());
       lines.push('```');
@@ -111,7 +142,9 @@ function formatExploreResults(results: DirectoryResult[]): string {
 
   for (const result of results) {
     lines.push(`## ${result.dirPath}`);
-    lines.push(`Silo: ${result.siloName} | Relevance: ${Math.round(result.qualityScore * 100)}% | ${result.fileCount} files · ${result.subdirCount} subdirs`);
+    const pct = Math.round(result.score * 100);
+    const sourceLabel = result.scoreSource === 'keyword' ? 'keyword' : 'segment';
+    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${sourceLabel}) | ${result.fileCount} files \u00B7 ${result.subdirCount} subdirs`);
     lines.push('');
 
     if (result.children.length > 0) {
@@ -136,7 +169,7 @@ function renderTree(
     const node = nodes[i];
     const isLast = i === nodes.length - 1;
     const connector = isLast ? '\u2514\u2500' : '\u251C\u2500';
-    const stats = `${node.fileCount} files · ${node.subdirCount} subdirs`;
+    const stats = `${node.fileCount} files \u00B7 ${node.subdirCount} subdirs`;
     lines.push(`${prefix}${connector} ${node.name}/ (${stats})`);
 
     if (node.children.length > 0) {
@@ -147,17 +180,45 @@ function renderTree(
   return lines;
 }
 
-// ── Description ──────────────────────────────────────────────────────────────
+// ── Tool Descriptions ────────────────────────────────────────────────────────
 
 const SEARCH_DESCRIPTION = [
   'Search across locally indexed files using semantic (vector) search.',
   'Returns ranked file results with relevant code/text chunks.',
   '',
-  'Search presets (controls how signals are weighted):',
-  '  \u2022 balanced \u2014 general-purpose mix of semantic + keyword signals (default)',
-  '  \u2022 semantic  \u2014 conceptual/prose queries; finds documents that mean the same thing even if they use different words',
-  '  \u2022 keyword   \u2014 exact phrase matching; finds documents that contain the query terms, including tags and metadata',
-  '  \u2022 code      \u2014 identifier and path matching; finds specific function names, class names, or file paths using substring matching',
+  'Results are scored on two axes:',
+  '  \u2022 content \u2014 max(semantic similarity, BM25 keyword match) per chunk',
+  '  \u2022 filename \u2014 Levenshtein similarity of the query to the file name',
+  'The file score is max(content, filename), making all scores transparent [0,1].',
+  '',
+  'Each result is assigned a short reference ID (r1, r2, ...) for use with lodestone_read.',
+  'Use lodestone_read after searching to retrieve full file contents.',
+  '',
+  'Use the lodestone_status tool to see available silos and their current state.',
+].join('\n');
+
+const READ_DESCRIPTION = [
+  'Read file contents by reference ID from a previous lodestone_search.',
+  '',
+  'Accepts an array of references:',
+  '  \u2022 Plain string "r1" \u2014 reads the full file for result r1',
+  '  \u2022 Object { id: "r1", startLine: 10, endLine: 20 } \u2014 reads lines 10\u201320',
+  '',
+  'Reference IDs (r1, r2, ...) are assigned by lodestone_search and reset on each new search.',
+  'You can also pass absolute file paths instead of reference IDs.',
+].join('\n');
+
+const EXPLORE_DESCRIPTION = [
+  'Explore the directory structure of locally indexed silos.',
+  'Returns ranked directories with nested tree views showing file/subdirectory counts.',
+  '',
+  'Use without a query to browse the top-level directories of a silo (ordered by depth then file count).',
+  'Results are capped at maxResults \u2014 increase it if you need to see more top-level directories.',
+  'Use with a query to find directories by name or path.',
+  '',
+  'Directories are scored on two axes:',
+  '  \u2022 segment \u2014 Levenshtein similarity of query to each path segment (finds dirs by name)',
+  '  \u2022 keyword \u2014 token coverage of query words in the path (finds dirs matching multi-word queries)',
   '',
   'Use the lodestone_status tool to see available silos and their current state.',
 ].join('\n');
@@ -193,17 +254,17 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       query: z.string().describe('The search query \u2014 use natural language or code snippets'),
       silo: z.string().optional().describe('Restrict search to a specific silo name (omit to search all)'),
       maxResults: z.number().min(1).max(50).optional().describe('Maximum results to return (default: 10)'),
-      preset: z.enum(['balanced', 'semantic', 'keyword', 'code']).optional()
-        .describe('Search weight preset (default: balanced). Use "code" for source-code silos, "semantic" for prose, "keyword" for exact terms.'),
       startPath: z.string().optional().describe('Filter results to files under this directory path'),
     },
-    async ({ query, silo, maxResults, preset, startPath }) => {
+    async ({ query, silo, maxResults, startPath }) => {
       try {
+        // Reset puid namespace on each new search
+        resetPuids();
+
         const { results, warnings } = await deps.search({
           query,
           silo,
           maxResults: maxResults ?? 10,
-          preset,
           startPath,
         });
 
@@ -217,6 +278,67 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
 
         return {
           content: [{ type: 'text' as const, text }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // ── Register lodestone_read tool ──
+
+  server.tool(
+    'lodestone_read',
+    READ_DESCRIPTION,
+    {
+      results: z.array(z.union([
+        z.string(),
+        z.object({
+          id: z.string(),
+          startLine: z.number().int().min(1).optional(),
+          endLine: z.number().int().min(1).optional(),
+        }),
+      ])).min(1).describe('Array of reference IDs (e.g. "r1") or objects with id and optional line range'),
+    },
+    async ({ results: refs }) => {
+      try {
+        const sections: string[] = [];
+
+        for (const entry of refs) {
+          const id = typeof entry === 'string' ? entry : entry.id;
+          const startLine = typeof entry === 'object' ? entry.startLine : undefined;
+          const endLine = typeof entry === 'object' ? entry.endLine : undefined;
+
+          const filePath = resolvePuid(id);
+
+          try {
+            const content = fs.readFileSync(filePath, 'utf-8');
+
+            if (startLine || endLine) {
+              const allLines = content.split('\n');
+              const start = (startLine ?? 1) - 1; // convert to 0-indexed
+              const end = endLine ?? allLines.length;
+              const slice = allLines.slice(start, end);
+              sections.push(
+                `## ${id}: ${filePath} (lines ${start + 1}\u2013${end})\n\`\`\`\n${slice.join('\n')}\n\`\`\``,
+              );
+            } else {
+              sections.push(
+                `## ${id}: ${filePath}\n\`\`\`\n${content}\n\`\`\``,
+              );
+            }
+          } catch (readErr) {
+            const msg = readErr instanceof Error ? readErr.message : String(readErr);
+            sections.push(`## ${id}: ${filePath}\nError: ${msg}`);
+          }
+        }
+
+        return {
+          content: [{ type: 'text' as const, text: sections.join('\n\n---\n\n') }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -278,23 +400,6 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
 
   // ── Register lodestone_explore tool ──
 
-  const EXPLORE_DESCRIPTION = [
-    'Explore the directory structure of locally indexed silos.',
-    'Returns ranked directories with nested tree views showing file/subdirectory counts.',
-    '',
-    'Use without a query to browse the top-level directories of a silo (ordered by depth then file count).',
-    'Results are capped at maxResults — increase it if you need to see more top-level directories.',
-    'Use with a query to find directories by name or path.',
-    '',
-    'Search presets (controls how signals are weighted):',
-    '  \u2022 balanced \u2014 general-purpose mix of semantic + keyword signals (default)',
-    '  \u2022 semantic  \u2014 prioritises vector similarity; best for conceptual/prose queries',
-    '  \u2022 keyword   \u2014 prioritises trigram + filepath matching; best for exact directory names',
-    '  \u2022 code      \u2014 boosts filepath scoring; best for source-code silos',
-    '',
-    'Use the lodestone_status tool to see available silos and their current state.',
-  ].join('\n');
-
   server.tool(
     'lodestone_explore',
     EXPLORE_DESCRIPTION,
@@ -304,10 +409,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       startPath: z.string().optional().describe('Filter to directories under this path'),
       maxDepth: z.number().min(1).max(5).optional().describe('Depth of directory tree expansion (default: 2)'),
       maxResults: z.number().min(1).max(50).optional().describe('Maximum directory results to return (default: 20). Increase when browsing without a query to see more top-level directories.'),
-      preset: z.enum(['balanced', 'semantic', 'keyword', 'code']).optional()
-        .describe('Search weight preset (default: balanced). Use "code" for path-heavy, "semantic" for conceptual queries.'),
     },
-    async ({ query, silo, startPath, maxDepth, maxResults, preset }) => {
+    async ({ query, silo, startPath, maxDepth, maxResults }) => {
       try {
         const { results, warnings } = await deps.explore({
           query,
@@ -315,7 +418,6 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           startPath,
           maxDepth: maxDepth ?? 2,
           maxResults: maxResults ?? 20,
-          preset,
         });
 
         let text = formatExploreResults(results);

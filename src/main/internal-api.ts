@@ -13,10 +13,9 @@
 
 import { createServer, type Server, type Socket } from 'node:net';
 import type { AppContext } from './context';
-import { dispatchSearch, dispatchExplore, calibrateAndMerge, calibrateAndMergeDirectories } from '../backend/search-merge';
+import { dispatchExplore, mergeDirectoryResults, dispatchTwoAxisSearch, mergeTwoAxisResults } from '../backend/search-merge';
 import { resolveModelAlias } from '../backend/model-registry';
-import type { SearchResult, DirectoryResult, SiloStatus, SearchWeights } from '../shared/types';
-import { DEFAULT_SEARCH_WEIGHTS, DEFAULT_EXPLORE_WEIGHTS, SEARCH_PRESETS, EXPLORE_PRESETS } from '../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
 import type { SiloManager } from '../backend/silo-manager';
 
 /** Windows named pipe path. */
@@ -171,7 +170,6 @@ export class InternalApi {
     const query = params.query as string;
     const silo = params.silo as string | undefined;
     const maxResults = (params.maxResults as number) ?? 10;
-    const preset = params.preset as string | undefined;
     const startPath = params.startPath as string | undefined;
 
     if (!query) throw new Error('Missing required parameter: query');
@@ -220,38 +218,30 @@ export class InternalApi {
       return { results: [], warnings };
     }
 
-    // Resolve weights: explicit preset > user's configured weights > defaults
-    const weights: SearchWeights = SEARCH_PRESETS[preset as keyof typeof SEARCH_PRESETS]
-      ?? this.ctx.config?.search.weights
-      ?? DEFAULT_SEARCH_WEIGHTS;
-
-    const raw = await dispatchSearch(
+    const raw = await dispatchTwoAxisSearch(
       query,
       searchable,
       (model) => this.ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
       maxResults,
-      weights,
       startPath,
     );
 
-    const merged = calibrateAndMerge(raw);
-    merged.sort((a, b) => b.qualityScore - a.qualityScore);
+    const merged = mergeTwoAxisResults(raw, maxResults);
 
-    const results: SearchResult[] = merged.slice(0, maxResults).map((r) => ({
+    const results: SearchResult[] = merged.map((r) => ({
       filePath: r.filePath,
-      score: r.score,
-      qualityScore: r.qualityScore,
-      matchType: r.matchType,
-      scoreSource: r.scoreSource,
-      chunks: r.chunks.map((c) => ({
-        ...c,
-        breakdown: c.breakdown,
-      })),
       siloName: r.siloName,
-      rrfScore: r.rrfScore,
-      bestCosineSimilarity: r.bestCosineSimilarity,
-      weights: r.weights,
-      breakdown: r.breakdown,
+      score: r.score,
+      scoreSource: r.scoreSource,
+      contentScore: r.contentScore,
+      filenameScore: r.filenameScore,
+      chunks: r.chunks.map((c) => ({
+        sectionPath: c.sectionPath,
+        text: c.text,
+        startLine: c.startLine,
+        endLine: c.endLine,
+        scores: c.scores,
+      })),
     }));
 
     return { results, warnings };
@@ -269,7 +259,6 @@ export class InternalApi {
     const startPath = params.startPath as string | undefined;
     const maxDepth = (params.maxDepth as number) ?? 2;
     const maxResults = (params.maxResults as number) ?? 20;
-    const preset = params.preset as string | undefined;
 
     // Notify renderer that an MCP explore is happening
     this.ctx.mainWindow?.webContents.send('mcp:search', { query: query ?? '', silo });
@@ -305,36 +294,26 @@ export class InternalApi {
       }
     }
 
-    // For explore, even silos without embedding services can return structural results
-    // (empty query uses broadQueryFallback which doesn't need embeddings)
-    const isEmptyQuery = !query || query.trim().length === 0;
-    const searchable = isEmptyQuery
-      ? ready
-      : ready.filter(([, m]) => m.getEmbeddingService() !== null);
-
-    if (searchable.length === 0) {
+    if (ready.length === 0) {
       return { results: [], warnings };
     }
 
-    const weights = EXPLORE_PRESETS[preset as keyof typeof EXPLORE_PRESETS]
-      ?? DEFAULT_EXPLORE_WEIGHTS;
-
+    // No embeddings needed — directory scoring uses string-based scorers
     const raw = await dispatchExplore(
-      { query, startPath, maxDepth, maxResults, weights },
-      searchable,
-      (model) => this.ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+      { query, startPath, maxDepth, maxResults },
+      ready,
     );
 
-    const merged = calibrateAndMergeDirectories(raw);
-    merged.sort((a, b) => b.qualityScore - a.qualityScore);
+    const merged = mergeDirectoryResults(raw, maxResults);
 
-    const results: DirectoryResult[] = merged.slice(0, maxResults).map((r) => ({
+    const results: DirectoryResult[] = merged.map((r) => ({
       dirPath: r.dirPath,
       dirName: r.dirName,
       siloName: r.siloName,
       score: r.score,
-      qualityScore: r.qualityScore,
-      breakdown: r.breakdown,
+      scoreSource: r.scoreSource,
+      segmentScore: r.segmentScore,
+      keywordScore: r.keywordScore,
       fileCount: r.fileCount,
       subdirCount: r.subdirCount,
       depth: r.depth,

@@ -11,7 +11,7 @@ import type { MatchType, SearchWeights, ScoreBreakdown, ScoreSource } from '../s
 import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import type { EmbeddingService } from './embedding';
 import type { SiloManager } from './silo-manager';
-import type { SiloSearchResultChunk } from './store';
+import type { SiloSearchResultChunk, TwoAxisFileResult, TwoAxisScoreSource, TwoAxisChunk } from './store';
 import { RRF_K } from './store';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 
@@ -194,47 +194,102 @@ export function calibrateAndMerge(raw: RawSiloResult[]): MergedResult[] {
 
 // ── Directory Exploration ───────────────────────────────────────────────────
 
-/** Raw per-directory result from a single silo, before cross-silo calibration. */
+/** Per-directory result from a single silo with siloName attached. */
 export interface RawDirectoryResult extends SiloDirectorySearchResult {
   siloName: string;
 }
 
-/** Merged directory result with calibrated score. */
-export interface MergedDirectoryResult extends RawDirectoryResult {
-  qualityScore: number;
-}
-
 /**
- * Run a directory explore query across multiple silos, grouping by embedding
- * model so the query is only embedded once per model.
+ * Run a directory explore query across multiple silos.
+ *
+ * No embeddings needed — directory scoring uses segment Levenshtein
+ * and token coverage, both of which operate on the query string directly.
  */
 export async function dispatchExplore(
   params: DirectorySearchParams,
   managers: Iterable<[string, SiloManager]>,
-  resolveService: (model: string) => EmbeddingService | null,
 ): Promise<RawDirectoryResult[]> {
+  const raw: RawDirectoryResult[] = [];
+
+  for (const [name, manager] of managers) {
+    try {
+      const siloResults = manager.exploreDirectories(params);
+      for (const r of siloResults) {
+        raw.push({ ...r, siloName: name });
+      }
+    } catch (err) {
+      console.error(`[explore] Error in silo "${name}":`, err);
+    }
+  }
+
+  return raw;
+}
+
+/**
+ * Merge directory results from multiple silos.
+ *
+ * No calibration needed — scores are absolute [0,1] values.
+ * Just sort by score descending and truncate.
+ */
+export function mergeDirectoryResults(
+  raw: RawDirectoryResult[],
+  limit: number,
+): RawDirectoryResult[] {
+  return raw
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+// ── Two-Axis Search (replaces RRF pipeline) ─────────────────────────────────
+
+/** Per-file result from a single silo in the two-axis model. */
+export interface TwoAxisSiloResult {
+  filePath: string;
+  siloName: string;
+  score: number;
+  scoreSource: TwoAxisScoreSource;
+  contentScore: number;
+  filenameScore: number;
+  chunks: TwoAxisChunk[];
+}
+
+/**
+ * Run a two-axis search query across multiple silos, grouping by embedding
+ * model so the query is only embedded once per model.
+ *
+ * No cross-silo calibration needed — all scores are absolute [0,1].
+ */
+export async function dispatchTwoAxisSearch(
+  query: string,
+  managers: Iterable<[string, SiloManager]>,
+  resolveService: (model: string) => EmbeddingService | null,
+  limit: number,
+  startPath?: string,
+): Promise<TwoAxisSiloResult[]> {
   const byModel = groupByModel(managers);
 
-  const raw: RawDirectoryResult[] = [];
-  const isEmptyQuery = !params.query || params.query.trim().length === 0;
-
+  const raw: TwoAxisSiloResult[] = [];
   for (const [model, group] of byModel) {
-    let queryEmbedding: number[] | undefined;
+    const service = resolveService(model);
+    if (!service) continue;
 
-    if (!isEmptyQuery) {
-      const service = resolveService(model);
-      if (!service) continue;
-      queryEmbedding = await service.embed(params.query!);
-    }
-
+    const queryVector = await service.embed(query);
     for (const [name, manager] of group) {
       try {
-        const siloResults = manager.exploreDirectories(params, queryEmbedding);
+        const siloResults = manager.searchTwoAxis(queryVector, query, limit, startPath);
         for (const r of siloResults) {
-          raw.push({ ...r, siloName: name });
+          raw.push({
+            filePath: r.filePath,
+            siloName: name,
+            score: r.score,
+            scoreSource: r.scoreSource,
+            contentScore: r.contentScore,
+            filenameScore: r.filenameScore,
+            chunks: r.chunks,
+          });
         }
       } catch (err) {
-        console.error(`[explore] Error in silo "${name}":`, err);
+        console.error(`[search] Error in silo "${name}":`, err);
       }
     }
   }
@@ -243,18 +298,16 @@ export async function dispatchExplore(
 }
 
 /**
- * Calibrate and merge directory results from multiple silos.
+ * Merge two-axis results from multiple silos.
  *
- * Simpler than file calibration — uses mean cosine per silo when cross-silo,
- * and computes quality scores from cosine + signal agreement.
+ * Unlike the old RRF pipeline, no calibration is needed because scores are
+ * absolute [0,1] values. We just flatten, sort by score, and take top results.
  */
-export function calibrateAndMergeDirectories(raw: RawDirectoryResult[]): MergedDirectoryResult[] {
-  const crossSilo = new Set(raw.map((r) => r.siloName)).size > 1;
-  const siloMeanCosine = crossSilo ? computeSiloMeanCosines(raw) : new Map<string, number>();
-
-  return raw.map((r) => ({
-    ...r,
-    score: crossSilo ? r.score * (siloMeanCosine.get(r.siloName) ?? 0) : r.score,
-    qualityScore: computeQualityScore(r.bestCosineSimilarity, r.breakdown, DIR_SIGNAL_COUNT),
-  }));
+export function mergeTwoAxisResults(
+  raw: TwoAxisSiloResult[],
+  limit: number,
+): TwoAxisSiloResult[] {
+  return raw
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }

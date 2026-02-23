@@ -14,6 +14,7 @@ import type { EmbeddingService } from './embedding';
 import {
   createSiloDatabase,
   hybridSearchSilo,
+  twoAxisSearch,
   getChunkCount,
   loadMtimes,
   setMtime,
@@ -26,12 +27,13 @@ import {
   peekFileCount,
   type SiloDatabase,
   type SiloSearchResult,
+  type TwoAxisFileResult,
   type StoredSiloConfig,
 } from './store';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
 import type { WatcherState, SearchWeights, DirectoryTreeNode } from '../shared/types';
-import { DEFAULT_SEARCH_WEIGHTS, ZERO_SCORE_BREAKDOWN } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import { directorySearchSilo, expandTree, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
 
@@ -499,19 +501,25 @@ export class SiloManager {
     return this.resolveResultPaths(results);
   }
 
+  /** Two-axis search with a pre-computed query vector. */
+  searchTwoAxis(queryVector: number[], queryText: string, maxResults: number = 10, startPath?: string): TwoAxisFileResult[] {
+    if (!this.db) return [];
+    const results = twoAxisSearch(this.db, queryVector, queryText, maxResults, startPath);
+    return this.resolveTwoAxisPaths(results);
+  }
+
   /**
-   * Explore directory structure with a pre-computed query vector.
-   * Used by the main process to embed the query once and share the
-   * vector across all silos.
+   * Explore directory structure using segment Levenshtein and token coverage.
+   * No embeddings needed — scoring operates on the query string directly.
    */
-  exploreDirectories(params: DirectorySearchParams, queryEmbedding?: number[]): SiloDirectorySearchResult[] {
+  exploreDirectories(params: DirectorySearchParams): SiloDirectorySearchResult[] {
     if (!this.db) return [];
     const isEmptyQuery = !params.query || params.query.trim().length === 0;
     // Empty query with no startPath → return the silo's configured root directories directly
     if (isEmptyQuery && !params.startPath) {
       return this.exploreRootDirectories(params.maxDepth ?? 2);
     }
-    const raw = directorySearchSilo(this.db, params, queryEmbedding);
+    const raw = directorySearchSilo(this.db, params);
     return this.resolveDirectoryPaths(raw);
   }
 
@@ -537,8 +545,9 @@ export class SiloManager {
         dirPath: absPath,
         dirName: path.basename(absPath),
         score: 1.0,
-        bestCosineSimilarity: 0,
-        breakdown: ZERO_SCORE_BREAKDOWN,
+        scoreSource: 'segment' as const,
+        segmentScore: 0,
+        keywordScore: 0,
         fileCount,
         subdirCount,
         depth: 0,
@@ -549,6 +558,14 @@ export class SiloManager {
 
   /** Resolve stored keys in search results back to absolute file paths. */
   private resolveResultPaths(results: SiloSearchResult[]): SiloSearchResult[] {
+    return results.map((r) => ({
+      ...r,
+      filePath: resolveStoredKey(r.filePath, this.config.directories),
+    }));
+  }
+
+  /** Resolve stored keys in two-axis search results back to absolute file paths. */
+  private resolveTwoAxisPaths(results: TwoAxisFileResult[]): TwoAxisFileResult[] {
     return results.map((r) => ({
       ...r,
       filePath: resolveStoredKey(r.filePath, this.config.directories),

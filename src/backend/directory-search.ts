@@ -1,10 +1,16 @@
 /**
- * Directory search — 3-signal RRF pipeline for directory exploration.
+ * Directory search — two-axis scoring for directory exploration.
  *
- * Signals:
- *   1. Semantic   — sqlite-vec cosine similarity on directory embeddings
- *   2. Trigram    — FTS5 trigram search on dir_path and dir_name
- *   3. Filepath   — LIKE substring match on directories.dir_path
+ * Axes:
+ *   1. Segment Levenshtein — decompose path into segments, score each
+ *      against query, take best. Finds directories by name.
+ *   2. Token coverage — tokenise query and path, compute what fraction
+ *      of query tokens appear in path tokens. Finds directories
+ *      matching multi-word queries.
+ *
+ * Directory score = max(segment, keyword).
+ *
+ * Prefilter: trigram FTS5 on dirs_fts to narrow candidates before scoring.
  *
  * Empty query with no startPath is handled upstream in SiloManager, which
  * returns the silo's configured root directories directly. The broadQueryFallback
@@ -12,10 +18,9 @@
  */
 
 import type { SiloDatabase } from './store';
-import type { SearchWeights, ScoreBreakdown, DirectoryTreeNode } from '../shared/types';
-import { DEFAULT_EXPLORE_WEIGHTS, ZERO_SCORE_BREAKDOWN } from '../shared/types';
-
-const DIR_RRF_K = 60;
+import type { DirectoryTreeNode, DirectoryScoreSource } from '../shared/types';
+import { levenshteinDistance } from './scorers/filename';
+import { tokenise } from './tokeniser';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -24,19 +29,74 @@ export interface DirectorySearchParams {
   startPath?: string;
   maxDepth?: number;
   maxResults?: number;
-  weights?: SearchWeights;
 }
 
 export interface SiloDirectorySearchResult {
   dirPath: string;
   dirName: string;
   score: number;
-  bestCosineSimilarity: number;
-  breakdown: ScoreBreakdown;
+  scoreSource: DirectoryScoreSource;
+  segmentScore: number;
+  keywordScore: number;
   fileCount: number;
   subdirCount: number;
   depth: number;
   children: DirectoryTreeNode[];
+}
+
+// ── Scorers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Score a directory path by comparing each path segment against the query
+ * using normalised Levenshtein distance. Returns the best (highest) score.
+ *
+ * Example: query "chunkers", path "src/backend/chunkers/" → high score
+ * on the "chunkers" segment.
+ */
+function scoreSegmentLevenshtein(queryLower: string, dirPath: string): number {
+  const segments = dirPath.replace(/\/$/, '').split(/[/\\]/).filter((s) => s.length > 0);
+  let best = 0;
+  for (const seg of segments) {
+    const segLower = seg.toLowerCase();
+    const maxLen = Math.max(queryLower.length, segLower.length);
+    if (maxLen === 0) continue;
+    const dist = levenshteinDistance(queryLower, segLower);
+    const sim = 1 - dist / maxLen;
+    if (sim > best) best = sim;
+  }
+  return best;
+}
+
+/**
+ * Score a directory path by token coverage — what fraction of query tokens
+ * appear in the path (as exact matches or substring containment).
+ *
+ * Example: query "nutrient calculator", path "src/nutrients/calculator/" → 1.0
+ * (both query tokens matched by path tokens).
+ */
+function scorePathTokenCoverage(queryTokens: string[], dirPath: string): number {
+  if (queryTokens.length === 0) return 0;
+  // Tokenise the path by splitting on separators, then into alphanumeric tokens
+  const pathTokens = tokenise(dirPath.replace(/[/\\]/g, ' '));
+  let matched = 0;
+  for (const qt of queryTokens) {
+    // Exact token match
+    if (pathTokens.includes(qt)) {
+      matched++;
+      continue;
+    }
+    // Substring containment (either direction) — handles partial matches
+    // like "chunk" matching "chunkers" or "test" matching "tests"
+    let found = false;
+    for (const pt of pathTokens) {
+      if (pt.includes(qt) || qt.includes(pt)) {
+        found = true;
+        break;
+      }
+    }
+    if (found) matched++;
+  }
+  return matched / queryTokens.length;
 }
 
 // ── Main Search Function ────────────────────────────────────────────────────
@@ -44,14 +104,12 @@ export interface SiloDirectorySearchResult {
 export function directorySearchSilo(
   db: SiloDatabase,
   params: DirectorySearchParams,
-  queryEmbedding?: number[],
 ): SiloDirectorySearchResult[] {
   const {
     query,
     startPath,
     maxDepth = 2,
     maxResults = 20,
-    weights = DEFAULT_EXPLORE_WEIGHTS,
   } = params;
 
   const isEmptyQuery = !query || query.trim().length === 0;
@@ -61,156 +119,93 @@ export function directorySearchSilo(
   }
 
   const candidateLimit = maxResults * 5;
-  const k = DIR_RRF_K;
+  const queryLower = query.trim().toLowerCase();
+  const queryTokens = tokenise(query);
 
-  // Normalise weights (only semantic, trigram, filepath are active)
-  const wTotal = weights.semantic + weights.trigram + weights.filepath;
-  const w = wTotal > 0 ? {
-    semantic: weights.semantic / wTotal,
-    trigram: weights.trigram / wTotal,
-    filepath: weights.filepath / wTotal,
-  } : { semantic: 0.4, trigram: 0.3, filepath: 0.3 };
+  // ── Prefilter: trigram FTS5 + LIKE substring ──
 
-  // ── Signal 1: Semantic (sqlite-vec on dirs_vec) ──
+  const candidateIds = new Set<number>();
 
-  const vecRankMap = new Map<number, number>();
-  const cosineSims = new Map<number, number>();
-  if (queryEmbedding && w.semantic > 0) {
-    try {
-      const vecRows = db.prepare(`
-        SELECT v.rowid, v.distance
-        FROM dirs_vec v
-        WHERE v.embedding MATCH ?
-          AND k = ?
-        ORDER BY v.distance
-      `).all(float32Buffer(queryEmbedding), candidateLimit) as Array<{ rowid: number; distance: number }>;
-
-      for (let i = 0; i < vecRows.length; i++) {
-        const cosine = 1 - vecRows[i].distance / 2;
-        vecRankMap.set(vecRows[i].rowid, i + 1);
-        cosineSims.set(vecRows[i].rowid, cosine);
-      }
-    } catch {
-      // Skip if dirs_vec is empty or query fails
-    }
-  }
-
-  // ── Signal 2: Trigram (FTS5 on dirs_fts) ──
-
-  const trigramRankMap = new Map<number, number>();
-  const sanitised = sanitiseTrigramQuery(query!);
-  if (sanitised.length > 0 && w.trigram > 0) {
+  // Trigram prefilter
+  const sanitised = sanitiseTrigramQuery(query);
+  if (sanitised.length > 0) {
     try {
       const rows = db.prepare(`
-        SELECT rowid, rank FROM dirs_fts
+        SELECT rowid FROM dirs_fts
         WHERE dirs_fts MATCH ?
         ORDER BY rank LIMIT ?
-      `).all(sanitised, candidateLimit) as Array<{ rowid: number; rank: number }>;
-      for (let i = 0; i < rows.length; i++) {
-        trigramRankMap.set(rows[i].rowid, i + 1);
-      }
+      `).all(sanitised, candidateLimit) as Array<{ rowid: number }>;
+      for (const row of rows) candidateIds.add(row.rowid);
     } catch {
-      // FTS5 error — skip signal
+      // FTS5 error — skip
     }
   }
 
-  // ── Signal 3: Filepath (LIKE substring match on dir_path) ──
-
-  const filepathRankMap = new Map<number, number>();
-  if (query!.trim().length > 0 && w.filepath > 0) {
-    const likePattern = `%${query!.trim().replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
-    try {
-      const rows = db.prepare(`
-        SELECT id FROM directories
-        WHERE dir_path LIKE ? ESCAPE '\\'
-        ORDER BY depth ASC, file_count DESC
-        LIMIT ?
-      `).all(likePattern, candidateLimit) as Array<{ id: number }>;
-      for (let i = 0; i < rows.length; i++) {
-        filepathRankMap.set(rows[i].id, i + 1);
-      }
-    } catch {
-      // Skip on error
-    }
+  // LIKE substring fallback
+  const likePattern = `%${query.trim().replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
+  try {
+    const rows = db.prepare(`
+      SELECT id FROM directories
+      WHERE dir_path LIKE ? ESCAPE '\\'
+      ORDER BY depth ASC, file_count DESC
+      LIMIT ?
+    `).all(likePattern, candidateLimit) as Array<{ id: number }>;
+    for (const row of rows) candidateIds.add(row.id);
+  } catch {
+    // Skip on error
   }
 
-  // ── Union candidates and compute RRF ──
+  if (candidateIds.size === 0) return [];
 
-  const allIds = new Set([
-    ...vecRankMap.keys(),
-    ...trigramRankMap.keys(),
-    ...filepathRankMap.keys(),
-  ]);
+  // ── Fetch candidate directories ──
 
-  if (allIds.size === 0) return [];
-
-  const penaltyRank = candidateLimit + 1;
-  const rrfScores = new Map<number, number>();
-  const breakdowns = new Map<number, ScoreBreakdown>();
-
-  for (const id of allIds) {
-    const vecRank = vecRankMap.get(id) ?? penaltyRank;
-    const triRank = trigramRankMap.get(id) ?? penaltyRank;
-    const fpRank = filepathRankMap.get(id) ?? penaltyRank;
-
-    const semanticContrib = w.semantic / (k + vecRank);
-    const trigramContrib = w.trigram / (k + triRank);
-    const filepathContrib = w.filepath / (k + fpRank);
-
-    const rrf = semanticContrib + trigramContrib + filepathContrib;
-    rrfScores.set(id, rrf);
-    breakdowns.set(id, {
-      semantic:  { rank: vecRankMap.get(id) ?? 0, rawScore: cosineSims.get(id) ?? 0, rrfContribution: semanticContrib },
-      bm25:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-      trigram:   { rank: trigramRankMap.get(id) ?? 0, rawScore: 0, rrfContribution: trigramContrib },
-      filepath:  { rank: filepathRankMap.get(id) ?? 0, rawScore: 0, rrfContribution: filepathContrib },
-      tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-    });
-  }
-
-  // Sort by RRF score — overfetch to account for startPath filtering + ancestor dedup
-  const sortedIds = Array.from(rrfScores.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, maxResults * 4)
-    .map(([id]) => id);
-
-  // Fetch directory data for top results
-  const placeholders = sortedIds.map(() => '?').join(',');
+  const idList = Array.from(candidateIds);
+  const placeholders = idList.map(() => '?').join(',');
   const dirRows = db.prepare(`
     SELECT id, dir_path, dir_name, depth, file_count, subdir_count
     FROM directories
     WHERE id IN (${placeholders})
-  `).all(...sortedIds) as Array<{
+  `).all(...idList) as Array<{
     id: number; dir_path: string; dir_name: string;
     depth: number; file_count: number; subdir_count: number;
   }>;
 
-  const dirMap = new Map(dirRows.map((r) => [r.id, r]));
+  // ── Score candidates ──
 
-  // Build results, filtering by startPath if specified
-  const results: SiloDirectorySearchResult[] = [];
-  for (const id of sortedIds) {
-    const dir = dirMap.get(id);
-    if (!dir) continue;
+  const scored: SiloDirectorySearchResult[] = [];
+
+  for (const dir of dirRows) {
     if (startPath && !dir.dir_path.includes(startPath)) continue;
 
-    const children = expandTree(db, dir.dir_path, dir.depth, maxDepth);
+    const segmentScore = scoreSegmentLevenshtein(queryLower, dir.dir_path);
+    const keywordScore = scorePathTokenCoverage(queryTokens, dir.dir_path);
+    const score = Math.max(segmentScore, keywordScore);
+    const scoreSource: DirectoryScoreSource = segmentScore >= keywordScore ? 'segment' : 'keyword';
 
-    results.push({
+    scored.push({
       dirPath: dir.dir_path,
       dirName: dir.dir_name,
-      score: rrfScores.get(id) ?? 0,
-      bestCosineSimilarity: cosineSims.get(id) ?? 0,
-      breakdown: breakdowns.get(id)!,
+      score,
+      scoreSource,
+      segmentScore,
+      keywordScore,
       fileCount: dir.file_count,
       subdirCount: dir.subdir_count,
       depth: dir.depth,
-      children,
+      children: [], // filled below after sorting
     });
   }
 
-  // Remove results already visible inside a higher-ranked ancestor's tree
-  return deduplicateAncestors(results, maxDepth).slice(0, maxResults);
+  // Sort by score descending, overfetch for ancestor dedup
+  scored.sort((a, b) => b.score - a.score);
+  const topScored = scored.slice(0, maxResults * 4);
+
+  // Expand trees for top results
+  for (const result of topScored) {
+    result.children = expandTree(db, result.dirPath, result.depth, maxDepth);
+  }
+
+  return deduplicateAncestors(topScored, maxDepth).slice(0, maxResults);
 }
 
 // ── Broad/Empty Query Fallback ──────────────────────────────────────────────
@@ -221,7 +216,6 @@ function broadQueryFallback(
   maxDepth: number,
   maxResults: number,
 ): SiloDirectorySearchResult[] {
-  // Overfetch to account for ancestor dedup
   const fetchLimit = maxResults * 4;
   let rows;
   if (startPath) {
@@ -248,8 +242,9 @@ function broadQueryFallback(
     dirPath: r.dir_path,
     dirName: r.dir_name,
     score: 1.0,
-    bestCosineSimilarity: 0,
-    breakdown: ZERO_SCORE_BREAKDOWN,
+    scoreSource: 'segment' as DirectoryScoreSource,
+    segmentScore: 0,
+    keywordScore: 0,
     fileCount: r.file_count,
     subdirCount: r.subdir_count,
     depth: r.depth,
@@ -264,9 +259,7 @@ function broadQueryFallback(
 /**
  * Remove results that are already visible inside a higher-ranked ancestor's
  * expanded tree. Results are processed in score order (highest first), so an
- * ancestor is always accepted before its descendants. A descendant is dropped
- * when it is a sub-path of an accepted result AND falls within that result's
- * tree expansion depth.
+ * ancestor is always accepted before its descendants.
  */
 function deduplicateAncestors(
   results: SiloDirectorySearchResult[],
@@ -288,7 +281,6 @@ function deduplicateAncestors(
 
 /**
  * Expand a directory's children tree to maxDepth levels below the root.
- * Queries the directories table and assembles into a nested tree.
  */
 export function expandTree(
   db: SiloDatabase,
@@ -316,7 +308,6 @@ export function expandTree(
 
 /**
  * Assemble a flat list of directory rows (sorted by dir_path) into a nested tree.
- * Directories at rootDepth+1 become root-level children; deeper ones nest under parents.
  */
 function buildTreeFromFlat(
   rows: Array<{ dir_path: string; dir_name: string; file_count: number; subdir_count: number; depth: number }>,
@@ -324,7 +315,6 @@ function buildTreeFromFlat(
 ): DirectoryTreeNode[] {
   const nodeMap = new Map<string, DirectoryTreeNode>();
 
-  // Create nodes
   for (const r of rows) {
     nodeMap.set(r.dir_path, {
       name: r.dir_name,
@@ -335,14 +325,12 @@ function buildTreeFromFlat(
     });
   }
 
-  // Link children to parents
   const roots: DirectoryTreeNode[] = [];
   for (const r of rows) {
     const node = nodeMap.get(r.dir_path)!;
     if (r.depth === rootDepth + 1) {
       roots.push(node);
     } else {
-      // Find parent by trimming the last path segment
       const parentPath = r.dir_path.replace(/[^/]+\/$/, '');
       const parent = nodeMap.get(parentPath);
       if (parent) {
@@ -355,12 +343,6 @@ function buildTreeFromFlat(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Convert number[] to Buffer for sqlite-vec queries. */
-function float32Buffer(vec: number[]): Buffer {
-  const f32 = new Float32Array(vec);
-  return Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength);
-}
 
 /**
  * Sanitise a query for FTS5 trigram MATCH.

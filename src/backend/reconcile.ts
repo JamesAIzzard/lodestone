@@ -14,8 +14,7 @@ import path from 'node:path';
 import { prepareFile, type PreparedFile } from './pipeline';
 import {
   makeStoredKey, resolveStoredKey, flushPreparedFiles,
-  syncDirectoriesWithDisk, getDirectoriesNeedingEmbeddings,
-  flushDirectoryEmbeddings, directoryEmbeddingText,
+  syncDirectoriesWithDisk, flushDirectoryFts,
   type SiloDatabase,
 } from './store';
 import type { EmbeddingService } from './embedding';
@@ -270,24 +269,12 @@ export async function reconcile(
       }
     }
 
-    // 9. Generate embeddings for any new directories
-    const dirsNeedingEmbed = getDirectoriesNeedingEmbeddings(db);
-    if (dirsNeedingEmbed.length > 0) {
-      const embedEntries: Array<{ id: number; dirPath: string; dirName: string; embedding: number[] }> = [];
-      for (const dir of dirsNeedingEmbed) {
-        if (shouldStop?.()) break;
-        const text = directoryEmbeddingText(dir.dirPath);
-        const embedding = await embeddingService.embed(text);
-        embedEntries.push({ ...dir, embedding });
-      }
-      if (embedEntries.length > 0) {
-        flushDirectoryEmbeddings(db, embedEntries);
-        console.log(`[reconcile] Embedded ${embedEntries.length} director${embedEntries.length === 1 ? 'y' : 'ies'}`);
-        // Emit dir-added events for newly embedded directories
-        for (const entry of embedEntries) {
-          onEvent?.({ filePath: resolveStoredKey(entry.dirPath, config.directories), eventType: 'dir-added' });
-        }
-      }
+    // 9. Sync FTS entries for all directories (no embeddings needed)
+    const allDirs = db.prepare(
+      `SELECT id, dir_path, dir_name FROM directories`,
+    ).all() as Array<{ id: number; dir_path: string; dir_name: string }>;
+    if (allDirs.length > 0) {
+      flushDirectoryFts(db, allDirs.map((d) => ({ id: d.id, dirPath: d.dir_path, dirName: d.dir_name })));
     }
   }
 

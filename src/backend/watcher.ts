@@ -16,7 +16,7 @@ import { prepareFile, type PreparedFile } from './pipeline';
 import {
   makeStoredKey, makeStoredDirKey, resolveStoredKey,
   flushPreparedFiles, insertDirEntry, deleteDirEntry,
-  getDirectoriesNeedingEmbeddings, flushDirectoryEmbeddings, directoryEmbeddingText,
+  flushDirectoryFts,
   type SiloDatabase,
 } from './store';
 import type { ResolvedSiloConfig } from './config';
@@ -277,30 +277,19 @@ export class SiloWatcher {
         }
       }
 
-      // Sync directory embeddings for any newly-created directories
+      // Sync FTS entries for any newly-created directories
       // (from file upserts via maintainDirectoriesOnUpsert, or from addDir events above).
-      // Wrapped in try/catch so directory embedding failures never break the file-indexing flow.
-      const needsDirEmbed = upserts.length > 0 || pendingDirAdds.length > 0;
-      if (needsDirEmbed) {
+      const needsDirFts = upserts.length > 0 || pendingDirAdds.length > 0;
+      if (needsDirFts) {
         try {
-          const dirsNeedingEmbed = getDirectoriesNeedingEmbeddings(this.db);
-          if (dirsNeedingEmbed.length > 0) {
-            const embedEntries: Array<{ id: number; dirPath: string; dirName: string; embedding: number[] }> = [];
-            for (const dir of dirsNeedingEmbed) {
-              try {
-                const text = directoryEmbeddingText(dir.dirPath);
-                const embedding = await this.embeddingService.embed(text);
-                embedEntries.push({ ...dir, embedding });
-              } catch (err) {
-                console.error(`[watcher] Error embedding directory ${dir.dirPath}:`, err);
-              }
-            }
-            if (embedEntries.length > 0) {
-              flushDirectoryEmbeddings(this.db, embedEntries);
-            }
+          const allDirs = this.db.prepare(
+            `SELECT id, dir_path, dir_name FROM directories`,
+          ).all() as Array<{ id: number; dir_path: string; dir_name: string }>;
+          if (allDirs.length > 0) {
+            flushDirectoryFts(this.db, allDirs.map((d) => ({ id: d.id, dirPath: d.dir_path, dirName: d.dir_name })));
           }
         } catch (err) {
-          console.error(`[watcher] Error syncing directory embeddings:`, err);
+          console.error(`[watcher] Error syncing directory FTS:`, err);
         }
       }
 

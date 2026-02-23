@@ -23,6 +23,9 @@ import path from 'node:path';
 import type { ChunkRecord } from './pipeline-types';
 import type { SearchWeights, ScoreBreakdown, ScoreSource } from '../shared/types';
 import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
+import { tokenise } from './tokeniser';
+import { scoreBm25 } from './scorers/bm25';
+import { scoreFilenames } from './scorers/filename';
 
 // ── Portable Path Utilities ──────────────────────────────────────────────────
 
@@ -89,7 +92,6 @@ export function deleteDirEntry(db: SiloDatabase, dirPath: string): number | null
   if (!row) return null;
   db.transaction(() => {
     try { db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`).run(row.id); } catch { /* ignore */ }
-    try { db.prepare(`DELETE FROM dirs_vec WHERE rowid = ?`).run(row.id); } catch { /* ignore */ }
     db.prepare(`DELETE FROM directories WHERE id = ?`).run(row.id);
   })();
   return row.id;
@@ -231,7 +233,8 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
       metadata      TEXT    NOT NULL DEFAULT '{}',
       content_hash  TEXT    NOT NULL,
       heading_depth INTEGER NOT NULL DEFAULT 0,
-      tags_text     TEXT    NOT NULL DEFAULT ''
+      tags_text     TEXT    NOT NULL DEFAULT '',
+      token_count   INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON chunks(file_path);
@@ -283,6 +286,21 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    -- Inverted index for hand-rolled BM25 scoring
+    CREATE TABLE IF NOT EXISTS terms (
+      term     TEXT PRIMARY KEY,
+      doc_freq INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS postings (
+      term      TEXT    NOT NULL,
+      chunk_id  INTEGER NOT NULL,
+      term_freq INTEGER NOT NULL,
+      PRIMARY KEY (term, chunk_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_postings_chunk ON postings(chunk_id);
   `);
 
   // Add new columns to existing databases that predate this schema version.
@@ -298,6 +316,13 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
   ).get();
   if (!hasTagsText) {
     db.exec(`ALTER TABLE chunks ADD COLUMN tags_text TEXT NOT NULL DEFAULT ''`);
+  }
+
+  const hasTokenCount = db.prepare(
+    `SELECT 1 FROM pragma_table_info('chunks') WHERE name='token_count'`,
+  ).get();
+  if (!hasTokenCount) {
+    db.exec(`ALTER TABLE chunks ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0`);
   }
 
   // sqlite-vec virtual table — must be created separately because
@@ -319,12 +344,12 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
     db.exec(`CREATE VIRTUAL TABLE dirs_fts USING fts5(dir_path, dir_name, tokenize='trigram')`);
   }
 
-  // dirs_vec: vector search on directory embeddings
+  // Drop legacy dirs_vec if it exists (no longer used — directory search uses string scorers)
   const dirsVecExists = db.prepare(
     `SELECT 1 FROM sqlite_master WHERE type='table' AND name='dirs_vec'`,
   ).get();
-  if (!dirsVecExists) {
-    db.exec(`CREATE VIRTUAL TABLE dirs_vec USING vec0(embedding float[${dimensions}])`);
+  if (dirsVecExists) {
+    db.exec(`DROP TABLE dirs_vec`);
   }
 
   return db;
@@ -362,6 +387,11 @@ function upsertFileInner(
   for (const row of existingRows) {
     trigramDelete.run(row.id);
     metaFtsDelete.run(row.id);
+  }
+
+  // 3b. Remove from inverted index (postings + terms.doc_freq)
+  if (existingRows.length > 0) {
+    removeFromInvertedIndex(db, existingRows.map((r) => r.id));
   }
 
   // 4. Remove from vec_chunks
@@ -403,8 +433,18 @@ function upsertFileInner(
     `INSERT INTO chunks_meta_fts(rowid, tags_text) VALUES (?, ?)`,
   );
 
+  const insertPosting = db.prepare(
+    `INSERT OR REPLACE INTO postings (term, chunk_id, term_freq) VALUES (?, ?, ?)`,
+  );
+  const upsertTerm = db.prepare(
+    `INSERT INTO terms (term, doc_freq) VALUES (?, 1) ON CONFLICT(term) DO UPDATE SET doc_freq = doc_freq + 1`,
+  );
+
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
+    const tokens = tokenise(chunk.text);
+    const tokenCount = tokens.length;
+
     const vecResult = insertVec.run(float32Buffer(embeddings[i]));
     const rowid = Number(vecResult.lastInsertRowid);
     insertChunk.run(
@@ -420,12 +460,28 @@ function upsertFileInner(
       chunk.headingDepth,
       chunk.tagsText,
     );
+    // Store token count on the chunk row
+    db.prepare(`UPDATE chunks SET token_count = ? WHERE id = ?`).run(tokenCount, rowid);
+
     insertFts.run(rowid, chunk.text);
     insertTrigram.run(rowid, chunk.text);
     if (chunk.tagsText) {
       insertMetaFts.run(rowid, chunk.tagsText);
     }
+
+    // Build inverted index: compute term frequencies and write postings
+    const termFreqs = new Map<string, number>();
+    for (const token of tokens) {
+      termFreqs.set(token, (termFreqs.get(token) ?? 0) + 1);
+    }
+    for (const [term, freq] of termFreqs) {
+      upsertTerm.run(term);
+      insertPosting.run(term, rowid, freq);
+    }
   }
+
+  // Update corpus-level BM25 stats
+  updateCorpusStats(db);
 
   if (mtimeMs !== undefined) {
     db.prepare(`INSERT OR REPLACE INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`).run(filePath, mtimeMs);
@@ -457,6 +513,11 @@ function deleteFileInner(db: SiloDatabase, filePath: string, deleteMtimeEntry?: 
     metaFtsDelete.run(row.id);
   }
 
+  // Remove from inverted index (postings + terms.doc_freq)
+  if (existingRows.length > 0) {
+    removeFromInvertedIndex(db, existingRows.map((r) => r.id));
+  }
+
   const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
   for (const row of existingRows) {
     vecDelete.run(row.id);
@@ -474,6 +535,9 @@ function deleteFileInner(db: SiloDatabase, filePath: string, deleteMtimeEntry?: 
   if (deleteMtimeEntry) {
     db.prepare(`DELETE FROM mtimes WHERE file_path = ?`).run(filePath);
   }
+
+  // Update corpus-level BM25 stats
+  updateCorpusStats(db);
 
   // Recompute directory counts (never remove dirs — lifecycle driven by reconciliation)
   const dirPaths = extractDirectoryPaths(filePath);
@@ -843,6 +907,195 @@ export function hybridSearchSilo(
   );
 }
 
+// ── Two-Axis Search ─────────────────────────────────────────────────────────
+
+export interface TwoAxisChunkScore {
+  /** Cosine similarity to query vector (0 if chunk not in semantic results). */
+  semantic: number;
+  /** Normalised BM25 score (0 if chunk has no query term matches). */
+  bm25: number;
+  /** max(semantic, bm25) — the winning content score for this chunk. */
+  best: number;
+  /** Which scorer produced the best score. */
+  bestScorer: 'semantic' | 'bm25';
+}
+
+export interface TwoAxisChunk {
+  sectionPath: string[];
+  text: string;
+  startLine: number;
+  endLine: number;
+  scores: TwoAxisChunkScore;
+}
+
+export type TwoAxisScoreSource = 'content' | 'filename';
+
+export interface TwoAxisFileResult {
+  filePath: string;
+  /** Overall file score: max(contentScore, filenameScore). */
+  score: number;
+  /** Which axis drove the file's ranking. */
+  scoreSource: TwoAxisScoreSource;
+  /** Best chunk's content score (max of semantic/BM25 across chunks). */
+  contentScore: number;
+  /** Levenshtein filename similarity (0 if no filename match). */
+  filenameScore: number;
+  /** Top chunks sorted by content score descending. */
+  chunks: TwoAxisChunk[];
+}
+
+/**
+ * Two-axis search: replaces the 5-signal RRF pipeline.
+ *
+ * Content axis: max(cosine_similarity, normalised_bm25) per chunk.
+ * Filename axis: Levenshtein similarity on file basenames (trigram prefiltered).
+ * File score: max(best_chunk_content_score, filename_score).
+ *
+ * All scores are transparent [0,1] values.
+ */
+export function twoAxisSearch(
+  db: SiloDatabase,
+  queryVector: number[],
+  queryText: string,
+  maxResults: number = 10,
+  startPath?: string,
+): TwoAxisFileResult[] {
+  const chunkLimit = maxResults * CHUNK_FANOUT;
+
+  // ── Content Axis: Semantic ────────────────────────────────────────────────
+  const vecRows = db.prepare(`
+    SELECT v.rowid, v.distance
+    FROM vec_chunks v
+    WHERE v.embedding MATCH ?
+      AND k = ?
+    ORDER BY v.distance
+  `).all(float32Buffer(queryVector), chunkLimit) as Array<{ rowid: number; distance: number }>;
+
+  const cosineSims = new Map<number, number>();
+  for (const row of vecRows) {
+    cosineSims.set(row.rowid, 1 - row.distance / 2);
+  }
+
+  // ── Content Axis: BM25 ────────────────────────────────────────────────────
+  const queryTokens = tokenise(queryText);
+  const bm25Scores = scoreBm25(db, queryTokens);
+
+  // ── Merge chunk IDs from both content signals ─────────────────────────────
+  const allChunkIds = new Set([...cosineSims.keys(), ...bm25Scores.keys()]);
+  if (allChunkIds.size === 0 && queryText.trim().length === 0) return [];
+
+  // ── Filename Axis ─────────────────────────────────────────────────────────
+  const filenameScores = scoreFilenames(db, queryText);
+
+  // If we have no content matches and no filename matches, nothing to return
+  if (allChunkIds.size === 0 && filenameScores.size === 0) return [];
+
+  // ── Fetch chunk data for all content-matched chunks ───────────────────────
+  const chunkDataMap = new Map<number, {
+    file_path: string;
+    section_path: string;
+    text: string;
+    start_line: number;
+    end_line: number;
+  }>();
+
+  if (allChunkIds.size > 0) {
+    db.exec(`CREATE TEMP TABLE IF NOT EXISTS _twoaxis_ids (id INTEGER PRIMARY KEY)`);
+    db.exec(`DELETE FROM _twoaxis_ids`);
+    const insertId = db.prepare(`INSERT INTO _twoaxis_ids (id) VALUES (?)`);
+    for (const id of allChunkIds) {
+      insertId.run(id);
+    }
+
+    const chunkRows = db.prepare(`
+      SELECT c.id, c.file_path, c.section_path, c.text, c.start_line, c.end_line
+      FROM chunks c
+      JOIN _twoaxis_ids t ON t.id = c.id
+    `).all() as Array<{
+      id: number;
+      file_path: string;
+      section_path: string;
+      text: string;
+      start_line: number;
+      end_line: number;
+    }>;
+
+    for (const row of chunkRows) {
+      chunkDataMap.set(row.id, row);
+    }
+  }
+
+  // ── Build per-file aggregation ────────────────────────────────────────────
+  const fileMap = new Map<string, {
+    bestContentScore: number;
+    chunks: TwoAxisChunk[];
+  }>();
+
+  for (const chunkId of allChunkIds) {
+    const data = chunkDataMap.get(chunkId);
+    if (!data) continue;
+
+    // Apply startPath filter
+    if (startPath && !data.file_path.startsWith(startPath)) continue;
+
+    const semantic = cosineSims.get(chunkId) ?? 0;
+    const bm25 = bm25Scores.get(chunkId)?.score ?? 0;
+    const best = Math.max(semantic, bm25);
+    const bestScorer: 'semantic' | 'bm25' = semantic >= bm25 ? 'semantic' : 'bm25';
+
+    const chunk: TwoAxisChunk = {
+      sectionPath: JSON.parse(data.section_path),
+      text: data.text,
+      startLine: data.start_line,
+      endLine: data.end_line,
+      scores: { semantic, bm25, best, bestScorer },
+    };
+
+    const existing = fileMap.get(data.file_path);
+    if (existing) {
+      existing.chunks.push(chunk);
+      if (best > existing.bestContentScore) existing.bestContentScore = best;
+    } else {
+      fileMap.set(data.file_path, { bestContentScore: best, chunks: [chunk] });
+    }
+  }
+
+  // Add filename-only files (matched by filename but no content chunks)
+  for (const [filePath] of filenameScores) {
+    if (startPath && !filePath.startsWith(startPath)) continue;
+    if (!fileMap.has(filePath)) {
+      fileMap.set(filePath, { bestContentScore: 0, chunks: [] });
+    }
+  }
+
+  // ── Compute final file scores and sort ────────────────────────────────────
+  const results: TwoAxisFileResult[] = [];
+
+  for (const [filePath, { bestContentScore, chunks }] of fileMap) {
+    const filenameScore = filenameScores.get(filePath)?.score ?? 0;
+    const score = Math.max(bestContentScore, filenameScore);
+    const scoreSource: TwoAxisScoreSource = filenameScore > bestContentScore ? 'filename' : 'content';
+
+    // Sort chunks by content score descending, cap at MAX_CHUNKS_PER_FILE
+    chunks.sort((a, b) => b.scores.best - a.scores.best);
+    if (chunks.length > MAX_CHUNKS_PER_FILE) chunks.length = MAX_CHUNKS_PER_FILE;
+
+    results.push({
+      filePath,
+      score,
+      scoreSource,
+      contentScore: bestContentScore,
+      filenameScore,
+      chunks,
+    });
+  }
+
+  results.sort((a, b) => b.score - a.score);
+  if (results.length > maxResults) results.length = maxResults;
+
+  return results;
+}
+
 // ── Stats ────────────────────────────────────────────────────────────────────
 
 /**
@@ -999,6 +1252,56 @@ export function readConfigFromDbFile(dbPath: string): {
   }
 }
 
+// ── Inverted Index Helpers ───────────────────────────────────────────────────
+
+/**
+ * Remove a set of chunk IDs from the inverted index.
+ * Decrements doc_freq in the terms table and deletes terms that reach 0.
+ * Must be called BEFORE deleting the chunk rows from the chunks table.
+ */
+function removeFromInvertedIndex(db: SiloDatabase, chunkIds: number[]): void {
+  if (chunkIds.length === 0) return;
+
+  // 1. Collect the terms that will be affected
+  const placeholders = chunkIds.map(() => '?').join(',');
+  const affectedTerms = db.prepare(
+    `SELECT DISTINCT term FROM postings WHERE chunk_id IN (${placeholders})`,
+  ).all(...chunkIds) as Array<{ term: string }>;
+
+  // 2. Delete all postings for these chunks
+  db.prepare(`DELETE FROM postings WHERE chunk_id IN (${placeholders})`).run(...chunkIds);
+
+  // 3. Recompute doc_freq for each affected term from remaining postings.
+  //    Delete terms that have no remaining postings.
+  for (const { term } of affectedTerms) {
+    const remaining = db.prepare(
+      `SELECT COUNT(*) as cnt FROM postings WHERE term = ?`,
+    ).get(term) as { cnt: number };
+
+    if (remaining.cnt === 0) {
+      db.prepare(`DELETE FROM terms WHERE term = ?`).run(term);
+    } else {
+      db.prepare(`UPDATE terms SET doc_freq = ? WHERE term = ?`).run(remaining.cnt, term);
+    }
+  }
+}
+
+/**
+ * Recompute corpus-level BM25 statistics and store them in the meta table.
+ * Called after every upsert or delete transaction.
+ */
+function updateCorpusStats(db: SiloDatabase): void {
+  const stats = db.prepare(
+    `SELECT COUNT(*) AS cnt, COALESCE(AVG(token_count), 0) AS avg_tc FROM chunks`,
+  ).get() as { cnt: number; avg_tc: number };
+
+  const upsertMeta = db.prepare(
+    `INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`,
+  );
+  upsertMeta.run('corpus_chunk_count', String(stats.cnt));
+  upsertMeta.run('corpus_avg_token_count', String(stats.avg_tc));
+}
+
 // ── Internal Helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -1050,19 +1353,6 @@ export function extractDirectoryPaths(storedKey: string): Array<{ dirPath: strin
 }
 
 /**
- * Generate embedding text for a directory path.
- * Path separators become spaces, leaf name is repeated for emphasis.
- * e.g. "0:src/backend/chunkers/" → "src backend chunkers chunkers"
- */
-export function directoryEmbeddingText(dirPath: string): string {
-  const colonIdx = dirPath.indexOf(':');
-  const rel = colonIdx >= 0 ? dirPath.slice(colonIdx + 1) : dirPath;
-  const segments = rel.replace(/\/$/, '').split('/').filter(Boolean);
-  const leaf = segments[segments.length - 1] ?? '';
-  return [...segments, leaf].join(' ');
-}
-
-/**
  * Maintain the directories table after a file upsert.
  * Ensures all ancestor directories exist and recomputes their counts.
  * Runs inside the caller's transaction.
@@ -1111,58 +1401,21 @@ function updateDirectoryCounts(
   }
 }
 
-// ── Directory Embedding Helpers ─────────────────────────────────────────────
-
 /**
- * Find directories that exist in the directories table but have no embedding.
- * Returns entries needing embedding generation.
+ * Flush FTS entries for a batch of directories.
+ * Called after directories are synced to ensure dirs_fts is up to date.
  */
-export function getDirectoriesNeedingEmbeddings(db: SiloDatabase): Array<{
-  id: number;
-  dirPath: string;
-  dirName: string;
-}> {
-  // Avoid LEFT JOIN on the vec0 virtual table — sqlite-vec may not support
-  // standard JOIN semantics reliably. Instead, collect existing vec rowids
-  // and filter in application code.
-  const allDirs = db.prepare(
-    `SELECT id, dir_path, dir_name FROM directories`,
-  ).all() as Array<{ id: number; dir_path: string; dir_name: string }>;
-
-  // vec0 rowid lookups: fetch IDs one at a time (vec0 doesn't support
-  // SELECT rowid FROM dirs_vec without a MATCH clause on some builds).
-  const checkVec = db.prepare(`SELECT rowid FROM dirs_vec WHERE rowid = ?`);
-  const rows = allDirs.filter((d) => {
-    try {
-      return !checkVec.get(d.id);
-    } catch {
-      // If the vec0 table doesn't support this query, assume the dir needs embedding
-      return true;
-    }
-  });
-  return rows.map((r) => ({ id: r.id, dirPath: r.dir_path, dirName: r.dir_name }));
-}
-
-/**
- * Write directory embeddings and FTS entries for a batch of directories.
- * Called after embedding generation completes.
- */
-export function flushDirectoryEmbeddings(
+export function flushDirectoryFts(
   db: SiloDatabase,
-  entries: Array<{ id: number; dirPath: string; dirName: string; embedding: number[] }>,
+  entries: Array<{ id: number; dirPath: string; dirName: string }>,
 ): void {
   if (entries.length === 0) return;
 
   db.transaction(() => {
-    // Use OR REPLACE to handle cases where the directory already has an embedding
-    // (e.g. vec0 LEFT JOIN returned stale results, or re-embed after a failure).
-    const insertVec = db.prepare(`INSERT OR REPLACE INTO dirs_vec(rowid, embedding) VALUES (?, ?)`);
     const deleteOldFts = db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`);
     const insertFts = db.prepare(`INSERT INTO dirs_fts(rowid, dir_path, dir_name) VALUES (?, ?, ?)`);
 
     for (const entry of entries) {
-      insertVec.run(entry.id, float32Buffer(entry.embedding));
-      // FTS5 doesn't support OR REPLACE, so delete+re-insert
       deleteOldFts.run(entry.id);
       insertFts.run(entry.id, entry.dirPath, entry.dirName);
     }
@@ -1201,7 +1454,6 @@ export function syncDirectoriesWithDisk(
     // Remove orphaned directories
     for (const d of toRemove) {
       db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`).run(d.id);
-      db.prepare(`DELETE FROM dirs_vec WHERE rowid = ?`).run(d.id);
       db.prepare(`DELETE FROM directories WHERE id = ?`).run(d.id);
     }
 

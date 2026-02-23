@@ -18,9 +18,8 @@ import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/
 import { checkOllamaConnection } from '../backend/embedding';
 import type { SiloManager } from '../backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
-import { calibrateAndMerge, calibrateAndMergeDirectories, dispatchSearch, dispatchExplore } from '../backend/search-merge';
-import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, SearchWeights, ExploreParams } from '../shared/types';
-import { DEFAULT_SEARCH_WEIGHTS, DEFAULT_EXPLORE_WEIGHTS } from '../shared/types';
+import { dispatchExplore, mergeDirectoryResults, dispatchTwoAxisSearch, mergeTwoAxisResults } from '../backend/search-merge';
+import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams } from '../shared/types';
 import type { AppContext } from './context';
 import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
 
@@ -100,7 +99,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return statuses;
   });
 
-  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string, weights?: SearchWeights, startPath?: string): Promise<SearchResult[]> => {
+  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string, _weights?: unknown, startPath?: string): Promise<SearchResult[]> => {
     // Collect searchable managers — skip stopped and model-mismatched silos
     const ready: [string, SiloManager][] = [];
     if (siloName) {
@@ -114,38 +113,31 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
     if (ready.length === 0) return [];
 
-    const effectiveWeights: SearchWeights = weights ?? ctx.config?.search.weights ?? DEFAULT_SEARCH_WEIGHTS;
-
-    const raw = await dispatchSearch(
+    const raw = await dispatchTwoAxisSearch(
       query,
       ready,
       (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
       10,
-      effectiveWeights,
       startPath,
     );
 
-    const merged = calibrateAndMerge(raw);
-    merged.sort((a, b) => b.qualityScore - a.qualityScore);
+    const merged = mergeTwoAxisResults(raw, 20);
 
-    const results: SearchResult[] = merged.slice(0, 20).map((r) => ({
+    return merged.map((r) => ({
       filePath: r.filePath,
-      score: r.score,
-      qualityScore: r.qualityScore,
-      matchType: r.matchType,
-      scoreSource: r.scoreSource,
-      chunks: r.chunks.map((c) => ({
-        ...c,
-        breakdown: c.breakdown,
-      })),
       siloName: r.siloName,
-      rrfScore: r.rrfScore,
-      bestCosineSimilarity: r.bestCosineSimilarity,
-      weights: r.weights,
-      breakdown: r.breakdown,
+      score: r.score,
+      scoreSource: r.scoreSource,
+      contentScore: r.contentScore,
+      filenameScore: r.filenameScore,
+      chunks: r.chunks.map((c) => ({
+        sectionPath: c.sectionPath,
+        text: c.text,
+        startLine: c.startLine,
+        endLine: c.endLine,
+        scores: c.scores,
+      })),
     }));
-
-    return results;
   });
 
   ipcMain.handle('silos:explore', async (_event, params: ExploreParams): Promise<DirectoryResult[]> => {
@@ -162,42 +154,22 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
     if (ready.length === 0) return [];
 
-    const effectiveWeights = params.weights ?? DEFAULT_EXPLORE_WEIGHTS;
+    const raw = await dispatchExplore(params, ready);
+    const merged = mergeDirectoryResults(raw, params.maxResults ?? 10);
 
-    const raw = await dispatchExplore(
-      { ...params, weights: effectiveWeights },
-      ready,
-      (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
-    );
-
-    const merged = calibrateAndMergeDirectories(raw);
-    merged.sort((a, b) => b.qualityScore - a.qualityScore);
-
-    return merged.slice(0, params.maxResults ?? 10).map((r) => ({
+    return merged.map((r) => ({
       dirPath: r.dirPath,
       dirName: r.dirName,
       siloName: r.siloName,
       score: r.score,
-      qualityScore: r.qualityScore,
-      breakdown: r.breakdown,
+      scoreSource: r.scoreSource,
+      segmentScore: r.segmentScore,
+      keywordScore: r.keywordScore,
       fileCount: r.fileCount,
       subdirCount: r.subdirCount,
       depth: r.depth,
       children: r.children,
     }));
-  });
-
-  // ── Search Weights ──────────────────────────────────────────────────────
-
-  ipcMain.handle('search:getWeights', async (): Promise<SearchWeights> => {
-    return ctx.config?.search.weights ?? DEFAULT_SEARCH_WEIGHTS;
-  });
-
-  ipcMain.handle('search:updateWeights', async (_event, weights: SearchWeights): Promise<{ success: boolean }> => {
-    if (!ctx.config) return { success: false };
-    ctx.config.search.weights = weights;
-    saveConfig(ctx.configPath(), ctx.config);
-    return { success: true };
   });
 
   // ── Activity ────────────────────────────────────────────────────────────

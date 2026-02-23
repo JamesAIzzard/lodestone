@@ -100,51 +100,50 @@ export const ZERO_SCORE_BREAKDOWN: ScoreBreakdown = {
   tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
 };
 
-// ── Search ────────────────────────────────────────────────────────────────────
+// ── Search (Two-Axis Model) ──────────────────────────────────────────────────
+
+/** Per-chunk score breakdown: semantic and BM25 sub-scores, plus the winning scorer. */
+export interface ChunkScore {
+  /** Cosine similarity to query vector [0,1]. */
+  semantic: number;
+  /** Normalised BM25 score [0,1]. */
+  bm25: number;
+  /** max(semantic, bm25) — the chunk's content score. */
+  best: number;
+  /** Which scorer produced the best score. */
+  bestScorer: 'semantic' | 'bm25';
+}
 
 export interface SearchResultChunk {
   sectionPath: string[];
   text: string;
   startLine: number;
   endLine: number;
-  score: number;
-  /** Whether this chunk was matched by semantic search, keyword search, or both */
-  matchType: MatchType;
-  /** Cosine similarity of this chunk to the query (0 for keyword-only chunks) */
-  cosineSimilarity: number;
-  /** Per-signal score breakdown for this chunk */
-  breakdown?: ScoreBreakdown;
+  /** Per-scorer breakdown for this chunk. */
+  scores: ChunkScore;
 }
 
-export type MatchType = 'semantic' | 'keyword' | 'both';
-
-/** What drove this file's ranking score: a filename/path match or content signals */
-export type ScoreSource = 'filename' | 'content';
+/** What drove this file's ranking score: a filename/path match or content signals. */
+export type ScoreSource = 'content' | 'filename';
 
 export interface SearchResult {
   filePath: string;
-  /** Final score (RRF, or RRF × bestCosineSimilarity when merging across silos) */
-  score: number;
-  /**
-   * Display-friendly "goodness of fit" score (0–1).
-   * Anchored on cosine similarity, boosted by keyword signal agreement.
-   * Use this for display and ordering; `score` (RRF) is the raw ranking signal.
-   */
-  qualityScore: number;
-  matchType: MatchType;
-  /** Whether the file's score was driven by a filename/path match or content signals */
-  scoreSource: ScoreSource;
-  chunks: SearchResultChunk[];
   siloName: string;
-  /** Raw RRF score before cross-silo cosine calibration */
-  rrfScore: number;
-  /** Best cosine similarity among the file's vector-matched chunks (0 for keyword-only) */
-  bestCosineSimilarity: number;
-  /** Per-signal score breakdown for this file's best-scoring chunk */
-  breakdown?: ScoreBreakdown;
-  /** The search weights that produced this result */
-  weights?: SearchWeights;
+  /** Overall file score: max(contentScore, filenameScore) [0,1]. */
+  score: number;
+  /** Which axis drove the file's ranking. */
+  scoreSource: ScoreSource;
+  /** Best chunk content score across all chunks. */
+  contentScore: number;
+  /** Levenshtein filename similarity [0,1] (0 if no filename match). */
+  filenameScore: number;
+  /** Top chunks sorted by content score descending. */
+  chunks: SearchResultChunk[];
 }
+
+// Legacy types — still used by old code paths (directory search, store.ts internals).
+// Will be removed once all consumers are migrated.
+export type MatchType = 'semantic' | 'keyword' | 'both';
 
 // ── Directory Exploration ────────────────────────────────────────────────
 
@@ -161,6 +160,9 @@ export interface DirectoryTreeNode {
   children: DirectoryTreeNode[];
 }
 
+/** What drove a directory's ranking: a segment name match or keyword coverage. */
+export type DirectoryScoreSource = 'segment' | 'keyword';
+
 export interface DirectoryResult {
   /** Absolute filesystem path of the matched directory */
   dirPath: string;
@@ -168,12 +170,14 @@ export interface DirectoryResult {
   dirName: string;
   /** Silo this directory belongs to */
   siloName: string;
-  /** Overall relevance score (0-1) */
+  /** Overall directory score: max(segmentScore, keywordScore) [0,1]. */
   score: number;
-  /** Display-friendly quality score (0-1), analogous to SearchResult.qualityScore */
-  qualityScore: number;
-  /** Per-signal score breakdown */
-  breakdown: ScoreBreakdown;
+  /** Which axis drove the directory's ranking. */
+  scoreSource: DirectoryScoreSource;
+  /** Best path-segment Levenshtein similarity [0,1]. */
+  segmentScore: number;
+  /** Path token coverage score [0,1]. */
+  keywordScore: number;
   /** Number of files directly in this directory */
   fileCount: number;
   /** Number of immediate subdirectories */
@@ -190,23 +194,7 @@ export interface ExploreParams {
   startPath?: string;
   maxDepth?: number;
   maxResults?: number;
-  weights?: SearchWeights;
 }
-
-export const DEFAULT_EXPLORE_WEIGHTS: SearchWeights = {
-  semantic: 0.40,
-  bm25: 0.0,
-  trigram: 0.30,
-  filepath: 0.30,
-  tags: 0.0,
-};
-
-export const EXPLORE_PRESETS: Record<SearchPreset, SearchWeights> = {
-  balanced: DEFAULT_EXPLORE_WEIGHTS,
-  semantic: { semantic: 0.90, bm25: 0.0, trigram: 0.05, filepath: 0.05, tags: 0.0 },
-  keyword:  { semantic: 0.05, bm25: 0.0, trigram: 0.55, filepath: 0.40, tags: 0.0 },
-  code:     { semantic: 0.05, bm25: 0.0, trigram: 0.40, filepath: 0.55, tags: 0.0 },
-};
 
 // ── Activity ──────────────────────────────────────────────────────────────────
 

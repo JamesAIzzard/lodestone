@@ -42,18 +42,28 @@ const SIGNAL_KEYS = ['semantic', 'bm25', 'trigram', 'filepath', 'tags'] as const
  * Compute a display-friendly "goodness of fit" quality score (0–0.99).
  *
  * Anchored on cosine similarity (a real 0-1 quality measure).
- * Each additional matching signal adds an agreement bonus.
+ * Each additional matching signal adds an agreement bonus, normalised against
+ * the number of signals that were *available* for this search type so that
+ * directory results (3 active signals) are not penalised vs file results (5).
  * For keyword-only results (no cosine) a moderate baseline is used.
+ *
+ * @param availableSignals  How many signals are active for this search type
+ *                          (default 5 for file search, 3 for directory search).
  */
 export function computeQualityScore(
   bestCosine: number,
   breakdown?: ScoreBreakdown,
+  availableSignals: number = SIGNAL_KEYS.length,
 ): number {
   const matchCount = breakdown
     ? SIGNAL_KEYS.filter((k) => (breakdown[k]?.rank ?? 0) > 0).length
     : 0;
   const base = bestCosine > 0 ? bestCosine : 0.35;
-  const agreementBonus = Math.max(0, matchCount - 1) * 0.05;
+  // Bonus is normalised: full agreement always yields +0.20 regardless of
+  // how many signals are available. For 5 signals this is identical to the
+  // previous formula ((matchCount - 1) * 0.05).
+  const maxSlots = Math.max(1, availableSignals - 1);
+  const agreementBonus = (Math.max(0, matchCount - 1) / maxSlots) * 0.20;
   return Math.min(base + agreementBonus, 0.99);
 }
 
@@ -240,7 +250,8 @@ export function calibrateAndMergeDirectories(raw: RawDirectoryResult[]): MergedD
     return {
       ...r,
       score: calibratedScore,
-      qualityScore: computeQualityScore(r.bestCosineSimilarity, r.breakdown),
+      // 3 active signals for directory search: semantic, trigram, filepath
+      qualityScore: computeQualityScore(r.bestCosineSimilarity, r.breakdown, 3),
     };
   });
 }

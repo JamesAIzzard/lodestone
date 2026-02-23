@@ -262,6 +262,11 @@ export default function SearchView() {
   const activePresets = searchMode === 'directory' ? DIR_WEIGHT_PRESETS : FILE_WEIGHT_PRESETS;
   const isDirectoryMode = searchMode === 'directory';
 
+  function isActivePreset(weights: SearchWeights): boolean {
+    const p = weightsToSliders(weights);
+    return SIGNAL_KEYS.every((k) => sliders[k] === p[k]);
+  }
+
   return (
     <div>
       {/* Sticky header */}
@@ -365,7 +370,12 @@ export default function SearchView() {
                 <button
                   key={p.label}
                   onClick={() => applyPreset(p.weights)}
-                  className="rounded px-2.5 py-1 text-xs text-muted-foreground border border-border hover:bg-accent/50 hover:text-foreground transition-colors"
+                  className={cn(
+                    'rounded px-2.5 py-1 text-xs border transition-colors',
+                    isActivePreset(p.weights)
+                      ? 'bg-accent text-foreground border-border'
+                      : 'text-muted-foreground border-border hover:bg-accent/50 hover:text-foreground',
+                  )}
                 >
                   {p.label}
                 </button>

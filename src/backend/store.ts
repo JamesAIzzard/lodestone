@@ -208,6 +208,17 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
       tags_text
     );
 
+    CREATE TABLE IF NOT EXISTS directories (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      dir_path     TEXT UNIQUE NOT NULL,
+      dir_name     TEXT NOT NULL,
+      depth        INTEGER NOT NULL,
+      file_count   INTEGER NOT NULL DEFAULT 0,
+      subdir_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_directories_depth ON directories(depth);
+
     CREATE TABLE IF NOT EXISTS mtimes (
       file_path TEXT PRIMARY KEY,
       mtime_ms  REAL NOT NULL
@@ -243,6 +254,22 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
 
   if (!vecTableExists) {
     db.exec(`CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[${dimensions}])`);
+  }
+
+  // dirs_fts: trigram search on directory paths and names
+  const dirsFtsExists = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='dirs_fts'`,
+  ).get();
+  if (!dirsFtsExists) {
+    db.exec(`CREATE VIRTUAL TABLE dirs_fts USING fts5(dir_path, dir_name, tokenize='trigram')`);
+  }
+
+  // dirs_vec: vector search on directory embeddings
+  const dirsVecExists = db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='dirs_vec'`,
+  ).get();
+  if (!dirsVecExists) {
+    db.exec(`CREATE VIRTUAL TABLE dirs_vec USING vec0(embedding float[${dimensions}])`);
   }
 
   return db;
@@ -348,6 +375,9 @@ function upsertFileInner(
   if (mtimeMs !== undefined) {
     db.prepare(`INSERT OR REPLACE INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`).run(filePath, mtimeMs);
   }
+
+  // 8. Maintain directories table (insert new dirs, recompute counts)
+  maintainDirectoriesOnUpsert(db, filePath);
 }
 
 /**
@@ -388,6 +418,12 @@ function deleteFileInner(db: SiloDatabase, filePath: string, deleteMtimeEntry?: 
 
   if (deleteMtimeEntry) {
     db.prepare(`DELETE FROM mtimes WHERE file_path = ?`).run(filePath);
+  }
+
+  // Recompute directory counts (never remove dirs — lifecycle driven by reconciliation)
+  const dirPaths = extractDirectoryPaths(filePath);
+  if (dirPaths.length > 0) {
+    updateDirectoryCounts(db, dirPaths);
   }
 }
 
@@ -502,6 +538,7 @@ export function hybridSearchSilo(
   queryText: string,
   maxResults: number = 10,
   weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS,
+  startPath?: string,
 ): SiloSearchResult[] {
   const chunkLimit = maxResults * CHUNK_FANOUT;
   const k = RRF_K;
@@ -698,7 +735,7 @@ export function hybridSearchSilo(
     insertHybridId.run(id);
   }
 
-  const rows = db.prepare(`
+  let rows = db.prepare(`
     SELECT c.id, c.file_path, c.section_path, c.text,
            c.start_line, c.end_line
     FROM chunks c
@@ -711,6 +748,12 @@ export function hybridSearchSilo(
     start_line: number;
     end_line: number;
   }>;
+
+  // Filter to startPath prefix if specified (stored-key prefix match)
+  if (startPath) {
+    rows = rows.filter((r) => r.file_path.startsWith(startPath));
+    if (rows.length === 0) return [];
+  }
 
   return aggregateByFileRrf(
     rows,
@@ -900,6 +943,198 @@ function float32Buffer(vec: number[]): Buffer {
  */
 function fileBasename(filePath: string): string {
   return filePath.split('/').pop() ?? filePath;
+}
+
+// ── Directory Helpers ────────────────────────────────────────────────────────
+
+/**
+ * Extract all ancestor directory paths from a stored key.
+ * e.g. "0:src/backend/chunkers/foo.ts" → [
+ *   { dirPath: "0:src/", dirName: "src", depth: 1 },
+ *   { dirPath: "0:src/backend/", dirName: "backend", depth: 2 },
+ *   { dirPath: "0:src/backend/chunkers/", dirName: "chunkers", depth: 3 },
+ * ]
+ */
+export function extractDirectoryPaths(storedKey: string): Array<{ dirPath: string; dirName: string; depth: number }> {
+  const colonIdx = storedKey.indexOf(':');
+  if (colonIdx === -1) return [];
+
+  const prefix = storedKey.slice(0, colonIdx + 1); // e.g. "0:"
+  const relPath = storedKey.slice(colonIdx + 1);    // e.g. "src/backend/chunkers/foo.ts"
+  const parts = relPath.split('/');
+
+  // Remove the filename (last part)
+  parts.pop();
+  if (parts.length === 0) return [];
+
+  const dirs: Array<{ dirPath: string; dirName: string; depth: number }> = [];
+  for (let i = 0; i < parts.length; i++) {
+    const dirPath = prefix + parts.slice(0, i + 1).join('/') + '/';
+    const dirName = parts[i];
+    dirs.push({ dirPath, dirName, depth: i + 1 });
+  }
+  return dirs;
+}
+
+/**
+ * Generate embedding text for a directory path.
+ * Path separators become spaces, leaf name is repeated for emphasis.
+ * e.g. "0:src/backend/chunkers/" → "src backend chunkers chunkers"
+ */
+export function directoryEmbeddingText(dirPath: string): string {
+  const colonIdx = dirPath.indexOf(':');
+  const rel = colonIdx >= 0 ? dirPath.slice(colonIdx + 1) : dirPath;
+  const segments = rel.replace(/\/$/, '').split('/').filter(Boolean);
+  const leaf = segments[segments.length - 1] ?? '';
+  return [...segments, leaf].join(' ');
+}
+
+/**
+ * Maintain the directories table after a file upsert.
+ * Ensures all ancestor directories exist and recomputes their counts.
+ * Runs inside the caller's transaction.
+ */
+function maintainDirectoriesOnUpsert(db: SiloDatabase, filePath: string): void {
+  const dirPaths = extractDirectoryPaths(filePath);
+  if (dirPaths.length === 0) return;
+
+  const insertDir = db.prepare(
+    `INSERT OR IGNORE INTO directories (dir_path, dir_name, depth, file_count, subdir_count) VALUES (?, ?, ?, 0, 0)`,
+  );
+  for (const d of dirPaths) {
+    insertDir.run(d.dirPath, d.dirName, d.depth);
+  }
+
+  updateDirectoryCounts(db, dirPaths);
+}
+
+/**
+ * Recompute file_count and subdir_count for a set of directory paths.
+ * Does NOT remove empty directories — lifecycle is driven by disk presence during reconciliation.
+ */
+function updateDirectoryCounts(
+  db: SiloDatabase,
+  dirPaths: Array<{ dirPath: string; depth: number }>,
+): void {
+  const updateFileCount = db.prepare(`
+    UPDATE directories SET file_count = (
+      SELECT COUNT(*) FROM files
+      WHERE file_path LIKE ? || '%'
+        AND file_path NOT LIKE ? || '%/%'
+    ) WHERE dir_path = ?
+  `);
+  const updateSubdirCount = db.prepare(`
+    UPDATE directories SET subdir_count = (
+      SELECT COUNT(*) FROM directories
+      WHERE dir_path LIKE ? || '%'
+        AND dir_path != ?
+        AND depth = ?
+    ) WHERE dir_path = ?
+  `);
+
+  for (const d of dirPaths) {
+    updateFileCount.run(d.dirPath, d.dirPath, d.dirPath);
+    updateSubdirCount.run(d.dirPath, d.dirPath, d.depth + 1, d.dirPath);
+  }
+}
+
+// ── Directory Embedding Helpers ─────────────────────────────────────────────
+
+/**
+ * Find directories that exist in the directories table but have no embedding.
+ * Returns entries needing embedding generation.
+ */
+export function getDirectoriesNeedingEmbeddings(db: SiloDatabase): Array<{
+  id: number;
+  dirPath: string;
+  dirName: string;
+}> {
+  const rows = db.prepare(`
+    SELECT d.id, d.dir_path, d.dir_name
+    FROM directories d
+    LEFT JOIN dirs_vec v ON v.rowid = d.id
+    WHERE v.rowid IS NULL
+  `).all() as Array<{ id: number; dir_path: string; dir_name: string }>;
+  return rows.map((r) => ({ id: r.id, dirPath: r.dir_path, dirName: r.dir_name }));
+}
+
+/**
+ * Write directory embeddings and FTS entries for a batch of directories.
+ * Called after embedding generation completes.
+ */
+export function flushDirectoryEmbeddings(
+  db: SiloDatabase,
+  entries: Array<{ id: number; dirPath: string; dirName: string; embedding: number[] }>,
+): void {
+  if (entries.length === 0) return;
+
+  db.transaction(() => {
+    const insertVec = db.prepare(`INSERT INTO dirs_vec(rowid, embedding) VALUES (?, ?)`);
+    const insertFts = db.prepare(`INSERT INTO dirs_fts(rowid, dir_path, dir_name) VALUES (?, ?, ?)`);
+
+    for (const entry of entries) {
+      insertVec.run(entry.id, float32Buffer(entry.embedding));
+      insertFts.run(entry.id, entry.dirPath, entry.dirName);
+    }
+  })();
+}
+
+/**
+ * Sync the directories table with a set of directory paths found on disk.
+ * - Inserts any new directories not yet in the table
+ * - Removes directories no longer present on disk
+ * - Recomputes all counts
+ * Returns the number of directories removed.
+ */
+export function syncDirectoriesWithDisk(
+  db: SiloDatabase,
+  diskDirPaths: Array<{ dirPath: string; dirName: string; depth: number }>,
+): number {
+  const diskSet = new Set(diskDirPaths.map((d) => d.dirPath));
+
+  return db.transaction(() => {
+    // Insert any new directories
+    const insertDir = db.prepare(
+      `INSERT OR IGNORE INTO directories (dir_path, dir_name, depth, file_count, subdir_count) VALUES (?, ?, ?, 0, 0)`,
+    );
+    for (const d of diskDirPaths) {
+      insertDir.run(d.dirPath, d.dirName, d.depth);
+    }
+
+    // Find directories in DB but not on disk
+    const allDbDirs = db.prepare(`SELECT id, dir_path FROM directories`).all() as Array<{
+      id: number;
+      dir_path: string;
+    }>;
+    const toRemove = allDbDirs.filter((d) => !diskSet.has(d.dir_path));
+
+    // Remove orphaned directories
+    for (const d of toRemove) {
+      db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`).run(d.id);
+      db.prepare(`DELETE FROM dirs_vec WHERE rowid = ?`).run(d.id);
+      db.prepare(`DELETE FROM directories WHERE id = ?`).run(d.id);
+    }
+
+    // Recompute all counts in one pass
+    db.prepare(`
+      UPDATE directories SET file_count = (
+        SELECT COUNT(*) FROM files
+        WHERE file_path LIKE directories.dir_path || '%'
+          AND file_path NOT LIKE directories.dir_path || '%/%'
+      )
+    `).run();
+
+    db.prepare(`
+      UPDATE directories SET subdir_count = (
+        SELECT COUNT(*) FROM directories d2
+        WHERE d2.dir_path LIKE directories.dir_path || '%'
+          AND d2.dir_path != directories.dir_path
+          AND d2.depth = directories.depth + 1
+      )
+    `).run();
+
+    return toRemove.length;
+  })();
 }
 
 /**

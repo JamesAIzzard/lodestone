@@ -69,9 +69,9 @@ export type SearchPreset = 'balanced' | 'semantic' | 'keyword' | 'code';
 
 export const SEARCH_PRESETS: Record<SearchPreset, SearchWeights> = {
   balanced: DEFAULT_SEARCH_WEIGHTS,
-  semantic: { semantic: 0.70, bm25: 0.10, trigram: 0.08, filepath: 0.07, tags: 0.05 },
-  keyword:  { semantic: 0.15, bm25: 0.40, trigram: 0.25, filepath: 0.12, tags: 0.08 },
-  code:     { semantic: 0.30, bm25: 0.20, trigram: 0.20, filepath: 0.25, tags: 0.05 },
+  semantic: { semantic: 0.90, bm25: 0.04, trigram: 0.03, filepath: 0.02, tags: 0.01 },
+  keyword:  { semantic: 0.05, bm25: 0.44, trigram: 0.28, filepath: 0.10, tags: 0.13 },
+  code:     { semantic: 0.05, bm25: 0.10, trigram: 0.42, filepath: 0.38, tags: 0.05 },
 };
 
 export interface SignalContribution {
@@ -131,6 +131,68 @@ export interface SearchResult {
   /** The search weights that produced this result */
   weights?: SearchWeights;
 }
+
+// ── Directory Exploration ────────────────────────────────────────────────
+
+export interface DirectoryTreeNode {
+  /** Leaf directory name */
+  name: string;
+  /** Full relative path (stored-key style, e.g. "0:src/backend/chunkers/") */
+  path: string;
+  /** Files directly in this directory */
+  fileCount: number;
+  /** Immediate subdirectory count */
+  subdirCount: number;
+  /** Nested children (empty if at maxDepth) */
+  children: DirectoryTreeNode[];
+}
+
+export interface DirectoryResult {
+  /** Full relative path of the matched directory */
+  dirPath: string;
+  /** Leaf directory name */
+  dirName: string;
+  /** Silo this directory belongs to */
+  siloName: string;
+  /** Overall relevance score (0-1) */
+  score: number;
+  /** Display-friendly quality score (0-1), analogous to SearchResult.qualityScore */
+  qualityScore: number;
+  /** Per-signal score breakdown */
+  breakdown: ScoreBreakdown;
+  /** Number of files directly in this directory */
+  fileCount: number;
+  /** Number of immediate subdirectories */
+  subdirCount: number;
+  /** Depth from silo root */
+  depth: number;
+  /** Tree of children, populated to maxDepth levels */
+  children: DirectoryTreeNode[];
+}
+
+export interface ExploreParams {
+  query?: string;
+  silo?: string;
+  startPath?: string;
+  maxDepth?: number;
+  maxResults?: number;
+  weights?: SearchWeights;
+}
+
+export const DEFAULT_EXPLORE_WEIGHTS: SearchWeights = {
+  semantic: 0.40,
+  bm25: 0.0,
+  trigram: 0.30,
+  filepath: 0.30,
+  tags: 0.0,
+};
+
+export const EXPLORE_PRESETS: Record<SearchPreset, SearchWeights> = {
+  balanced: DEFAULT_EXPLORE_WEIGHTS,
+  semantic: { semantic: 0.90, bm25: 0.0, trigram: 0.05, filepath: 0.05, tags: 0.0 },
+  keyword:  { semantic: 0.05, bm25: 0.0, trigram: 0.55, filepath: 0.40, tags: 0.0 },
+  code:     { semantic: 0.05, bm25: 0.0, trigram: 0.40, filepath: 0.55, tags: 0.0 },
+};
 
 // ── Activity ──────────────────────────────────────────────────────────────────
 

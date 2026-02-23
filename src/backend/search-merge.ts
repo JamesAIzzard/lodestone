@@ -12,6 +12,7 @@ import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import type { EmbeddingService } from './embedding';
 import type { SiloManager } from './silo-manager';
 import type { SiloSearchResultChunk } from './store';
+import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -72,6 +73,7 @@ export async function dispatchSearch(
   resolveService: (model: string) => EmbeddingService | null,
   limit: number,
   weights: SearchWeights,
+  startPath?: string,
 ): Promise<RawSiloResult[]> {
   const byModel = new Map<string, Array<[string, SiloManager]>>();
   for (const [name, manager] of managers) {
@@ -89,7 +91,7 @@ export async function dispatchSearch(
     const queryVector = await service.embed(query);
     for (const [name, manager] of group) {
       try {
-        const siloResults = manager.searchWithVector(queryVector, query, limit, weights);
+        const siloResults = manager.searchWithVector(queryVector, query, limit, weights, startPath);
         for (const r of siloResults) {
           raw.push({
             filePath: r.filePath,
@@ -148,4 +150,97 @@ export function calibrateAndMerge(raw: RawSiloResult[]): MergedResult[] {
     score: crossSilo ? r.rrfScore * (siloMeanCosine.get(r.siloName) ?? 0) : r.rrfScore,
     qualityScore: computeQualityScore(r.bestCosineSimilarity, r.breakdown),
   }));
+}
+
+// ── Directory Exploration ───────────────────────────────────────────────────
+
+/** Raw per-directory result from a single silo, before cross-silo calibration. */
+export interface RawDirectoryResult extends SiloDirectorySearchResult {
+  siloName: string;
+}
+
+/** Merged directory result with calibrated score. */
+export interface MergedDirectoryResult extends RawDirectoryResult {
+  qualityScore: number;
+}
+
+/**
+ * Run a directory explore query across multiple silos, grouping by embedding
+ * model so the query is only embedded once per model.
+ */
+export async function dispatchExplore(
+  params: DirectorySearchParams,
+  managers: Iterable<[string, SiloManager]>,
+  resolveService: (model: string) => EmbeddingService | null,
+): Promise<RawDirectoryResult[]> {
+  const byModel = new Map<string, Array<[string, SiloManager]>>();
+  for (const [name, manager] of managers) {
+    const model = manager.getConfig().model;
+    let group = byModel.get(model);
+    if (!group) { group = []; byModel.set(model, group); }
+    group.push([name, manager]);
+  }
+
+  const raw: RawDirectoryResult[] = [];
+  const isEmptyQuery = !params.query || params.query.trim().length === 0;
+
+  for (const [model, group] of byModel) {
+    let queryEmbedding: number[] | undefined;
+
+    if (!isEmptyQuery) {
+      const service = resolveService(model);
+      if (!service) continue;
+      queryEmbedding = await service.embed(params.query!);
+    }
+
+    for (const [name, manager] of group) {
+      try {
+        const siloResults = manager.exploreDirectories(params, queryEmbedding);
+        for (const r of siloResults) {
+          raw.push({ ...r, siloName: name });
+        }
+      } catch (err) {
+        console.error(`[explore] Error in silo "${name}":`, err);
+      }
+    }
+  }
+
+  return raw;
+}
+
+/**
+ * Calibrate and merge directory results from multiple silos.
+ *
+ * Simpler than file calibration — uses mean cosine per silo when cross-silo,
+ * and computes quality scores from cosine + signal agreement.
+ */
+export function calibrateAndMergeDirectories(raw: RawDirectoryResult[]): MergedDirectoryResult[] {
+  const silosWithResults = new Set(raw.map((r) => r.siloName));
+  const crossSilo = silosWithResults.size > 1;
+
+  const siloMeanCosine = new Map<string, number>();
+  if (crossSilo) {
+    const siloSums = new Map<string, { sum: number; count: number }>();
+    for (const r of raw) {
+      if (r.bestCosineSimilarity <= 0) continue;
+      const entry = siloSums.get(r.siloName) ?? { sum: 0, count: 0 };
+      entry.sum += r.bestCosineSimilarity;
+      entry.count++;
+      siloSums.set(r.siloName, entry);
+    }
+    for (const [name, { sum, count }] of siloSums) {
+      siloMeanCosine.set(name, sum / count);
+    }
+  }
+
+  return raw.map((r) => {
+    const calibratedScore = crossSilo
+      ? r.score * (siloMeanCosine.get(r.siloName) ?? 0)
+      : r.score;
+    return {
+      ...r,
+      score: calibratedScore,
+      qualityScore: computeQualityScore(r.bestCosineSimilarity, r.breakdown),
+    };
+  });
 }

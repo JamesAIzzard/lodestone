@@ -13,10 +13,10 @@
 
 import { createServer, type Server, type Socket } from 'node:net';
 import type { AppContext } from './context';
-import { dispatchSearch, calibrateAndMerge } from '../backend/search-merge';
+import { dispatchSearch, dispatchExplore, calibrateAndMerge, calibrateAndMergeDirectories } from '../backend/search-merge';
 import { resolveModelAlias } from '../backend/model-registry';
-import type { SearchResult, SiloStatus, SearchWeights } from '../shared/types';
-import { DEFAULT_SEARCH_WEIGHTS, SEARCH_PRESETS } from '../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus, SearchWeights } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS, DEFAULT_EXPLORE_WEIGHTS, SEARCH_PRESETS, EXPLORE_PRESETS } from '../shared/types';
 import type { SiloManager } from '../backend/silo-manager';
 
 /** Windows named pipe path. */
@@ -133,6 +133,9 @@ export class InternalApi {
         case 'search':
           result = await this.handleSearch(req.params ?? {});
           break;
+        case 'explore':
+          result = await this.handleExplore(req.params ?? {});
+          break;
         case 'status':
           result = await this.handleStatus();
           break;
@@ -169,6 +172,7 @@ export class InternalApi {
     const silo = params.silo as string | undefined;
     const maxResults = (params.maxResults as number) ?? 10;
     const preset = params.preset as string | undefined;
+    const startPath = params.startPath as string | undefined;
 
     if (!query) throw new Error('Missing required parameter: query');
 
@@ -227,6 +231,7 @@ export class InternalApi {
       (model) => this.ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
       maxResults,
       weights,
+      startPath,
     );
 
     const merged = calibrateAndMerge(raw);
@@ -246,6 +251,93 @@ export class InternalApi {
       bestCosineSimilarity: r.bestCosineSimilarity,
       weights: r.weights,
       breakdown: r.breakdown,
+    }));
+
+    return { results, warnings };
+  }
+
+  /**
+   * Handle an explore request. Mirrors the IPC `silos:explore` handler logic.
+   */
+  private async handleExplore(params: Record<string, unknown>): Promise<{
+    results: DirectoryResult[];
+    warnings: string[];
+  }> {
+    const query = params.query as string | undefined;
+    const silo = params.silo as string | undefined;
+    const startPath = params.startPath as string | undefined;
+    const maxDepth = (params.maxDepth as number) ?? 2;
+    const maxResults = (params.maxResults as number) ?? 10;
+    const preset = params.preset as string | undefined;
+
+    // Notify renderer that an MCP explore is happening
+    this.ctx.mainWindow?.webContents.send('mcp:search', { query: query ?? '', silo });
+
+    // Collect searchable managers
+    const ready: [string, SiloManager][] = [];
+    const warnings: string[] = [];
+
+    if (silo) {
+      const m = this.ctx.siloManagers.get(silo);
+      if (!m) throw new Error(`Silo "${silo}" not found`);
+      if (m.isStopped) throw new Error(`Silo "${silo}" is stopped`);
+      if (m.hasModelMismatch()) throw new Error(`Silo "${silo}" has a model mismatch — rebuild required`);
+      ready.push([silo, m]);
+    } else {
+      for (const [name, m] of this.ctx.siloManagers) {
+        if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+      }
+    }
+
+    // Check readiness
+    for (const [name, manager] of ready) {
+      const status = manager.getStatus();
+      if (status.watcherState === 'indexing') {
+        const prog = status.reconcileProgress;
+        if (prog) {
+          warnings.push(
+            `Silo "${name}" is indexing (${prog.current.toLocaleString()} / ${prog.total.toLocaleString()} files) — results may be incomplete.`,
+          );
+        } else {
+          warnings.push(`Silo "${name}" is indexing — results may be incomplete.`);
+        }
+      }
+    }
+
+    // For explore, even silos without embedding services can return structural results
+    // (empty query uses broadQueryFallback which doesn't need embeddings)
+    const isEmptyQuery = !query || query.trim().length === 0;
+    const searchable = isEmptyQuery
+      ? ready
+      : ready.filter(([, m]) => m.getEmbeddingService() !== null);
+
+    if (searchable.length === 0) {
+      return { results: [], warnings };
+    }
+
+    const weights = EXPLORE_PRESETS[preset as keyof typeof EXPLORE_PRESETS]
+      ?? DEFAULT_EXPLORE_WEIGHTS;
+
+    const raw = await dispatchExplore(
+      { query, startPath, maxDepth, maxResults, weights },
+      searchable,
+      (model) => this.ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+    );
+
+    const merged = calibrateAndMergeDirectories(raw);
+    merged.sort((a, b) => b.qualityScore - a.qualityScore);
+
+    const results: DirectoryResult[] = merged.slice(0, maxResults).map((r) => ({
+      dirPath: r.dirPath,
+      dirName: r.dirName,
+      siloName: r.siloName,
+      score: r.score,
+      qualityScore: r.qualityScore,
+      breakdown: r.breakdown,
+      fileCount: r.fileCount,
+      subdirCount: r.subdirCount,
+      depth: r.depth,
+      children: r.children,
     }));
 
     return { results, warnings };

@@ -13,7 +13,11 @@ import { watch, type FSWatcher } from 'chokidar';
 import path from 'node:path';
 import type { EmbeddingService } from './embedding';
 import { prepareFile, type PreparedFile } from './pipeline';
-import { makeStoredKey, flushPreparedFiles, type SiloDatabase } from './store';
+import {
+  makeStoredKey, flushPreparedFiles,
+  getDirectoriesNeedingEmbeddings, flushDirectoryEmbeddings, directoryEmbeddingText,
+  type SiloDatabase,
+} from './store';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
 import { matchesAnyPattern } from './pattern-match';
@@ -195,6 +199,20 @@ export class SiloWatcher {
         })),
         deletes.map((d) => ({ filePath: d.storedKey, deleteMtime: false })),
       );
+    }
+
+    // Sync directory embeddings for any newly-created directories
+    if (upserts.length > 0) {
+      const dirsNeedingEmbed = getDirectoriesNeedingEmbeddings(this.db);
+      if (dirsNeedingEmbed.length > 0) {
+        const embedEntries: Array<{ id: number; dirPath: string; dirName: string; embedding: number[] }> = [];
+        for (const dir of dirsNeedingEmbed) {
+          const text = directoryEmbeddingText(dir.dirPath);
+          const embedding = await this.embeddingService.embed(text);
+          embedEntries.push({ ...dir, embedding });
+        }
+        flushDirectoryEmbeddings(this.db, embedEntries);
+      }
     }
 
     // Emit events after the flush succeeds

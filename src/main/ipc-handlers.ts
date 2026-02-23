@@ -18,9 +18,9 @@ import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/
 import { checkOllamaConnection } from '../backend/embedding';
 import type { SiloManager } from '../backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
-import { calibrateAndMerge, dispatchSearch } from '../backend/search-merge';
-import type { SiloStatus, SearchResult, ActivityEvent, ServerStatus, DefaultSettings, SearchWeights } from '../shared/types';
-import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
+import { calibrateAndMerge, calibrateAndMergeDirectories, dispatchSearch, dispatchExplore } from '../backend/search-merge';
+import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, SearchWeights, ExploreParams } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS, DEFAULT_EXPLORE_WEIGHTS } from '../shared/types';
 import type { AppContext } from './context';
 import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
 
@@ -100,7 +100,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return statuses;
   });
 
-  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string, weights?: SearchWeights): Promise<SearchResult[]> => {
+  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string, weights?: SearchWeights, startPath?: string): Promise<SearchResult[]> => {
     // Collect searchable managers — skip stopped and model-mismatched silos
     const ready: [string, SiloManager][] = [];
     if (siloName) {
@@ -122,6 +122,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
       10,
       effectiveWeights,
+      startPath,
     );
 
     const merged = calibrateAndMerge(raw);
@@ -144,6 +145,45 @@ export function registerIpcHandlers(ctx: AppContext): void {
     }));
 
     return results;
+  });
+
+  ipcMain.handle('silos:explore', async (_event, params: ExploreParams): Promise<DirectoryResult[]> => {
+    // Collect searchable managers — skip stopped and model-mismatched silos
+    const ready: [string, SiloManager][] = [];
+    if (params.silo) {
+      const m = ctx.siloManagers.get(params.silo);
+      if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([params.silo, m]);
+    } else {
+      for (const [name, m] of ctx.siloManagers) {
+        if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+      }
+    }
+
+    if (ready.length === 0) return [];
+
+    const effectiveWeights = params.weights ?? DEFAULT_EXPLORE_WEIGHTS;
+
+    const raw = await dispatchExplore(
+      { ...params, weights: effectiveWeights },
+      ready,
+      (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+    );
+
+    const merged = calibrateAndMergeDirectories(raw);
+    merged.sort((a, b) => b.qualityScore - a.qualityScore);
+
+    return merged.slice(0, params.maxResults ?? 10).map((r) => ({
+      dirPath: r.dirPath,
+      dirName: r.dirName,
+      siloName: r.siloName,
+      score: r.score,
+      qualityScore: r.qualityScore,
+      breakdown: r.breakdown,
+      fileCount: r.fileCount,
+      subdirCount: r.subdirCount,
+      depth: r.depth,
+      children: r.children,
+    }));
   });
 
   // ── Search Weights ──────────────────────────────────────────────────────

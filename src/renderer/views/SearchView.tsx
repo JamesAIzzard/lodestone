@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Search, FileText, ExternalLink, Loader2, ChevronRight, ChevronDown, SlidersHorizontal } from 'lucide-react';
+import { Search, FileText, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, SlidersHorizontal, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
-import type { SiloStatus, SearchResult, MatchType, SearchWeights, ScoreBreakdown } from '../../shared/types';
-import { DEFAULT_SEARCH_WEIGHTS, SEARCH_PRESETS } from '../../shared/types';
+import type { SiloStatus, SearchResult, DirectoryResult, DirectoryTreeNode, MatchType, SearchWeights, ScoreBreakdown, ExploreParams } from '../../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS, DEFAULT_EXPLORE_WEIGHTS, SEARCH_PRESETS, EXPLORE_PRESETS } from '../../shared/types';
 
 function fileName(p: string): string {
   return p.split(/[/\\]/).pop() ?? p;
@@ -60,11 +60,18 @@ function activeSignals(breakdown: ScoreBreakdown): SignalKey[] {
 
 // ── Weight presets ─────────────────────────────────────────────────────────
 
-const WEIGHT_PRESETS: Array<{ label: string; weights: SearchWeights }> = [
+const FILE_WEIGHT_PRESETS: Array<{ label: string; weights: SearchWeights }> = [
   { label: 'Balanced', weights: SEARCH_PRESETS.balanced },
   { label: 'Semantic', weights: SEARCH_PRESETS.semantic },
   { label: 'Keyword',  weights: SEARCH_PRESETS.keyword },
   { label: 'Code',     weights: SEARCH_PRESETS.code },
+];
+
+const DIR_WEIGHT_PRESETS: Array<{ label: string; weights: SearchWeights }> = [
+  { label: 'Balanced', weights: EXPLORE_PRESETS.balanced },
+  { label: 'Semantic', weights: EXPLORE_PRESETS.semantic },
+  { label: 'Keyword',  weights: EXPLORE_PRESETS.keyword },
+  { label: 'Code',     weights: EXPLORE_PRESETS.code },
 ];
 
 // Convert normalised [0,1] weights to integer slider values (0–100)
@@ -91,15 +98,21 @@ function slidersToWeights(sliders: Record<SignalKey, number>): SearchWeights {
   };
 }
 
+type SearchMode = 'file' | 'directory';
+
 export default function SearchView() {
   const [query, setQuery] = useState('');
   const [selectedSilo, setSelectedSilo] = useState('all');
   const [silos, setSilos] = useState<SiloStatus[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [directoryResults, setDirectoryResults] = useState<DirectoryResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [searching, setSearching] = useState(false);
   const [expandedResults, setExpandedResults] = useState<Set<number>>(new Set());
   const [tuningOpen, setTuningOpen] = useState(false);
+  const [searchMode, setSearchMode] = useState<SearchMode>('file');
+  const [startPath, setStartPath] = useState('');
+  const [depthSetting, setDepthSetting] = useState(2);
 
   // Raw slider values (integers 0–100), kept in sync with config
   const [sliders, setSliders] = useState<Record<SignalKey, number>>(weightsToSliders(DEFAULT_SEARCH_WEIGHTS));
@@ -132,41 +145,91 @@ export default function SearchView() {
 
   const effectiveWeights = useMemo(() => slidersToWeights(sliders), [sliders]);
 
-  const runSearch = useCallback(async (q: string, silo: string | undefined, w: SearchWeights) => {
+  const runSearch = useCallback(async (q: string, silo: string | undefined, w: SearchWeights, sp?: string) => {
     if (!q.trim()) return;
     setHasSearched(true);
     setSearching(true);
     setExpandedResults(new Set());
     try {
-      const res = await window.electronAPI?.search(q, silo, w) ?? [];
+      const res = await window.electronAPI?.search(q, silo, w, sp || undefined) ?? [];
       setResults(res);
+      setDirectoryResults([]);
+    } finally {
+      setSearching(false);
+    }
+  }, []);
+
+  const runExplore = useCallback(async (q: string, silo: string | undefined, w: SearchWeights, sp?: string, depth?: number) => {
+    setHasSearched(true);
+    setSearching(true);
+    setExpandedResults(new Set());
+    try {
+      const params: ExploreParams = {
+        query: q.trim() || undefined,
+        silo,
+        startPath: sp || undefined,
+        maxDepth: depth ?? 2,
+        weights: w,
+      };
+      const res = await window.electronAPI?.explore(params) ?? [];
+      setDirectoryResults(res);
+      setResults([]);
     } finally {
       setSearching(false);
     }
   }, []);
 
   async function handleSearch() {
-    if (!query.trim() || searching) return;
+    if (searchMode === 'file' && !query.trim()) return;
+    if (searching) return;
     const silo = selectedSilo === 'all' ? undefined : selectedSilo;
-    await runSearch(query, silo, effectiveWeights);
+    if (searchMode === 'directory') {
+      await runExplore(query, silo, effectiveWeights, startPath, depthSetting);
+    } else {
+      await runSearch(query, silo, effectiveWeights, startPath);
+    }
+  }
+
+  function handleModeChange(mode: SearchMode) {
+    setSearchMode(mode);
+    setHasSearched(false);
+    setResults([]);
+    setDirectoryResults([]);
+    setExpandedResults(new Set());
+    // Switch sliders to appropriate defaults
+    if (mode === 'directory') {
+      setSliders(weightsToSliders(DEFAULT_EXPLORE_WEIGHTS));
+    } else {
+      // Reload file search weights from config
+      window.electronAPI?.getSearchWeights().then((w) => {
+        if (w) setSliders(weightsToSliders(w));
+      });
+    }
   }
 
   function handleSliderChange(key: SignalKey, value: number) {
     const next = { ...sliders, [key]: value };
     setSliders(next);
 
-    // Debounce save to config
-    if (savePendingRef.current) clearTimeout(savePendingRef.current);
-    savePendingRef.current = setTimeout(() => {
-      window.electronAPI?.updateSearchWeights(slidersToWeights(next));
-    }, 600);
+    // Only save file-mode weights to config
+    if (searchMode === 'file') {
+      if (savePendingRef.current) clearTimeout(savePendingRef.current);
+      savePendingRef.current = setTimeout(() => {
+        window.electronAPI?.updateSearchWeights(slidersToWeights(next));
+      }, 600);
+    }
 
     // Debounce re-search if there are existing results
-    if (hasSearched && query.trim()) {
+    if (hasSearched && (searchMode === 'directory' || query.trim())) {
       if (researchPendingRef.current) clearTimeout(researchPendingRef.current);
       researchPendingRef.current = setTimeout(() => {
         const silo = selectedSilo === 'all' ? undefined : selectedSilo;
-        runSearch(query, silo, slidersToWeights(next));
+        const w = slidersToWeights(next);
+        if (searchMode === 'directory') {
+          runExplore(query, silo, w, startPath, depthSetting);
+        } else {
+          runSearch(query, silo, w, startPath);
+        }
       }, 300);
     }
   }
@@ -174,10 +237,16 @@ export default function SearchView() {
   function applyPreset(preset: SearchWeights) {
     const next = weightsToSliders(preset);
     setSliders(next);
-    window.electronAPI?.updateSearchWeights(preset);
-    if (hasSearched && query.trim()) {
+    if (searchMode === 'file') {
+      window.electronAPI?.updateSearchWeights(preset);
+    }
+    if (hasSearched && (searchMode === 'directory' || query.trim())) {
       const silo = selectedSilo === 'all' ? undefined : selectedSilo;
-      runSearch(query, silo, preset);
+      if (searchMode === 'directory') {
+        runExplore(query, silo, preset, startPath, depthSetting);
+      } else {
+        runSearch(query, silo, preset, startPath);
+      }
     }
   }
 
@@ -189,6 +258,9 @@ export default function SearchView() {
       return next;
     });
   }
+
+  const activePresets = searchMode === 'directory' ? DIR_WEIGHT_PRESETS : FILE_WEIGHT_PRESETS;
+  const isDirectoryMode = searchMode === 'directory';
 
   return (
     <div>
@@ -225,6 +297,34 @@ export default function SearchView() {
             ))}
           </select>
 
+          {/* Mode toggle */}
+          <div className="flex rounded-md border border-input overflow-hidden">
+            <button
+              onClick={() => handleModeChange('file')}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors',
+                searchMode === 'file'
+                  ? 'bg-accent text-foreground'
+                  : 'text-muted-foreground hover:bg-accent/30',
+              )}
+            >
+              <FileText className="h-3.5 w-3.5" />
+              Files
+            </button>
+            <button
+              onClick={() => handleModeChange('directory')}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors border-l border-input',
+                searchMode === 'directory'
+                  ? 'bg-accent text-foreground'
+                  : 'text-muted-foreground hover:bg-accent/30',
+              )}
+            >
+              <Folder className="h-3.5 w-3.5" />
+              Directories
+            </button>
+          </div>
+
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
@@ -232,17 +332,36 @@ export default function SearchView() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder="Search your indexed files..."
+              placeholder={isDirectoryMode ? 'Explore directory structure...' : 'Search your indexed files...'}
               className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
+        </div>
+
+        {/* Start path filter */}
+        <div className="mt-2 relative">
+          <input
+            type="text"
+            value={startPath}
+            onChange={(e) => setStartPath(e.target.value)}
+            placeholder="Filter to path (optional)"
+            className="h-7 w-full rounded-md border border-input bg-background px-3 pr-7 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+          {startPath && (
+            <button
+              onClick={() => setStartPath('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
         </div>
 
         {/* Tuning panel */}
         {tuningOpen && (
           <div className="mt-3 rounded-md border border-border bg-card p-4">
             <div className="mb-3 flex flex-wrap gap-1.5">
-              {WEIGHT_PRESETS.map((p) => (
+              {activePresets.map((p) => (
                 <button
                   key={p.label}
                   onClick={() => applyPreset(p.weights)}
@@ -253,25 +372,48 @@ export default function SearchView() {
               ))}
             </div>
             <div className="space-y-2.5">
-              {SIGNAL_KEYS.map((key) => (
-                <div key={key} className="flex items-center gap-3">
-                  <span className={cn('shrink-0 w-18 rounded px-1.5 py-0.5 text-[10px]', SIGNAL_COLORS[key])}>
-                    {SIGNAL_LABELS[key]}
-                  </span>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    value={sliders[key]}
-                    onChange={(e) => handleSliderChange(key, parseInt(e.target.value, 10))}
-                    className="flex-1 h-1.5 accent-foreground"
-                  />
-                  <span className="shrink-0 w-7 text-right text-[10px] text-muted-foreground">
-                    {sliders[key]}
-                  </span>
-                </div>
-              ))}
+              {SIGNAL_KEYS.map((key) => {
+                const isDisabled = isDirectoryMode && (key === 'bm25' || key === 'tags');
+                return (
+                  <div key={key} className={cn('flex items-center gap-3', isDisabled && 'opacity-30')}>
+                    <span className={cn('shrink-0 w-18 rounded px-1.5 py-0.5 text-[10px]', SIGNAL_COLORS[key])}>
+                      {SIGNAL_LABELS[key]}
+                    </span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={sliders[key]}
+                      onChange={(e) => handleSliderChange(key, parseInt(e.target.value, 10))}
+                      disabled={isDisabled}
+                      className="flex-1 h-1.5 accent-foreground"
+                    />
+                    <span className="shrink-0 w-7 text-right text-[10px] text-muted-foreground">
+                      {sliders[key]}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
+            {/* Depth slider for directory mode */}
+            {isDirectoryMode && (
+              <div className="mt-3 pt-3 border-t border-border flex items-center gap-3">
+                <span className="shrink-0 w-18 rounded px-1.5 py-0.5 text-[10px] bg-muted text-muted-foreground">
+                  depth
+                </span>
+                <input
+                  type="range"
+                  min={1}
+                  max={5}
+                  value={depthSetting}
+                  onChange={(e) => setDepthSetting(parseInt(e.target.value, 10))}
+                  className="flex-1 h-1.5 accent-foreground"
+                />
+                <span className="shrink-0 w-7 text-right text-[10px] text-muted-foreground">
+                  {depthSetting}
+                </span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -281,17 +423,29 @@ export default function SearchView() {
         {searching && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Searching...
+            {isDirectoryMode ? 'Exploring...' : 'Searching...'}
           </div>
         )}
 
         {!searching && !hasSearched && (
           <p className="text-sm text-muted-foreground">
-            Enter a query and press Enter to search.
+            {isDirectoryMode
+              ? 'Enter a query and press Enter to explore directories, or press Enter with an empty query for a structural overview.'
+              : 'Enter a query and press Enter to search.'}
           </p>
         )}
 
-        {!searching && hasSearched && (() => {
+        {!searching && hasSearched && isDirectoryMode && (
+          <DirectoryResultsView
+            results={directoryResults}
+            silos={silos}
+            siloColorMap={siloColorMap}
+            expandedResults={expandedResults}
+            toggleExpand={toggleExpand}
+          />
+        )}
+
+        {!searching && hasSearched && !isDirectoryMode && (() => {
           const stoppedSilos = silos.filter((s) => s.watcherState === 'stopped');
           const stoppedSkipped = selectedSilo === 'all'
             ? stoppedSilos
@@ -444,6 +598,135 @@ export default function SearchView() {
           );
         })()}
       </div>
+    </div>
+  );
+}
+
+// ── Directory Results View ───────────────────────────────────────────────────
+
+function DirectoryResultsView({
+  results,
+  silos,
+  siloColorMap,
+  expandedResults,
+  toggleExpand,
+}: {
+  results: DirectoryResult[];
+  silos: SiloStatus[];
+  siloColorMap: Map<string, SiloColor>;
+  expandedResults: Set<number>;
+  toggleExpand: (i: number) => void;
+}) {
+  if (results.length === 0) {
+    return <p className="text-sm text-muted-foreground">No directories found.</p>;
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="mb-3">
+        <p className="text-xs text-muted-foreground">
+          {results.length} director{results.length !== 1 ? 'ies' : 'y'}
+        </p>
+      </div>
+
+      {results.map((result, i) => {
+        const isExpanded = expandedResults.has(i);
+        const signals = activeSignals(result.breakdown);
+
+        return (
+          <div key={`${result.dirPath}-${i}`}>
+            <button
+              onClick={() => toggleExpand(i)}
+              className={cn(
+                'group flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors',
+                'hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                isExpanded && 'bg-accent/20',
+              )}
+            >
+              {isExpanded
+                ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              }
+
+              <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium text-foreground">
+                    {result.dirName}/
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground/50">
+                  <span className="truncate">{result.dirPath}</span>
+                  <span className={cn(
+                    'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
+                    (() => {
+                      const c = siloColorMap.get(result.siloName) ?? DEFAULT_SILO_COLOR;
+                      const classes = SILO_COLOR_MAP[c];
+                      return `${classes.bgSoft} ${classes.text}`;
+                    })(),
+                  )}>
+                    {result.siloName}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground/40">
+                    {result.fileCount} file{result.fileCount !== 1 ? 's' : ''} · {result.subdirCount} dir{result.subdirCount !== 1 ? 's' : ''}
+                  </span>
+                  {signals.map((sig) => (
+                    <span key={sig} className={cn('shrink-0 rounded px-1 py-0.5 text-[9px]', SIGNAL_COLORS[sig])}>
+                      {SIGNAL_LABELS[sig]}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <ScoreBar breakdown={result.breakdown} />
+                <span className="w-8 text-right text-xs text-muted-foreground">
+                  {scorePercent(result.qualityScore)}
+                </span>
+              </div>
+            </button>
+
+            {/* Expanded tree */}
+            {isExpanded && result.children.length > 0 && (
+              <div className="ml-[26px] border-l-2 border-accent/20 pl-4 pb-2 mt-1">
+                <DirectoryTree nodes={result.children} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Directory Tree ───────────────────────────────────────────────────────────
+
+function DirectoryTree({ nodes }: { nodes: DirectoryTreeNode[] }) {
+  return (
+    <div className="space-y-0.5">
+      {nodes.map((node, i) => (
+        <DirectoryTreeNodeRow key={node.path} node={node} isLast={i === nodes.length - 1} />
+      ))}
+    </div>
+  );
+}
+
+function DirectoryTreeNodeRow({ node, isLast }: { node: DirectoryTreeNode; isLast: boolean }) {
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 py-0.5">
+        <Folder className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+        <span className="text-xs text-muted-foreground">{node.name}/</span>
+        <span className="text-[10px] text-muted-foreground/30">
+          {node.fileCount} file{node.fileCount !== 1 ? 's' : ''}
+        </span>
+      </div>
+      {node.children.length > 0 && (
+        <div className="ml-4 border-l border-accent/20 pl-3">
+          <DirectoryTree nodes={node.children} />
+        </div>
+      )}
     </div>
   );
 }

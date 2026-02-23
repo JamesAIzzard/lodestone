@@ -16,7 +16,7 @@
 import { app } from 'electron';
 import { createConnection, type Socket } from 'node:net';
 import { startMcpServer } from '../backend/mcp-server';
-import type { SearchResult, SiloStatus } from '../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
 import type { AppContext } from './context';
 
 /** Must match the pipe name in internal-api.ts (GUI side). */
@@ -153,6 +153,7 @@ export async function startMcpMode(_ctx: AppContext): Promise<void> {
     input: wrapperSocket,
     output: wrapperSocket,
     search: (params) => gui.call<{ results: SearchResult[]; warnings: string[] }>('search', params),
+    explore: (params) => gui.call<{ results: DirectoryResult[]; warnings: string[] }>('explore', params),
     status: () => gui.call<{ silos: SiloStatus[] }>('status'),
   });
 

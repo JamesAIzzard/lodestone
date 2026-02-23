@@ -32,6 +32,7 @@ import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
 import type { WatcherState, SearchWeights } from '../shared/types';
 import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
+import { directorySearchSilo, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -476,10 +477,10 @@ export class SiloManager {
   }
 
   /** Embed a query and search the silo database using hybrid search. */
-  async search(query: string, maxResults: number = 10, weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS): Promise<SiloSearchResult[]> {
+  async search(query: string, maxResults: number = 10, weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS, startPath?: string): Promise<SiloSearchResult[]> {
     if (!this.embeddingService || !this.db) return [];
     const queryVector = await this.embeddingService.embed(query);
-    const results = hybridSearchSilo(this.db, queryVector, query, maxResults, weights);
+    const results = hybridSearchSilo(this.db, queryVector, query, maxResults, weights, startPath);
     return this.resolveResultPaths(results);
   }
 
@@ -488,10 +489,20 @@ export class SiloManager {
    * Used by the main process to embed the query once and share the
    * vector across all silos, avoiding redundant ONNX inference calls.
    */
-  searchWithVector(queryVector: number[], queryText: string, maxResults: number = 10, weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS): SiloSearchResult[] {
+  searchWithVector(queryVector: number[], queryText: string, maxResults: number = 10, weights: SearchWeights = DEFAULT_SEARCH_WEIGHTS, startPath?: string): SiloSearchResult[] {
     if (!this.db) return [];
-    const results = hybridSearchSilo(this.db, queryVector, queryText, maxResults, weights);
+    const results = hybridSearchSilo(this.db, queryVector, queryText, maxResults, weights, startPath);
     return this.resolveResultPaths(results);
+  }
+
+  /**
+   * Explore directory structure with a pre-computed query vector.
+   * Used by the main process to embed the query once and share the
+   * vector across all silos.
+   */
+  exploreDirectories(params: DirectorySearchParams, queryEmbedding?: number[]): SiloDirectorySearchResult[] {
+    if (!this.db) return [];
+    return directorySearchSilo(this.db, params, queryEmbedding);
   }
 
   /** Resolve stored keys in search results back to absolute file paths. */

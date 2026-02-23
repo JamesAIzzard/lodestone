@@ -30,8 +30,8 @@ import {
 } from './store';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
-import type { WatcherState, SearchWeights, DirectoryTreeNode, ScoreBreakdown } from '../shared/types';
-import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
+import type { WatcherState, SearchWeights, DirectoryTreeNode } from '../shared/types';
+import { DEFAULT_SEARCH_WEIGHTS, ZERO_SCORE_BREAKDOWN } from '../shared/types';
 import { directorySearchSilo, expandTree, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
 
@@ -518,42 +518,31 @@ export class SiloManager {
   /** Synthesise explore results for the silo's configured root directories. */
   private exploreRootDirectories(maxDepth: number): SiloDirectorySearchResult[] {
     const db = this.db!;
-    const zeroBreakdown: ScoreBreakdown = {
-      semantic:  { rank: 0, rawScore: 0, rrfContribution: 0 },
-      bm25:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-      trigram:   { rank: 0, rawScore: 0, rrfContribution: 0 },
-      filepath:  { rank: 0, rawScore: 0, rrfContribution: 0 },
-      tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-    };
+
+    // Prepare once — these run once per configured root directory
+    const countFiles = db.prepare(
+      `SELECT COUNT(*) as count FROM files WHERE file_path LIKE ?`,
+    );
+    const countSubdirs = db.prepare(
+      `SELECT COUNT(*) as count FROM directories WHERE dir_path LIKE ? AND depth = 1`,
+    );
 
     return this.config.directories.map((absPath, i) => {
       const prefix = `${i}:`;
-      const dirName = path.basename(absPath);
-
-      // Total files in this root (recursive)
-      const { count: fileCount } = db.prepare(
-        `SELECT COUNT(*) as count FROM files WHERE file_path LIKE ?`,
-      ).get(prefix + '%') as { count: number };
-
-      // Immediate subdirectory count (depth = 1 under this root)
-      const { count: subdirCount } = db.prepare(
-        `SELECT COUNT(*) as count FROM directories WHERE dir_path LIKE ? AND depth = 1`,
-      ).get(prefix + '%') as { count: number };
-
-      // Children tree — raw stored-key paths, resolved below
+      const { count: fileCount }   = countFiles.get(prefix + '%') as { count: number };
+      const { count: subdirCount } = countSubdirs.get(prefix + '%') as { count: number };
       const rawChildren = expandTree(db, prefix, 0, maxDepth);
-      const children = resolveTreeNodes(rawChildren, this.config.directories);
 
       return {
         dirPath: absPath,
-        dirName,
+        dirName: path.basename(absPath),
         score: 1.0,
         bestCosineSimilarity: 0,
-        breakdown: zeroBreakdown,
+        breakdown: ZERO_SCORE_BREAKDOWN,
         fileCount,
         subdirCount,
         depth: 0,
-        children,
+        children: resolveTreeNodes(rawChildren, this.config.directories),
       };
     });
   }

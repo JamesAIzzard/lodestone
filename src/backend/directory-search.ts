@@ -6,12 +6,14 @@
  *   2. Trigram    — FTS5 trigram search on dir_path and dir_name
  *   3. Filepath   — LIKE substring match on directories.dir_path
  *
- * When the query is empty/broad, falls back to ordering by file_count descending.
+ * Empty query with no startPath is handled upstream in SiloManager, which
+ * returns the silo's configured root directories directly. The broadQueryFallback
+ * here is only reached for empty queries scoped to a startPath.
  */
 
 import type { SiloDatabase } from './store';
 import type { SearchWeights, ScoreBreakdown, DirectoryTreeNode } from '../shared/types';
-import { DEFAULT_EXPLORE_WEIGHTS } from '../shared/types';
+import { DEFAULT_EXPLORE_WEIGHTS, ZERO_SCORE_BREAKDOWN } from '../shared/types';
 
 const DIR_RRF_K = 60;
 
@@ -239,23 +241,15 @@ function broadQueryFallback(
     `).all(fetchLimit);
   }
 
-  const zeroBreakdown: ScoreBreakdown = {
-    semantic:  { rank: 0, rawScore: 0, rrfContribution: 0 },
-    bm25:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-    trigram:   { rank: 0, rawScore: 0, rrfContribution: 0 },
-    filepath:  { rank: 0, rawScore: 0, rrfContribution: 0 },
-    tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
-  };
-
   const results = (rows as Array<{
     id: number; dir_path: string; dir_name: string;
     depth: number; file_count: number; subdir_count: number;
   }>).map((r) => ({
     dirPath: r.dir_path,
     dirName: r.dir_name,
-    score: r.file_count / 100, // rough normalised score
+    score: 1.0,
     bestCosineSimilarity: 0,
-    breakdown: zeroBreakdown,
+    breakdown: ZERO_SCORE_BREAKDOWN,
     fileCount: r.file_count,
     subdirCount: r.subdir_count,
     depth: r.depth,

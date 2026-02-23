@@ -114,7 +114,7 @@ function formatExploreResults(results: DirectoryResult[]): string {
     lines.push('');
 
     if (result.children.length > 0) {
-      renderTree(result.children, lines, '');
+      lines.push(...renderTree(result.children, ''));
       lines.push('');
     }
 
@@ -128,9 +128,9 @@ function formatExploreResults(results: DirectoryResult[]): string {
 /** Recursively render a directory tree with box-drawing characters. */
 function renderTree(
   nodes: DirectoryResult['children'],
-  lines: string[],
   prefix: string,
-): void {
+): string[] {
+  const lines: string[] = [];
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     const isLast = i === nodes.length - 1;
@@ -140,9 +140,10 @@ function renderTree(
 
     if (node.children.length > 0) {
       const childPrefix = prefix + (isLast ? '   ' : '\u2502  ');
-      renderTree(node.children, lines, childPrefix);
+      lines.push(...renderTree(node.children, childPrefix));
     }
   }
+  return lines;
 }
 
 // ── Description ──────────────────────────────────────────────────────────────

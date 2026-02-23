@@ -38,6 +38,9 @@ export interface MergedResult extends RawSiloResult {
 
 const SIGNAL_KEYS = ['semantic', 'bm25', 'trigram', 'filepath', 'tags'] as const;
 
+/** Number of scoring signals active in directory search (semantic, trigram, filepath). */
+const DIR_SIGNAL_COUNT = 3;
+
 /**
  * Compute a display-friendly "goodness of fit" quality score (0–0.99).
  *
@@ -69,6 +72,20 @@ export function computeQualityScore(
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 
+/** Group silo managers by their embedding model so each model is embedded once. */
+function groupByModel(
+  managers: Iterable<[string, SiloManager]>,
+): Map<string, Array<[string, SiloManager]>> {
+  const byModel = new Map<string, Array<[string, SiloManager]>>();
+  for (const [name, manager] of managers) {
+    const model = manager.getConfig().model;
+    const group = byModel.get(model) ?? [];
+    if (!byModel.has(model)) byModel.set(model, group);
+    group.push([name, manager]);
+  }
+  return byModel;
+}
+
 /**
  * Run a search query across multiple silos, grouping by embedding model
  * so the query is only embedded once per model.
@@ -85,13 +102,7 @@ export async function dispatchSearch(
   weights: SearchWeights,
   startPath?: string,
 ): Promise<RawSiloResult[]> {
-  const byModel = new Map<string, Array<[string, SiloManager]>>();
-  for (const [name, manager] of managers) {
-    const model = manager.getConfig().model;
-    let group = byModel.get(model);
-    if (!group) { group = []; byModel.set(model, group); }
-    group.push([name, manager]);
-  }
+  const byModel = groupByModel(managers);
 
   const raw: RawSiloResult[] = [];
   for (const [model, group] of byModel) {
@@ -126,6 +137,29 @@ export async function dispatchSearch(
 // ── Calibration ──────────────────────────────────────────────────────────────
 
 /**
+ * Compute the mean cosine similarity per silo across a set of results.
+ * Used for cross-silo score calibration: silos with low average cosine
+ * are discounted so that a weakly-relevant silo can't dominate results.
+ */
+function computeSiloMeanCosines(
+  raw: Array<{ siloName: string; bestCosineSimilarity: number }>,
+): Map<string, number> {
+  const siloSums = new Map<string, { sum: number; count: number }>();
+  for (const r of raw) {
+    if (r.bestCosineSimilarity <= 0) continue;
+    const entry = siloSums.get(r.siloName) ?? { sum: 0, count: 0 };
+    entry.sum += r.bestCosineSimilarity;
+    entry.count++;
+    siloSums.set(r.siloName, entry);
+  }
+  const means = new Map<string, number>();
+  for (const [name, { sum, count }] of siloSums) {
+    means.set(name, sum / count);
+  }
+  return means;
+}
+
+/**
  * Calibrate and merge search results from multiple silos.
  *
  * When results come from a single silo, the RRF score is used directly.
@@ -137,23 +171,8 @@ export async function dispatchSearch(
  * is silo-level (not per-file) so keyword-only results aren't zeroed out.
  */
 export function calibrateAndMerge(raw: RawSiloResult[]): MergedResult[] {
-  const silosWithResults = new Set(raw.map((r) => r.siloName));
-  const crossSilo = silosWithResults.size > 1;
-
-  const siloMeanCosine = new Map<string, number>();
-  if (crossSilo) {
-    const siloSums = new Map<string, { sum: number; count: number }>();
-    for (const r of raw) {
-      if (r.bestCosineSimilarity <= 0) continue;
-      const entry = siloSums.get(r.siloName) ?? { sum: 0, count: 0 };
-      entry.sum += r.bestCosineSimilarity;
-      entry.count++;
-      siloSums.set(r.siloName, entry);
-    }
-    for (const [name, { sum, count }] of siloSums) {
-      siloMeanCosine.set(name, sum / count);
-    }
-  }
+  const crossSilo = new Set(raw.map((r) => r.siloName)).size > 1;
+  const siloMeanCosine = crossSilo ? computeSiloMeanCosines(raw) : new Map<string, number>();
 
   return raw.map((r) => ({
     ...r,
@@ -183,13 +202,7 @@ export async function dispatchExplore(
   managers: Iterable<[string, SiloManager]>,
   resolveService: (model: string) => EmbeddingService | null,
 ): Promise<RawDirectoryResult[]> {
-  const byModel = new Map<string, Array<[string, SiloManager]>>();
-  for (const [name, manager] of managers) {
-    const model = manager.getConfig().model;
-    let group = byModel.get(model);
-    if (!group) { group = []; byModel.set(model, group); }
-    group.push([name, manager]);
-  }
+  const byModel = groupByModel(managers);
 
   const raw: RawDirectoryResult[] = [];
   const isEmptyQuery = !params.query || params.query.trim().length === 0;
@@ -225,33 +238,12 @@ export async function dispatchExplore(
  * and computes quality scores from cosine + signal agreement.
  */
 export function calibrateAndMergeDirectories(raw: RawDirectoryResult[]): MergedDirectoryResult[] {
-  const silosWithResults = new Set(raw.map((r) => r.siloName));
-  const crossSilo = silosWithResults.size > 1;
+  const crossSilo = new Set(raw.map((r) => r.siloName)).size > 1;
+  const siloMeanCosine = crossSilo ? computeSiloMeanCosines(raw) : new Map<string, number>();
 
-  const siloMeanCosine = new Map<string, number>();
-  if (crossSilo) {
-    const siloSums = new Map<string, { sum: number; count: number }>();
-    for (const r of raw) {
-      if (r.bestCosineSimilarity <= 0) continue;
-      const entry = siloSums.get(r.siloName) ?? { sum: 0, count: 0 };
-      entry.sum += r.bestCosineSimilarity;
-      entry.count++;
-      siloSums.set(r.siloName, entry);
-    }
-    for (const [name, { sum, count }] of siloSums) {
-      siloMeanCosine.set(name, sum / count);
-    }
-  }
-
-  return raw.map((r) => {
-    const calibratedScore = crossSilo
-      ? r.score * (siloMeanCosine.get(r.siloName) ?? 0)
-      : r.score;
-    return {
-      ...r,
-      score: calibratedScore,
-      // 3 active signals for directory search: semantic, trigram, filepath
-      qualityScore: computeQualityScore(r.bestCosineSimilarity, r.breakdown, 3),
-    };
-  });
+  return raw.map((r) => ({
+    ...r,
+    score: crossSilo ? r.score * (siloMeanCosine.get(r.siloName) ?? 0) : r.score,
+    qualityScore: computeQualityScore(r.bestCosineSimilarity, r.breakdown, DIR_SIGNAL_COUNT),
+  }));
 }

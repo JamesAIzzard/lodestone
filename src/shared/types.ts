@@ -91,6 +91,15 @@ export interface ScoreBreakdown {
   tags?: SignalContribution;
 }
 
+/** A breakdown where every signal contributed nothing — used for structural/fallback results. */
+export const ZERO_SCORE_BREAKDOWN: ScoreBreakdown = {
+  semantic:  { rank: 0, rawScore: 0, rrfContribution: 0 },
+  bm25:      { rank: 0, rawScore: 0, rrfContribution: 0 },
+  trigram:   { rank: 0, rawScore: 0, rrfContribution: 0 },
+  filepath:  { rank: 0, rawScore: 0, rrfContribution: 0 },
+  tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
+};
+
 // ── Search ────────────────────────────────────────────────────────────────────
 
 export interface SearchResultChunk {

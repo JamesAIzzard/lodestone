@@ -43,6 +43,55 @@ export function makeStoredKey(absPath: string, directories: string[]): string {
 }
 
 /**
+ * Convert an absolute directory path to a stored dir-key (like makeStoredKey but with trailing '/').
+ * Returns null if the path is not under any configured directory or is a silo root itself.
+ */
+export function makeStoredDirKey(absDirPath: string, directories: string[]): string | null {
+  for (let i = 0; i < directories.length; i++) {
+    const dir = directories[i];
+    if (absDirPath === dir) return null; // silo root — not tracked individually
+    const rel = path.relative(dir, absDirPath);
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+      return `${i}:${rel.replace(/\\/g, '/')}/`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Insert a single directory entry (by stored dir-key) if it doesn't already exist.
+ * Extracts dirName and depth from the stored key.
+ */
+export function insertDirEntry(db: SiloDatabase, dirPath: string): void {
+  // dirPath looks like "0:src/backend/" — derive name and depth
+  const colonIdx = dirPath.indexOf(':');
+  if (colonIdx === -1) return;
+  const rel = dirPath.slice(colonIdx + 1, -1); // strip trailing '/'
+  const segments = rel.split('/').filter(Boolean);
+  if (segments.length === 0) return;
+  const dirName = segments[segments.length - 1];
+  const depth = segments.length;
+  db.prepare(
+    `INSERT OR IGNORE INTO directories (dir_path, dir_name, depth, file_count, subdir_count) VALUES (?, ?, ?, 0, 0)`,
+  ).run(dirPath, dirName, depth);
+}
+
+/**
+ * Delete a single directory entry (and its vec/fts rows) by stored dir-key.
+ * Returns the deleted directory id, or null if not found.
+ */
+export function deleteDirEntry(db: SiloDatabase, dirPath: string): number | null {
+  const row = db.prepare(`SELECT id FROM directories WHERE dir_path = ?`).get(dirPath) as { id: number } | undefined;
+  if (!row) return null;
+  db.transaction(() => {
+    try { db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`).run(row.id); } catch { /* ignore */ }
+    try { db.prepare(`DELETE FROM dirs_vec WHERE rowid = ?`).run(row.id); } catch { /* ignore */ }
+    db.prepare(`DELETE FROM directories WHERE id = ?`).run(row.id);
+  })();
+  return row.id;
+}
+
+/**
  * Resolve a stored key back to an absolute path using the silo's configured directories.
  */
 export function resolveStoredKey(storedKey: string, directories: string[]): string {
@@ -1101,12 +1150,12 @@ export function flushDirectoryEmbeddings(
  * - Inserts any new directories not yet in the table
  * - Removes directories no longer present on disk
  * - Recomputes all counts
- * Returns the number of directories removed.
+ * Returns the list of removed directory stored-key paths (for activity event emission).
  */
 export function syncDirectoriesWithDisk(
   db: SiloDatabase,
   diskDirPaths: Array<{ dirPath: string; dirName: string; depth: number }>,
-): number {
+): string[] {
   const diskSet = new Set(diskDirPaths.map((d) => d.dirPath));
 
   return db.transaction(() => {
@@ -1150,7 +1199,7 @@ export function syncDirectoriesWithDisk(
       )
     `).run();
 
-    return toRemove.length;
+    return toRemove.map((d) => d.dir_path);
   })();
 }
 

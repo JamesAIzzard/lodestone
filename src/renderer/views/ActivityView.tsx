@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { AlertCircle, ChevronDown, FileMinus, RefreshCw, FilePlus } from 'lucide-react';
+import { AlertCircle, ChevronDown, FileMinus, RefreshCw, FilePlus, FolderPlus, FolderMinus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
@@ -27,9 +27,11 @@ const eventConfig: Record<
   reindexed: { label: 'Re-indexed', icon: RefreshCw, className: 'text-blue-400' },
   deleted: { label: 'Deleted', icon: FileMinus, className: 'text-muted-foreground' },
   error: { label: 'Error', icon: AlertCircle, className: 'text-red-400' },
+  'dir-added': { label: 'Dir Added', icon: FolderPlus, className: 'text-teal-400' },
+  'dir-removed': { label: 'Dir Removed', icon: FolderMinus, className: 'text-muted-foreground/70' },
 };
 
-const ALL_EVENT_TYPES: ActivityEventType[] = ['indexed', 'reindexed', 'deleted', 'error'];
+const ALL_EVENT_TYPES: ActivityEventType[] = ['indexed', 'reindexed', 'deleted', 'error', 'dir-added', 'dir-removed'];
 
 export default function ActivityView() {
   const [silos, setSilos] = useState<SiloStatus[]>([]);

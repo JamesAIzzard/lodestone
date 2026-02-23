@@ -8,7 +8,7 @@ import {
 } from './ui/dialog';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
-import { FileText, Blocks, FolderOpen, Loader2, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play, HardDrive, Unplug, Pencil, Check, X } from 'lucide-react';
+import { FileText, Blocks, FolderOpen, FolderPlus, FolderMinus, Loader2, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play, HardDrive, Unplug, Pencil, Check, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
 import IgnorePatternsEditor from './IgnorePatternsEditor';
@@ -52,7 +52,18 @@ const eventTypeStyles: Record<string, string> = {
   reindexed: 'text-blue-400',
   deleted: 'text-muted-foreground',
   error: 'text-red-400',
+  'dir-added': 'text-teal-400',
+  'dir-removed': 'text-muted-foreground/70',
 };
+
+function eventLabel(type: string): string {
+  switch (type) {
+    case 'reindexed': return 'Re-indexed';
+    case 'dir-added': return 'Dir Added';
+    case 'dir-removed': return 'Dir Removed';
+    default: return type.charAt(0).toUpperCase() + type.slice(1);
+  }
+}
 
 interface SiloDetailModalProps {
   silo: SiloStatus | null;
@@ -532,14 +543,20 @@ export default function SiloDetailModal({ silo, open, onOpenChange, onDeleted, o
                   <span className="w-12 shrink-0 text-muted-foreground/60">
                     {formatTime(event.timestamp)}
                   </span>
-                  <span className={cn('w-16 shrink-0 capitalize', eventTypeStyles[event.eventType])}>
-                    {event.eventType === 'reindexed' ? 're-indexed' : event.eventType}
+                  <span className={cn('w-20 shrink-0', eventTypeStyles[event.eventType])}>
+                    {eventLabel(event.eventType)}
                   </span>
                   <span className="truncate text-muted-foreground" title={event.filePath}>
                     {fileName(event.filePath)}
                   </span>
                   {event.eventType === 'error' && (
                     <AlertCircle className="h-3 w-3 shrink-0 text-red-400" />
+                  )}
+                  {event.eventType === 'dir-added' && (
+                    <FolderPlus className="h-3 w-3 shrink-0 text-teal-400" />
+                  )}
+                  {event.eventType === 'dir-removed' && (
+                    <FolderMinus className="h-3 w-3 shrink-0 text-muted-foreground/70" />
                   )}
                 </div>
               ))}

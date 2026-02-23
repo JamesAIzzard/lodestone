@@ -14,7 +14,8 @@ import path from 'node:path';
 import type { EmbeddingService } from './embedding';
 import { prepareFile, type PreparedFile } from './pipeline';
 import {
-  makeStoredKey, flushPreparedFiles,
+  makeStoredKey, makeStoredDirKey, resolveStoredKey,
+  flushPreparedFiles, insertDirEntry, deleteDirEntry,
   getDirectoriesNeedingEmbeddings, flushDirectoryEmbeddings, directoryEmbeddingText,
   type SiloDatabase,
 } from './store';
@@ -43,6 +44,10 @@ export class SiloWatcher {
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private processing = false;
   private queue: Array<{ absPath: string; storedKey: string; type: 'upsert' | 'delete' }> = [];
+  /** Pending directory additions (absolute paths). */
+  private dirAddQueue: string[] = [];
+  /** Pending directory removals (stored dir-key strings). */
+  private dirRemoveQueue: string[] = [];
   private onEvent: WatcherEventHandler | null = null;
   private onQueueFilled?: () => void;
 
@@ -98,6 +103,8 @@ export class SiloWatcher {
     this.watcher.on('add', (filePath: string) => this.debounce(filePath, 'upsert', debounceMs));
     this.watcher.on('change', (filePath: string) => this.debounce(filePath, 'upsert', debounceMs));
     this.watcher.on('unlink', (filePath: string) => this.debounce(filePath, 'delete', debounceMs));
+    this.watcher.on('addDir', (dirPath: string) => this.debounceDir(dirPath, 'add', debounceMs));
+    this.watcher.on('unlinkDir', (dirPath: string) => this.debounceDir(dirPath, 'remove', debounceMs));
   }
 
   /** Stop watching and clear all pending timers. */
@@ -107,6 +114,8 @@ export class SiloWatcher {
     }
     this.debounceTimers.clear();
     this.queue = [];
+    this.dirAddQueue = [];
+    this.dirRemoveQueue = [];
 
     if (this.watcher) {
       await this.watcher.close();
@@ -114,9 +123,9 @@ export class SiloWatcher {
     }
   }
 
-  /** Number of files waiting in the queue. */
+  /** Number of items (files + dirs) waiting in the queue. */
   get queueLength(): number {
-    return this.queue.length;
+    return this.queue.length + this.dirAddQueue.length + this.dirRemoveQueue.length;
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────
@@ -148,6 +157,36 @@ export class SiloWatcher {
     this.queue.push({ absPath, storedKey, type });
     // Notify SiloManager to schedule a global-queue run rather than processing
     // directly, so only one silo indexes at a time.
+    this.onQueueFilled?.();
+  }
+
+  private debounceDir(absDirPath: string, type: 'add' | 'remove', delayMs: number): void {
+    const absPath = path.resolve(absDirPath);
+    const debounceKey = `dir:${type}:${absPath}`;
+
+    const existing = this.debounceTimers.get(debounceKey);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.debounceTimers.delete(debounceKey);
+      this.enqueueDir(absPath, type);
+    }, delayMs);
+
+    this.debounceTimers.set(debounceKey, timer);
+  }
+
+  private enqueueDir(absDirPath: string, type: 'add' | 'remove'): void {
+    if (type === 'add') {
+      // Deduplicate
+      if (!this.dirAddQueue.includes(absDirPath)) {
+        this.dirAddQueue.push(absDirPath);
+      }
+    } else {
+      const storedDirKey = makeStoredDirKey(absDirPath, this.config.directories);
+      if (storedDirKey && !this.dirRemoveQueue.includes(storedDirKey)) {
+        this.dirRemoveQueue.push(storedDirKey);
+      }
+    }
     this.onQueueFilled?.();
   }
 
@@ -202,10 +241,33 @@ export class SiloWatcher {
         );
       }
 
-      // Sync directory embeddings for any newly-created directories.
-      // Wrapped in try/catch so directory embedding failures never break
-      // the main file-indexing flow.
-      if (upserts.length > 0) {
+      // Process queued directory additions: insert entries so they appear
+      // in getDirectoriesNeedingEmbeddings() below.
+      const pendingDirAdds = this.dirAddQueue.splice(0);
+      for (const absDirPath of pendingDirAdds) {
+        const storedDirKey = makeStoredDirKey(absDirPath, this.config.directories);
+        if (storedDirKey) {
+          try { insertDirEntry(this.db, storedDirKey); } catch { /* ignore */ }
+        }
+      }
+
+      // Process queued directory removals: delete entries and emit events.
+      const pendingDirRemoves = this.dirRemoveQueue.splice(0);
+      for (const storedDirKey of pendingDirRemoves) {
+        try {
+          deleteDirEntry(this.db, storedDirKey);
+          const absPath = resolveStoredKey(storedDirKey, this.config.directories);
+          this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absPath, eventType: 'dir-removed' });
+        } catch (err) {
+          console.error(`[watcher] Error removing directory ${storedDirKey}:`, err);
+        }
+      }
+
+      // Sync directory embeddings for any newly-created directories
+      // (from file upserts via maintainDirectoriesOnUpsert, or from addDir events above).
+      // Wrapped in try/catch so directory embedding failures never break the file-indexing flow.
+      const needsDirEmbed = upserts.length > 0 || pendingDirAdds.length > 0;
+      if (needsDirEmbed) {
         try {
           const dirsNeedingEmbed = getDirectoriesNeedingEmbeddings(this.db);
           if (dirsNeedingEmbed.length > 0) {
@@ -221,6 +283,11 @@ export class SiloWatcher {
             }
             if (embedEntries.length > 0) {
               flushDirectoryEmbeddings(this.db, embedEntries);
+              // Emit dir-added for each newly embedded directory
+              for (const entry of embedEntries) {
+                const absPath = resolveStoredKey(entry.dirPath, this.config.directories);
+                this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absPath, eventType: 'dir-added' });
+              }
             }
           }
         } catch (err) {
@@ -228,7 +295,7 @@ export class SiloWatcher {
         }
       }
 
-      // Emit events after the flush succeeds
+      // Emit file events after the flush succeeds
       for (const u of upserts) {
         this.emit({
           timestamp: new Date(),

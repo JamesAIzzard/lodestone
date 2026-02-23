@@ -261,9 +261,13 @@ export async function reconcile(
       }
     }
 
-    const removedDirs = syncDirectoriesWithDisk(db, diskDirEntries);
-    if (removedDirs > 0) {
-      console.log(`[reconcile] Removed ${removedDirs} stale director${removedDirs === 1 ? 'y' : 'ies'}`);
+    const removedDirKeys = syncDirectoriesWithDisk(db, diskDirEntries);
+    if (removedDirKeys.length > 0) {
+      console.log(`[reconcile] Removed ${removedDirKeys.length} stale director${removedDirKeys.length === 1 ? 'y' : 'ies'}`);
+      // Emit dir-removed events for each orphaned directory
+      for (const dirPath of removedDirKeys) {
+        onEvent?.({ filePath: resolveStoredKey(dirPath, config.directories), eventType: 'dir-removed' });
+      }
     }
 
     // 9. Generate embeddings for any new directories
@@ -279,6 +283,10 @@ export async function reconcile(
       if (embedEntries.length > 0) {
         flushDirectoryEmbeddings(db, embedEntries);
         console.log(`[reconcile] Embedded ${embedEntries.length} director${embedEntries.length === 1 ? 'y' : 'ies'}`);
+        // Emit dir-added events for newly embedded directories
+        for (const entry of embedEntries) {
+          onEvent?.({ filePath: resolveStoredKey(entry.dirPath, config.directories), eventType: 'dir-added' });
+        }
       }
     }
   }

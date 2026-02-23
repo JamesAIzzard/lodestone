@@ -196,7 +196,7 @@ export const EXPLORE_PRESETS: Record<SearchPreset, SearchWeights> = {
 
 // ── Activity ──────────────────────────────────────────────────────────────────
 
-export type ActivityEventType = 'indexed' | 'reindexed' | 'deleted' | 'error';
+export type ActivityEventType = 'indexed' | 'reindexed' | 'deleted' | 'error' | 'dir-added' | 'dir-removed';
 
 export interface ActivityEvent {
   id: string;

@@ -2,15 +2,17 @@
  * Directory search — two-axis scoring for directory exploration.
  *
  * Axes:
- *   1. Segment Levenshtein — decompose path into segments, score each
- *      against query, take best. Finds directories by name.
- *   2. Token coverage — tokenise query and path, compute what fraction
- *      of query tokens appear in path tokens. Finds directories
+ *   1. Segment Levenshtein — score the directory's own name (leaf segment)
+ *      against the query. Finds directories by name.
+ *   2. Token coverage — tokenise query and directory name, compute what
+ *      fraction of query tokens appear in the name. Finds directories
  *      matching multi-word queries.
  *
  * Directory score = max(segment, keyword).
  *
- * Prefilter: trigram FTS5 on dirs_fts to narrow candidates before scoring.
+ * Directory tables are small (dozens to hundreds of rows) so every directory
+ * is scored directly — no prefilter needed. This ensures fuzzy Levenshtein
+ * matches are never missed.
  *
  * Empty query with no startPath is handled upstream in SiloManager, which
  * returns the silo's configured root directories directly. The broadQueryFallback
@@ -47,49 +49,44 @@ export interface SiloDirectorySearchResult {
 // ── Scorers ──────────────────────────────────────────────────────────────────
 
 /**
- * Score a directory path by comparing each path segment against the query
- * using normalised Levenshtein distance. Returns the best (highest) score.
+ * Score a directory by comparing its own name (leaf segment) against the query
+ * using normalised Levenshtein distance.
  *
- * Example: query "chunkers", path "src/backend/chunkers/" → high score
- * on the "chunkers" segment.
+ * Only the leaf is scored — ancestor segments are ignored so that searching
+ * "src" doesn't give every directory under src/ a perfect score.
+ *
+ * Example: query "chunkers", dirName "chunkers" → 1.0
  */
-function scoreSegmentLevenshtein(queryLower: string, dirPath: string): number {
-  const segments = dirPath.replace(/\/$/, '').split(/[/\\]/).filter((s) => s.length > 0);
-  let best = 0;
-  for (const seg of segments) {
-    const segLower = seg.toLowerCase();
-    const maxLen = Math.max(queryLower.length, segLower.length);
-    if (maxLen === 0) continue;
-    const dist = levenshteinDistance(queryLower, segLower);
-    const sim = 1 - dist / maxLen;
-    if (sim > best) best = sim;
-  }
-  return best;
+function scoreSegmentLevenshtein(queryLower: string, dirName: string): number {
+  const nameLower = dirName.toLowerCase();
+  const maxLen = Math.max(queryLower.length, nameLower.length);
+  if (maxLen === 0) return 0;
+  const dist = levenshteinDistance(queryLower, nameLower);
+  return 1 - dist / maxLen;
 }
 
 /**
- * Score a directory path by token coverage — what fraction of query tokens
- * appear in the path (as exact matches or substring containment).
+ * Score a directory by token coverage on its own name (leaf segment) —
+ * what fraction of query tokens appear in the directory name.
  *
- * Example: query "nutrient calculator", path "src/nutrients/calculator/" → 1.0
- * (both query tokens matched by path tokens).
+ * Only the leaf name is tokenised — ancestor segments are ignored so that
+ * "src" doesn't match every directory under src/.
+ *
+ * Example: query "nutrient calculator", dirName "calculator" → 0.5
+ * (one of two query tokens matched).
  */
-function scorePathTokenCoverage(queryTokens: string[], dirPath: string): number {
+function scoreNameTokenCoverage(queryTokens: string[], dirName: string): number {
   if (queryTokens.length === 0) return 0;
-  // Tokenise the path by splitting on separators, then into alphanumeric tokens
-  const pathTokens = tokenise(dirPath.replace(/[/\\]/g, ' '));
+  const nameTokens = tokenise(dirName);
   let matched = 0;
   for (const qt of queryTokens) {
-    // Exact token match
-    if (pathTokens.includes(qt)) {
+    if (nameTokens.includes(qt)) {
       matched++;
       continue;
     }
-    // Substring containment (either direction) — handles partial matches
-    // like "chunk" matching "chunkers" or "test" matching "tests"
     let found = false;
-    for (const pt of pathTokens) {
-      if (pt.includes(qt) || qt.includes(pt)) {
+    for (const nt of nameTokens) {
+      if (nt.includes(qt) || qt.includes(nt)) {
         found = true;
         break;
       }
@@ -118,54 +115,18 @@ export function directorySearchSilo(
     return broadQueryFallback(db, startPath, maxDepth, maxResults);
   }
 
-  const candidateLimit = maxResults * 5;
   const queryLower = query.trim().toLowerCase();
   const queryTokens = tokenise(query);
 
-  // ── Prefilter: trigram FTS5 + LIKE substring ──
+  // ── Fetch all directories ──
+  // Directory tables are small (dozens to hundreds of rows) so we score
+  // every entry with Levenshtein rather than prefiltering. This ensures
+  // fuzzy matches like "chunkr" → "chunkers" are never missed.
 
-  const candidateIds = new Set<number>();
-
-  // Trigram prefilter
-  const sanitised = sanitiseTrigramQuery(query);
-  if (sanitised.length > 0) {
-    try {
-      const rows = db.prepare(`
-        SELECT rowid FROM dirs_fts
-        WHERE dirs_fts MATCH ?
-        ORDER BY rank LIMIT ?
-      `).all(sanitised, candidateLimit) as Array<{ rowid: number }>;
-      for (const row of rows) candidateIds.add(row.rowid);
-    } catch {
-      // FTS5 error — skip
-    }
-  }
-
-  // LIKE substring fallback
-  const likePattern = `%${query.trim().replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
-  try {
-    const rows = db.prepare(`
-      SELECT id FROM directories
-      WHERE dir_path LIKE ? ESCAPE '\\'
-      ORDER BY depth ASC, file_count DESC
-      LIMIT ?
-    `).all(likePattern, candidateLimit) as Array<{ id: number }>;
-    for (const row of rows) candidateIds.add(row.id);
-  } catch {
-    // Skip on error
-  }
-
-  if (candidateIds.size === 0) return [];
-
-  // ── Fetch candidate directories ──
-
-  const idList = Array.from(candidateIds);
-  const placeholders = idList.map(() => '?').join(',');
   const dirRows = db.prepare(`
     SELECT id, dir_path, dir_name, depth, file_count, subdir_count
     FROM directories
-    WHERE id IN (${placeholders})
-  `).all(...idList) as Array<{
+  `).all() as Array<{
     id: number; dir_path: string; dir_name: string;
     depth: number; file_count: number; subdir_count: number;
   }>;
@@ -177,8 +138,8 @@ export function directorySearchSilo(
   for (const dir of dirRows) {
     if (startPath && !dir.dir_path.includes(startPath)) continue;
 
-    const segmentScore = scoreSegmentLevenshtein(queryLower, dir.dir_path);
-    const keywordScore = scorePathTokenCoverage(queryTokens, dir.dir_path);
+    const segmentScore = scoreSegmentLevenshtein(queryLower, dir.dir_name);
+    const keywordScore = scoreNameTokenCoverage(queryTokens, dir.dir_name);
     const score = Math.max(segmentScore, keywordScore);
     const scoreSource: DirectoryScoreSource = segmentScore >= keywordScore ? 'segment' : 'keyword';
 
@@ -196,9 +157,11 @@ export function directorySearchSilo(
     });
   }
 
-  // Sort by score descending, overfetch for ancestor dedup
-  scored.sort((a, b) => b.score - a.score);
-  const topScored = scored.slice(0, maxResults * 4);
+  // Drop zero-scoring candidates (prefilter may pull in path matches that
+  // don't match the leaf name) and sort by score descending
+  const filtered = scored.filter((r) => r.score > 0);
+  filtered.sort((a, b) => b.score - a.score);
+  const topScored = filtered.slice(0, maxResults * 4);
 
   // Expand trees for top results
   for (const result of topScored) {
@@ -340,19 +303,4 @@ function buildTreeFromFlat(
   }
 
   return roots;
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-/**
- * Sanitise a query for FTS5 trigram MATCH.
- * Trigram requires terms of at least 3 characters; shorter terms are dropped.
- */
-function sanitiseTrigramQuery(query: string): string {
-  return query
-    .replace(/"/g, '""')
-    .split(/\s+/)
-    .filter((term) => term.length >= 3)
-    .map((term) => `"${term}"`)
-    .join(' ');
 }

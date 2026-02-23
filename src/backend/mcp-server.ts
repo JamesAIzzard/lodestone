@@ -217,8 +217,8 @@ const EXPLORE_DESCRIPTION = [
   'Use with a query to find directories by name or path.',
   '',
   'Directories are scored on two axes:',
-  '  \u2022 segment \u2014 Levenshtein similarity of query to each path segment (finds dirs by name)',
-  '  \u2022 keyword \u2014 token coverage of query words in the path (finds dirs matching multi-word queries)',
+  '  \u2022 segment \u2014 Levenshtein similarity of query to directory name (finds dirs by name)',
+  '  \u2022 keyword \u2014 token coverage of query words in directory name (finds dirs matching multi-word queries)',
   '',
   'Use the lodestone_status tool to see available silos and their current state.',
 ].join('\n');

@@ -1,14 +1,16 @@
 /**
- * Filename axis scorer: Levenshtein similarity with trigram Jaccard prefilter.
+ * Filename axis scorer: trigram Jaccard filter + Levenshtein similarity.
  *
  * Two-stage pipeline:
- *   1. Query the `files_fts` trigram index to retrieve candidate filenames.
- *      Compute Jaccard similarity between query trigrams and each candidate's
- *      trigrams, filtering out candidates below the threshold (0.2).
+ *   1. Scan all files in the silo, compute trigram Jaccard similarity between
+ *      the query and each basename, filtering out candidates below the
+ *      threshold (0.2).
  *   2. Score remaining candidates with normalised Levenshtein distance against
  *      the basename (file_name), producing a [0,1] score per file.
  *
- * The prefilter avoids computing edit distance against every file in the silo.
+ * File tables are small enough (thousands of rows) that scanning all basenames
+ * with trigram Jaccard is fast — no FTS5 prefilter needed. This ensures fuzzy
+ * matches are never missed (e.g. "classsical mechnics" → "Classical Mechanics.md").
  */
 
 import type { SiloDatabase } from '../store';
@@ -30,7 +32,7 @@ export interface FilenameScore {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Score filenames against a query using trigram prefilter + Levenshtein.
+ * Score filenames against a query using trigram Jaccard + Levenshtein.
  *
  * @param db     Silo database handle.
  * @param query  Raw search query string.
@@ -44,32 +46,18 @@ export function scoreFilenames(
   const queryLower = query.toLowerCase().trim();
   if (queryLower.length === 0) return results;
 
-  // Build query trigrams for Jaccard comparison
   const queryTrigrams = computeTrigrams(queryLower);
   if (queryTrigrams.size === 0) return results;
 
-  // Stage 1: Retrieve candidates from FTS5 trigram index.
-  // We use a broad trigram match to get candidates, then filter by Jaccard.
-  const sanitised = sanitiseTrigramQuery(queryLower);
-  if (sanitised.length === 0) return results;
+  // Scan all files — file tables are small enough (thousands of rows) that
+  // computing trigram Jaccard against every basename is fast.
+  const allFiles = db.prepare(
+    `SELECT file_path, file_name FROM files`,
+  ).all() as Array<{ file_path: string; file_name: string }>;
 
-  let candidates: Array<{ file_path: string; file_name: string }>;
-  try {
-    candidates = db.prepare(`
-      SELECT f.file_path, f.file_name
-      FROM files f
-      JOIN files_fts ON files_fts.rowid = f.id
-      WHERE files_fts MATCH ?
-      ORDER BY files_fts.rank
-      LIMIT 200
-    `).all(sanitised) as Array<{ file_path: string; file_name: string }>;
-  } catch {
-    return results;
-  }
-
-  // Stage 2: Jaccard prefilter + Levenshtein scoring
-  for (const { file_path, file_name } of candidates) {
-    const nameLower = file_name.toLowerCase();
+  for (const { file_path, file_name } of allFiles) {
+    // Strip extension before scoring — users search for document names, not ".md"
+    const nameLower = stripExtension(file_name).toLowerCase();
     const candidateTrigrams = computeTrigrams(nameLower);
 
     if (candidateTrigrams.size === 0) continue;
@@ -154,17 +142,9 @@ export function levenshteinDistance(a: string, b: string): number {
   return prev[m];
 }
 
-// ── Internal ─────────────────────────────────────────────────────────────────
-
-/**
- * Sanitise a query string for FTS5 trigram MATCH.
- * Terms shorter than 3 characters are dropped (trigram minimum).
- */
-function sanitiseTrigramQuery(query: string): string {
-  return query
-    .replace(/"/g, '""')
-    .split(/\s+/)
-    .filter((term) => term.length >= 3)
-    .map((term) => `"${term}"`)
-    .join(' ');
+/** Remove the file extension from a filename (e.g. "foo.md" → "foo"). */
+function stripExtension(filename: string): string {
+  const dot = filename.lastIndexOf('.');
+  return dot > 0 ? filename.slice(0, dot) : filename;
 }
+

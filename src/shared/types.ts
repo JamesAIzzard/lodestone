@@ -118,6 +118,9 @@ export interface SearchResultChunk {
 
 export type MatchType = 'semantic' | 'keyword' | 'both';
 
+/** What drove this file's ranking score: a filename/path match or content signals */
+export type ScoreSource = 'filename' | 'content';
+
 export interface SearchResult {
   filePath: string;
   /** Final score (RRF, or RRF × bestCosineSimilarity when merging across silos) */
@@ -129,6 +132,8 @@ export interface SearchResult {
    */
   qualityScore: number;
   matchType: MatchType;
+  /** Whether the file's score was driven by a filename/path match or content signals */
+  scoreSource: ScoreSource;
   chunks: SearchResultChunk[];
   siloName: string;
   /** Raw RRF score before cross-silo cosine calibration */

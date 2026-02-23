@@ -242,6 +242,7 @@ export class InternalApi {
       score: r.score,
       qualityScore: r.qualityScore,
       matchType: r.matchType,
+      scoreSource: r.scoreSource,
       chunks: r.chunks.map((c) => ({
         ...c,
         breakdown: c.breakdown,

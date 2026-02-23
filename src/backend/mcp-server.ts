@@ -70,7 +70,8 @@ function formatSearchResults(results: SearchResult[]): string {
     lines.push(`## ${result.filePath}`);
     const matchLabel = result.matchType === 'both' ? 'semantic + keyword'
       : result.matchType === 'keyword' ? 'keyword' : 'semantic';
-    lines.push(`Silo: ${result.siloName} | Relevance: ${Math.round(result.qualityScore * 100)}% | Match: ${matchLabel}`);
+    const sourceLabel = result.scoreSource === 'filename' ? 'filename match' : 'content match';
+    lines.push(`Silo: ${result.siloName} | Relevance: ${Math.round(result.qualityScore * 100)}% | Match: ${matchLabel} | Ranked by: ${sourceLabel}`);
     lines.push('');
 
     for (const chunk of result.chunks) {

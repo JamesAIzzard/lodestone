@@ -110,6 +110,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.96,
     rrfScore: 0.94,
     bestCosineSimilarity: 0.91,
+    scoreSource: 'content',
     matchType: 'both',
     chunks: [
       {
@@ -131,6 +132,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.91,
     rrfScore: 0.91,
     bestCosineSimilarity: 0.91,
+    scoreSource: 'content',
     matchType: 'semantic',
     chunks: [
       {
@@ -147,6 +149,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.92,
     rrfScore: 0.89,
     bestCosineSimilarity: 0.87,
+    scoreSource: 'content',
     matchType: 'both',
     chunks: [
       {
@@ -168,6 +171,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.87,
     rrfScore: 0.87,
     bestCosineSimilarity: 0.87,
+    scoreSource: 'content',
     matchType: 'semantic',
     chunks: [
       {
@@ -184,6 +188,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.35,
     rrfScore: 0.85,
     bestCosineSimilarity: 0,
+    scoreSource: 'content',
     matchType: 'keyword',
     chunks: [
       {
@@ -210,6 +215,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.82,
     rrfScore: 0.82,
     bestCosineSimilarity: 0.82,
+    scoreSource: 'content',
     matchType: 'semantic',
     chunks: [
       {
@@ -226,6 +232,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.80,
     rrfScore: 0.80,
     bestCosineSimilarity: 0.80,
+    scoreSource: 'content',
     matchType: 'semantic',
     chunks: [
       {
@@ -242,6 +249,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.35,
     rrfScore: 0.78,
     bestCosineSimilarity: 0,
+    scoreSource: 'content',
     matchType: 'keyword',
     chunks: [
       {
@@ -258,6 +266,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.75,
     rrfScore: 0.75,
     bestCosineSimilarity: 0.75,
+    scoreSource: 'content',
     matchType: 'semantic',
     chunks: [
       {
@@ -274,6 +283,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.75,
     rrfScore: 0.73,
     bestCosineSimilarity: 0.70,
+    scoreSource: 'content',
     matchType: 'both',
     chunks: [
       {
@@ -290,6 +300,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.71,
     rrfScore: 0.71,
     bestCosineSimilarity: 0.71,
+    scoreSource: 'content',
     matchType: 'semantic',
     chunks: [
       {
@@ -306,6 +317,7 @@ export const mockSearchResults: SearchResult[] = [
     qualityScore: 0.68,
     rrfScore: 0.68,
     bestCosineSimilarity: 0.68,
+    scoreSource: 'content',
     matchType: 'semantic',
     chunks: [
       {

@@ -7,11 +7,12 @@
  * shared by the main process IPC handler and the MCP server.
  */
 
-import type { MatchType, SearchWeights, ScoreBreakdown } from '../shared/types';
+import type { MatchType, SearchWeights, ScoreBreakdown, ScoreSource } from '../shared/types';
 import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 import type { EmbeddingService } from './embedding';
 import type { SiloManager } from './silo-manager';
 import type { SiloSearchResultChunk } from './store';
+import { RRF_K } from './store';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -22,6 +23,7 @@ export interface RawSiloResult {
   rrfScore: number;
   bestCosineSimilarity: number;
   matchType: MatchType;
+  scoreSource: ScoreSource;
   siloName: string;
   chunks: SiloSearchResultChunk[];
   weights: SearchWeights;
@@ -58,6 +60,7 @@ export function computeQualityScore(
   breakdown?: ScoreBreakdown,
   availableSignals: number = SIGNAL_KEYS.length,
 ): number {
+  // Content quality: cosine-anchored with signal agreement bonus
   const matchCount = breakdown
     ? SIGNAL_KEYS.filter((k) => (breakdown[k]?.rank ?? 0) > 0).length
     : 0;
@@ -67,7 +70,14 @@ export function computeQualityScore(
   // previous formula ((matchCount - 1) * 0.05).
   const maxSlots = Math.max(1, availableSignals - 1);
   const agreementBonus = (Math.max(0, matchCount - 1) / maxSlots) * 0.20;
-  return Math.min(base + agreementBonus, 0.99);
+  const contentQuality = Math.min(base + agreementBonus, 0.99);
+
+  // Filename quality: RRF-style decay on filepath rank so an exact filename
+  // match scores near 1.0, independently of whether the content matched.
+  const filepathRank = breakdown?.filepath?.rank ?? 0;
+  const filenameQuality = filepathRank > 0 ? (RRF_K + 1) / (RRF_K + filepathRank) : 0;
+
+  return Math.min(Math.max(contentQuality, filenameQuality), 0.99);
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -119,6 +129,7 @@ export async function dispatchSearch(
             rrfScore: r.score,
             bestCosineSimilarity: r.bestCosineSimilarity,
             matchType: r.matchType,
+            scoreSource: r.scoreSource,
             siloName: name,
             chunks: r.chunks,
             weights: r.weights,

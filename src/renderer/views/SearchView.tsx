@@ -509,6 +509,11 @@ export default function SearchView() {
                           <span className="truncate text-sm font-medium text-foreground">
                             {fileName(result.filePath)}
                           </span>
+                          {result.scoreSource === 'filename' && (
+                            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] bg-cyan-500/20 text-cyan-300">
+                              filename match
+                            </span>
+                          )}
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground/50">
                           <span className="truncate">{dirPath(result.filePath)}</span>

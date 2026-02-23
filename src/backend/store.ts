@@ -21,7 +21,7 @@ import * as sqliteVec from 'sqlite-vec';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ChunkRecord } from './pipeline-types';
-import type { SearchWeights, ScoreBreakdown } from '../shared/types';
+import type { SearchWeights, ScoreBreakdown, ScoreSource } from '../shared/types';
 import { DEFAULT_SEARCH_WEIGHTS } from '../shared/types';
 
 // ── Portable Path Utilities ──────────────────────────────────────────────────
@@ -134,6 +134,8 @@ export interface SiloSearchResultChunk {
 export interface SiloSearchResult {
   filePath: string;
   score: number;
+  /** Whether the file's score was driven by a filename/path match or content signals */
+  scoreSource: ScoreSource;
   matchType: MatchType;
   chunks: SiloSearchResultChunk[];
   /** Best raw cosine similarity (0–1) among the file's vector-matched chunks. */
@@ -753,9 +755,12 @@ export function hybridSearchSilo(
     headingDepths.set(row.id, row.heading_depth);
   }
 
-  // Compute RRF scores per chunk, applying heading depth boost to BM25 and trigram
+  // Compute RRF scores per chunk, applying heading depth boost to BM25 and trigram.
+  // contentRrf excludes the filepath signal so we can compute file-level scores
+  // independently from content signals (see aggregateByFileRrf for usage).
   const penaltyRank = chunkLimit + 1;
   const rrfScores = new Map<number, number>();
+  const contentRrfScores = new Map<number, number>();
   const breakdowns = new Map<number, ScoreBreakdown>();
 
   for (const id of allIds) {
@@ -774,8 +779,10 @@ export function hybridSearchSilo(
     const filepathContrib = w.filepath / (k + filepathRank);
     const tagsContrib = w.tags / (k + tagsRank);
 
-    const rrf = semanticContrib + bm25Contrib + trigramContrib + filepathContrib + tagsContrib;
+    const contentRrf = semanticContrib + bm25Contrib + trigramContrib + tagsContrib;
+    const rrf = contentRrf + filepathContrib;
     rrfScores.set(id, rrf);
+    contentRrfScores.set(id, contentRrf);
     breakdowns.set(id, {
       semantic:  { rank: vecRankMap.get(id) ?? 0,      rawScore: vecRawScores.get(id) ?? 0,      rrfContribution: semanticContrib },
       bm25:      { rank: bm25RankMap.get(id) ?? 0,     rawScore: bm25RawScores.get(id) ?? 0,     rrfContribution: bm25Contrib },
@@ -829,8 +836,10 @@ export function hybridSearchSilo(
     tagsRankMap,
     cosineSims,
     rrfScores,
+    contentRrfScores,
     breakdowns,
     weights,
+    k,
   );
 }
 
@@ -1320,6 +1329,7 @@ function aggregateByFile(
     .map(([filePath, { bestScore, chunks }]) => ({
       filePath,
       score: bestScore,
+      scoreSource: 'content' as ScoreSource,
       matchType: 'semantic' as MatchType,
       bestCosineSimilarity: bestScore,
       chunks,
@@ -1351,8 +1361,10 @@ function aggregateByFileRrf(
   tagsRankMap: Map<number, number>,
   cosineSims: Map<number, number>,
   rrfScores: Map<number, number>,
+  contentRrfScores: Map<number, number>,
   breakdowns: Map<number, ScoreBreakdown>,
   weights: SearchWeights,
+  k: number,
 ): SiloSearchResult[] {
   const zeroBreakdown: ScoreBreakdown = {
     semantic:  { rank: 0, rawScore: 0, rrfContribution: 0 },
@@ -1363,7 +1375,8 @@ function aggregateByFileRrf(
   };
 
   const fileMap = new Map<string, {
-    bestScore: number;
+    bestContentScore: number;
+    bestFilepathRank: number;   // 1-based; 0 = no filepath match
     bestCosineSim: number;
     bestBreakdown: ScoreBreakdown;
     hasVec: boolean;
@@ -1377,7 +1390,9 @@ function aggregateByFileRrf(
     const inFts = bm25RankMap.has(row.id) || trigramRankMap.has(row.id) || filepathRankMap.has(row.id) || tagsRankMap.has(row.id);
     const cosineSim = cosineSims.get(row.id) ?? 0;
     const rrfScore = rrfScores.get(row.id) ?? 0;
+    const contentScore = contentRrfScores.get(row.id) ?? 0;
     const breakdown = breakdowns.get(row.id) ?? zeroBreakdown;
+    const chunkFilepathRank = filepathRankMap.get(row.id) ?? 0;
 
     let chunkMatchType: MatchType = 'semantic';
     if (inVec && inFts) chunkMatchType = 'both';
@@ -1397,16 +1412,20 @@ function aggregateByFileRrf(
     const existing = fileMap.get(row.file_path);
     if (existing) {
       existing.chunks.push(chunk);
-      if (rrfScore > existing.bestScore) {
-        existing.bestScore = rrfScore;
+      if (contentScore > existing.bestContentScore) {
+        existing.bestContentScore = contentScore;
         existing.bestBreakdown = breakdown;
       }
       if (cosineSim > existing.bestCosineSim) existing.bestCosineSim = cosineSim;
+      if (chunkFilepathRank > 0 && (existing.bestFilepathRank === 0 || chunkFilepathRank < existing.bestFilepathRank)) {
+        existing.bestFilepathRank = chunkFilepathRank;
+      }
       if (inVec) existing.hasVec = true;
       if (inFts) existing.hasFts = true;
     } else {
       fileMap.set(row.file_path, {
-        bestScore: rrfScore,
+        bestContentScore: contentScore,
+        bestFilepathRank: chunkFilepathRank,
         bestCosineSim: cosineSim,
         bestBreakdown: breakdown,
         hasVec: inVec,
@@ -1422,13 +1441,22 @@ function aggregateByFileRrf(
   }
 
   return Array.from(fileMap.entries())
-    .map(([filePath, { bestScore, bestCosineSim, bestBreakdown, hasVec, hasFts, chunks }]) => {
+    .map(([filePath, { bestContentScore, bestFilepathRank, bestCosineSim, bestBreakdown, hasVec, hasFts, chunks }]) => {
+      // Filepath signal treated as an independent composite: if the filename is a
+      // strong match, the file should surface even if content signals are weak.
+      // Filepath score uses weight 1.0 (sole signal), so it's directly comparable
+      // to the content-only composite (which also sums to ~1.0 across its signals).
+      const filepathScore = bestFilepathRank > 0 ? 1.0 / (k + bestFilepathRank) : 0;
+      const scoreSource: ScoreSource = filepathScore > bestContentScore ? 'filename' : 'content';
+      const score = Math.max(bestContentScore, filepathScore);
+
       let matchType: MatchType = 'semantic';
       if (hasVec && hasFts) matchType = 'both';
       else if (hasFts && !hasVec) matchType = 'keyword';
       return {
         filePath,
-        score: bestScore,
+        score,
+        scoreSource,
         matchType,
         bestCosineSimilarity: bestCosineSim,
         chunks,

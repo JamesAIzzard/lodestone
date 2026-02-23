@@ -133,6 +133,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       score: r.score,
       qualityScore: r.qualityScore,
       matchType: r.matchType,
+      scoreSource: r.scoreSource,
       chunks: r.chunks.map((c) => ({
         ...c,
         breakdown: c.breakdown,

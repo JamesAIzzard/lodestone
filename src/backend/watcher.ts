@@ -245,13 +245,19 @@ export class SiloWatcher {
         );
       }
 
-      // Process queued directory additions: insert entries so they appear
-      // in getDirectoriesNeedingEmbeddings() below.
+      // Process queued directory additions: insert entries and emit dir-added
+      // immediately on successful insert (before embedding, so the event fires
+      // even if the embedding pipeline fails).
       const pendingDirAdds = this.dirAddQueue.splice(0);
       for (const absDirPath of pendingDirAdds) {
         const storedDirKey = makeStoredDirKey(absDirPath, this.config.directories);
         if (storedDirKey) {
-          try { insertDirEntry(this.db, storedDirKey); } catch { /* ignore */ }
+          try {
+            const inserted = insertDirEntry(this.db, storedDirKey);
+            if (inserted) {
+              this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absDirPath, eventType: 'dir-added' });
+            }
+          } catch { /* ignore */ }
         }
       }
 
@@ -291,11 +297,6 @@ export class SiloWatcher {
             }
             if (embedEntries.length > 0) {
               flushDirectoryEmbeddings(this.db, embedEntries);
-              // Emit dir-added for each newly embedded directory
-              for (const entry of embedEntries) {
-                const absPath = resolveStoredKey(entry.dirPath, this.config.directories);
-                this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absPath, eventType: 'dir-added' });
-              }
             }
           }
         } catch (err) {

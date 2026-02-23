@@ -62,18 +62,22 @@ export function makeStoredDirKey(absDirPath: string, directories: string[]): str
  * Insert a single directory entry (by stored dir-key) if it doesn't already exist.
  * Extracts dirName and depth from the stored key.
  */
-export function insertDirEntry(db: SiloDatabase, dirPath: string): void {
+/**
+ * Returns true if the row was newly inserted, false if it already existed.
+ */
+export function insertDirEntry(db: SiloDatabase, dirPath: string): boolean {
   // dirPath looks like "0:src/backend/" — derive name and depth
   const colonIdx = dirPath.indexOf(':');
-  if (colonIdx === -1) return;
+  if (colonIdx === -1) return false;
   const rel = dirPath.slice(colonIdx + 1, -1); // strip trailing '/'
   const segments = rel.split('/').filter(Boolean);
-  if (segments.length === 0) return;
+  if (segments.length === 0) return false;
   const dirName = segments[segments.length - 1];
   const depth = segments.length;
-  db.prepare(
+  const result = db.prepare(
     `INSERT OR IGNORE INTO directories (dir_path, dir_name, depth, file_count, subdir_count) VALUES (?, ?, ?, 0, 0)`,
   ).run(dirPath, dirName, depth);
+  return result.changes > 0;
 }
 
 /**

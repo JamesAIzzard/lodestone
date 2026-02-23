@@ -164,81 +164,95 @@ export class SiloWatcher {
     const deletes: Array<{ storedKey: string; absPath: string }> = [];
     const errors: WatcherEvent[] = [];
 
-    while (this.queue.length > 0) {
-      const item = this.queue.shift()!;
+    try {
+      while (this.queue.length > 0) {
+        const item = this.queue.shift()!;
 
-      try {
-        if (item.type === 'delete') {
-          deletes.push({ storedKey: item.storedKey, absPath: item.absPath });
-        } else {
-          const start = performance.now();
-          const prepared = await prepareFile(item.absPath, item.storedKey, this.embeddingService);
-          upserts.push({ prepared, absPath: item.absPath, durationMs: performance.now() - start });
+        try {
+          if (item.type === 'delete') {
+            deletes.push({ storedKey: item.storedKey, absPath: item.absPath });
+          } else {
+            const start = performance.now();
+            const prepared = await prepareFile(item.absPath, item.storedKey, this.embeddingService);
+            upserts.push({ prepared, absPath: item.absPath, durationMs: performance.now() - start });
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[watcher] Error processing ${item.absPath}:`, message);
+          errors.push({
+            timestamp: new Date(),
+            siloName: this.config.name,
+            filePath: item.absPath,
+            eventType: 'error',
+            errorMessage: message,
+          });
         }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[watcher] Error processing ${item.absPath}:`, message);
-        errors.push({
+      }
+
+      // Flush all prepared files + deletes in one transaction
+      if (upserts.length > 0 || deletes.length > 0) {
+        flushPreparedFiles(
+          this.db,
+          upserts.map((u) => ({
+            filePath: u.prepared.storedKey,
+            chunks: u.prepared.chunks,
+            embeddings: u.prepared.embeddings,
+          })),
+          deletes.map((d) => ({ filePath: d.storedKey, deleteMtime: false })),
+        );
+      }
+
+      // Sync directory embeddings for any newly-created directories.
+      // Wrapped in try/catch so directory embedding failures never break
+      // the main file-indexing flow.
+      if (upserts.length > 0) {
+        try {
+          const dirsNeedingEmbed = getDirectoriesNeedingEmbeddings(this.db);
+          if (dirsNeedingEmbed.length > 0) {
+            const embedEntries: Array<{ id: number; dirPath: string; dirName: string; embedding: number[] }> = [];
+            for (const dir of dirsNeedingEmbed) {
+              try {
+                const text = directoryEmbeddingText(dir.dirPath);
+                const embedding = await this.embeddingService.embed(text);
+                embedEntries.push({ ...dir, embedding });
+              } catch (err) {
+                console.error(`[watcher] Error embedding directory ${dir.dirPath}:`, err);
+              }
+            }
+            if (embedEntries.length > 0) {
+              flushDirectoryEmbeddings(this.db, embedEntries);
+            }
+          }
+        } catch (err) {
+          console.error(`[watcher] Error syncing directory embeddings:`, err);
+        }
+      }
+
+      // Emit events after the flush succeeds
+      for (const u of upserts) {
+        this.emit({
           timestamp: new Date(),
           siloName: this.config.name,
-          filePath: item.absPath,
-          eventType: 'error',
-          errorMessage: message,
+          filePath: u.absPath,
+          eventType: 'indexed',
+          chunkCount: u.prepared.chunks.length,
+          durationMs: u.durationMs,
         });
       }
-    }
-
-    // Flush all prepared files + deletes in one transaction
-    if (upserts.length > 0 || deletes.length > 0) {
-      flushPreparedFiles(
-        this.db,
-        upserts.map((u) => ({
-          filePath: u.prepared.storedKey,
-          chunks: u.prepared.chunks,
-          embeddings: u.prepared.embeddings,
-        })),
-        deletes.map((d) => ({ filePath: d.storedKey, deleteMtime: false })),
-      );
-    }
-
-    // Sync directory embeddings for any newly-created directories
-    if (upserts.length > 0) {
-      const dirsNeedingEmbed = getDirectoriesNeedingEmbeddings(this.db);
-      if (dirsNeedingEmbed.length > 0) {
-        const embedEntries: Array<{ id: number; dirPath: string; dirName: string; embedding: number[] }> = [];
-        for (const dir of dirsNeedingEmbed) {
-          const text = directoryEmbeddingText(dir.dirPath);
-          const embedding = await this.embeddingService.embed(text);
-          embedEntries.push({ ...dir, embedding });
-        }
-        flushDirectoryEmbeddings(this.db, embedEntries);
+      for (const d of deletes) {
+        this.emit({
+          timestamp: new Date(),
+          siloName: this.config.name,
+          filePath: d.absPath,
+          eventType: 'deleted',
+        });
       }
+      for (const e of errors) {
+        this.emit(e);
+      }
+    } finally {
+      this.processing = false;
     }
-
-    // Emit events after the flush succeeds
-    for (const u of upserts) {
-      this.emit({
-        timestamp: new Date(),
-        siloName: this.config.name,
-        filePath: u.absPath,
-        eventType: 'indexed',
-        chunkCount: u.prepared.chunks.length,
-        durationMs: u.durationMs,
-      });
-    }
-    for (const d of deletes) {
-      this.emit({
-        timestamp: new Date(),
-        siloName: this.config.name,
-        filePath: d.absPath,
-        eventType: 'deleted',
-      });
-    }
-    for (const e of errors) {
-      this.emit(e);
-    }
-
-    this.processing = false;
 
     // If more items arrived while we were processing, notify again so
     // SiloManager can schedule another queue run via the IndexingQueue.

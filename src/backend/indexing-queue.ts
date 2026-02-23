@@ -53,9 +53,11 @@ export class IndexingQueue {
       if (cancelled) return;
 
       this._currentHolder = siloName;
-      onStart();
       try {
+        onStart();
         await task();
+      } catch (err) {
+        console.error(`[IndexingQueue] Task for silo "${siloName}" threw unexpectedly:`, err);
       } finally {
         this._currentHolder = null;
       }

@@ -76,7 +76,11 @@ export class SiloManager {
   private set watcherState(value: WatcherState) {
     if (this._watcherState !== value) {
       this._watcherState = value;
-      this.stateChangeListener?.();
+      try {
+        this.stateChangeListener?.();
+      } catch (err) {
+        console.error(`[silo:${this.config.name}] Error in state change listener:`, err);
+      }
     }
   }
 
@@ -658,8 +662,13 @@ export class SiloManager {
       async () => {
         this.pendingWatcherEnqueue = false;
         this.cancelWatcherEnqueue = null;
-        if (this.watcher && !this.stopped) {
-          await this.watcher.runQueue();
+        try {
+          if (this.watcher && !this.stopped) {
+            await this.watcher.runQueue();
+          }
+        } catch (err) {
+          // Log but don't propagate — ensures we always reach the state-recovery below
+          console.error(`[silo:${this.config.name}] Watcher runQueue error:`, err);
         }
         // runQueue() re-fires onQueueFilled if items arrived mid-run,
         // which schedules another turn. Set ready only if truly idle.

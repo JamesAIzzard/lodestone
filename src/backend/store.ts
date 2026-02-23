@@ -1049,12 +1049,24 @@ export function getDirectoriesNeedingEmbeddings(db: SiloDatabase): Array<{
   dirPath: string;
   dirName: string;
 }> {
-  const rows = db.prepare(`
-    SELECT d.id, d.dir_path, d.dir_name
-    FROM directories d
-    LEFT JOIN dirs_vec v ON v.rowid = d.id
-    WHERE v.rowid IS NULL
-  `).all() as Array<{ id: number; dir_path: string; dir_name: string }>;
+  // Avoid LEFT JOIN on the vec0 virtual table — sqlite-vec may not support
+  // standard JOIN semantics reliably. Instead, collect existing vec rowids
+  // and filter in application code.
+  const allDirs = db.prepare(
+    `SELECT id, dir_path, dir_name FROM directories`,
+  ).all() as Array<{ id: number; dir_path: string; dir_name: string }>;
+
+  // vec0 rowid lookups: fetch IDs one at a time (vec0 doesn't support
+  // SELECT rowid FROM dirs_vec without a MATCH clause on some builds).
+  const checkVec = db.prepare(`SELECT rowid FROM dirs_vec WHERE rowid = ?`);
+  const rows = allDirs.filter((d) => {
+    try {
+      return !checkVec.get(d.id);
+    } catch {
+      // If the vec0 table doesn't support this query, assume the dir needs embedding
+      return true;
+    }
+  });
   return rows.map((r) => ({ id: r.id, dirPath: r.dir_path, dirName: r.dir_name }));
 }
 
@@ -1069,11 +1081,16 @@ export function flushDirectoryEmbeddings(
   if (entries.length === 0) return;
 
   db.transaction(() => {
-    const insertVec = db.prepare(`INSERT INTO dirs_vec(rowid, embedding) VALUES (?, ?)`);
+    // Use OR REPLACE to handle cases where the directory already has an embedding
+    // (e.g. vec0 LEFT JOIN returned stale results, or re-embed after a failure).
+    const insertVec = db.prepare(`INSERT OR REPLACE INTO dirs_vec(rowid, embedding) VALUES (?, ?)`);
+    const deleteOldFts = db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`);
     const insertFts = db.prepare(`INSERT INTO dirs_fts(rowid, dir_path, dir_name) VALUES (?, ?, ?)`);
 
     for (const entry of entries) {
       insertVec.run(entry.id, float32Buffer(entry.embedding));
+      // FTS5 doesn't support OR REPLACE, so delete+re-insert
+      deleteOldFts.run(entry.id);
       insertFts.run(entry.id, entry.dirPath, entry.dirName);
     }
   })();

@@ -162,7 +162,11 @@ export class SiloWatcher {
 
   private debounceDir(absDirPath: string, type: 'add' | 'remove', delayMs: number): void {
     const absPath = path.resolve(absDirPath);
-    const debounceKey = `dir:${type}:${absPath}`;
+    // Use path-only key (no type) so that add→remove or remove→add within the
+    // debounce window collapses to just the last event. This prevents spurious
+    // dir-removed events when macOS/Windows creates "untitled folder" then
+    // immediately renames it — the unlinkDir overwrites the addDir timer.
+    const debounceKey = `dir:${absPath}`;
 
     const existing = this.debounceTimers.get(debounceKey);
     if (existing) clearTimeout(existing);
@@ -255,9 +259,13 @@ export class SiloWatcher {
       const pendingDirRemoves = this.dirRemoveQueue.splice(0);
       for (const storedDirKey of pendingDirRemoves) {
         try {
-          deleteDirEntry(this.db, storedDirKey);
-          const absPath = resolveStoredKey(storedDirKey, this.config.directories);
-          this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absPath, eventType: 'dir-removed' });
+          const deletedId = deleteDirEntry(this.db, storedDirKey);
+          // Only emit if the entry actually existed — avoids spurious dir-removed
+          // events for directories that were renamed before the debounce fired.
+          if (deletedId !== null) {
+            const absPath = resolveStoredKey(storedDirKey, this.config.directories);
+            this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absPath, eventType: 'dir-removed' });
+          }
         } catch (err) {
           console.error(`[watcher] Error removing directory ${storedDirKey}:`, err);
         }

@@ -157,6 +157,14 @@ export const CHUNK_FANOUT = 5;
 /** Maximum chunks returned per file in search results. */
 export const MAX_CHUNKS_PER_FILE = 5;
 
+/**
+ * Number of top filepath-matched files guaranteed to appear in search results,
+ * even when their content RRF score falls below the normal chunk-limit cutoff.
+ * Ensures that a file matching strongly by name (e.g. a CSV full of numbers)
+ * is never silently dropped just because its content has no semantic signal.
+ */
+export const FILEPATH_GUARANTEE_COUNT = 3;
+
 // ── Silo Meta ────────────────────────────────────────────────────────────────
 
 export interface SiloMeta {
@@ -702,7 +710,12 @@ export function hybridSearchSilo(
   // chunk its file's rank. Chunks from the best-matching file all get rank 1, so
   // the filepath signal correctly represents "this file's name/path matches",
   // rather than unfairly penalising later chunks within the same file.
+  //
+  // chunksByFile is also populated here for the filepath-guarantee step below —
+  // it maps each matched file to its chunk IDs so we can inject a representative
+  // chunk if the file would otherwise be squeezed out by the chunkLimit cutoff.
   const filepathRankMap = new Map<number, number>();
+  const chunksByFile = new Map<string, number[]>();
   if (filepathFileRanks.size > 0) {
     try {
       const filePaths = Array.from(filepathFileRanks.keys());
@@ -712,7 +725,11 @@ export function hybridSearchSilo(
       ).all(...filePaths) as Array<{ id: number; file_path: string }>;
       for (const { id, file_path } of chunkRows) {
         const fileRank = filepathFileRanks.get(file_path);
-        if (fileRank !== undefined) filepathRankMap.set(id, fileRank);
+        if (fileRank !== undefined) {
+          filepathRankMap.set(id, fileRank);
+          const arr = chunksByFile.get(file_path);
+          if (arr) arr.push(id); else chunksByFile.set(file_path, [id]);
+        }
       }
     } catch {
       // Skip on error
@@ -791,6 +808,28 @@ export function hybridSearchSilo(
     .slice(0, chunkLimit)
     .map(([id]) => id);
 
+  // Filepath guarantee: ensure the top FILEPATH_GUARANTEE_COUNT filename-matched
+  // files have at least one chunk in the candidate pool, even if their content RRF
+  // score pushed all their chunks below the chunkLimit cutoff.  This is the key
+  // fix for files like numeric CSVs that match perfectly by name but have no
+  // semantic or keyword signal in their content.
+  if (chunksByFile.size > 0) {
+    const sortedIdSet = new Set(sortedIds);
+    const topFilepathFiles = Array.from(filepathFileRanks.entries())
+      .sort((a, b) => a[1] - b[1])          // ascending rank = best match first
+      .slice(0, FILEPATH_GUARANTEE_COUNT);
+    for (const [filePath] of topFilepathFiles) {
+      const fileChunkIds = chunksByFile.get(filePath);
+      if (!fileChunkIds || fileChunkIds.some((id) => sortedIdSet.has(id))) continue;
+      // Pick the highest-RRF chunk from this file (all may score equally low, that's fine)
+      let bestId = fileChunkIds[0];
+      for (const id of fileChunkIds) {
+        if ((rrfScores.get(id) ?? 0) > (rrfScores.get(bestId) ?? 0)) bestId = id;
+      }
+      sortedIds.push(bestId);
+    }
+  }
+
   if (sortedIds.length === 0) return [];
 
   // Fetch chunk data for the top IDs using the existing temp table
@@ -821,7 +860,7 @@ export function hybridSearchSilo(
 
   return aggregateByFileRrf(
     rows,
-    maxResults,
+    maxResults + FILEPATH_GUARANTEE_COUNT,  // allow guaranteed filepath files through the final slice
     vecRankMap,
     bm25RankMap,
     trigramRankMap,

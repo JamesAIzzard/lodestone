@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
-import { Search, FileText, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, X } from 'lucide-react';
+import { Search, FileText, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, X, Text, Type } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
 import type { SiloStatus, SearchResult, DirectoryResult, DirectoryTreeNode, ExploreParams } from '../../shared/types';
@@ -34,10 +34,7 @@ const SCORER_COLORS = {
   bm25:     'text-amber-400',
 } as const;
 
-const DIR_SOURCE_COLORS = {
-  segment: { bar: 'bg-purple-400', label: 'segment' },
-  keyword: { bar: 'bg-amber-400', label: 'keyword' },
-} as const;
+const DIR_BAR_COLOR = 'bg-purple-400';
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -313,11 +310,16 @@ export default function SearchView() {
                           <span className="truncate text-sm font-medium text-foreground">
                             {fileName(result.filePath)}
                           </span>
-                          {result.scoreSource === 'filename' && (
-                            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] bg-cyan-500/20 text-cyan-300">
-                              filename match
-                            </span>
-                          )}
+                          <span className={cn(
+                            'shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]',
+                            source.badge,
+                          )}>
+                            {result.scoreSource === 'content'
+                              ? <Text className="h-3 w-3" />
+                              : <Type className="h-3 w-3" />
+                            }
+                            {source.label}
+                          </span>
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground/50">
                           <span className="truncate">{dirPath(result.filePath)}</span>
@@ -452,7 +454,6 @@ function DirectoryResultsView({
 
       {results.map((result, i) => {
         const isExpanded = expandedResults.has(i);
-        const dirSource = DIR_SOURCE_COLORS[result.scoreSource];
 
         return (
           <div key={`${result.dirPath}-${i}`}>
@@ -498,7 +499,7 @@ function DirectoryResultsView({
               <div className="flex items-center gap-2 shrink-0">
                 <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
                   <div
-                    className={cn('h-full rounded-full', dirSource.bar)}
+                    className={cn('h-full rounded-full', DIR_BAR_COLOR)}
                     style={{ width: `${Math.round(result.score * 100)}%` }}
                   />
                 </div>
@@ -511,19 +512,6 @@ function DirectoryResultsView({
             {/* Expanded: score breakdown + tree */}
             {isExpanded && (
               <div className="ml-[26px] border-l-2 border-accent/20 pl-4 pb-2 mt-1">
-                <div className="mb-1 flex items-center gap-2 text-[10px]">
-                  <span className={cn(
-                    result.scoreSource === 'segment' ? 'text-purple-400' : 'text-muted-foreground/40',
-                  )}>
-                    segment {scorePercent(result.segmentScore)}
-                  </span>
-                  <span className="text-muted-foreground/20">·</span>
-                  <span className={cn(
-                    result.scoreSource === 'keyword' ? 'text-amber-400' : 'text-muted-foreground/40',
-                  )}>
-                    keyword {scorePercent(result.keywordScore)}
-                  </span>
-                </div>
                 {result.children.length > 0 && (
                   <DirectoryTree nodes={result.children} />
                 )}

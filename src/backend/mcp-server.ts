@@ -16,6 +16,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import fs from 'node:fs';
+import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
 
@@ -77,6 +78,16 @@ function assignPuid(filePath: string): string {
 
 function resolvePuid(id: string): string {
   return puidMap.get(id) ?? id; // fall back to treating id as a file path
+}
+
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+};
+
+/** Return the MIME type if the file is an image, or null for text files. */
+function imageMimeType(filePath: string): string | null {
+  return IMAGE_MIME[path.extname(filePath).toLowerCase()] ?? null;
 }
 
 // ── Formatting ───────────────────────────────────────────────────────────────
@@ -198,7 +209,7 @@ const SEARCH_DESCRIPTION = [
 ].join('\n');
 
 const READ_DESCRIPTION = [
-  'Read file contents by reference ID from a previous lodestone_search.',
+  'Read file contents by reference ID from a previous lodestone_search. Supports text and image files (PNG, JPG, GIF, WebP, SVG).',
   '',
   'Accepts an array of references:',
   '  \u2022 Plain string "r1" \u2014 reads the full file for result r1',
@@ -206,6 +217,11 @@ const READ_DESCRIPTION = [
   '',
   'Reference IDs (r1, r2, ...) are assigned by lodestone_search and reset on each new search.',
   'You can also pass absolute file paths instead of reference IDs.',
+  '',
+  'Examples:',
+  '  \u2022 ["r1", "r3"] \u2014 read two files from the last search',
+  '  \u2022 [{ id: "r2", startLine: 10, endLine: 50 }] \u2014 read a specific line range',
+  '  \u2022 ["C:/Users/me/docs/notes.md"] \u2014 read a file directly by path (no search needed)',
 ].join('\n');
 
 const EXPLORE_DESCRIPTION = [
@@ -306,7 +322,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     },
     async ({ results: refs }) => {
       try {
-        const sections: string[] = [];
+        const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [];
 
         for (const entry of refs) {
           const id = typeof entry === 'string' ? entry : entry.id;
@@ -314,32 +330,41 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           const endLine = typeof entry === 'object' ? entry.endLine : undefined;
 
           const filePath = resolvePuid(id);
+          const mime = imageMimeType(filePath);
 
           try {
-            const content = fs.readFileSync(filePath, 'utf-8');
-
-            if (startLine || endLine) {
-              const allLines = content.split('\n');
-              const start = (startLine ?? 1) - 1; // convert to 0-indexed
-              const end = endLine ?? allLines.length;
-              const slice = allLines.slice(start, end);
-              sections.push(
-                `## ${id}: ${filePath} (lines ${start + 1}\u2013${end})\n\`\`\`\n${slice.join('\n')}\n\`\`\``,
-              );
+            if (mime) {
+              // Image file — return as base64 image content block
+              const buf = fs.readFileSync(filePath);
+              content.push({ type: 'text' as const, text: `## ${id}: ${filePath}` });
+              content.push({ type: 'image' as const, data: buf.toString('base64'), mimeType: mime });
             } else {
-              sections.push(
-                `## ${id}: ${filePath}\n\`\`\`\n${content}\n\`\`\``,
-              );
+              // Text file — return as text content block
+              const text = fs.readFileSync(filePath, 'utf-8');
+
+              if (startLine || endLine) {
+                const allLines = text.split('\n');
+                const start = (startLine ?? 1) - 1; // convert to 0-indexed
+                const end = endLine ?? allLines.length;
+                const slice = allLines.slice(start, end);
+                content.push({
+                  type: 'text' as const,
+                  text: `## ${id}: ${filePath} (lines ${start + 1}\u2013${end})\n\`\`\`\n${slice.join('\n')}\n\`\`\``,
+                });
+              } else {
+                content.push({
+                  type: 'text' as const,
+                  text: `## ${id}: ${filePath}\n\`\`\`\n${text}\n\`\`\``,
+                });
+              }
             }
           } catch (readErr) {
             const msg = readErr instanceof Error ? readErr.message : String(readErr);
-            sections.push(`## ${id}: ${filePath}\nError: ${msg}`);
+            content.push({ type: 'text' as const, text: `## ${id}: ${filePath}\nError: ${msg}` });
           }
         }
 
-        return {
-          content: [{ type: 'text' as const, text: sections.join('\n\n---\n\n') }],
-        };
+        return { content };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return {

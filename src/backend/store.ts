@@ -636,24 +636,23 @@ export function hybridSearchSilo(
     }
   }
 
-  // 4. Filepath/filename: FTS5 trigram search; map matching file paths to chunk rowids
-  let filepathChunkIds: number[] = [];
+  // 4. Filepath/filename: FTS5 trigram search ordered by relevance.
+  //    Each matched file gets a 1-based rank; all chunks from that file inherit
+  //    the file's rank so a strong filename match boosts every chunk equally,
+  //    letting the content signals (semantic, BM25) pick the best chunk within it.
+  const filepathFileRanks = new Map<string, number>(); // file_path → 1-based file rank
   if (sanitisedTrigram.length > 0) {
     try {
       const matchingFiles = db.prepare(`
         SELECT f.file_path FROM files f
         JOIN files_fts ON files_fts.rowid = f.id
         WHERE files_fts MATCH ?
+        ORDER BY files_fts.rank
         LIMIT ?
       `).all(sanitisedTrigram, chunkLimit) as Array<{ file_path: string }>;
 
-      if (matchingFiles.length > 0) {
-        const filePaths = matchingFiles.map((r) => r.file_path);
-        const placeholders = filePaths.map(() => '?').join(',');
-        const chunkIdRows = db.prepare(
-          `SELECT id FROM chunks WHERE file_path IN (${placeholders}) LIMIT ?`,
-        ).all(...filePaths, chunkLimit) as Array<{ id: number }>;
-        filepathChunkIds = chunkIdRows.map((r) => r.id);
+      for (let i = 0; i < matchingFiles.length; i++) {
+        filepathFileRanks.set(matchingFiles[i].file_path, i + 1);
       }
     } catch {
       // Skip filepath signal on error
@@ -699,12 +698,24 @@ export function hybridSearchSilo(
     trigramRawScores.set(trigramRows[i].rowid, trigramRows[i].rank);
   }
 
-  // Filepath signal: assign rank by order of appearance (all chunks of matched files)
+  // Filepath signal: fetch all chunks from filepath-matched files and assign each
+  // chunk its file's rank. Chunks from the best-matching file all get rank 1, so
+  // the filepath signal correctly represents "this file's name/path matches",
+  // rather than unfairly penalising later chunks within the same file.
   const filepathRankMap = new Map<number, number>();
-  for (let i = 0; i < filepathChunkIds.length; i++) {
-    const id = filepathChunkIds[i];
-    if (!filepathRankMap.has(id)) {
-      filepathRankMap.set(id, i + 1);
+  if (filepathFileRanks.size > 0) {
+    try {
+      const filePaths = Array.from(filepathFileRanks.keys());
+      const placeholders = filePaths.map(() => '?').join(',');
+      const chunkRows = db.prepare(
+        `SELECT id, file_path FROM chunks WHERE file_path IN (${placeholders})`,
+      ).all(...filePaths) as Array<{ id: number; file_path: string }>;
+      for (const { id, file_path } of chunkRows) {
+        const fileRank = filepathFileRanks.get(file_path);
+        if (fileRank !== undefined) filepathRankMap.set(id, fileRank);
+      }
+    } catch {
+      // Skip on error
     }
   }
 

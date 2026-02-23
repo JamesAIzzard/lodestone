@@ -60,8 +60,6 @@ export function makeStoredDirKey(absDirPath: string, directories: string[]): str
 /**
  * Insert a single directory entry (by stored dir-key) if it doesn't already exist.
  * Extracts dirName and depth from the stored key.
- */
-/**
  * Returns true if the row was newly inserted, false if it already existed.
  */
 export function insertDirEntry(db: SiloDatabase, dirPath: string): boolean {
@@ -80,7 +78,7 @@ export function insertDirEntry(db: SiloDatabase, dirPath: string): boolean {
 }
 
 /**
- * Delete a single directory entry (and its vec/fts rows) by stored dir-key.
+ * Delete a single directory entry (and its FTS row) by stored dir-key.
  * Returns the deleted directory id, or null if not found.
  */
 export function deleteDirEntry(db: SiloDatabase, dirPath: string): number | null {

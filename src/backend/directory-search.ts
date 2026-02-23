@@ -166,10 +166,10 @@ export function directorySearchSilo(
     });
   }
 
-  // Sort by RRF score, take top N
+  // Sort by RRF score — overfetch to account for startPath filtering + ancestor dedup
   const sortedIds = Array.from(rrfScores.entries())
     .sort((a, b) => b[1] - a[1])
-    .slice(0, maxResults * 2) // overfetch before startPath filtering
+    .slice(0, maxResults * 4)
     .map(([id]) => id);
 
   // Fetch directory data for top results
@@ -188,8 +188,6 @@ export function directorySearchSilo(
   // Build results, filtering by startPath if specified
   const results: SiloDirectorySearchResult[] = [];
   for (const id of sortedIds) {
-    if (results.length >= maxResults) break;
-
     const dir = dirMap.get(id);
     if (!dir) continue;
     if (startPath && !dir.dir_path.includes(startPath)) continue;
@@ -209,7 +207,8 @@ export function directorySearchSilo(
     });
   }
 
-  return results;
+  // Remove results already visible inside a higher-ranked ancestor's tree
+  return deduplicateAncestors(results, maxDepth).slice(0, maxResults);
 }
 
 // ── Broad/Empty Query Fallback ──────────────────────────────────────────────
@@ -220,6 +219,8 @@ function broadQueryFallback(
   maxDepth: number,
   maxResults: number,
 ): SiloDirectorySearchResult[] {
+  // Overfetch to account for ancestor dedup
+  const fetchLimit = maxResults * 4;
   let rows;
   if (startPath) {
     rows = db.prepare(`
@@ -228,14 +229,14 @@ function broadQueryFallback(
       WHERE dir_path LIKE ? || '%'
       ORDER BY file_count DESC
       LIMIT ?
-    `).all(startPath, maxResults);
+    `).all(startPath, fetchLimit);
   } else {
     rows = db.prepare(`
       SELECT id, dir_path, dir_name, depth, file_count, subdir_count
       FROM directories
       ORDER BY file_count DESC
       LIMIT ?
-    `).all(maxResults);
+    `).all(fetchLimit);
   }
 
   const zeroBreakdown: ScoreBreakdown = {
@@ -246,7 +247,7 @@ function broadQueryFallback(
     tags:      { rank: 0, rawScore: 0, rrfContribution: 0 },
   };
 
-  return (rows as Array<{
+  const results = (rows as Array<{
     id: number; dir_path: string; dir_name: string;
     depth: number; file_count: number; subdir_count: number;
   }>).map((r) => ({
@@ -260,6 +261,33 @@ function broadQueryFallback(
     depth: r.depth,
     children: expandTree(db, r.dir_path, r.depth, maxDepth),
   }));
+
+  return deduplicateAncestors(results, maxDepth).slice(0, maxResults);
+}
+
+// ── Ancestor Deduplication ───────────────────────────────────────────────────
+
+/**
+ * Remove results that are already visible inside a higher-ranked ancestor's
+ * expanded tree. Results are processed in score order (highest first), so an
+ * ancestor is always accepted before its descendants. A descendant is dropped
+ * when it is a sub-path of an accepted result AND falls within that result's
+ * tree expansion depth.
+ */
+function deduplicateAncestors(
+  results: SiloDirectorySearchResult[],
+  maxDepth: number,
+): SiloDirectorySearchResult[] {
+  const accepted: SiloDirectorySearchResult[] = [];
+  for (const result of results) {
+    const subsumed = accepted.some((ancestor) => {
+      if (!result.dirPath.startsWith(ancestor.dirPath)) return false;
+      const depthDiff = result.depth - ancestor.depth;
+      return depthDiff > 0 && depthDiff <= maxDepth;
+    });
+    if (!subsumed) accepted.push(result);
+  }
+  return accepted;
 }
 
 // ── Tree Expansion ──────────────────────────────────────────────────────────

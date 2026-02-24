@@ -259,6 +259,7 @@ export class InternalApi {
     const startPath = params.startPath as string | undefined;
     const maxDepth = (params.maxDepth as number) ?? 2;
     const maxResults = (params.maxResults as number) ?? 20;
+    const fullContents = params.fullContents as boolean | undefined;
 
     // Notify renderer that an MCP explore is happening
     this.ctx.mainWindow?.webContents.send('mcp:search', { query: query ?? '', silo });
@@ -300,7 +301,7 @@ export class InternalApi {
 
     // No embeddings needed — directory scoring uses string-based scorers
     const raw = await dispatchExplore(
-      { query, startPath, maxDepth, maxResults },
+      { query, startPath, maxDepth, maxResults, fullContents },
       ready,
     );
 
@@ -318,6 +319,7 @@ export class InternalApi {
       subdirCount: r.subdirCount,
       depth: r.depth,
       children: r.children,
+      files: r.files,
     }));
 
     return { results, warnings };

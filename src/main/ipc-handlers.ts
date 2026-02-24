@@ -169,6 +169,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       subdirCount: r.subdirCount,
       depth: r.depth,
       children: r.children,
+      files: r.files,
     }));
   });
 

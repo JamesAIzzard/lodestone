@@ -22,7 +22,9 @@ import {
   saveMeta,
   saveConfigBlob,
   makeStoredKey,
+  makeStoredDirKey,
   resolveStoredKey,
+  getFilesInDirectory,
   peekFileCount,
   type SiloDatabase,
   type TwoAxisFileResult,
@@ -482,7 +484,21 @@ export class SiloManager {
   /** Two-axis search with a pre-computed query vector. */
   searchTwoAxis(queryVector: number[], queryText: string, maxResults: number = 10, startPath?: string): TwoAxisFileResult[] {
     if (!this.db) return [];
-    const results = twoAxisSearch(this.db, queryVector, queryText, maxResults, startPath);
+    // Convert absolute startPath → stored key prefix for DB filtering
+    let storedStartPath = startPath;
+    if (startPath) {
+      const key = makeStoredDirKey(startPath, this.config.directories);
+      if (key) {
+        storedStartPath = key;
+      } else {
+        // startPath may be a silo root or already a stored key
+        const rootIdx = this.config.directories.indexOf(startPath);
+        if (rootIdx >= 0) {
+          storedStartPath = `${rootIdx}:`;
+        }
+      }
+    }
+    const results = twoAxisSearch(this.db, queryVector, queryText, maxResults, storedStartPath);
     return this.resolveTwoAxisPaths(results);
   }
 
@@ -495,14 +511,29 @@ export class SiloManager {
     const isEmptyQuery = !params.query || params.query.trim().length === 0;
     // Empty query with no startPath → return the silo's configured root directories directly
     if (isEmptyQuery && !params.startPath) {
-      return this.exploreRootDirectories(params.maxDepth ?? 2);
+      return this.exploreRootDirectories(params.maxDepth ?? 2, params.fullContents);
     }
-    const raw = directorySearchSilo(this.db, params);
+    // Convert absolute startPath → stored key for DB queries
+    const resolvedParams = { ...params };
+    if (params.startPath) {
+      const key = makeStoredDirKey(params.startPath, this.config.directories);
+      if (key) {
+        resolvedParams.startPath = key;
+      } else {
+        // startPath may be a silo root or already a stored key
+        const rootIdx = this.config.directories.indexOf(params.startPath);
+        if (rootIdx >= 0) {
+          resolvedParams.startPath = `${rootIdx}:`;
+        }
+        // Otherwise pass through as-is (may already be a stored key)
+      }
+    }
+    const raw = directorySearchSilo(this.db, resolvedParams);
     return this.resolveDirectoryPaths(raw);
   }
 
   /** Synthesise explore results for the silo's configured root directories. */
-  private exploreRootDirectories(maxDepth: number): SiloDirectorySearchResult[] {
+  private exploreRootDirectories(maxDepth: number, fullContents?: boolean): SiloDirectorySearchResult[] {
     const db = this.db!;
 
     // Prepare once — these run once per configured root directory
@@ -517,7 +548,8 @@ export class SiloManager {
       const prefix = `${i}:`;
       const { count: fileCount }   = countFiles.get(prefix + '%') as { count: number };
       const { count: subdirCount } = countSubdirs.get(prefix + '%') as { count: number };
-      const rawChildren = expandTree(db, prefix, 0, maxDepth);
+      const rawChildren = expandTree(db, prefix, 0, maxDepth, fullContents);
+      const rawFiles = fullContents ? getFilesInDirectory(db, prefix) : undefined;
 
       return {
         dirPath: absPath,
@@ -530,6 +562,10 @@ export class SiloManager {
         subdirCount,
         depth: 0,
         children: resolveTreeNodes(rawChildren, this.config.directories),
+        files: rawFiles?.map((f) => ({
+          filePath: resolveStoredKey(f.filePath, this.config.directories),
+          fileName: f.fileName,
+        })),
       };
     });
   }
@@ -549,6 +585,10 @@ export class SiloManager {
       ...r,
       dirPath: resolveStoredKey(r.dirPath, dirs),
       children: resolveTreeNodes(r.children, dirs),
+      files: r.files?.map((f) => ({
+        filePath: resolveStoredKey(f.filePath, dirs),
+        fileName: f.fileName,
+      })),
     }));
   }
 
@@ -749,5 +789,9 @@ function resolveTreeNodes(nodes: DirectoryTreeNode[], directories: string[]): Di
     ...n,
     path: resolveStoredKey(n.path, directories),
     children: resolveTreeNodes(n.children, directories),
+    files: n.files?.map((f) => ({
+      filePath: resolveStoredKey(f.filePath, directories),
+      fileName: f.fileName,
+    })),
   }));
 }

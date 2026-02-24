@@ -90,6 +90,14 @@ export interface SearchResult {
 
 // ── Directory Exploration ────────────────────────────────────────────────
 
+/** A file entry returned as part of a fullContents explore. */
+export interface DirectoryFileEntry {
+  /** Absolute filesystem path of the file */
+  filePath: string;
+  /** File basename */
+  fileName: string;
+}
+
 export interface DirectoryTreeNode {
   /** Leaf directory name */
   name: string;
@@ -101,6 +109,8 @@ export interface DirectoryTreeNode {
   subdirCount: number;
   /** Nested children (empty if at maxDepth) */
   children: DirectoryTreeNode[];
+  /** Files directly inside this directory (only present when fullContents=true) */
+  files?: DirectoryFileEntry[];
 }
 
 /** What drove a directory's ranking: a segment name match or keyword coverage. */
@@ -129,6 +139,8 @@ export interface DirectoryResult {
   depth: number;
   /** Tree of children, populated to maxDepth levels */
   children: DirectoryTreeNode[];
+  /** Files directly inside this directory (only present when fullContents=true) */
+  files?: DirectoryFileEntry[];
 }
 
 export interface ExploreParams {
@@ -137,6 +149,8 @@ export interface ExploreParams {
   startPath?: string;
   maxDepth?: number;
   maxResults?: number;
+  /** When true, include file listings in results. Defaults to true when startPath is provided. */
+  fullContents?: boolean;
 }
 
 // ── Activity ──────────────────────────────────────────────────────────────────

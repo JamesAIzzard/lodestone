@@ -974,6 +974,27 @@ function updateDirectoryCounts(
 }
 
 /**
+ * List files directly inside a directory (not recursive).
+ * Returns stored-key file paths and file names for files whose
+ * stored key starts with the directory's stored key but has no
+ * further '/' separators.
+ *
+ * @param dirStoredKey The stored directory key (e.g. "0:src/backend/") or
+ *                     a silo root prefix (e.g. "0:") for root-level files.
+ */
+export function getFilesInDirectory(
+  db: SiloDatabase,
+  dirStoredKey: string,
+): Array<{ filePath: string; fileName: string }> {
+  return db.prepare(`
+    SELECT file_path AS filePath, file_name AS fileName FROM files
+    WHERE file_path LIKE ? || '%'
+      AND file_path NOT LIKE ? || '%/%'
+    ORDER BY file_name
+  `).all(dirStoredKey, dirStoredKey) as Array<{ filePath: string; fileName: string }>;
+}
+
+/**
  * Flush FTS entries for a batch of directories.
  * Called after directories are synced to ensure dirs_fts is up to date.
  */

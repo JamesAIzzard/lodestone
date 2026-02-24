@@ -20,6 +20,7 @@
  */
 
 import type { SiloDatabase } from './store';
+import { getFilesInDirectory } from './store';
 import type { DirectoryTreeNode, DirectoryScoreSource } from '../shared/types';
 import { levenshteinDistance } from './scorers/filename';
 import { tokenise } from './tokeniser';
@@ -31,6 +32,7 @@ export interface DirectorySearchParams {
   startPath?: string;
   maxDepth?: number;
   maxResults?: number;
+  fullContents?: boolean;
 }
 
 export interface SiloDirectorySearchResult {
@@ -44,6 +46,8 @@ export interface SiloDirectorySearchResult {
   subdirCount: number;
   depth: number;
   children: DirectoryTreeNode[];
+  /** Files directly inside this directory (only present when fullContents=true) */
+  files?: Array<{ filePath: string; fileName: string }>;
 }
 
 // ── Scorers ──────────────────────────────────────────────────────────────────
@@ -107,12 +111,13 @@ export function directorySearchSilo(
     startPath,
     maxDepth = 2,
     maxResults = 20,
+    fullContents,
   } = params;
 
   const isEmptyQuery = !query || query.trim().length === 0;
 
   if (isEmptyQuery) {
-    return broadQueryFallback(db, startPath, maxDepth, maxResults);
+    return broadQueryFallback(db, startPath, maxDepth, maxResults, fullContents);
   }
 
   const queryLower = query.trim().toLowerCase();
@@ -165,7 +170,10 @@ export function directorySearchSilo(
 
   // Expand trees for top results
   for (const result of topScored) {
-    result.children = expandTree(db, result.dirPath, result.depth, maxDepth);
+    result.children = expandTree(db, result.dirPath, result.depth, maxDepth, fullContents);
+    if (fullContents) {
+      result.files = getFilesInDirectory(db, result.dirPath);
+    }
   }
 
   return deduplicateAncestors(topScored, maxDepth).slice(0, maxResults);
@@ -178,6 +186,7 @@ function broadQueryFallback(
   startPath: string | undefined,
   maxDepth: number,
   maxResults: number,
+  fullContents?: boolean,
 ): SiloDirectorySearchResult[] {
   const fetchLimit = maxResults * 4;
   let rows;
@@ -211,7 +220,8 @@ function broadQueryFallback(
     fileCount: r.file_count,
     subdirCount: r.subdir_count,
     depth: r.depth,
-    children: expandTree(db, r.dir_path, r.depth, maxDepth),
+    children: expandTree(db, r.dir_path, r.depth, maxDepth, fullContents),
+    files: fullContents ? getFilesInDirectory(db, r.dir_path) : undefined,
   }));
 
   return deduplicateAncestors(results, maxDepth).slice(0, maxResults);
@@ -250,6 +260,7 @@ export function expandTree(
   rootPath: string,
   rootDepth: number,
   maxDepth: number,
+  fullContents?: boolean,
 ): DirectoryTreeNode[] {
   if (maxDepth <= 0) return [];
 
@@ -266,7 +277,13 @@ export function expandTree(
     subdir_count: number; depth: number;
   }>;
 
-  return buildTreeFromFlat(rows, rootDepth);
+  const tree = buildTreeFromFlat(rows, rootDepth);
+
+  if (fullContents) {
+    attachFilesToTree(db, tree);
+  }
+
+  return tree;
 }
 
 /**
@@ -303,4 +320,17 @@ function buildTreeFromFlat(
   }
 
   return roots;
+}
+
+/** Recursively attach file listings to each tree node using stored-key paths. */
+function attachFilesToTree(db: SiloDatabase, nodes: DirectoryTreeNode[]): void {
+  for (const node of nodes) {
+    node.files = getFilesInDirectory(db, node.path).map((f) => ({
+      filePath: f.filePath,
+      fileName: f.fileName,
+    }));
+    if (node.children.length > 0) {
+      attachFilesToTree(db, node.children);
+    }
+  }
 }

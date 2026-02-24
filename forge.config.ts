@@ -30,7 +30,6 @@ const EXTERNAL_MODULES = [
 
 const config: ForgeConfig = {
   packagerConfig: {
-    icon: './assets/icon',
     extraResource: ['mcp-wrapper.js'],
     asar: {
       // AutoUnpackNativesPlugin handles .node files.  We additionally need
@@ -96,7 +95,6 @@ const config: ForgeConfig = {
   makers: [
     new MakerSquirrel({
       name: 'Lodestone',
-      setupIcon: './assets/icon.ico',
       authors: 'James Izzard',
       description: 'Local semantic search over your files via MCP',
     }),

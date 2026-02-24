@@ -28,7 +28,8 @@
       "Bash(git pull:*)",
       "Bash(grep:*)",
       "Bash(npx electron-forge make:*)",
-      "Bash(xargs basename:*)"
+      "Bash(xargs basename:*)",
+      "Bash(find:*)"
     ]
   }
 }

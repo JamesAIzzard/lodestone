@@ -26,6 +26,7 @@ const EXTERNAL_MODULES = [
   'chokidar',
   'web-tree-sitter',
   'tree-sitter-wasms',
+  'trash',
 ];
 
 const config: ForgeConfig = {
@@ -36,7 +37,7 @@ const config: ForgeConfig = {
       // .dll/.dylib/.so for sqlite-vec and .wasm for tree-sitter — these are
       // loaded by native code (SQLite loadExtension / WASM runtimes) that
       // can't read from inside an ASAR archive.
-      unpack: '**/*.{dll,dylib,so,wasm}',
+      unpack: '**/*.{dll,dylib,so,wasm,exe}',
     },
     // This hook fires AFTER the Vite plugin has copied .vite/ and
     // package.json to the build directory — so package.json is guaranteed

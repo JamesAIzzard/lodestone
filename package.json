@@ -71,6 +71,7 @@
     "smol-toml": "^1.6.0",
     "sqlite-vec": "^0.1.7-alpha.2",
     "tailwind-merge": "^3.5.0",
+    "trash": "^10.1.0",
     "tree-sitter-wasms": "^0.1.13",
     "unified": "^11.0.5",
     "web-tree-sitter": "^0.20.8",

@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
-import type { TextEditOperation, EditResult } from './edit';
+import type { EditOperation, EditResult } from './edit';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ export interface McpServerDeps {
   status: () => Promise<{ silos: SiloStatus[] }>;
   /** Proxy edit operations through the GUI process. */
   edit: (params: {
-    operation: TextEditOperation;
+    operation: EditOperation;
     contextLines: number;
     siloDirectories: string[];
   }) => Promise<EditResult>;
@@ -137,11 +137,49 @@ function assignDirPuid(dirPath: string): string {
 }
 
 /**
+ * Resolve a puid to its record, checking for invalidation.
+ * Returns the PuidRecord, an error object, or undefined for unknown puids.
+ */
+function resolvePuidRecord(id: string): PuidRecord | { error: string } | undefined {
+  const record = puidMap.get(id);
+  if (!record) return undefined;
+  if (record.invalidated) {
+    return {
+      error: `Puid ${id} has been invalidated. The file at ${record.invalidatedPath} was moved or deleted. Search again to obtain a fresh reference.`,
+    };
+  }
+  return record;
+}
+
+/**
  * Resolve a puid to its filepath, falling back to treating the id as a literal path.
+ * Does NOT check invalidation — use resolvePuidRecord for puid-addressed operations.
  */
 function resolvePuid(id: string): string {
   const record = puidMap.get(id);
   return record ? record.filepath : id;
+}
+
+/** Mark a single puid as invalidated (direct invalidation after move/delete). */
+function invalidatePuid(puid: string): void {
+  const record = puidMap.get(puid);
+  if (record) {
+    record.invalidated = true;
+    record.invalidatedPath = record.filepath;
+  }
+}
+
+/** Scan all puids for records matching a filepath and invalidate them (path-scan). */
+function invalidateByPath(sourcePath: string): void {
+  const resolved = path.resolve(sourcePath);
+  for (const [, record] of puidMap) {
+    if (!record.invalidated && path.resolve(record.filepath) === resolved) {
+      record.invalidated = true;
+      record.invalidatedPath = record.filepath;
+    }
+  }
+  // Remove from reverse lookup
+  filePathToPuid.delete(sourcePath);
 }
 
 function isDirPuid(id: string): boolean {
@@ -363,22 +401,27 @@ const EXPLORE_DESCRIPTION = [
 ].join('\n');
 
 const EDIT_DESCRIPTION = [
-  'Edit files within indexed silos. Supports four text-editing operations.',
+  'Edit files within indexed silos. Seven operations:',
   '',
-  'Operations:',
+  'Text editing (requires file parameter):',
   '  \u2022 str_replace \u2014 Replace a unique string (must match exactly once)',
   '  \u2022 insert_at_line \u2014 Insert content before a specific line number',
   '  \u2022 overwrite \u2014 Replace entire file content',
   '  \u2022 append \u2014 Add content to end of file',
   '',
-  'All operations accept puid references (e.g. "r3") from lodestone_search/explore/read,',
-  'or absolute file paths. All operations support dry_run for previewing changes.',
+  'File lifecycle:',
+  '  \u2022 create \u2014 Create a new file (returns a puid for immediate use)',
+  '  \u2022 move \u2014 Move or rename a file (supports dry_run)',
+  '  \u2022 delete \u2014 Move a file to OS trash (recoverable, supports dry_run)',
+  '',
+  'All operations accept puid references (e.g. "r3", "d5") from lodestone_search/explore/read,',
+  'or absolute file paths. All mutating operations support dry_run for previewing changes.',
   '',
   'Staleness detection: If a file was previously read via lodestone_read and has been',
   'modified externally since, the edit is rejected with the current file content.',
   'This prevents accidental overwrites of concurrent changes.',
   '',
-  'Files must be within a configured silo directory and must be valid UTF-8.',
+  'Files must be within a configured silo directory. Text edits require valid UTF-8.',
 ].join('\n');
 
 // ── Server ───────────────────────────────────────────────────────────────────
@@ -489,6 +532,15 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
               text: `## ${id}: ${dirPath}\nError: "${id}" is a directory reference. Use lodestone_explore with startPath: "${id}" to browse its contents.`,
             });
             continue;
+          }
+
+          // Check for invalidated puids (moved or deleted files)
+          if (/^r\d+$/.test(id)) {
+            const resolved = resolvePuidRecord(id);
+            if (resolved && 'error' in resolved) {
+              content.push({ type: 'text' as const, text: `## ${id}\nError: ${resolved.error}` });
+              continue;
+            }
           }
 
           const filePath = resolvePuid(id);
@@ -657,30 +709,250 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     'lodestone_edit',
     EDIT_DESCRIPTION,
     {
-      operation: z.enum(['str_replace', 'insert_at_line', 'overwrite', 'append']).describe('The edit operation to perform'),
-      file: z.string().describe('Puid (e.g. "r3") or absolute filepath'),
+      operation: z.enum(['str_replace', 'insert_at_line', 'overwrite', 'append', 'create', 'move', 'delete']).describe('The edit operation to perform'),
+      file: z.string().optional().describe('Puid (e.g. "r3") or absolute filepath. Required for str_replace, insert_at_line, overwrite, append, move, delete.'),
       old_str: z.string().optional().describe('String to find and replace (must match exactly once). Required for str_replace.'),
       new_str: z.string().optional().describe('Replacement string. Required for str_replace.'),
       line: z.number().int().min(1).optional().describe('1-based line number to insert before. Required for insert_at_line.'),
-      content: z.string().optional().describe('Content to insert/write/append. Required for insert_at_line, overwrite, append.'),
+      content: z.string().optional().describe('Content to insert/write/append/create. Required for insert_at_line, overwrite, append, create.'),
       dry_run: z.boolean().optional().describe('Preview the change without writing to disk.'),
       context_lines: z.number().int().min(0).optional().describe('Lines of surrounding context in confirmation (default: from config).'),
       full_document: z.boolean().optional().describe('Return the full document after edit instead of a context snippet.'),
+      directory: z.string().optional().describe('D-puid (e.g. "d5") or absolute directory path. Required for create.'),
+      filename: z.string().optional().describe('Name of the file to create. Required for create.'),
+      destination: z.string().optional().describe('D-puid, absolute directory path, or absolute filepath. Required for move.'),
+      destination_type: z.enum(['directory', 'filepath']).optional().describe('Whether destination is a directory (preserve filename) or a filepath (rename). Required for move.'),
     },
-    async ({ operation, file, old_str, new_str, line, content, dry_run, context_lines, full_document }) => {
+    async ({ operation, file, old_str, new_str, line, content, dry_run, context_lines, full_document, directory, filename, destination, destination_type }) => {
       try {
+        // ── Collect silo directories (needed by all operations) ──
+        const statusResult = await deps.status();
+        const siloDirectories = statusResult.silos.flatMap(s => s.config.directories);
+
+        // ── CREATE ──
+        if (operation === 'create') {
+          if (directory === undefined || filename === undefined || content === undefined) {
+            return { content: [{ type: 'text' as const, text: 'Error: create requires directory, filename, and content parameters.' }], isError: true };
+          }
+
+          // Resolve d-puid
+          let resolvedDir = directory;
+          if (isDirPuid(directory)) {
+            const resolved = resolvePuidRecord(directory);
+            if (!resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${directory}". It may be from a previous session.` }], isError: true };
+            }
+            if ('error' in resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+            }
+            resolvedDir = resolved.filepath;
+          }
+
+          const result = await deps.edit({
+            operation: { op: 'create', directory: resolvedDir, filename, content, fullDocument: full_document },
+            contextLines: 0,
+            siloDirectories,
+          });
+
+          if (!result.success) {
+            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }], isError: true };
+          }
+
+          // Assign puid for the new file and cache the hash
+          const newFilePath = result.sourcePath!;
+          const newPuid = assignFilePuid(newFilePath);
+          const newRecord = puidMap.get(newPuid)!;
+          newRecord.contentHash = result.newHash;
+
+          // Format response
+          const parts: string[] = [`Created ${newPuid}: ${newFilePath}`];
+          if (result.fullContent) {
+            parts.push('');
+            parts.push(result.fullContent);
+          }
+          return { content: [{ type: 'text' as const, text: parts.join('\n') }] };
+        }
+
+        // ── MOVE ──
+        if (operation === 'move') {
+          if (file === undefined) {
+            return { content: [{ type: 'text' as const, text: 'Error: move requires file parameter.' }], isError: true };
+          }
+          if (destination === undefined || destination_type === undefined) {
+            return { content: [{ type: 'text' as const, text: 'Error: move requires destination and destination_type parameters.' }], isError: true };
+          }
+
+          // Resolve file reference
+          let filePath: string;
+          let puidKey: string | undefined;
+          let puidRecord: PuidRecord | undefined;
+          if (/^r\d+$/.test(file)) {
+            const resolved = resolvePuidRecord(file);
+            if (!resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: Unknown puid "${file}". It may be from a previous session.` }], isError: true };
+            }
+            if ('error' in resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+            }
+            puidKey = file;
+            puidRecord = resolved;
+            filePath = resolved.filepath;
+          } else {
+            filePath = file;
+          }
+
+          // Staleness check
+          if (puidRecord?.contentHash) {
+            const currentHash = computeFileHash(filePath);
+            if (currentHash !== puidRecord.contentHash) {
+              return {
+                content: [{ type: 'text' as const, text: `File has been modified externally since last read.\nStored hash: ${puidRecord.contentHash}\nCurrent hash: ${currentHash}` }],
+                isError: true,
+              };
+            }
+          }
+
+          // Resolve destination (d-puid or path)
+          let resolvedDest = destination;
+          if (isDirPuid(destination)) {
+            const resolved = resolvePuidRecord(destination);
+            if (!resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${destination}". It may be from a previous session.` }], isError: true };
+            }
+            if ('error' in resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+            }
+            resolvedDest = resolved.filepath;
+          }
+
+          const result = await deps.edit({
+            operation: { op: 'move', filePath, destination: resolvedDest, destinationType: destination_type, dryRun: dry_run },
+            contextLines: 0,
+            siloDirectories,
+          });
+
+          if (!result.success) {
+            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }], isError: true };
+          }
+
+          // Invalidate puids on live (non-dry-run) moves
+          if (!dry_run) {
+            if (puidKey) invalidatePuid(puidKey);
+            invalidateByPath(filePath);
+          }
+
+          // Format response
+          const parts: string[] = [];
+          if (dry_run) {
+            parts.push(`Dry run — file would be moved:`);
+            parts.push(`  ${result.sourcePath} → ${result.destinationPath}`);
+          } else {
+            parts.push(`Moved: ${result.sourcePath} → ${result.destinationPath}`);
+          }
+          if (result.sourceDirectoryListing) {
+            parts.push('');
+            parts.push('Source directory:');
+            parts.push(result.sourceDirectoryListing);
+          }
+          if (result.destinationDirectoryListing) {
+            parts.push('');
+            parts.push('Destination directory:');
+            parts.push(result.destinationDirectoryListing);
+          }
+          return { content: [{ type: 'text' as const, text: parts.join('\n') }] };
+        }
+
+        // ── DELETE ──
+        if (operation === 'delete') {
+          if (file === undefined) {
+            return { content: [{ type: 'text' as const, text: 'Error: delete requires file parameter.' }], isError: true };
+          }
+
+          // Resolve file reference
+          let filePath: string;
+          let puidKey: string | undefined;
+          let puidRecord: PuidRecord | undefined;
+          if (/^r\d+$/.test(file)) {
+            const resolved = resolvePuidRecord(file);
+            if (!resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: Unknown puid "${file}". It may be from a previous session.` }], isError: true };
+            }
+            if ('error' in resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+            }
+            puidKey = file;
+            puidRecord = resolved;
+            filePath = resolved.filepath;
+          } else {
+            filePath = file;
+          }
+
+          // Staleness check
+          if (puidRecord?.contentHash) {
+            const currentHash = computeFileHash(filePath);
+            if (currentHash !== puidRecord.contentHash) {
+              return {
+                content: [{ type: 'text' as const, text: `File has been modified externally since last read.\nStored hash: ${puidRecord.contentHash}\nCurrent hash: ${currentHash}` }],
+                isError: true,
+              };
+            }
+          }
+
+          const result = await deps.edit({
+            operation: { op: 'delete', filePath, dryRun: dry_run },
+            contextLines: 0,
+            siloDirectories,
+          });
+
+          if (!result.success) {
+            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }], isError: true };
+          }
+
+          // Invalidate puids on live (non-dry-run) deletes
+          if (!dry_run) {
+            if (puidKey) invalidatePuid(puidKey);
+            invalidateByPath(filePath);
+          }
+
+          // Format response
+          const parts: string[] = [];
+          if (dry_run) {
+            parts.push(`Dry run — file would be moved to trash:`);
+            parts.push(`  ${result.sourcePath}`);
+          } else {
+            parts.push(`Moved to trash: ${result.sourcePath}`);
+            parts.push('');
+            parts.push('The file can be recovered from the operating system trash/recycle bin.');
+          }
+          if (result.sourceDirectoryListing) {
+            parts.push('');
+            parts.push('Directory:');
+            parts.push(result.sourceDirectoryListing);
+          }
+          return { content: [{ type: 'text' as const, text: parts.join('\n') }] };
+        }
+
+        // ── TEXT EDITING OPERATIONS (str_replace, insert_at_line, overwrite, append) ──
+        if (file === undefined) {
+          return { content: [{ type: 'text' as const, text: `Error: ${operation} requires file parameter.` }], isError: true };
+        }
+
         // 1. Resolve file reference
         let filePath: string;
         let puidRecord: PuidRecord | undefined;
         if (/^r\d+$/.test(file)) {
-          puidRecord = puidMap.get(file);
-          if (!puidRecord) {
+          const resolved = resolvePuidRecord(file);
+          if (!resolved) {
             return {
               content: [{ type: 'text' as const, text: `Error: Unknown puid "${file}". It may be from a previous session. Search or explore again to get a fresh reference.` }],
               isError: true,
             };
           }
-          filePath = puidRecord.filepath;
+          if ('error' in resolved) {
+            return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+          }
+          puidRecord = resolved;
+          filePath = resolved.filepath;
         } else {
           filePath = file;
         }
@@ -701,16 +973,12 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           }
         }
 
-        // 3. Collect silo directories
-        const statusResult = await deps.status();
-        const siloDirectories = statusResult.silos.flatMap(s => s.config.directories);
-
-        // 4. Resolve context_lines default
+        // 3. Resolve context_lines default
         const defaults = await deps.getDefaults();
         const effectiveContextLines = context_lines ?? defaults.contextLines;
 
-        // 5. Build operation and dispatch
-        let editOp: import('./edit').TextEditOperation;
+        // 4. Build operation and dispatch
+        let editOp: import('./edit').EditOperation;
         switch (operation) {
           case 'str_replace':
             if (old_str === undefined || new_str === undefined) {
@@ -744,12 +1012,12 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           siloDirectories,
         });
 
-        // 6. Update puid hash on success (non-dry-run)
+        // 5. Update puid hash on success (non-dry-run)
         if (result.success && !dry_run && result.newHash && puidRecord) {
           puidRecord.contentHash = result.newHash;
         }
 
-        // 7. Format response
+        // 6. Format response
         if (!result.success) {
           return {
             content: [{ type: 'text' as const, text: `Error: ${result.error}` }],

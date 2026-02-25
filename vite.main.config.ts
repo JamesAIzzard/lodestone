@@ -18,6 +18,7 @@ export default defineConfig({
         'web-tree-sitter',
         'better-sqlite3',
         'sqlite-vec',
+        'trash',
       ],
     },
   },

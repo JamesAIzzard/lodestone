@@ -16,7 +16,7 @@ import type { AppContext } from './context';
 import { dispatchExplore, mergeDirectoryResults, dispatchTwoAxisSearch, mergeTwoAxisResults } from '../backend/search-merge';
 import { resolveModelAlias } from '../backend/model-registry';
 import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
-import type { TextEditOperation, EditResult } from '../backend/edit';
+import type { EditOperation, EditResult } from '../backend/edit';
 import type { SiloManager } from '../backend/silo-manager';
 
 /** Windows named pipe path. */
@@ -337,7 +337,7 @@ export class InternalApi {
    */
   private async handleEdit(params: Record<string, unknown>): Promise<EditResult> {
     const { executeEdit } = await import('../backend/edit');
-    const operation = params.operation as TextEditOperation;
+    const operation = params.operation as EditOperation;
     const contextLines = (params.contextLines as number) ?? 10;
     const siloDirectories = (params.siloDirectories as string[]) ?? [];
     return executeEdit(operation, contextLines, siloDirectories);

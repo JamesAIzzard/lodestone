@@ -21,11 +21,12 @@ export type TextEditOperation =
   | { op: 'overwrite'; filePath: string; content: string; dryRun?: boolean; contextLines?: number; fullDocument?: boolean }
   | { op: 'append'; filePath: string; content: string; dryRun?: boolean; contextLines?: number; fullDocument?: boolean };
 
-/** Discriminated union for the three file lifecycle operations. */
+/** Discriminated union for file lifecycle operations. */
 export type FileLifecycleOperation =
   | { op: 'create'; directory: string; filename: string; content: string; fullDocument?: boolean }
-  | { op: 'move'; filePath: string; destination: string; destinationType: 'directory' | 'filepath'; dryRun?: boolean }
-  | { op: 'delete'; filePath: string; dryRun?: boolean };
+  | { op: 'mkdir'; directory: string; name: string; dryRun?: boolean }
+  | { op: 'move'; target: string; destination: string; destinationType: 'directory' | 'filepath'; dryRun?: boolean }
+  | { op: 'delete'; target: string; dryRun?: boolean };
 
 /** Combined type for all edit operations. */
 export type EditOperation = TextEditOperation | FileLifecycleOperation;
@@ -69,6 +70,12 @@ function validateUtf8(buffer: Buffer): boolean {
 function isWithinSiloBoundary(filePath: string, siloDirectories: string[]): boolean {
   const normalised = path.resolve(filePath);
   return siloDirectories.some(dir => normalised.startsWith(path.resolve(dir) + path.sep) || normalised === path.resolve(dir));
+}
+
+/** Check whether a path is itself a configured silo root directory. */
+function isSiloRoot(target: string, siloDirectories: string[]): boolean {
+  const resolved = path.resolve(target);
+  return siloDirectories.some(dir => path.resolve(dir) === resolved);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -329,6 +336,55 @@ function formatDirectoryListing(dirPath: string, maxEntries: number = 20): strin
 
 // ── Lifecycle Operations ────────────────────────────────────────────────────
 
+function executeMkdir(
+  op: Extract<FileLifecycleOperation, { op: 'mkdir' }>,
+  siloDirectories: string[],
+): EditResult {
+  // Silo boundary check on the parent directory
+  if (!isWithinSiloBoundary(op.directory, siloDirectories)) {
+    return {
+      success: false,
+      error: 'Parent directory is outside all configured silo directories. lodestone_edit can only create directories within indexed silos.',
+    };
+  }
+
+  // Verify the parent directory exists
+  if (!fs.existsSync(op.directory) || !fs.statSync(op.directory).isDirectory()) {
+    return {
+      success: false,
+      error: `Parent directory does not exist: ${op.directory}`,
+    };
+  }
+
+  const newPath = path.join(op.directory, op.name);
+
+  // Check doesn't already exist
+  if (fs.existsSync(newPath)) {
+    return {
+      success: false,
+      error: `Directory already exists: ${newPath}`,
+    };
+  }
+
+  // Dry run — return resolved path without creating
+  if (op.dryRun) {
+    return {
+      success: true,
+      sourcePath: newPath,
+      destinationDirectoryListing: formatDirectoryListing(op.directory),
+    };
+  }
+
+  // Live: create the directory
+  fs.mkdirSync(newPath);
+
+  return {
+    success: true,
+    sourcePath: newPath,
+    destinationDirectoryListing: formatDirectoryListing(op.directory),
+  };
+}
+
 function executeCreate(
   op: Extract<FileLifecycleOperation, { op: 'create' }>,
   siloDirectories: string[],
@@ -381,18 +437,18 @@ function executeMove(
   siloDirectories: string[],
 ): EditResult {
   // Silo boundary check on source
-  if (!isWithinSiloBoundary(op.filePath, siloDirectories)) {
+  if (!isWithinSiloBoundary(op.target, siloDirectories)) {
     return {
       success: false,
-      error: 'Source file is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
+      error: 'Source is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
     };
   }
 
   // Check source exists
-  if (!fs.existsSync(op.filePath)) {
+  if (!fs.existsSync(op.target)) {
     return {
       success: false,
-      error: `Source file not found: ${op.filePath}`,
+      error: `Source not found: ${op.target}`,
     };
   }
 
@@ -423,7 +479,7 @@ function executeMove(
 
   // Compute final destination path
   const finalDestination = op.destinationType === 'directory'
-    ? path.join(op.destination, path.basename(op.filePath))
+    ? path.join(op.destination, path.basename(op.target))
     : op.destination;
 
   // Silo boundary check on destination
@@ -438,42 +494,60 @@ function executeMove(
   if (fs.existsSync(finalDestination)) {
     return {
       success: false,
-      error: `A file already exists at the destination: ${finalDestination}`,
+      error: `A file or directory already exists at the destination: ${finalDestination}`,
     };
+  }
+
+  // Directory-specific: cycle detection
+  const isDir = fs.statSync(op.target).isDirectory();
+  if (isDir) {
+    const resolvedSource = path.resolve(op.target);
+    const resolvedDest = path.resolve(finalDestination);
+    if (resolvedDest.startsWith(resolvedSource + path.sep)) {
+      return {
+        success: false,
+        error: 'Cannot move a directory into one of its own descendants.',
+      };
+    }
   }
 
   // Dry run — return resolved paths and directory listings without moving
   if (op.dryRun) {
     return {
       success: true,
-      sourcePath: op.filePath,
+      sourcePath: op.target,
       destinationPath: finalDestination,
-      sourceDirectoryListing: formatDirectoryListing(path.dirname(op.filePath)),
+      sourceDirectoryListing: formatDirectoryListing(path.dirname(op.target)),
       destinationDirectoryListing: formatDirectoryListing(
         op.destinationType === 'directory' ? op.destination : path.dirname(op.destination),
       ),
     };
   }
 
-  // Live: move the file
+  // Live: move the file or directory
   try {
-    fs.renameSync(op.filePath, finalDestination);
+    fs.renameSync(op.target, finalDestination);
   } catch (err: unknown) {
     // Cross-device move — fall back to copy + delete
     if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
-      fs.copyFileSync(op.filePath, finalDestination);
-      fs.unlinkSync(op.filePath);
+      if (isDir) {
+        fs.cpSync(op.target, finalDestination, { recursive: true });
+        fs.rmSync(op.target, { recursive: true, force: true });
+      } else {
+        fs.copyFileSync(op.target, finalDestination);
+        fs.unlinkSync(op.target);
+      }
     } else {
       const msg = err instanceof Error ? err.message : String(err);
-      return { success: false, error: `Failed to move file: ${msg}` };
+      return { success: false, error: `Failed to move: ${msg}` };
     }
   }
 
   return {
     success: true,
-    sourcePath: op.filePath,
+    sourcePath: op.target,
     destinationPath: finalDestination,
-    sourceDirectoryListing: formatDirectoryListing(path.dirname(op.filePath)),
+    sourceDirectoryListing: formatDirectoryListing(path.dirname(op.target)),
     destinationDirectoryListing: formatDirectoryListing(path.dirname(finalDestination)),
   };
 }
@@ -483,43 +557,52 @@ async function executeDelete(
   siloDirectories: string[],
 ): Promise<EditResult> {
   // Silo boundary check
-  if (!isWithinSiloBoundary(op.filePath, siloDirectories)) {
+  if (!isWithinSiloBoundary(op.target, siloDirectories)) {
     return {
       success: false,
-      error: 'File is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
+      error: 'Target is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
     };
   }
 
   // Check existence
-  if (!fs.existsSync(op.filePath)) {
+  if (!fs.existsSync(op.target)) {
     return {
       success: false,
-      error: `File not found: ${op.filePath}`,
+      error: `Target not found: ${op.target}`,
     };
   }
 
-  // Dry run — return the filepath that would be trashed
+  // Directory-specific: reject deletion of silo root directories
+  const isDir = fs.statSync(op.target).isDirectory();
+  if (isDir && isSiloRoot(op.target, siloDirectories)) {
+    return {
+      success: false,
+      error: 'Cannot delete a configured silo root directory. Remove or reconfigure the silo first.',
+    };
+  }
+
+  // Dry run — return the path that would be trashed
   if (op.dryRun) {
     return {
       success: true,
-      sourcePath: op.filePath,
-      sourceDirectoryListing: formatDirectoryListing(path.dirname(op.filePath)),
+      sourcePath: op.target,
+      sourceDirectoryListing: formatDirectoryListing(path.dirname(op.target)),
     };
   }
 
   // Live: move to OS trash
   try {
     const { default: trash } = await import('trash');
-    await trash([op.filePath]);
+    await trash([op.target]);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { success: false, error: `Failed to trash file: ${msg}` };
+    return { success: false, error: `Failed to trash: ${msg}` };
   }
 
   return {
     success: true,
-    sourcePath: op.filePath,
-    sourceDirectoryListing: formatDirectoryListing(path.dirname(op.filePath)),
+    sourcePath: op.target,
+    sourceDirectoryListing: formatDirectoryListing(path.dirname(op.target)),
   };
 }
 
@@ -548,6 +631,8 @@ export async function executeEdit(
       return executeAppend(operation, defaultContextLines, siloDirectories);
     case 'create':
       return executeCreate(operation, siloDirectories);
+    case 'mkdir':
+      return executeMkdir(operation, siloDirectories);
     case 'move':
       return executeMove(operation, siloDirectories);
     case 'delete':

@@ -15,6 +15,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
@@ -56,13 +57,32 @@ export interface McpServerHandle {
 // ── Puid tracking ────────────────────────────────────────────────────────────
 
 /**
+ * Structured record stored for each puid.
+ *
+ * The contentHash is computed lazily — not at puid assignment time during
+ * search or explore, but on the first lodestone_read or lodestone_edit call
+ * that targets the puid. This avoids reading and hashing every file during
+ * explore calls that may list hundreds of files.
+ */
+interface PuidRecord {
+  /** Absolute filesystem path. */
+  filepath: string;
+  /** SHA-256 hex digest of the file's raw bytes, computed lazily on first read/edit. Undefined for directories. */
+  contentHash?: string;
+  /** True if this puid has been invalidated by a move or delete. */
+  invalidated?: boolean;
+  /** Original path before invalidation, for error messages. */
+  invalidatedPath?: string;
+}
+
+/**
  * Session-scoped puid (persistent unique ID) tracking.
  *
  * Two monotonic counters — never reset during a session:
  *   r1, r2, r3... for files (from search results and explore file listings)
  *   d1, d2, d3... for directories (from explore results)
  *
- * Both share a single forward lookup map (puid → path) so lodestone_read
+ * Both share a single forward lookup map (puid → record) so lodestone_read
  * and lodestone_explore can resolve any puid regardless of origin.
  *
  * Reverse maps (path → puid) ensure the same path always returns the same
@@ -71,7 +91,7 @@ export interface McpServerHandle {
  */
 let rCounter = 0;
 let dCounter = 0;
-const puidMap = new Map<string, string>();         // puid → absolute path
+const puidMap = new Map<string, PuidRecord>();     // puid → record
 const filePathToPuid = new Map<string, string>();   // absolute file path → r-puid
 const dirPathToPuid = new Map<string, string>();    // normalised dir path → d-puid
 
@@ -80,12 +100,18 @@ function normaliseDirPath(p: string): string {
   return p.replace(/[\\/]+$/, '');
 }
 
+/** Compute SHA-256 hex digest of a file's raw bytes. */
+function computeFileHash(filepath: string): string {
+  const buffer = fs.readFileSync(filepath);
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
 function assignFilePuid(filePath: string): string {
   const existing = filePathToPuid.get(filePath);
   if (existing) return existing;
   rCounter++;
   const puid = `r${rCounter}`;
-  puidMap.set(puid, filePath);
+  puidMap.set(puid, { filepath: filePath });
   filePathToPuid.set(filePath, puid);
   return puid;
 }
@@ -96,13 +122,17 @@ function assignDirPuid(dirPath: string): string {
   if (existing) return existing;
   dCounter++;
   const puid = `d${dCounter}`;
-  puidMap.set(puid, dirPath);
+  puidMap.set(puid, { filepath: dirPath });
   dirPathToPuid.set(key, puid);
   return puid;
 }
 
+/**
+ * Resolve a puid to its filepath, falling back to treating the id as a literal path.
+ */
 function resolvePuid(id: string): string {
-  return puidMap.get(id) ?? id; // fall back to treating id as a file path
+  const record = puidMap.get(id);
+  return record ? record.filepath : id;
 }
 
 function isDirPuid(id: string): boolean {
@@ -434,6 +464,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           }
 
           const filePath = resolvePuid(id);
+          const record = puidMap.get(id); // may be undefined for raw-path reads
           const mime = imageMimeType(filePath);
 
           try {
@@ -445,6 +476,11 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
             } else {
               // Text file — return as text content block
               const text = fs.readFileSync(filePath, 'utf-8');
+
+              // Lazily compute and cache the content hash on first read
+              if (record && !record.contentHash) {
+                record.contentHash = computeFileHash(filePath);
+              }
 
               if (startLine || endLine) {
                 const allLines = text.split('\n');

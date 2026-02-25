@@ -257,6 +257,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
         ignore: def.defaults.ignore,
         ignoreFiles: def.defaults.ignore_files,
         debounce: def.defaults.debounce,
+        contextLines: def.defaults.context_lines,
       };
     }
     return {
@@ -264,6 +265,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       ignore: ctx.config.defaults.ignore,
       ignoreFiles: ctx.config.defaults.ignore_files,
       debounce: ctx.config.defaults.debounce,
+      contextLines: ctx.config.defaults.context_lines,
     };
   });
 
@@ -276,6 +278,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       if (updates.ignore !== undefined) ctx.config.defaults.ignore = updates.ignore;
       if (updates.ignoreFiles !== undefined) ctx.config.defaults.ignore_files = updates.ignoreFiles;
       if (updates.debounce !== undefined) ctx.config.defaults.debounce = updates.debounce;
+      if (updates.contextLines !== undefined) ctx.config.defaults.context_lines = updates.contextLines;
 
       saveConfig(ctx.configPath(), ctx.config);
       return { success: true };

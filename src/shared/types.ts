@@ -173,6 +173,8 @@ export interface DefaultSettings {
   ignore: string[];
   ignoreFiles: string[];
   debounce: number;
+  /** Number of surrounding lines in post-edit confirmation snippets */
+  contextLines: number;
 }
 
 // ── Server ────────────────────────────────────────────────────────────────────

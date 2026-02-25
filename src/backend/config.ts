@@ -34,6 +34,8 @@ export interface DefaultsConfig {
   ignore: string[];
   /** Default file ignore patterns (matched against file basenames) */
   ignore_files: string[];
+  /** Number of surrounding lines in post-edit confirmation snippets */
+  context_lines: number;
 }
 
 export interface SiloTomlConfig {
@@ -86,6 +88,7 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     ],
     ignore: ['.*', '_*', 'node_modules', 'dist', 'build'],
     ignore_files: ['.*', 'Thumbs.db'],
+    context_lines: 10,
   },
   search: {},
   silos: {},
@@ -144,6 +147,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
       extensions: Array.isArray(defaults.extensions) ? defaults.extensions as string[] : DEFAULT_CONFIG.defaults.extensions,
       ignore: Array.isArray(defaults.ignore) ? defaults.ignore as string[] : DEFAULT_CONFIG.defaults.ignore,
       ignore_files: Array.isArray(defaults.ignore_files) ? defaults.ignore_files as string[] : DEFAULT_CONFIG.defaults.ignore_files,
+      context_lines: typeof defaults.context_lines === 'number' ? defaults.context_lines : DEFAULT_CONFIG.defaults.context_lines,
     },
     search: {},
     silos: validatedSilos,

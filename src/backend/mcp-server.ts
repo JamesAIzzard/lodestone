@@ -419,7 +419,8 @@ const EDIT_DESCRIPTION = [
   '',
   'Staleness detection: If a file was previously read via lodestone_read and has been',
   'modified externally since, the edit is rejected with the current file content.',
-  'This prevents accidental overwrites of concurrent changes.',
+  'The stored hash is refreshed on conflict, so you can adjust and retry immediately',
+  'without a separate lodestone_read call.',
   '',
   'Files must be within a configured silo directory. Text edits require valid UTF-8.',
 ].join('\n');
@@ -805,8 +806,10 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           if (puidRecord?.contentHash) {
             const currentHash = computeFileHash(filePath);
             if (currentHash !== puidRecord.contentHash) {
+              const body = `File has been modified externally since last read.\nStored hash: ${puidRecord.contentHash}\nCurrent hash: ${currentHash}`;
+              puidRecord.contentHash = currentHash;
               return {
-                content: [{ type: 'text' as const, text: `File has been modified externally since last read.\nStored hash: ${puidRecord.contentHash}\nCurrent hash: ${currentHash}` }],
+                content: [{ type: 'text' as const, text: body }],
                 isError: true,
               };
             }
@@ -891,8 +894,10 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           if (puidRecord?.contentHash) {
             const currentHash = computeFileHash(filePath);
             if (currentHash !== puidRecord.contentHash) {
+              const body = `File has been modified externally since last read.\nStored hash: ${puidRecord.contentHash}\nCurrent hash: ${currentHash}`;
+              puidRecord.contentHash = currentHash;
               return {
-                content: [{ type: 'text' as const, text: `File has been modified externally since last read.\nStored hash: ${puidRecord.contentHash}\nCurrent hash: ${currentHash}` }],
+                content: [{ type: 'text' as const, text: body }],
                 isError: true,
               };
             }
@@ -966,6 +971,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
               const currentContent = fs.readFileSync(filePath, 'utf-8');
               body += `\n\nCurrent content:\n\`\`\`\n${currentContent}\n\`\`\``;
             } catch { /* if read fails, just show hashes */ }
+            puidRecord.contentHash = currentHash;
             return {
               content: [{ type: 'text' as const, text: body }],
               isError: true,

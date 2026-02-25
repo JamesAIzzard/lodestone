@@ -57,6 +57,10 @@ export function registerIpcHandlers(ctx: AppContext): void {
     await shell.openPath(filePath);
   });
 
+  ipcMain.handle('shell:showItemInFolder', (_event, filePath: string) => {
+    shell.showItemInFolder(filePath);
+  });
+
   // ── Database peek (for "Connect existing" wizard) ─────────────────────
 
   ipcMain.handle('db:readConfig', async (_event, dbPath: string) => {

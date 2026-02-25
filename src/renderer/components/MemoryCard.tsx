@@ -129,7 +129,7 @@ export default function MemoryCard({ status, onDone, shimmerKey }: MemoryCardPro
               size="sm"
               variant="ghost"
               className="h-7 px-2 text-xs text-muted-foreground"
-              onClick={() => window.electronAPI?.openPath(status.dbPath!)}
+              onClick={() => window.electronAPI?.showItemInFolder(status.dbPath!)}
               disabled={!!loading}
             >
               <FolderOpen className="h-3.5 w-3.5" />

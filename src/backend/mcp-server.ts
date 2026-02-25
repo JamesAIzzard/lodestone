@@ -527,6 +527,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     },
     async ({ query, silo, maxResults, startPath, mode, filePattern, regexFlags }) => {
       try {
+        deps.notifyActivity?.({ channel: 'silo', siloName: silo });
         // Resolve d-prefixed puids in startPath to absolute paths
         let resolvedStartPath = startPath;
         if (startPath && isDirPuid(startPath)) {
@@ -730,6 +731,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     },
     async ({ query, silo, startPath, maxDepth, maxResults, fullContents }) => {
       try {
+        deps.notifyActivity?.({ channel: 'silo', siloName: silo });
         // Resolve d-prefixed puids in startPath to absolute paths
         let resolvedStartPath = startPath;
         if (startPath && isDirPuid(startPath)) {
@@ -799,6 +801,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     },
     async ({ operation, target, old_str, new_str, line, content, dry_run, context_lines, full_document, directory, filename, name, destination, destination_type, on_conflict }) => {
       try {
+        deps.notifyActivity?.({ channel: 'silo' });
         // ── Collect silo directories (needed by all operations) ──
         const statusResult = await deps.status();
         const siloDirectories = statusResult.silos.flatMap(s => s.config.directories);
@@ -1564,6 +1567,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     },
     async ({ topic, body, confidence, context_hint }) => {
       try {
+        deps.notifyActivity?.({ channel: 'memory' });
         const result = await deps.memoryRemember({
           topic,
           body,
@@ -1599,6 +1603,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     },
     async ({ query, max_results }) => {
       try {
+        deps.notifyActivity?.({ channel: 'memory' });
         const results = await deps.memoryRecall({ query, maxResults: max_results });
         if (results.length === 0) {
           return { content: [{ type: 'text' as const, text: 'No memories found.' }] };
@@ -1642,6 +1647,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     },
     async ({ id, body, confidence, context_hint }) => {
       try {
+        deps.notifyActivity?.({ channel: 'memory' });
         await deps.memoryRevise({ id, body, confidence, contextHint: context_hint });
         return { content: [{ type: 'text' as const, text: `Memory ${id} revised.` }] };
       } catch (err) {
@@ -1667,6 +1673,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     },
     async ({ id }) => {
       try {
+        deps.notifyActivity?.({ channel: 'memory' });
         await deps.memoryForget({ id });
         return { content: [{ type: 'text' as const, text: `Memory ${id} deleted.` }] };
       } catch (err) {
@@ -1693,6 +1700,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     },
     async ({ max_results }) => {
       try {
+        deps.notifyActivity?.({ channel: 'memory' });
         const results = await deps.memoryOrient({ maxResults: max_results });
         if (results.length === 0) {
           return { content: [{ type: 'text' as const, text: 'No memories stored yet.' }] };

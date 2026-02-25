@@ -25,6 +25,7 @@ export interface ElectronAPI {
   selectDbFile: () => Promise<string | null>;
   saveDbFile: (defaultName: string) => Promise<string | null>;
   openPath: (path: string) => Promise<void>;
+  showItemInFolder: (path: string) => Promise<void>;
   readDbConfig: (dbPath: string) => Promise<StoredSiloConfigResponse | null>;
 
   // ── Silos ──────────────────────────────────────────────────────────────────

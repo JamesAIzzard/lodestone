@@ -425,7 +425,7 @@ const EXPLORE_DESCRIPTION = [
 ].join('\n');
 
 const EDIT_DESCRIPTION = [
-  'Edit files within indexed silos. Eight operations:',
+  'Edit files within indexed silos. Nine operations:',
   '',
   'Text editing (requires target parameter):',
   '  \u2022 str_replace \u2014 Replace a unique string (must match exactly once)',
@@ -436,7 +436,8 @@ const EDIT_DESCRIPTION = [
   'File lifecycle:',
   '  \u2022 create \u2014 Create a new file (returns a puid for immediate use)',
   '  \u2022 mkdir \u2014 Create a new directory (returns a d-puid for immediate use)',
-  '  \u2022 move \u2014 Move or rename a file or directory (supports dry_run)',
+  '  \u2022 rename \u2014 Rename a file or directory in place (fails if name already taken)',
+  '  \u2022 move \u2014 Move or rename a file or directory (supports dry_run and on_conflict)',
   '  \u2022 delete \u2014 Move a file or directory to OS trash (recoverable, supports dry_run)',
   '',
   'All operations accept puid references (e.g. "r3", "d5") from lodestone_search/explore/read,',
@@ -445,6 +446,12 @@ const EDIT_DESCRIPTION = [
   'Batch mode: move and delete accept target as an array of puids/paths to operate on',
   'multiple targets in a single call. Each element is processed independently; failures',
   'do not abort the batch. Text operations do not support batch mode.',
+  '',
+  'Conflict handling for move: use on_conflict to control behaviour when the destination',
+  'already exists. "error" (default) rejects with [CONFLICT], "skip" silently skips with',
+  '[SKIP], "overwrite" replaces the destination file with [OVERWRITE]. on_conflict only',
+  'applies to file targets; directory conflicts always error. Dry-run detects conflicts',
+  'and flags them in the response.',
   '',
   'Staleness detection: If a file was previously read via lodestone_read and has been',
   'modified externally since, the edit is rejected with the current file content.',
@@ -739,8 +746,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     'lodestone_edit',
     EDIT_DESCRIPTION,
     {
-      operation: z.enum(['str_replace', 'insert_at_line', 'overwrite', 'append', 'create', 'mkdir', 'move', 'delete']).describe('The edit operation to perform'),
-      target: z.union([z.string(), z.array(z.string())]).optional().describe('Puid (e.g. "r3", "d5") or absolute path. Required for str_replace, insert_at_line, overwrite, append, move, delete. move and delete accept an array for batch operations.'),
+      operation: z.enum(['str_replace', 'insert_at_line', 'overwrite', 'append', 'create', 'mkdir', 'rename', 'move', 'delete']).describe('The edit operation to perform'),
+      target: z.union([z.string(), z.array(z.string())]).optional().describe('Puid (e.g. "r3", "d5") or absolute path. Required for str_replace, insert_at_line, overwrite, append, rename, move, delete. move and delete accept an array for batch operations.'),
       old_str: z.string().optional().describe('String to find and replace (must match exactly once). Required for str_replace.'),
       new_str: z.string().optional().describe('Replacement string. Required for str_replace.'),
       line: z.number().int().min(1).optional().describe('1-based line number to insert before. Required for insert_at_line.'),
@@ -750,11 +757,12 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       full_document: z.boolean().optional().describe('Return the full document after edit instead of a context snippet.'),
       directory: z.string().optional().describe('D-puid (e.g. "d5") or absolute directory path. Required for create and mkdir.'),
       filename: z.string().optional().describe('Name of the file to create. Required for create.'),
-      name: z.string().optional().describe('Name of the new directory. Required for mkdir.'),
+      name: z.string().optional().describe('Name for mkdir (new directory) or rename (new name). Required for mkdir and rename.'),
       destination: z.string().optional().describe('D-puid, absolute directory path, or absolute filepath. Required for move.'),
       destination_type: z.enum(['directory', 'filepath']).optional().describe('Whether destination is a directory (preserve filename) or a filepath (rename). Required for move.'),
+      on_conflict: z.enum(['error', 'skip', 'overwrite']).optional().describe('Conflict resolution for move when destination exists. "error" (default) rejects, "skip" silently skips, "overwrite" replaces. Only applies to file targets.'),
     },
-    async ({ operation, target, old_str, new_str, line, content, dry_run, context_lines, full_document, directory, filename, name, destination, destination_type }) => {
+    async ({ operation, target, old_str, new_str, line, content, dry_run, context_lines, full_document, directory, filename, name, destination, destination_type, on_conflict }) => {
       try {
         // ── Collect silo directories (needed by all operations) ──
         const statusResult = await deps.status();
@@ -855,6 +863,107 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           }
         }
 
+        // ── RENAME ──
+        if (operation === 'rename') {
+          if (target === undefined || typeof target !== 'string') {
+            return { content: [{ type: 'text' as const, text: 'Error: rename requires a single target parameter (not an array).' }], isError: true };
+          }
+          if (!name) {
+            return { content: [{ type: 'text' as const, text: 'Error: rename requires name parameter.' }], isError: true };
+          }
+
+          // Resolve target reference (r-puid, d-puid, or raw path)
+          let filePath: string;
+          let puidKey: string | undefined;
+          let puidRecord: PuidRecord | undefined;
+          let isDirectory = false;
+
+          if (/^r\d+$/.test(target)) {
+            const resolved = resolvePuidRecord(target);
+            if (!resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: Unknown puid "${target}". It may be from a previous session.` }], isError: true };
+            }
+            if ('error' in resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+            }
+            puidKey = target;
+            puidRecord = resolved;
+            filePath = resolved.filepath;
+          } else if (isDirPuid(target)) {
+            const resolved = resolvePuidRecord(target);
+            if (!resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${target}". It may be from a previous session.` }], isError: true };
+            }
+            if ('error' in resolved) {
+              return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+            }
+            puidKey = target;
+            puidRecord = resolved;
+            filePath = resolved.filepath;
+            isDirectory = true;
+          } else {
+            filePath = target;
+            try { isDirectory = fs.statSync(filePath).isDirectory(); } catch { /* will fail in edit */ }
+          }
+
+          // Staleness check (files only)
+          if (puidRecord?.contentHash) {
+            const currentHash = computeFileHash(filePath);
+            if (currentHash !== puidRecord.contentHash) {
+              const fileContent = fs.readFileSync(filePath, 'utf-8');
+              const msg = `File has been modified externally since last read. The edit has been rejected.\n\nStored hash: ${puidRecord.contentHash}\nCurrent hash: ${currentHash}\n\nCurrent file content:\n\`\`\`\n${fileContent}\n\`\`\``;
+              puidRecord.contentHash = currentHash;
+              return { content: [{ type: 'text' as const, text: msg }], isError: true };
+            }
+          }
+
+          const result = await deps.edit({
+            operation: { op: 'rename', target: filePath, name, dryRun: dry_run },
+            contextLines: 0,
+            siloDirectories,
+          });
+
+          if (!result.success) {
+            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }], isError: true };
+          }
+
+          // Invalidate old puids and assign new ones on live (non-dry-run) renames
+          if (!dry_run) {
+            if (puidKey) invalidatePuid(puidKey);
+            if (isDirectory) {
+              invalidateByPathPrefix(filePath);
+            } else {
+              invalidateByPath(filePath);
+            }
+
+            // Assign new puid at the new path
+            const newPath = result.destinationPath!;
+            const parts: string[] = [];
+            if (isDirectory) {
+              const newPuid = assignDirPuid(newPath);
+              parts.push(`Renamed ${newPuid}: ${result.sourcePath} → ${newPath}`);
+            } else {
+              const newPuid = assignFilePuid(newPath);
+              parts.push(`Renamed ${newPuid}: ${result.sourcePath} → ${newPath}`);
+            }
+            if (result.sourceDirectoryListing) {
+              parts.push('');
+              parts.push('Directory:');
+              parts.push(result.sourceDirectoryListing);
+            }
+            return { content: [{ type: 'text' as const, text: parts.join('\n') }] };
+          } else {
+            const parts: string[] = [`Dry run — would rename:`];
+            parts.push(`  ${result.sourcePath} → ${result.destinationPath}`);
+            if (result.sourceDirectoryListing) {
+              parts.push('');
+              parts.push('Directory:');
+              parts.push(result.sourceDirectoryListing);
+            }
+            return { content: [{ type: 'text' as const, text: parts.join('\n') }] };
+          }
+        }
+
         // ── MOVE ──
         if (operation === 'move') {
           if (target === undefined) {
@@ -879,7 +988,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
               resolvedDest = resolved.filepath;
             }
 
-            const batchResults: { source: string; destination?: string; success: boolean; error?: string; destListing?: string }[] = [];
+            const batchResults: { source: string; destination?: string; success: boolean; error?: string; conflict?: boolean; overwritten?: boolean; destListing?: string }[] = [];
 
             for (const element of target) {
               // Resolve each element
@@ -919,17 +1028,17 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
               }
 
               const result = await deps.edit({
-                operation: { op: 'move', target: filePath, destination: resolvedDest, destinationType: destination_type, dryRun: dry_run },
+                operation: { op: 'move', target: filePath, destination: resolvedDest, destinationType: destination_type, onConflict: on_conflict, dryRun: dry_run },
                 contextLines: 0,
                 siloDirectories,
               });
 
               if (!result.success) {
-                batchResults.push({ source: filePath, success: false, error: result.error });
+                batchResults.push({ source: filePath, success: false, error: result.error, conflict: result.conflict });
                 continue;
               }
 
-              batchResults.push({ source: filePath, destination: result.destinationPath, success: true, destListing: result.destinationDirectoryListing });
+              batchResults.push({ source: filePath, destination: result.destinationPath, success: true, overwritten: result.overwritten, conflict: result.conflict, destListing: result.destinationDirectoryListing });
 
               // Invalidate puids on live (non-dry-run) moves
               if (!dry_run) {
@@ -944,12 +1053,20 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
 
             // Format collapsed batch response
             const parts: string[] = [];
-            const succeeded = batchResults.filter(r => r.success).length;
-            const failed = batchResults.length - succeeded;
 
             for (const r of batchResults) {
-              if (r.success) {
-                parts.push(dry_run ? `  [OK] ${r.source} → ${r.destination}` : `  [OK] ${r.source} → ${r.destination}`);
+              if (r.success && r.overwritten) {
+                parts.push(`  [OVERWRITE] ${r.source} → ${r.destination}`);
+              } else if (r.success && dry_run && r.conflict) {
+                parts.push(`  [CONFLICT] ${r.source} → ${r.destination}`);
+              } else if (r.success && dry_run) {
+                parts.push(`  [WOULD MOVE] ${r.source} → ${r.destination}`);
+              } else if (r.success) {
+                parts.push(`  [OK] ${r.source} → ${r.destination}`);
+              } else if (!r.success && r.conflict && on_conflict === 'skip') {
+                parts.push(`  [SKIP] ${r.source}`);
+              } else if (!r.success && r.conflict) {
+                parts.push(`  [CONFLICT] ${r.source}: ${r.error}`);
               } else {
                 parts.push(`  [FAIL] ${r.source}: ${r.error}`);
               }
@@ -963,8 +1080,17 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
               parts.push(lastSuccess.destListing);
             }
 
+            // Summary with separate counts
+            const succeeded = batchResults.filter(r => r.success && !r.overwritten && !r.conflict).length;
+            const overwritten = batchResults.filter(r => r.overwritten).length;
+            const skipped = batchResults.filter(r => !r.success && r.conflict).length;
+            const failed = batchResults.filter(r => !r.success && !r.conflict).length;
+            const summaryParts: string[] = [`${succeeded + overwritten} of ${batchResults.length} succeeded`];
+            if (overwritten > 0) summaryParts.push(`${overwritten} overwritten`);
+            if (skipped > 0) summaryParts.push(`${skipped} ${on_conflict === 'skip' ? 'skipped' : 'conflicted'}`);
+            if (failed > 0) summaryParts.push(`${failed} failed`);
             parts.push('');
-            parts.push(`${succeeded} of ${batchResults.length} operations succeeded${failed > 0 ? `, ${failed} failed` : ''}.`);
+            parts.push(summaryParts.join(', ') + '.');
             return { content: [{ type: 'text' as const, text: parts.join('\n') }] };
           }
 
@@ -1030,12 +1156,18 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           }
 
           const result = await deps.edit({
-            operation: { op: 'move', target: filePath, destination: resolvedDest, destinationType: destination_type, dryRun: dry_run },
+            operation: { op: 'move', target: filePath, destination: resolvedDest, destinationType: destination_type, onConflict: on_conflict, dryRun: dry_run },
             contextLines: 0,
             siloDirectories,
           });
 
           if (!result.success) {
+            if (result.conflict && on_conflict === 'skip') {
+              return { content: [{ type: 'text' as const, text: `Skipped: file already exists at destination: ${result.destinationPath}` }] };
+            }
+            if (result.conflict) {
+              return { content: [{ type: 'text' as const, text: `Conflict: ${result.error}` }], isError: true };
+            }
             return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }], isError: true };
           }
 
@@ -1051,9 +1183,14 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
 
           // Format response
           const parts: string[] = [];
-          if (dry_run) {
+          if (dry_run && result.conflict) {
+            parts.push(`Dry run — would be moved (CONFLICT — destination exists):`);
+            parts.push(`  ${result.sourcePath} → ${result.destinationPath}`);
+          } else if (dry_run) {
             parts.push(`Dry run — would be moved:`);
             parts.push(`  ${result.sourcePath} → ${result.destinationPath}`);
+          } else if (result.overwritten) {
+            parts.push(`Moved (overwritten): ${result.sourcePath} → ${result.destinationPath}`);
           } else {
             parts.push(`Moved: ${result.sourcePath} → ${result.destinationPath}`);
           }

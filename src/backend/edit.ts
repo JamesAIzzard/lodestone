@@ -25,7 +25,8 @@ export type TextEditOperation =
 export type FileLifecycleOperation =
   | { op: 'create'; directory: string; filename: string; content: string; fullDocument?: boolean }
   | { op: 'mkdir'; directory: string; name: string; dryRun?: boolean }
-  | { op: 'move'; target: string; destination: string; destinationType: 'directory' | 'filepath'; dryRun?: boolean }
+  | { op: 'rename'; target: string; name: string; dryRun?: boolean }
+  | { op: 'move'; target: string; destination: string; destinationType: 'directory' | 'filepath'; onConflict?: 'error' | 'skip' | 'overwrite'; dryRun?: boolean }
   | { op: 'delete'; target: string; dryRun?: boolean };
 
 /** Combined type for all edit operations. */
@@ -42,6 +43,10 @@ export interface EditResult {
   contextSnippet?: string;
   /** Error message if the operation failed. */
   error?: string;
+  /** True when a destination conflict was detected (move). */
+  conflict?: boolean;
+  /** True when overwrite mode replaced an existing destination file (move). */
+  overwritten?: boolean;
   /** SHA-256 hash of the file after the edit (for updating the puid record). */
   newHash?: string;
   /** Resolved source path (move/delete). */
@@ -432,6 +437,57 @@ function executeCreate(
   };
 }
 
+function executeRename(
+  op: Extract<FileLifecycleOperation, { op: 'rename' }>,
+  siloDirectories: string[],
+): EditResult {
+  // Silo boundary check
+  if (!isWithinSiloBoundary(op.target, siloDirectories)) {
+    return {
+      success: false,
+      error: 'Target is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
+    };
+  }
+
+  // Check source exists
+  if (!fs.existsSync(op.target)) {
+    return {
+      success: false,
+      error: `Target not found: ${op.target}`,
+    };
+  }
+
+  const newPath = path.join(path.dirname(op.target), op.name);
+
+  // Check destination doesn't already exist
+  if (fs.existsSync(newPath)) {
+    return {
+      success: false,
+      error: `A file or directory with the name "${op.name}" already exists at: ${newPath}`,
+    };
+  }
+
+  // Dry run
+  if (op.dryRun) {
+    return {
+      success: true,
+      sourcePath: op.target,
+      destinationPath: newPath,
+      sourceDirectoryListing: formatDirectoryListing(path.dirname(op.target)),
+    };
+  }
+
+  // Live: rename in place (always same device)
+  fs.renameSync(op.target, newPath);
+
+  return {
+    success: true,
+    sourcePath: op.target,
+    destinationPath: newPath,
+    sourceDirectoryListing: formatDirectoryListing(path.dirname(op.target)),
+  };
+}
+
 function executeMove(
   op: Extract<FileLifecycleOperation, { op: 'move' }>,
   siloDirectories: string[],
@@ -490,16 +546,36 @@ function executeMove(
     };
   }
 
-  // Check for collision
-  if (fs.existsSync(finalDestination)) {
-    return {
-      success: false,
-      error: `A file or directory already exists at the destination: ${finalDestination}`,
-    };
+  // Directory-specific: detect before collision check (needed for on_conflict policy)
+  const isDir = fs.statSync(op.target).isDirectory();
+
+  // Check for collision (skip during dry-run — dry-run block handles conflict detection)
+  let didOverwrite = false;
+  if (!op.dryRun && fs.existsSync(finalDestination)) {
+    const onConflict = op.onConflict ?? 'error';
+
+    // on_conflict only applies to file targets — directory conflicts always error
+    if (isDir || onConflict === 'error') {
+      return {
+        success: false,
+        conflict: true,
+        error: `A file or directory already exists at the destination: ${finalDestination}`,
+      };
+    }
+    if (onConflict === 'skip') {
+      return {
+        success: false,
+        conflict: true,
+        sourcePath: op.target,
+        destinationPath: finalDestination,
+      };
+    }
+    // onConflict === 'overwrite': remove destination file, then proceed with move
+    fs.unlinkSync(finalDestination);
+    didOverwrite = true;
   }
 
   // Directory-specific: cycle detection
-  const isDir = fs.statSync(op.target).isDirectory();
   if (isDir) {
     const resolvedSource = path.resolve(op.target);
     const resolvedDest = path.resolve(finalDestination);
@@ -513,8 +589,10 @@ function executeMove(
 
   // Dry run — return resolved paths and directory listings without moving
   if (op.dryRun) {
+    const conflict = fs.existsSync(finalDestination);
     return {
       success: true,
+      conflict,
       sourcePath: op.target,
       destinationPath: finalDestination,
       sourceDirectoryListing: formatDirectoryListing(path.dirname(op.target)),
@@ -545,6 +623,7 @@ function executeMove(
 
   return {
     success: true,
+    overwritten: didOverwrite || undefined,
     sourcePath: op.target,
     destinationPath: finalDestination,
     sourceDirectoryListing: formatDirectoryListing(path.dirname(op.target)),
@@ -633,6 +712,8 @@ export async function executeEdit(
       return executeCreate(operation, siloDirectories);
     case 'mkdir':
       return executeMkdir(operation, siloDirectories);
+    case 'rename':
+      return executeRename(operation, siloDirectories);
     case 'move':
       return executeMove(operation, siloDirectories);
     case 'delete':

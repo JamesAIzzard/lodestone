@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
+import type { TextEditOperation, EditResult } from './edit';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,6 +47,14 @@ export interface McpServerDeps {
   }) => Promise<{ results: DirectoryResult[]; warnings: string[] }>;
   /** Proxy status through the GUI process. */
   status: () => Promise<{ silos: SiloStatus[] }>;
+  /** Proxy edit operations through the GUI process. */
+  edit: (params: {
+    operation: TextEditOperation;
+    contextLines: number;
+    siloDirectories: string[];
+  }) => Promise<EditResult>;
+  /** Get config defaults (e.g. contextLines) from the GUI process. */
+  getDefaults: () => Promise<{ contextLines: number }>;
 }
 
 /** Handle returned by startMcpServer for runtime control. */
@@ -353,6 +362,25 @@ const EXPLORE_DESCRIPTION = [
   'Use the lodestone_status tool to see available silos and their current state.',
 ].join('\n');
 
+const EDIT_DESCRIPTION = [
+  'Edit files within indexed silos. Supports four text-editing operations.',
+  '',
+  'Operations:',
+  '  \u2022 str_replace \u2014 Replace a unique string (must match exactly once)',
+  '  \u2022 insert_at_line \u2014 Insert content before a specific line number',
+  '  \u2022 overwrite \u2014 Replace entire file content',
+  '  \u2022 append \u2014 Add content to end of file',
+  '',
+  'All operations accept puid references (e.g. "r3") from lodestone_search/explore/read,',
+  'or absolute file paths. All operations support dry_run for previewing changes.',
+  '',
+  'Staleness detection: If a file was previously read via lodestone_read and has been',
+  'modified externally since, the edit is rejected with the current file content.',
+  'This prevents accidental overwrites of concurrent changes.',
+  '',
+  'Files must be within a configured silo directory and must be valid UTF-8.',
+].join('\n');
+
 // ── Server ───────────────────────────────────────────────────────────────────
 
 /**
@@ -612,6 +640,139 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
 
         return {
           content: [{ type: 'text' as const, text }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${message}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  // ── Register lodestone_edit tool ──
+
+  server.tool(
+    'lodestone_edit',
+    EDIT_DESCRIPTION,
+    {
+      operation: z.enum(['str_replace', 'insert_at_line', 'overwrite', 'append']).describe('The edit operation to perform'),
+      file: z.string().describe('Puid (e.g. "r3") or absolute filepath'),
+      old_str: z.string().optional().describe('String to find and replace (must match exactly once). Required for str_replace.'),
+      new_str: z.string().optional().describe('Replacement string. Required for str_replace.'),
+      line: z.number().int().min(1).optional().describe('1-based line number to insert before. Required for insert_at_line.'),
+      content: z.string().optional().describe('Content to insert/write/append. Required for insert_at_line, overwrite, append.'),
+      dry_run: z.boolean().optional().describe('Preview the change without writing to disk.'),
+      context_lines: z.number().int().min(0).optional().describe('Lines of surrounding context in confirmation (default: from config).'),
+      full_document: z.boolean().optional().describe('Return the full document after edit instead of a context snippet.'),
+    },
+    async ({ operation, file, old_str, new_str, line, content, dry_run, context_lines, full_document }) => {
+      try {
+        // 1. Resolve file reference
+        let filePath: string;
+        let puidRecord: PuidRecord | undefined;
+        if (/^r\d+$/.test(file)) {
+          puidRecord = puidMap.get(file);
+          if (!puidRecord) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: Unknown puid "${file}". It may be from a previous session. Search or explore again to get a fresh reference.` }],
+              isError: true,
+            };
+          }
+          filePath = puidRecord.filepath;
+        } else {
+          filePath = file;
+        }
+
+        // 2. Staleness check (puid path only — raw filepaths skip this)
+        if (puidRecord?.contentHash) {
+          const currentHash = computeFileHash(filePath);
+          if (currentHash !== puidRecord.contentHash) {
+            let body = `File has been modified externally since last read.\nStored hash: ${puidRecord.contentHash}\nCurrent hash: ${currentHash}`;
+            try {
+              const currentContent = fs.readFileSync(filePath, 'utf-8');
+              body += `\n\nCurrent content:\n\`\`\`\n${currentContent}\n\`\`\``;
+            } catch { /* if read fails, just show hashes */ }
+            return {
+              content: [{ type: 'text' as const, text: body }],
+              isError: true,
+            };
+          }
+        }
+
+        // 3. Collect silo directories
+        const statusResult = await deps.status();
+        const siloDirectories = statusResult.silos.flatMap(s => s.config.directories);
+
+        // 4. Resolve context_lines default
+        const defaults = await deps.getDefaults();
+        const effectiveContextLines = context_lines ?? defaults.contextLines;
+
+        // 5. Build operation and dispatch
+        let editOp: import('./edit').TextEditOperation;
+        switch (operation) {
+          case 'str_replace':
+            if (old_str === undefined || new_str === undefined) {
+              return { content: [{ type: 'text' as const, text: 'Error: str_replace requires old_str and new_str parameters.' }], isError: true };
+            }
+            editOp = { op: 'str_replace', filePath, oldStr: old_str, newStr: new_str, dryRun: dry_run, contextLines: context_lines, fullDocument: full_document };
+            break;
+          case 'insert_at_line':
+            if (line === undefined || content === undefined) {
+              return { content: [{ type: 'text' as const, text: 'Error: insert_at_line requires line and content parameters.' }], isError: true };
+            }
+            editOp = { op: 'insert_at_line', filePath, line, content, dryRun: dry_run, contextLines: context_lines, fullDocument: full_document };
+            break;
+          case 'overwrite':
+            if (content === undefined) {
+              return { content: [{ type: 'text' as const, text: 'Error: overwrite requires content parameter.' }], isError: true };
+            }
+            editOp = { op: 'overwrite', filePath, content, dryRun: dry_run, contextLines: context_lines, fullDocument: full_document };
+            break;
+          case 'append':
+            if (content === undefined) {
+              return { content: [{ type: 'text' as const, text: 'Error: append requires content parameter.' }], isError: true };
+            }
+            editOp = { op: 'append', filePath, content, dryRun: dry_run, contextLines: context_lines, fullDocument: full_document };
+            break;
+        }
+
+        const result = await deps.edit({
+          operation: editOp,
+          contextLines: effectiveContextLines,
+          siloDirectories,
+        });
+
+        // 6. Update puid hash on success (non-dry-run)
+        if (result.success && !dry_run && result.newHash && puidRecord) {
+          puidRecord.contentHash = result.newHash;
+        }
+
+        // 7. Format response
+        if (!result.success) {
+          return {
+            content: [{ type: 'text' as const, text: `Error: ${result.error}` }],
+            isError: true,
+          };
+        }
+
+        const parts: string[] = [];
+        if (result.diff) parts.push(result.diff);
+        if (result.contextSnippet) {
+          parts.push('Context:');
+          parts.push(result.contextSnippet);
+        }
+        if (result.fullContent) {
+          parts.push('Full document:');
+          parts.push('```');
+          parts.push(result.fullContent);
+          parts.push('```');
+        }
+        if (parts.length === 0) parts.push('Edit applied successfully.');
+
+        return {
+          content: [{ type: 'text' as const, text: parts.join('\n') }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

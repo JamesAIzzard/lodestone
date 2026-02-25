@@ -16,6 +16,7 @@ import type { AppContext } from './context';
 import { dispatchExplore, mergeDirectoryResults, dispatchTwoAxisSearch, mergeTwoAxisResults } from '../backend/search-merge';
 import { resolveModelAlias } from '../backend/model-registry';
 import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
+import type { TextEditOperation, EditResult } from '../backend/edit';
 import type { SiloManager } from '../backend/silo-manager';
 
 /** Windows named pipe path. */
@@ -137,6 +138,12 @@ export class InternalApi {
           break;
         case 'status':
           result = await this.handleStatus();
+          break;
+        case 'edit':
+          result = await this.handleEdit(req.params ?? {});
+          break;
+        case 'getDefaults':
+          result = this.handleGetDefaults();
           break;
         default:
           this.sendResponse(socket, req.id, undefined, `Unknown method: ${req.method}`);
@@ -323,6 +330,25 @@ export class InternalApi {
     }));
 
     return { results, warnings };
+  }
+
+  /**
+   * Handle an edit request. Delegates to the edit module.
+   */
+  private async handleEdit(params: Record<string, unknown>): Promise<EditResult> {
+    const { executeEdit } = await import('../backend/edit');
+    const operation = params.operation as TextEditOperation;
+    const contextLines = (params.contextLines as number) ?? 10;
+    const siloDirectories = (params.siloDirectories as string[]) ?? [];
+    return executeEdit(operation, contextLines, siloDirectories);
+  }
+
+  /**
+   * Return config defaults relevant to the MCP server.
+   */
+  private handleGetDefaults(): { contextLines: number } {
+    const contextLines = this.ctx.config?.defaults.context_lines ?? 10;
+    return { contextLines };
   }
 
   /**

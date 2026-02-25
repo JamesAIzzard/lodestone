@@ -153,6 +153,25 @@ export interface ExploreParams {
   fullContents?: boolean;
 }
 
+// ── Search Params ─────────────────────────────────────────────────────────────
+
+/** Controls which scoring signals are used for a search. */
+export type SearchMode = 'hybrid' | 'bm25' | 'semantic' | 'regex';
+
+export interface SearchParams {
+  query: string;
+  /** Search mode. Default: 'hybrid' (vector + BM25, Levenshtein filename). */
+  mode?: SearchMode;
+  /** Glob pattern to filter results to matching file paths (e.g. "*.ts" or "src/**"). */
+  filePattern?: string;
+  /** JavaScript regex flags for regex mode (default: 'i'). */
+  regexFlags?: string;
+  /** Filter results to files under this directory path (already resolved to stored key by silo-manager). */
+  startPath?: string;
+  /** Maximum results to return. Default: 10. */
+  limit?: number;
+}
+
 // ── Activity ──────────────────────────────────────────────────────────────────
 
 export type ActivityEventType = 'indexed' | 'reindexed' | 'deleted' | 'error' | 'dir-added' | 'dir-removed';
@@ -175,6 +194,29 @@ export interface DefaultSettings {
   debounce: number;
   /** Number of surrounding lines in post-edit confirmation snippets */
   contextLines: number;
+}
+
+// ── Memory ────────────────────────────────────────────────────────────────────
+
+export interface MemoryRecord {
+  id: number;
+  topic: string;
+  body: string;
+  confidence: number;
+  contextHint: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemorySearchResult extends MemoryRecord {
+  score: number;
+}
+
+export interface MemoryStatus {
+  connected: boolean;
+  dbPath: string | null;
+  memoryCount: number;
+  databaseSizeBytes: number;
 }
 
 // ── Server ────────────────────────────────────────────────────────────────────

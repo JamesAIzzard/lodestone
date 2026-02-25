@@ -1,38 +1,64 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import SiloCard from '@/components/SiloCard';
-import SiloDetailModal from '@/components/SiloDetailModal';
 import AddSiloModal from '@/components/AddSiloModal';
-import type { SiloStatus } from '../../shared/types';
+import MemoryCard from '@/components/MemoryCard';
+import type { SiloStatus, MemoryStatus } from '../../shared/types';
 
 export default function SilosView() {
+  const navigate = useNavigate();
   const [silos, setSilos] = useState<SiloStatus[]>([]);
-  const [selectedSilo, setSelectedSilo] = useState<SiloStatus | null>(null);
-  const [detailOpen, setDetailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [stoppingName, setStoppingName] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [memoryStatus, setMemoryStatus] = useState<MemoryStatus>({
+    connected: false, dbPath: null, memoryCount: 0, databaseSizeBytes: 0,
+  });
+
+  // Shimmer keys — incrementing forces the animation to restart on each MCP call
+  const [siloShimmerKeys, setSiloShimmerKeys] = useState<Record<string, number>>({});
+  const [memoryShimmerKey, setMemoryShimmerKey] = useState(0);
+  const silosRef = useRef<SiloStatus[]>([]);
 
   function fetchSilos() {
-    window.electronAPI?.getSilos().then(setSilos);
+    window.electronAPI?.getSilos().then((s) => {
+      setSilos(s);
+      silosRef.current = s;
+    });
   }
+
+  function fetchMemoryStatus() {
+    window.electronAPI?.getMemoryStatus().then(setMemoryStatus);
+  }
+
+  const shimmerSilo = useCallback((name: string) => {
+    setSiloShimmerKeys((prev) => ({ ...prev, [name]: (prev[name] ?? 0) + 1 }));
+  }, []);
 
   useEffect(() => {
     fetchSilos();
+    fetchMemoryStatus();
     // Re-fetch when state changes externally (e.g. tray stop/wake)
-    const unsub = window.electronAPI?.onSilosChanged(fetchSilos);
-    return () => unsub?.();
-  }, []);
-
-  // Keep the selected silo in sync with the latest data so the
-  // detail modal reflects live stats (file count, chunks, progress, etc.)
-  useEffect(() => {
-    if (selectedSilo) {
-      const updated = silos.find((s) => s.config.name === selectedSilo.config.name);
-      if (updated) setSelectedSilo(updated);
-    }
-  }, [silos]); // eslint-disable-line react-hooks/exhaustive-deps
+    const unsubSilos = window.electronAPI?.onSilosChanged(fetchSilos);
+    const unsubMemory = window.electronAPI?.onMemoriesChanged(fetchMemoryStatus);
+    const unsubActivity = window.electronAPI?.onMcpActivity(({ channel, siloName }) => {
+      if (channel === 'memory') {
+        setMemoryShimmerKey((k) => k + 1);
+      } else {
+        if (siloName) {
+          shimmerSilo(siloName);
+        } else {
+          // No specific silo targeted — shimmer all non-stopped silos
+          silosRef.current
+            .filter((s) => s.watcherState !== 'stopped')
+            .forEach((s) => shimmerSilo(s.config.name));
+        }
+      }
+    });
+    return () => { unsubSilos?.(); unsubMemory?.(); unsubActivity?.(); };
+  }, [shimmerSilo]);
 
   // Poll while any silo is indexing or waiting
   useEffect(() => {
@@ -53,9 +79,13 @@ export default function SilosView() {
     };
   }, [silos]);
 
-  function handleCardClick(silo: SiloStatus) {
-    setSelectedSilo(silo);
-    setDetailOpen(true);
+  function handleRescan(silo: SiloStatus) {
+    window.electronAPI?.rescanSilo(silo.config.name);
+    fetchSilos();
+  }
+
+  function handleSearchInSilo(silo: SiloStatus) {
+    navigate(`/search?silo=${encodeURIComponent(silo.config.name)}`);
   }
 
   async function handleStopToggle(silo: SiloStatus) {
@@ -75,6 +105,11 @@ export default function SilosView() {
 
   return (
     <div className="p-6">
+      <MemoryCard
+        status={memoryStatus}
+        onDone={fetchMemoryStatus}
+        shimmerKey={memoryShimmerKey}
+      />
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-lg font-semibold text-foreground">Silos</h1>
         <Button size="sm" onClick={() => setAddOpen(true)}>
@@ -93,24 +128,16 @@ export default function SilosView() {
             <SiloCard
               key={silo.config.name}
               silo={silo}
-              onClick={() => handleCardClick(silo)}
+              onClick={() => navigate(`/silos/${silo.config.name}`)}
               onStopToggle={() => handleStopToggle(silo)}
               isStopping={stoppingName === silo.config.name}
+              onRescan={() => handleRescan(silo)}
+              onSearchInSilo={() => handleSearchInSilo(silo)}
+              shimmerKey={siloShimmerKeys[silo.config.name] ?? 0}
             />
           ))}
         </div>
       )}
-
-      <SiloDetailModal
-        silo={selectedSilo}
-        open={detailOpen}
-        onOpenChange={setDetailOpen}
-        onDeleted={fetchSilos}
-        onStopToggle={selectedSilo ? () => handleStopToggle(selectedSilo) : undefined}
-        isStopping={selectedSilo ? stoppingName === selectedSilo.config.name : false}
-        onRebuilt={fetchSilos}
-        onUpdated={fetchSilos}
-      />
 
       <AddSiloModal open={addOpen} onOpenChange={setAddOpen} onCreated={fetchSilos} />
     </div>

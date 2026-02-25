@@ -73,6 +73,15 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+@keyframes neural-shimmer {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(250%); }
+}
+
+@theme inline {
+  --animate-neural-shimmer: neural-shimmer 0.9s ease-in-out both;
+}
+
 @layer base {
   * {
     @apply border-border;

@@ -16,7 +16,7 @@
 import { app } from 'electron';
 import { createConnection, type Socket } from 'node:net';
 import { startMcpServer } from '../backend/mcp-server';
-import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus, MemoryRecord, MemorySearchResult } from '../shared/types';
 import type { EditResult } from '../backend/edit';
 import type { AppContext } from './context';
 
@@ -158,6 +158,12 @@ export async function startMcpMode(_ctx: AppContext): Promise<void> {
     status: () => gui.call<{ silos: SiloStatus[] }>('status'),
     edit: (params) => gui.call<EditResult>('edit', params),
     getDefaults: () => gui.call<{ contextLines: number }>('getDefaults'),
+    memoryRemember: (params) => gui.call<{ id: number; updated: boolean }>('memory.remember', params as Record<string, unknown>),
+    memoryRecall: (params) => gui.call<MemorySearchResult[]>('memory.recall', params as Record<string, unknown>),
+    memoryRevise: (params) => gui.call<void>('memory.revise', params as Record<string, unknown>),
+    memoryForget: (params) => gui.call<void>('memory.forget', params as Record<string, unknown>),
+    memoryOrient: (params) => gui.call<MemoryRecord[]>('memory.orient', params as Record<string, unknown>),
+    notifyActivity: (params) => { gui.call('notify.activity', params as Record<string, unknown>).catch(() => {}); },
   });
 
   // ── Shutdown ──────────────────────────────────────────────────────────

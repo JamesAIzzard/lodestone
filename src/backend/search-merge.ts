@@ -9,6 +9,7 @@ import type { EmbeddingService } from './embedding';
 import type { SiloManager } from './silo-manager';
 import type { TwoAxisScoreSource, TwoAxisChunk } from './store';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
+import type { SearchParams } from '../shared/types';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -42,25 +43,32 @@ export interface TwoAxisSiloResult {
 /**
  * Run a two-axis search query across multiple silos, grouping by embedding
  * model so the query is only embedded once per model.
+ *
+ * For 'bm25' mode the query vector is skipped entirely; all silos run with an
+ * empty vector and the DB layer ignores it.
  */
 export async function dispatchTwoAxisSearch(
-  query: string,
+  params: SearchParams,
   managers: Iterable<[string, SiloManager]>,
   resolveService: (model: string) => EmbeddingService | null,
-  limit: number,
-  startPath?: string,
 ): Promise<TwoAxisSiloResult[]> {
   const byModel = groupByModel(managers);
 
   const raw: TwoAxisSiloResult[] = [];
   for (const [model, group] of byModel) {
-    const service = resolveService(model);
-    if (!service) continue;
+    // BM25-only mode: skip embedding entirely, use an empty vector
+    let queryVector: number[];
+    if (params.mode === 'bm25') {
+      queryVector = [];
+    } else {
+      const service = resolveService(model);
+      if (!service) continue;
+      queryVector = await service.embed(params.query);
+    }
 
-    const queryVector = await service.embed(query);
     for (const [name, manager] of group) {
       try {
-        const siloResults = manager.searchTwoAxis(queryVector, query, limit, startPath);
+        const siloResults = manager.searchTwoAxis(queryVector, params);
         for (const r of siloResults) {
           raw.push({
             filePath: r.filePath,
@@ -78,6 +86,36 @@ export async function dispatchTwoAxisSearch(
     }
   }
 
+  return raw;
+}
+
+/**
+ * Run a regex search across multiple silos synchronously.
+ * No embeddings needed — full-table scan using JS RegExp.
+ */
+export function dispatchRegexSearch(
+  params: SearchParams,
+  managers: Iterable<[string, SiloManager]>,
+): TwoAxisSiloResult[] {
+  const raw: TwoAxisSiloResult[] = [];
+  for (const [name, manager] of managers) {
+    try {
+      const siloResults = manager.searchRegex(params);
+      for (const r of siloResults) {
+        raw.push({
+          filePath: r.filePath,
+          siloName: name,
+          score: r.score,
+          scoreSource: r.scoreSource,
+          contentScore: r.contentScore,
+          filenameScore: r.filenameScore,
+          chunks: r.chunks,
+        });
+      }
+    } catch (err) {
+      console.error(`[search] Error in regex search for silo "${name}":`, err);
+    }
+  }
   return raw;
 }
 

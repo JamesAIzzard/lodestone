@@ -1,6 +1,7 @@
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import SilosView from './views/SilosView';
+import SiloDetailView from './views/SiloDetailView';
 import SearchView from './views/SearchView';
 import ActivityView from './views/ActivityView';
 import SettingsView from './views/SettingsView';
@@ -22,6 +23,7 @@ export default function App() {
               <main className="flex-1 overflow-y-auto">
                 <Routes>
                   <Route path="/" element={<SilosView />} />
+                  <Route path="/silos/:name" element={<SiloDetailView />} />
                   <Route path="/search" element={<SearchView />} />
                   <Route path="/activity" element={<ActivityView />} />
                   <Route path="/settings" element={<SettingsView />} />

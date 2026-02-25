@@ -18,6 +18,9 @@ export type SiloColor = (typeof SILO_COLORS)[number];
 /**
  * Tailwind class mappings for each palette colour.
  * All classes are full string literals so Tailwind's JIT scanner finds them.
+ *
+ * shimmerRgb — Tailwind 400-level RGB values as a bare "R,G,B" string for
+ * use in rgba() gradient stops (e.g. the MCP neural-shimmer overlay).
  */
 export const SILO_COLOR_MAP: Record<SiloColor, {
   dot: string;
@@ -25,20 +28,21 @@ export const SILO_COLOR_MAP: Record<SiloColor, {
   text: string;
   border: string;
   cardAccent: string;
+  shimmerRgb: string;
 }> = {
-  slate:   { dot: 'bg-slate-500',   bgSoft: 'bg-slate-500/15',   text: 'text-slate-400',   border: 'border-slate-500/40',   cardAccent: 'border-l-slate-500' },
-  red:     { dot: 'bg-red-500',     bgSoft: 'bg-red-500/15',     text: 'text-red-400',     border: 'border-red-500/40',     cardAccent: 'border-l-red-500' },
-  orange:  { dot: 'bg-orange-500',  bgSoft: 'bg-orange-500/15',  text: 'text-orange-400',  border: 'border-orange-500/40',  cardAccent: 'border-l-orange-500' },
-  amber:   { dot: 'bg-amber-500',   bgSoft: 'bg-amber-500/15',   text: 'text-amber-400',   border: 'border-amber-500/40',   cardAccent: 'border-l-amber-500' },
-  emerald: { dot: 'bg-emerald-500', bgSoft: 'bg-emerald-500/15', text: 'text-emerald-400', border: 'border-emerald-500/40', cardAccent: 'border-l-emerald-500' },
-  teal:    { dot: 'bg-teal-500',    bgSoft: 'bg-teal-500/15',    text: 'text-teal-400',    border: 'border-teal-500/40',    cardAccent: 'border-l-teal-500' },
-  cyan:    { dot: 'bg-cyan-500',    bgSoft: 'bg-cyan-500/15',    text: 'text-cyan-400',    border: 'border-cyan-500/40',    cardAccent: 'border-l-cyan-500' },
-  blue:    { dot: 'bg-blue-500',    bgSoft: 'bg-blue-500/15',    text: 'text-blue-400',    border: 'border-blue-500/40',    cardAccent: 'border-l-blue-500' },
-  indigo:  { dot: 'bg-indigo-500',  bgSoft: 'bg-indigo-500/15',  text: 'text-indigo-400',  border: 'border-indigo-500/40',  cardAccent: 'border-l-indigo-500' },
-  violet:  { dot: 'bg-violet-500',  bgSoft: 'bg-violet-500/15',  text: 'text-violet-400',  border: 'border-violet-500/40',  cardAccent: 'border-l-violet-500' },
-  purple:  { dot: 'bg-purple-500',  bgSoft: 'bg-purple-500/15',  text: 'text-purple-400',  border: 'border-purple-500/40',  cardAccent: 'border-l-purple-500' },
-  rose:    { dot: 'bg-rose-500',    bgSoft: 'bg-rose-500/15',    text: 'text-rose-400',    border: 'border-rose-500/40',    cardAccent: 'border-l-rose-500' },
-  pink:    { dot: 'bg-pink-500',    bgSoft: 'bg-pink-500/15',    text: 'text-pink-400',    border: 'border-pink-500/40',    cardAccent: 'border-l-pink-500' },
+  slate:   { dot: 'bg-slate-500',   bgSoft: 'bg-slate-500/15',   text: 'text-slate-400',   border: 'border-slate-500/40',   cardAccent: 'border-l-slate-500',   shimmerRgb: '148,163,184' },
+  red:     { dot: 'bg-red-500',     bgSoft: 'bg-red-500/15',     text: 'text-red-400',     border: 'border-red-500/40',     cardAccent: 'border-l-red-500',     shimmerRgb: '248,113,113' },
+  orange:  { dot: 'bg-orange-500',  bgSoft: 'bg-orange-500/15',  text: 'text-orange-400',  border: 'border-orange-500/40',  cardAccent: 'border-l-orange-500',  shimmerRgb: '251,146,60'  },
+  amber:   { dot: 'bg-amber-500',   bgSoft: 'bg-amber-500/15',   text: 'text-amber-400',   border: 'border-amber-500/40',   cardAccent: 'border-l-amber-500',   shimmerRgb: '251,191,36'  },
+  emerald: { dot: 'bg-emerald-500', bgSoft: 'bg-emerald-500/15', text: 'text-emerald-400', border: 'border-emerald-500/40', cardAccent: 'border-l-emerald-500', shimmerRgb: '52,211,153'  },
+  teal:    { dot: 'bg-teal-500',    bgSoft: 'bg-teal-500/15',    text: 'text-teal-400',    border: 'border-teal-500/40',    cardAccent: 'border-l-teal-500',    shimmerRgb: '45,212,191'  },
+  cyan:    { dot: 'bg-cyan-500',    bgSoft: 'bg-cyan-500/15',    text: 'text-cyan-400',    border: 'border-cyan-500/40',    cardAccent: 'border-l-cyan-500',    shimmerRgb: '34,211,238'  },
+  blue:    { dot: 'bg-blue-500',    bgSoft: 'bg-blue-500/15',    text: 'text-blue-400',    border: 'border-blue-500/40',    cardAccent: 'border-l-blue-500',    shimmerRgb: '96,165,250'  },
+  indigo:  { dot: 'bg-indigo-500',  bgSoft: 'bg-indigo-500/15',  text: 'text-indigo-400',  border: 'border-indigo-500/40',  cardAccent: 'border-l-indigo-500',  shimmerRgb: '129,140,248' },
+  violet:  { dot: 'bg-violet-500',  bgSoft: 'bg-violet-500/15',  text: 'text-violet-400',  border: 'border-violet-500/40',  cardAccent: 'border-l-violet-500',  shimmerRgb: '167,139,250' },
+  purple:  { dot: 'bg-purple-500',  bgSoft: 'bg-purple-500/15',  text: 'text-purple-400',  border: 'border-purple-500/40',  cardAccent: 'border-l-purple-500',  shimmerRgb: '192,132,252' },
+  rose:    { dot: 'bg-rose-500',    bgSoft: 'bg-rose-500/15',    text: 'text-rose-400',    border: 'border-rose-500/40',    cardAccent: 'border-l-rose-500',    shimmerRgb: '251,113,133' },
+  pink:    { dot: 'bg-pink-500',    bgSoft: 'bg-pink-500/15',    text: 'text-pink-400',    border: 'border-pink-500/40',    cardAccent: 'border-l-pink-500',    shimmerRgb: '244,114,182' },
 };
 
 export const DEFAULT_SILO_COLOR: SiloColor = 'blue';

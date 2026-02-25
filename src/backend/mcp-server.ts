@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
-import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus, MemoryRecord, MemorySearchResult } from '../shared/types';
 import type { EditOperation, EditResult } from './edit';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -35,6 +35,9 @@ export interface McpServerDeps {
     silo?: string;
     maxResults?: number;
     startPath?: string;
+    mode?: 'hybrid' | 'bm25' | 'semantic' | 'regex';
+    filePattern?: string;
+    regexFlags?: string;
   }) => Promise<{ results: SearchResult[]; warnings: string[] }>;
   /** Proxy directory exploration through the GUI process. */
   explore: (params: {
@@ -55,6 +58,31 @@ export interface McpServerDeps {
   }) => Promise<EditResult>;
   /** Get config defaults (e.g. contextLines) from the GUI process. */
   getDefaults: () => Promise<{ contextLines: number }>;
+  /** Write or update a memory entry. */
+  memoryRemember: (params: {
+    topic: string;
+    body: string;
+    confidence?: number;
+    contextHint?: string;
+  }) => Promise<{ id: number; updated: boolean }>;
+  /** Hybrid search over memories. */
+  memoryRecall: (params: {
+    query: string;
+    maxResults?: number;
+  }) => Promise<MemorySearchResult[]>;
+  /** Explicitly update a memory by id. */
+  memoryRevise: (params: {
+    id: number;
+    body?: string;
+    confidence?: number;
+    contextHint?: string | null;
+  }) => Promise<void>;
+  /** Delete a memory by id. */
+  memoryForget: (params: { id: number }) => Promise<void>;
+  /** Return N most recently updated memories. */
+  memoryOrient: (params: { maxResults?: number }) => Promise<MemoryRecord[]>;
+  /** Fire-and-forget notification to the GUI to trigger the shimmer on a card. */
+  notifyActivity?: (params: { channel: 'silo' | 'memory'; siloName?: string }) => void;
 }
 
 /** Handle returned by startMcpServer for runtime control. */
@@ -493,8 +521,11 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       silo: z.string().optional().describe('Restrict search to a specific silo name (omit to search all)'),
       maxResults: z.number().min(1).max(50).optional().describe('Maximum results to return (default: 10)'),
       startPath: z.string().optional().describe('Filter results to files under this directory path. Accepts d-prefixed reference IDs (e.g. "d3") from lodestone_explore.'),
+      mode: z.enum(['hybrid', 'bm25', 'semantic', 'regex']).optional().describe('Search mode: hybrid (default, vector + BM25 + Levenshtein filename), bm25 (keyword-only), semantic (vector-only), or regex (full-table scan with JS RegExp)'),
+      filePattern: z.string().optional().describe('Glob pattern to filter results to matching file paths (e.g. "**/*.ts")'),
+      regexFlags: z.string().optional().describe('JavaScript regex flags for regex mode (default: "i")'),
     },
-    async ({ query, silo, maxResults, startPath }) => {
+    async ({ query, silo, maxResults, startPath, mode, filePattern, regexFlags }) => {
       try {
         // Resolve d-prefixed puids in startPath to absolute paths
         let resolvedStartPath = startPath;
@@ -514,6 +545,9 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           silo,
           maxResults: maxResults ?? 10,
           startPath: resolvedStartPath,
+          mode,
+          filePattern,
+          regexFlags,
         });
 
         let text = formatSearchResults(results);
@@ -554,6 +588,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     },
     async ({ results: refs }) => {
       try {
+        deps.notifyActivity?.({ channel: 'silo' });
         const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [];
 
         for (const entry of refs) {
@@ -1499,6 +1534,180 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
           isError: true,
         };
+      }
+    },
+  );
+
+  // ── Register memory tools ──
+
+  server.tool(
+    'lodestone_remember',
+    [
+      'Write a new memory or update an existing similar one.',
+      '',
+      'Before inserting, checks cosine similarity against existing memories.',
+      'If a closely related entry is found, updates it instead of creating a duplicate.',
+      '',
+      'Parameters:',
+      '  topic        — Short label categorising the memory (e.g. "JAMES - THINKING STYLE")',
+      '  body         — The memory content (plain text)',
+      '  confidence   — Float 0–1. 1.0 = reliable, lower = tentative. Default: 1.0',
+      '  context_hint — Optional short string recording the conversational context',
+      '',
+      'Returns: { id, updated } — updated=true if an existing memory was modified.',
+    ].join('\n'),
+    {
+      topic: z.string().describe('Short label categorising the memory (e.g. "LODESTONE", "JAMES - THINKING STYLE")'),
+      body: z.string().describe('The memory content'),
+      confidence: z.number().min(0).max(1).optional().describe('Epistemic confidence 0–1. Default: 1.0'),
+      context_hint: z.string().optional().describe('Short string recording the conversational context (not searchable)'),
+    },
+    async ({ topic, body, confidence, context_hint }) => {
+      try {
+        const result = await deps.memoryRemember({
+          topic,
+          body,
+          confidence,
+          contextHint: context_hint,
+        });
+        const action = result.updated ? 'Updated' : 'Created';
+        return {
+          content: [{ type: 'text' as const, text: `${action} memory ${result.id}.` }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+
+  server.tool(
+    'lodestone_recall',
+    [
+      'Hybrid search over memories: BM25 (FTS5) + cosine similarity, fused by weighted-max.',
+      '',
+      'Returns ranked memory records with id, topic, body, confidence, timestamps, and score.',
+      'Use this when you have a specific question or topic to retrieve context for.',
+      '',
+      'Parameters:',
+      '  query       — Natural language search query',
+      '  max_results — Maximum memories to return. Default: 5',
+    ].join('\n'),
+    {
+      query: z.string().describe('Search query — natural language'),
+      max_results: z.number().min(1).max(50).optional().describe('Maximum results to return. Default: 5'),
+    },
+    async ({ query, max_results }) => {
+      try {
+        const results = await deps.memoryRecall({ query, maxResults: max_results });
+        if (results.length === 0) {
+          return { content: [{ type: 'text' as const, text: 'No memories found.' }] };
+        }
+        const lines: string[] = [];
+        for (const r of results) {
+          const pct = Math.round(r.score * 100);
+          lines.push(`## [${r.id}] ${r.topic} (${pct}%, confidence: ${r.confidence})`);
+          lines.push(r.body);
+          lines.push(`_Updated: ${r.updatedAt}_`);
+          lines.push('');
+        }
+        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+
+  server.tool(
+    'lodestone_revise',
+    [
+      'Explicitly update a specific memory by id.',
+      '',
+      'Use this when you have recalled a memory and want to correct or extend it with',
+      'precision, bypassing the similarity-based upsert of lodestone_remember.',
+      'Also use it to adjust confidence on an existing memory without rewriting the body.',
+      '',
+      'Parameters:',
+      '  id           — Memory id (from lodestone_recall or lodestone_orient)',
+      '  body         — New body text (optional)',
+      '  confidence   — New confidence value 0–1 (optional)',
+      '  context_hint — New context hint (optional, pass null to clear)',
+    ].join('\n'),
+    {
+      id: z.number().int().describe('Memory id to update'),
+      body: z.string().optional().describe('New body text'),
+      confidence: z.number().min(0).max(1).optional().describe('New confidence value 0–1'),
+      context_hint: z.union([z.string(), z.null()]).optional().describe('New context hint (null to clear)'),
+    },
+    async ({ id, body, confidence, context_hint }) => {
+      try {
+        await deps.memoryRevise({ id, body, confidence, contextHint: context_hint });
+        return { content: [{ type: 'text' as const, text: `Memory ${id} revised.` }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+
+  server.tool(
+    'lodestone_forget',
+    [
+      'Remove a specific memory by id.',
+      '',
+      'Use when something is definitively wrong, no longer relevant,',
+      'or has been superseded by a revised memory.',
+      '',
+      'Parameters:',
+      '  id — Memory id (from lodestone_recall or lodestone_orient)',
+    ].join('\n'),
+    {
+      id: z.number().int().describe('Memory id to delete'),
+    },
+    async ({ id }) => {
+      try {
+        await deps.memoryForget({ id });
+        return { content: [{ type: 'text' as const, text: `Memory ${id} deleted.` }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+
+  server.tool(
+    'lodestone_orient',
+    [
+      'Return the N most recently updated memories, regardless of query.',
+      '',
+      'This is the orientation tool — call it at the start of a conversation,',
+      'before there is enough context to form a meaningful recall query,',
+      'to ground yourself in recent and active working context.',
+      '',
+      'Parameters:',
+      '  max_results — Maximum memories to return. Default: 10',
+    ].join('\n'),
+    {
+      max_results: z.number().min(1).max(50).optional().describe('Maximum memories to return. Default: 10'),
+    },
+    async ({ max_results }) => {
+      try {
+        const results = await deps.memoryOrient({ maxResults: max_results });
+        if (results.length === 0) {
+          return { content: [{ type: 'text' as const, text: 'No memories stored yet.' }] };
+        }
+        const lines: string[] = [];
+        for (const r of results) {
+          lines.push(`## [${r.id}] ${r.topic} (confidence: ${r.confidence})`);
+          lines.push(r.body);
+          lines.push(`_Updated: ${r.updatedAt}_`);
+          lines.push('');
+        }
+        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
       }
     },
   );

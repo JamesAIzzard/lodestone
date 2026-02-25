@@ -5,7 +5,7 @@
  * Handlers access shared state via the AppContext object.
  */
 
-import { app, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -18,23 +18,26 @@ import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/
 import { checkOllamaConnection } from '../backend/embedding';
 import type { SiloManager } from '../backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
-import { dispatchExplore, mergeDirectoryResults, dispatchTwoAxisSearch, mergeTwoAxisResults } from '../backend/search-merge';
-import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams } from '../shared/types';
+import { dispatchExplore, mergeDirectoryResults, dispatchTwoAxisSearch, dispatchRegexSearch, mergeTwoAxisResults } from '../backend/search-merge';
+import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams, MemoryStatus } from '../shared/types';
+import { MemoryManager } from '../backend/memory-manager';
 import type { AppContext } from './context';
 import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
 
 export function registerIpcHandlers(ctx: AppContext): void {
   // ── Dialog & Shell ──────────────────────────────────────────────────────
 
-  ipcMain.handle('dialog:selectDirectories', async () => {
-    const result = await dialog.showOpenDialog({
+  ipcMain.handle('dialog:selectDirectories', async (_event) => {
+    const win = BrowserWindow.fromWebContents(_event.sender) ?? undefined;
+    const result = await dialog.showOpenDialog(win as BrowserWindow, {
       properties: ['openDirectory', 'multiSelections'],
     });
     return result.canceled ? [] : result.filePaths;
   });
 
-  ipcMain.handle('dialog:selectDbFile', async () => {
-    const result = await dialog.showOpenDialog({
+  ipcMain.handle('dialog:selectDbFile', async (_event) => {
+    const win = BrowserWindow.fromWebContents(_event.sender) ?? undefined;
+    const result = await dialog.showOpenDialog(win as BrowserWindow, {
       properties: ['openFile'],
       filters: [{ name: 'SQLite Database', extensions: ['db'] }],
     });
@@ -42,7 +45,8 @@ export function registerIpcHandlers(ctx: AppContext): void {
   });
 
   ipcMain.handle('dialog:saveDbFile', async (_event, defaultName: string) => {
-    const result = await dialog.showSaveDialog({
+    const win = BrowserWindow.fromWebContents(_event.sender) ?? undefined;
+    const result = await dialog.showSaveDialog(win as BrowserWindow, {
       defaultPath: defaultName,
       filters: [{ name: 'SQLite Database', extensions: ['db'] }],
     });
@@ -99,7 +103,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return statuses;
   });
 
-  ipcMain.handle('silos:search', async (_event, query: string, siloName?: string, _weights?: unknown, startPath?: string): Promise<SearchResult[]> => {
+  ipcMain.handle('silos:search', async (_event, params: SearchParams, siloName?: string): Promise<SearchResult[]> => {
     // Collect searchable managers — skip stopped and model-mismatched silos
     const ready: [string, SiloManager][] = [];
     if (siloName) {
@@ -113,15 +117,16 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
     if (ready.length === 0) return [];
 
-    const raw = await dispatchTwoAxisSearch(
-      query,
-      ready,
-      (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
-      10,
-      startPath,
-    );
+    const limit = params.limit ?? 10;
+    const raw = params.mode === 'regex'
+      ? dispatchRegexSearch(params, ready)
+      : await dispatchTwoAxisSearch(
+          params,
+          ready,
+          (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+        );
 
-    const merged = mergeTwoAxisResults(raw, 20);
+    const merged = mergeTwoAxisResults(raw, limit);
 
     return merged.map((r) => ({
       filePath: r.filePath,
@@ -453,6 +458,22 @@ export function registerIpcHandlers(ctx: AppContext): void {
   );
 
   ipcMain.handle(
+    'silos:rescan',
+    (_event, name: string): { success: boolean; error?: string } => {
+      const manager = ctx.siloManagers.get(name);
+      if (!manager) return { success: false, error: `Silo "${name}" not found` };
+
+      // Fire and forget — rescan() re-walks directories and indexes changes
+      // without deleting the DB. State updates via silos:changed events.
+      manager.rescan().catch((err) => {
+        console.error(`[main] Failed to rescan silo "${name}":`, err);
+      });
+
+      return { success: true };
+    },
+  );
+
+  ipcMain.handle(
     'silos:rebuild',
     (_event, name: string): { success: boolean; error?: string } => {
       const manager = ctx.siloManagers.get(name);
@@ -628,6 +649,77 @@ export function registerIpcHandlers(ctx: AppContext): void {
       notifySilosChanged(ctx);
 
       return { success: true };
+    },
+  );
+
+  // ── Memory ──────────────────────────────────────────────────────────────
+
+  ipcMain.handle('memory:status', (): MemoryStatus => {
+    return ctx.memoryManager?.getStatus() ?? {
+      connected: false,
+      dbPath: null,
+      memoryCount: 0,
+      databaseSizeBytes: 0,
+    };
+  });
+
+  ipcMain.handle(
+    'memory:setup',
+    async (_event, dbPath: string): Promise<{ success: boolean; error?: string }> => {
+      try {
+        if (!ctx.memoryManager) {
+          ctx.memoryManager = new MemoryManager();
+        }
+        ctx.memoryManager.setup(dbPath);
+
+        if (ctx.config) {
+          ctx.config.memory = { db_path: dbPath };
+          saveConfig(ctx.configPath(), ctx.config);
+        }
+
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'memory:connect',
+    async (_event, dbPath: string): Promise<{ success: boolean; error?: string }> => {
+      try {
+        if (!ctx.memoryManager) {
+          ctx.memoryManager = new MemoryManager();
+        }
+        ctx.memoryManager.connect(dbPath);
+
+        if (ctx.config) {
+          ctx.config.memory = { db_path: dbPath };
+          saveConfig(ctx.configPath(), ctx.config);
+        }
+
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'memory:disconnect',
+    async (): Promise<{ success: boolean; error?: string }> => {
+      try {
+        ctx.memoryManager?.disconnect();
+
+        if (ctx.config) {
+          ctx.config.memory = {};
+          saveConfig(ctx.configPath(), ctx.config);
+        }
+
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
     },
   );
 }

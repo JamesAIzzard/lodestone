@@ -106,7 +106,7 @@ describe('store', () => {
     );
 
     // Search with vector identical to makeVector(1) — /close.md should rank higher
-    const results = twoAxisSearch(db, makeVector(1), 'close', 10);
+    const results = twoAxisSearch(db, makeVector(1), { query: 'close', limit: 10 });
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0].filePath).toBe('/close.md');
 
@@ -120,7 +120,7 @@ describe('store', () => {
     chunk.sectionPath = ['Architecture', 'Pipeline'];
     upsertFileChunks(db, '/a.md', [chunk], [makeVector(1)]);
 
-    const results = twoAxisSearch(db, makeVector(1), 'test', 10);
+    const results = twoAxisSearch(db, makeVector(1), { query: 'test', limit: 10 });
     expect(results[0].chunks[0].sectionPath).toEqual(['Architecture', 'Pipeline']);
   });
 
@@ -134,7 +134,7 @@ describe('store', () => {
     }
     upsertFileChunks(db, '/many.md', chunks, embeddings);
 
-    const results = twoAxisSearch(db, makeVector(1), 'chunk', 10);
+    const results = twoAxisSearch(db, makeVector(1), { query: 'chunk', limit: 10 });
     expect(results.length).toBe(1);
     expect(results[0].chunks.length).toBeLessThanOrEqual(5);
   });
@@ -275,7 +275,7 @@ describe('store', () => {
     expect(loadMtimes(db2).get('/a.md')).toBe(1234);
     expect(loadMeta(db2)!.model).toBe('test-model');
 
-    const results = twoAxisSearch(db2, makeVector(1), 'persisted', 10);
+    const results = twoAxisSearch(db2, makeVector(1), { query: 'persisted', limit: 10 });
     expect(results.length).toBe(1);
     expect(results[0].filePath).toBe('/a.md');
 

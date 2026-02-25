@@ -59,11 +59,17 @@ export interface SearchConfig {
   // two-axis model — all scores are now transparent [0,1] values.
 }
 
+export interface MemoryConfig {
+  /** Absolute path to the memory database file. Null when not configured. */
+  db_path?: string;
+}
+
 export interface LodestoneConfig {
   server: ServerConfig;
   embeddings: EmbeddingsConfig;
   defaults: DefaultsConfig;
   search: SearchConfig;
+  memory: MemoryConfig;
   silos: Record<string, SiloTomlConfig>;
 }
 
@@ -91,6 +97,7 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     context_lines: 10,
   },
   search: {},
+  memory: {},
   silos: {},
 };
 
@@ -107,6 +114,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
   const server = (parsed.server ?? {}) as Partial<ServerConfig>;
   const embeddings = (parsed.embeddings ?? {}) as Partial<EmbeddingsConfig>;
   const defaults = (parsed.defaults ?? {}) as Partial<DefaultsConfig>;
+  const memory = (parsed.memory ?? {}) as Partial<MemoryConfig>;
   // search section is reserved but currently empty (weights removed in two-axis model)
   const silos = (parsed.silos ?? {}) as Record<string, unknown>;
 
@@ -150,6 +158,9 @@ export function loadConfig(configPath: string): LodestoneConfig {
       context_lines: typeof defaults.context_lines === 'number' ? defaults.context_lines : DEFAULT_CONFIG.defaults.context_lines,
     },
     search: {},
+    memory: {
+      db_path: typeof memory.db_path === 'string' ? memory.db_path : undefined,
+    },
     silos: validatedSilos,
   };
 }

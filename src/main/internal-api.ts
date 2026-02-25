@@ -13,11 +13,12 @@
 
 import { createServer, type Server, type Socket } from 'node:net';
 import type { AppContext } from './context';
-import { dispatchExplore, mergeDirectoryResults, dispatchTwoAxisSearch, mergeTwoAxisResults } from '../backend/search-merge';
+import { dispatchExplore, mergeDirectoryResults, dispatchTwoAxisSearch, dispatchRegexSearch, mergeTwoAxisResults } from '../backend/search-merge';
 import { resolveModelAlias } from '../backend/model-registry';
-import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus, SearchParams, MemoryRecord, MemorySearchResult } from '../shared/types';
 import type { EditOperation, EditResult } from '../backend/edit';
 import type { SiloManager } from '../backend/silo-manager';
+import { MEMORY_MODEL } from '../backend/memory-store';
 
 /** Windows named pipe path. */
 export const GUI_PIPE_NAME = '\\\\.\\pipe\\lodestone-gui';
@@ -145,6 +146,24 @@ export class InternalApi {
         case 'getDefaults':
           result = this.handleGetDefaults();
           break;
+        case 'notify.activity':
+          result = this.handleNotifyActivity(req.params ?? {});
+          break;
+        case 'memory.remember':
+          result = await this.handleMemoryRemember(req.params ?? {});
+          break;
+        case 'memory.recall':
+          result = await this.handleMemoryRecall(req.params ?? {});
+          break;
+        case 'memory.revise':
+          result = await this.handleMemoryRevise(req.params ?? {});
+          break;
+        case 'memory.forget':
+          result = this.handleMemoryForget(req.params ?? {});
+          break;
+        case 'memory.orient':
+          result = this.handleMemoryOrient(req.params ?? {});
+          break;
         default:
           this.sendResponse(socket, req.id, undefined, `Unknown method: ${req.method}`);
           return;
@@ -177,14 +196,19 @@ export class InternalApi {
     const query = params.query as string;
     const silo = params.silo as string | undefined;
     const maxResults = (params.maxResults as number) ?? 10;
+    const mode = (params.mode as SearchParams['mode']) ?? 'hybrid';
     const startPath = params.startPath as string | undefined;
+    const filePattern = params.filePattern as string | undefined;
+    const regexFlags = params.regexFlags as string | undefined;
 
     if (!query) throw new Error('Missing required parameter: query');
 
-    // Notify renderer that an MCP search is happening (for visual effects)
-    this.ctx.mainWindow?.webContents.send('mcp:search', { query, silo });
+    const searchParams: SearchParams = { query, mode, limit: maxResults, startPath, filePattern, regexFlags };
 
-    // Collect searchable managers — skip stopped and model-mismatched silos
+    // Notify renderer that a silo is being queried (triggers shimmer effect)
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo', siloName: silo });
+
+    // Collect managers — skip stopped and model-mismatched silos
     const ready: [string, SiloManager][] = [];
     const warnings: string[] = [];
 
@@ -201,10 +225,11 @@ export class InternalApi {
     }
 
     // Check readiness — collect warnings for partial results
+    // Regex mode doesn't need an embedding service, so skip that warning
     for (const [name, manager] of ready) {
       const service = manager.getEmbeddingService();
       const status = manager.getStatus();
-      if (!service) {
+      if (mode !== 'regex' && !service) {
         warnings.push(`Silo "${name}" is still initializing and not yet searchable.`);
       } else if (status.watcherState === 'indexing') {
         const prog = status.reconcileProgress;
@@ -218,20 +243,22 @@ export class InternalApi {
       }
     }
 
-    // Filter to silos that have an embedding service ready
-    const searchable = ready.filter(([, m]) => m.getEmbeddingService() !== null);
+    // Regex mode can search any ready silo; other modes need an embedding service
+    const searchable = mode === 'regex'
+      ? ready
+      : ready.filter(([, m]) => m.getEmbeddingService() !== null);
 
     if (searchable.length === 0) {
       return { results: [], warnings };
     }
 
-    const raw = await dispatchTwoAxisSearch(
-      query,
-      searchable,
-      (model) => this.ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
-      maxResults,
-      startPath,
-    );
+    const raw = mode === 'regex'
+      ? dispatchRegexSearch(searchParams, searchable)
+      : await dispatchTwoAxisSearch(
+          searchParams,
+          searchable,
+          (model) => this.ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+        );
 
     const merged = mergeTwoAxisResults(raw, maxResults);
 
@@ -268,8 +295,8 @@ export class InternalApi {
     const maxResults = (params.maxResults as number) ?? 20;
     const fullContents = params.fullContents as boolean | undefined;
 
-    // Notify renderer that an MCP explore is happening
-    this.ctx.mainWindow?.webContents.send('mcp:search', { query: query ?? '', silo });
+    // Notify renderer that a silo is being queried (triggers shimmer effect)
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo', siloName: silo });
 
     // Collect searchable managers
     const ready: [string, SiloManager][] = [];
@@ -336,6 +363,7 @@ export class InternalApi {
    * Handle an edit request. Delegates to the edit module.
    */
   private async handleEdit(params: Record<string, unknown>): Promise<EditResult> {
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo' });
     const { executeEdit } = await import('../backend/edit');
     const operation = params.operation as EditOperation;
     const contextLines = (params.contextLines as number) ?? 10;
@@ -346,15 +374,108 @@ export class InternalApi {
   /**
    * Return config defaults relevant to the MCP server.
    */
+  private handleNotifyActivity(params: Record<string, unknown>): Record<string, never> {
+    const channel = params.channel as 'silo' | 'memory';
+    const siloName = params.siloName as string | undefined;
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel, siloName });
+    return {};
+  }
+
   private handleGetDefaults(): { contextLines: number } {
     const contextLines = this.ctx.config?.defaults.context_lines ?? 10;
     return { contextLines };
+  }
+
+  // ── Memory Method Handlers ───────────────────────────────────────────────
+
+  private async handleMemoryRemember(params: Record<string, unknown>): Promise<{ id: number; updated: boolean }> {
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
+    const mm = this.ctx.memoryManager;
+    if (!mm?.isConnected()) throw new Error('No memory database connected');
+
+    const topic = (params.topic as string | undefined) ?? 'GENERAL';
+    const body = params.body as string;
+    const confidence = (params.confidence as number | undefined) ?? 1.0;
+    const contextHint = (params.contextHint as string | undefined) ?? null;
+
+    if (!body?.trim()) throw new Error('Missing required parameter: body');
+
+    const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
+    await service.ensureReady();
+
+    const result = await mm.remember(topic, body.trim(), confidence, contextHint, service);
+    this.notifyMemoriesChanged();
+    return result;
+  }
+
+  private async handleMemoryRecall(params: Record<string, unknown>): Promise<MemorySearchResult[]> {
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
+    const mm = this.ctx.memoryManager;
+    if (!mm?.isConnected()) throw new Error('No memory database connected');
+
+    const query = params.query as string;
+    const maxResults = (params.maxResults as number | undefined) ?? 5;
+
+    if (!query?.trim()) throw new Error('Missing required parameter: query');
+
+    const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
+    await service.ensureReady();
+
+    return mm.recall(query.trim(), maxResults, service);
+  }
+
+  private async handleMemoryRevise(params: Record<string, unknown>): Promise<void> {
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
+    const mm = this.ctx.memoryManager;
+    if (!mm?.isConnected()) throw new Error('No memory database connected');
+
+    const id = params.id as number;
+    if (typeof id !== 'number') throw new Error('Missing required parameter: id');
+
+    const updates: { body?: string; confidence?: number; contextHint?: string | null } = {};
+    if (typeof params.body === 'string') updates.body = params.body;
+    if (typeof params.confidence === 'number') updates.confidence = params.confidence;
+    if ('contextHint' in params) updates.contextHint = params.contextHint as string | null;
+
+    if (Object.keys(updates).length === 0) throw new Error('No fields to update');
+
+    const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
+    await service.ensureReady();
+
+    await mm.revise(id, updates, service);
+    this.notifyMemoriesChanged();
+  }
+
+  private handleMemoryForget(params: Record<string, unknown>): void {
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
+    const mm = this.ctx.memoryManager;
+    if (!mm?.isConnected()) throw new Error('No memory database connected');
+
+    const id = params.id as number;
+    if (typeof id !== 'number') throw new Error('Missing required parameter: id');
+
+    mm.forget(id);
+    this.notifyMemoriesChanged();
+  }
+
+  private handleMemoryOrient(params: Record<string, unknown>): MemoryRecord[] {
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
+    const mm = this.ctx.memoryManager;
+    if (!mm?.isConnected()) throw new Error('No memory database connected');
+
+    const maxResults = (params.maxResults as number | undefined) ?? 10;
+    return mm.orient(maxResults);
+  }
+
+  private notifyMemoriesChanged(): void {
+    this.ctx.mainWindow?.webContents.send('memories:changed');
   }
 
   /**
    * Handle a status request. Mirrors the IPC `silos:list` handler.
    */
   private handleStatus(): { silos: SiloStatus[] } {
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo' });
     const statuses: SiloStatus[] = [];
     for (const manager of this.ctx.siloManagers.values()) {
       const status = manager.getStatus();

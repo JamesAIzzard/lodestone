@@ -26,14 +26,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('silos:stop', name),
   wakeSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:wake', name),
+  rescanSilo: (name: string): Promise<unknown> =>
+    ipcRenderer.invoke('silos:rescan', name),
   rebuildSilo: (name: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:rebuild', name),
   updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string }): Promise<unknown> =>
     ipcRenderer.invoke('silos:update', name, updates),
   renameSilo: (oldName: string, newName: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:rename', oldName, newName),
-  search: (query: string, siloName?: string, startPath?: string): Promise<unknown[]> =>
-    ipcRenderer.invoke('silos:search', query, siloName, undefined, startPath),
+  search: (params: unknown, siloName?: string): Promise<unknown[]> =>
+    ipcRenderer.invoke('silos:search', params, siloName),
   explore: (params: unknown): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:explore', params),
 
@@ -53,6 +55,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('silos:changed', handler);
   },
 
+  // Memory state changes (e.g. remember/revise/forget from MCP)
+  onMemoriesChanged: (callback: () => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('memories:changed', handler);
+    return () => ipcRenderer.removeListener('memories:changed', handler);
+  },
+
+  // MCP channel activity (triggers shimmer on silo/memory cards)
+  onMcpActivity: (callback: (event: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data);
+    ipcRenderer.on('mcp:activity', handler);
+    return () => ipcRenderer.removeListener('mcp:activity', handler);
+  },
+
   // Defaults
   getDefaults: (): Promise<unknown> =>
     ipcRenderer.invoke('defaults:get'),
@@ -70,6 +86,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('config:path'),
   getDataDir: (): Promise<string> =>
     ipcRenderer.invoke('data:dir'),
+
+  // Memory
+  getMemoryStatus: (): Promise<unknown> =>
+    ipcRenderer.invoke('memory:status'),
+  setupMemory: (dbPath: string): Promise<unknown> =>
+    ipcRenderer.invoke('memory:setup', dbPath),
+  connectMemory: (dbPath: string): Promise<unknown> =>
+    ipcRenderer.invoke('memory:connect', dbPath),
+  disconnectMemory: (): Promise<unknown> =>
+    ipcRenderer.invoke('memory:disconnect'),
 
   // Claude Desktop Integration
   getClaudeDesktopStatus: (): Promise<unknown> =>

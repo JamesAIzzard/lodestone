@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Search, FileText, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, X, Text, Type } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
@@ -41,8 +42,9 @@ const DIR_BAR_COLOR = 'bg-purple-400';
 type SearchMode = 'file' | 'directory';
 
 export default function SearchView() {
+  const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
-  const [selectedSilo, setSelectedSilo] = useState('all');
+  const [selectedSilo, setSelectedSilo] = useState(() => searchParams.get('silo') ?? 'all');
   const [silos, setSilos] = useState<SiloStatus[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [directoryResults, setDirectoryResults] = useState<DirectoryResult[]>([]);
@@ -72,7 +74,7 @@ export default function SearchView() {
     setSearching(true);
     setExpandedResults(new Set());
     try {
-      const res = await window.electronAPI?.search(q, silo, sp || undefined) ?? [];
+      const res = await window.electronAPI?.search({ query: q, startPath: sp || undefined }, silo || undefined) ?? [];
       setResults(res);
       setDirectoryResults([]);
     } finally {

@@ -1,4 +1,4 @@
-import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams } from './types';
+import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams, MemoryStatus } from './types';
 
 /** Config snapshot stored inside a portable silo database. */
 export interface StoredSiloConfigResponse {
@@ -44,9 +44,10 @@ export interface ElectronAPI {
   disconnectSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   stopSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   wakeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
+  rescanSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   rebuildSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string }) => Promise<{ success: boolean; error?: string }>;
-  search: (query: string, siloName?: string, startPath?: string) => Promise<SearchResult[]>;
+  search: (params: SearchParams, siloName?: string) => Promise<SearchResult[]>;
   explore: (params: ExploreParams) => Promise<DirectoryResult[]>;
 
   // ── Activity ───────────────────────────────────────────────────────────────
@@ -55,6 +56,12 @@ export interface ElectronAPI {
 
   // ── Silo state push (e.g. tray sleep/wake) ────────────────────────────────
   onSilosChanged: (callback: () => void) => () => void;
+
+  // ── Memory state push (e.g. remember/revise/forget from MCP) ──────────────
+  onMemoriesChanged: (callback: () => void) => () => void;
+
+  // ── MCP activity push (triggers shimmer on silo/memory cards) ─────────────
+  onMcpActivity: (callback: (event: { channel: 'silo' | 'memory'; siloName?: string }) => void) => () => void;
 
   // ── Defaults ──────────────────────────────────────────────────────────────
   getDefaults: () => Promise<DefaultSettings>;
@@ -69,6 +76,12 @@ export interface ElectronAPI {
   testOllamaConnection: (url: string) => Promise<{ connected: boolean; models: string[] }>;
   getConfigPath: () => Promise<string>;
   getDataDir: () => Promise<string>;
+
+  // ── Memory ────────────────────────────────────────────────────────────────
+  getMemoryStatus: () => Promise<MemoryStatus>;
+  setupMemory: (dbPath: string) => Promise<{ success: boolean; error?: string }>;
+  connectMemory: (dbPath: string) => Promise<{ success: boolean; error?: string }>;
+  disconnectMemory: () => Promise<{ success: boolean; error?: string }>;
 
   // ── Claude Desktop Integration ────────────────────────────────────────────
   getClaudeDesktopStatus: () => Promise<{

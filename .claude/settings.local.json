@@ -29,7 +29,8 @@
       "Bash(grep:*)",
       "Bash(npx electron-forge make:*)",
       "Bash(xargs basename:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "mcp__lodestone__lodestone_search"
     ]
   }
 }

@@ -14,6 +14,7 @@ import type { EmbeddingService } from './embedding';
 import {
   createSiloDatabase,
   twoAxisSearch,
+  regexSearch,
   getChunkCount,
   loadMtimes,
   setMtime,
@@ -32,7 +33,7 @@ import {
 } from './store';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
-import type { WatcherState, DirectoryTreeNode } from '../shared/types';
+import type { WatcherState, DirectoryTreeNode, SearchParams } from '../shared/types';
 import { directorySearchSilo, expandTree, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
 
@@ -182,6 +183,11 @@ export class SiloManager {
   async updateExtensions(extensions: string[]): Promise<void> {
     this.config = { ...this.config, extensions };
     await this.reconcileAndRestartWatcher('extension');
+  }
+
+  /** Re-walk directories and index new/changed/removed files without deleting the DB. */
+  async rescan(): Promise<void> {
+    await this.reconcileAndRestartWatcher('manual rescan');
   }
 
   /**
@@ -482,23 +488,42 @@ export class SiloManager {
   }
 
   /** Two-axis search with a pre-computed query vector. */
-  searchTwoAxis(queryVector: number[], queryText: string, maxResults: number = 10, startPath?: string): TwoAxisFileResult[] {
+  searchTwoAxis(queryVector: number[], params: SearchParams): TwoAxisFileResult[] {
     if (!this.db) return [];
     // Convert absolute startPath → stored key prefix for DB filtering
-    let storedStartPath = startPath;
-    if (startPath) {
-      const key = makeStoredDirKey(startPath, this.config.directories);
+    let storedStartPath = params.startPath;
+    if (params.startPath) {
+      const key = makeStoredDirKey(params.startPath, this.config.directories);
       if (key) {
         storedStartPath = key;
       } else {
         // startPath may be a silo root or already a stored key
-        const rootIdx = this.config.directories.indexOf(startPath);
+        const rootIdx = this.config.directories.indexOf(params.startPath);
         if (rootIdx >= 0) {
           storedStartPath = `${rootIdx}:`;
         }
       }
     }
-    const results = twoAxisSearch(this.db, queryVector, queryText, maxResults, storedStartPath);
+    const results = twoAxisSearch(this.db, queryVector, { ...params, startPath: storedStartPath });
+    return this.resolveTwoAxisPaths(results);
+  }
+
+  /** Regex search: full-table scan — no embedding needed. */
+  searchRegex(params: SearchParams): TwoAxisFileResult[] {
+    if (!this.db) return [];
+    let storedStartPath = params.startPath;
+    if (params.startPath) {
+      const key = makeStoredDirKey(params.startPath, this.config.directories);
+      if (key) {
+        storedStartPath = key;
+      } else {
+        const rootIdx = this.config.directories.indexOf(params.startPath);
+        if (rootIdx >= 0) {
+          storedStartPath = `${rootIdx}:`;
+        }
+      }
+    }
+    const results = regexSearch(this.db, { ...params, startPath: storedStartPath });
     return this.resolveTwoAxisPaths(results);
   }
 

@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import { X } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
 
-const COMMON_EXTENSIONS = ['.md', '.txt', '.py', '.ts', '.js', '.toml', '.yaml', '.json', '.pdf', '.rs', '.go', '.java'];
+const COMMON_EXTENSIONS = ['.md', '.txt', '.py', '.ts', '.tsx', '.js', '.jsx', '.toml', '.yaml', '.json', '.pdf', '.rs', '.go', '.java'];
 
 interface ExtensionPickerProps {
   extensions: string[];
@@ -94,6 +95,30 @@ export default function ExtensionPicker({
           ))}
         </div>
       )}
+
+      {/* Removable pills for active extensions not in the common list */}
+      {(() => {
+        const customActive = extensions.filter((ext) => !COMMON_EXTENSIONS.includes(ext));
+        if (customActive.length === 0) return null;
+        return (
+          <div className="flex flex-wrap gap-1.5">
+            {customActive.map((ext) => (
+              <Badge key={ext} variant="secondary" className="gap-1 text-[11px]">
+                {ext}
+                {!disabled && (
+                  <button
+                    onClick={() => onChange(extensions.filter((e) => e !== ext))}
+                    className="ml-0.5 rounded-sm opacity-60 hover:opacity-100 transition-opacity"
+                    aria-label={`Remove ${ext}`}
+                  >
+                    <X className="h-2.5 w-2.5" />
+                  </button>
+                )}
+              </Badge>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Custom extension input */}
       {!disabled && (

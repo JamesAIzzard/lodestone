@@ -10,6 +10,7 @@ import {
   resolveSiloConfig,
 } from '../backend/config';
 import { SiloManager } from '../backend/silo-manager';
+import { MemoryManager } from '../backend/memory-manager';
 import type { AppContext } from './context';
 import { attachActivityForwarding } from './activity';
 import { buildTrayMenu } from './tray';
@@ -47,6 +48,19 @@ export function loadOrInitConfig(ctx: AppContext): void {
 
 export async function initializeBackend(ctx: AppContext): Promise<void> {
   loadOrInitConfig(ctx);
+
+  // Auto-connect memory database if configured
+  const memoryDbPath = ctx.config!.memory?.db_path;
+  if (memoryDbPath) {
+    ctx.memoryManager = new MemoryManager();
+    try {
+      ctx.memoryManager.connect(memoryDbPath);
+      console.log(`[main] Connected memory database: ${memoryDbPath}`);
+    } catch (err) {
+      console.error('[main] Failed to connect memory database:', err);
+      ctx.memoryManager = null;
+    }
+  }
 
   for (const [name, siloToml] of Object.entries(ctx.config!.silos)) {
     registerManager(ctx, name, siloToml);

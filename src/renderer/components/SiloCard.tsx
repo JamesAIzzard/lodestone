@@ -1,16 +1,11 @@
-import { FileText, Blocks, FolderOpen, Loader2, Pause, Play, AlertTriangle, Database } from 'lucide-react';
+import { useState, useCallback } from 'react';
+import { FolderOpen, Loader2, Pause, Play, AlertTriangle, Database, Copy, RefreshCw, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from './ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { SILO_COLOR_MAP } from '../../shared/silo-appearance';
 import SiloIcon from './SiloIconComponent';
 import type { SiloStatus, WatcherState } from '../../shared/types';
-
-function abbreviatePath(p: string): string {
-  return p
-    .replace(/^[A-Z]:\\Users\\[^\\]+/, '~')
-    .replace(/^\/home\/[^/]+/, '~');
-}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -31,10 +26,20 @@ interface SiloCardProps {
   onClick: () => void;
   onStopToggle?: () => void;
   isStopping?: boolean;
+  onRescan?: () => void;
+  onSearchInSilo?: () => void;
+  shimmerKey?: number;
 }
 
-export default function SiloCard({ silo, onClick, onStopToggle, isStopping }: SiloCardProps) {
+export default function SiloCard({ silo, onClick, onStopToggle, isStopping, onRescan, onSearchInSilo, shimmerKey }: SiloCardProps) {
   const { config, indexedFileCount, chunkCount, watcherState, reconcileProgress } = silo;
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  const copyPath = useCallback((e: React.MouseEvent, path: string) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(path).catch(() => {});
+    setCopiedPath(path);
+    setTimeout(() => setCopiedPath(null), 2000);
+  }, []);
   const state = stateConfig[watcherState];
   const colorClasses = SILO_COLOR_MAP[config.color];
   const hasModelOverride = config.modelOverride !== null;
@@ -49,24 +54,69 @@ export default function SiloCard({ silo, onClick, onStopToggle, isStopping }: Si
     <button
       onClick={onClick}
       className={cn(
-        'flex w-full flex-col gap-3 rounded-lg border border-border border-l-[3px] bg-card p-4 text-left transition-colors',
+        'relative overflow-hidden flex w-full flex-col gap-3 rounded-lg border border-border border-l-[3px] bg-card p-4 text-left transition-colors',
         colorClasses.cardAccent,
         'hover:border-foreground/20 hover:bg-accent/30',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
       )}
     >
-      {/* Header: name + status */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground truncate">
-            <SiloIcon icon={config.icon} className={cn('h-3.5 w-3.5 shrink-0', colorClasses.text)} />
-            {config.name}
-          </h3>
-          {config.description && (
-            <p className="text-xs text-muted-foreground/70 truncate mt-0.5">{config.description}</p>
+      {/* Header: status + actions row, then name + description below */}
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <Badge variant={state.badgeVariant} className="gap-1.5 whitespace-nowrap">
+            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', state.dotClass)} />
+            {isActive && progressPct !== null
+              ? `Indexing ${progressPct}%`
+              : state.label}
+          </Badge>
+          <div className="flex items-center gap-1.5 shrink-0">
+          {/* Search in silo */}
+          {onSearchInSilo && (
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); onSearchInSilo(); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); onSearchInSilo(); } }}
+                    className="rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground hover:bg-accent/40"
+                  >
+                    <Search className="h-3.5 w-3.5" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">Search in this silo</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+
+          {/* Rescan */}
+          {onRescan && (
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    role="button"
+                    tabIndex={isActive || isWaiting || isStopped ? -1 : 0}
+                    onClick={(e) => { e.stopPropagation(); if (!isActive && !isWaiting && !isStopped) onRescan(); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); if (!isActive && !isWaiting && !isStopped) onRescan(); } }}
+                    className={cn(
+                      'rounded p-0.5 transition-colors',
+                      isActive || isWaiting || isStopped
+                        ? 'text-muted-foreground/25 cursor-default'
+                        : 'text-muted-foreground/50 hover:text-foreground hover:bg-accent/40',
+                    )}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {isStopped ? 'Silo is stopped' : isActive ? 'Already indexing' : isWaiting ? 'Waiting to index' : 'Rescan for changes'}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+
           {/* Stop/wake button — shown in all states except waiting */}
           {onStopToggle && !isWaiting && (
             <span
@@ -90,13 +140,15 @@ export default function SiloCard({ silo, onClick, onStopToggle, isStopping }: Si
               }
             </span>
           )}
-          <Badge variant={state.badgeVariant} className="gap-1.5 whitespace-nowrap">
-            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', state.dotClass)} />
-            {isActive && progressPct !== null
-              ? `Indexing ${progressPct}%`
-              : state.label}
-          </Badge>
+          </div>
         </div>
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground truncate">
+          <SiloIcon icon={config.icon} className={cn('h-3.5 w-3.5 shrink-0', colorClasses.text)} />
+          {config.name}
+        </h3>
+        {config.description && (
+          <p className="text-xs text-muted-foreground/70 truncate">{config.description}</p>
+        )}
       </div>
 
       <div className={cn((isStopped || isWaiting) && 'opacity-50')}>
@@ -115,49 +167,82 @@ export default function SiloCard({ silo, onClick, onStopToggle, isStopping }: Si
           </div>
         )}
 
-        {/* Stats */}
-        <div className="flex gap-4 text-xs text-muted-foreground">
-          <TooltipProvider delayDuration={300}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="flex items-center gap-1.5 cursor-default">
-                  <Database className="h-3.5 w-3.5" />
-                  {indexedFileCount.toLocaleString()} files · {chunkCount.toLocaleString()} chunks
+        {/* Two linked groups: database ← directories */}
+        <div className="flex flex-col">
+          {/* Database group */}
+          <div className="flex items-start gap-1.5 text-xs text-muted-foreground min-w-0">
+            <Database className="h-3.5 w-3.5 mt-px shrink-0" />
+            <div className="min-w-0">
+              <TooltipProvider delayDuration={300}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      className="group flex items-center gap-1 cursor-pointer hover:text-foreground/80 transition-colors min-w-0"
+                      onClick={(e) => copyPath(e, silo.resolvedDbPath)}
+                    >
+                      <span className="truncate flex-1">{silo.resolvedDbPath}</span>
+                      <Copy className="h-2.5 w-2.5 shrink-0 opacity-0 group-hover:opacity-50 transition-opacity" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    {copiedPath === silo.resolvedDbPath ? '✓ Copied!' : 'Click to copy path'}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <span className="text-muted-foreground/60 block mt-0.5">
+                {indexedFileCount.toLocaleString()} files · {chunkCount.toLocaleString()} chunks · {isActive ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)}
+              </span>
+              {silo.modelMismatch && (
+                <span className="flex items-center gap-1 text-amber-400 mt-0.5">
+                  <AlertTriangle className="h-3 w-3 shrink-0" />
+                  Model mismatch — rebuild required
                 </span>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                Files and chunks indexed into database
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-          <span className="text-muted-foreground/60">
-            {isActive ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)}
-          </span>
-        </div>
-
-        {/* Model mismatch warning */}
-        {silo.modelMismatch && (
-          <div className="flex items-center gap-1.5 text-xs text-amber-400">
-            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-            Model mismatch — rebuild required
+              )}
+              <span className={cn('block mt-0.5', hasModelOverride ? 'text-amber-400/80' : 'text-muted-foreground/50')}>
+                {silo.resolvedModel}
+              </span>
+            </div>
           </div>
-        )}
 
-        {/* Model (always shown) */}
-        <div className={cn('text-xs', hasModelOverride ? 'text-amber-400/80' : 'text-muted-foreground/50')}>
-          {silo.resolvedModel}
-        </div>
+          {/* Connector */}
+          <div className="ml-[6.5px] my-1.5 w-px h-3 bg-border" />
 
-        {/* Directories */}
-        <div className="flex flex-col gap-1">
-          {config.directories.map((dir) => (
-            <span key={dir} className="flex items-center gap-1.5 text-xs text-muted-foreground/70 min-w-0">
-              <FolderOpen className="h-3 w-3 shrink-0" />
-              <span className="truncate">{abbreviatePath(dir)}</span>
-            </span>
-          ))}
+          {/* Directories group */}
+          <div className="flex flex-col gap-1">
+            {config.directories.map((dir) => (
+              <TooltipProvider key={dir} delayDuration={300}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      className="group flex items-center gap-1.5 text-xs text-muted-foreground/70 cursor-pointer hover:text-muted-foreground transition-colors min-w-0"
+                      onClick={(e) => copyPath(e, dir)}
+                    >
+                      <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate flex-1">{dir}</span>
+                      <Copy className="h-2.5 w-2.5 shrink-0 opacity-0 group-hover:opacity-50 transition-opacity" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    {copiedPath === dir ? '✓ Copied!' : 'Click to copy path'}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ))}
+          </div>
         </div>
       </div>
+
+      {/* Neural shimmer — color-tinted sweep when Claude queries this silo via MCP */}
+      {(shimmerKey ?? 0) > 0 && (
+        <div
+          key={shimmerKey}
+          aria-hidden
+          className="absolute inset-0 pointer-events-none animate-neural-shimmer"
+          style={{
+            background: `linear-gradient(108deg, transparent 38%, rgba(${colorClasses.shimmerRgb},0.08) 45%, rgba(${colorClasses.shimmerRgb},0.18) 50%, rgba(${colorClasses.shimmerRgb},0.08) 55%, transparent 62%)`,
+          }}
+        />
+      )}
     </button>
   );
 }

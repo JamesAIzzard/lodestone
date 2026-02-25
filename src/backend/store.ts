@@ -19,6 +19,7 @@ import * as sqliteVec from 'sqlite-vec';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ChunkRecord } from './pipeline-types';
+import type { SearchParams } from '../shared/types';
 import { tokenise } from './tokeniser';
 import { scoreBm25 } from './scorers/bm25';
 import { scoreFilenames } from './scorers/filename';
@@ -118,6 +119,34 @@ const CHUNK_FANOUT = 5;
 
 /** Maximum chunks returned per file in search results. */
 export const MAX_CHUNKS_PER_FILE = 5;
+
+/** Extract the relative-path portion from a stored key ("{dirIndex}:{relPath}"). */
+function extractRelPath(storedKey: string): string {
+  const colon = storedKey.indexOf(':');
+  return colon === -1 ? storedKey : storedKey.slice(colon + 1);
+}
+
+/**
+ * Convert a glob pattern to a RegExp.
+ *
+ * Rules:
+ *   **  → matches any sequence of characters including path separators
+ *   *   → matches any sequence of characters within a single path segment
+ *   ?   → matches any single character
+ *
+ * Uses a two-step approach: split on ** first to avoid double-replacement bugs.
+ */
+export function globToRegex(pattern: string, flags = 'i'): RegExp {
+  const parts = pattern.split('**');
+  const escapedParts = parts.map((part) =>
+    // Within each segment (no **), escape regex chars then handle * and ?
+    part
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '[^/\\\\]*')
+      .replace(/\?/g, '[^/\\\\]'),
+  );
+  return new RegExp(escapedParts.join('.*'), flags);
+}
 
 // ── Silo Meta ────────────────────────────────────────────────────────────────
 
@@ -528,36 +557,56 @@ export interface TwoAxisFileResult {
 export function twoAxisSearch(
   db: SiloDatabase,
   queryVector: number[],
-  queryText: string,
-  maxResults: number = 10,
-  startPath?: string,
+  params: SearchParams,
 ): TwoAxisFileResult[] {
+  const maxResults = params.limit ?? 10;
   const chunkLimit = maxResults * CHUNK_FANOUT;
+  const mode = params.mode ?? 'hybrid';
+  const filePatternRe = params.filePattern ? globToRegex(params.filePattern) : null;
 
   // ── Content Axis: Semantic ────────────────────────────────────────────────
-  const vecRows = db.prepare(`
-    SELECT v.rowid, v.distance
-    FROM vec_chunks v
-    WHERE v.embedding MATCH ?
-      AND k = ?
-    ORDER BY v.distance
-  `).all(float32Buffer(queryVector), chunkLimit) as Array<{ rowid: number; distance: number }>;
-
   const cosineSims = new Map<number, number>();
-  for (const row of vecRows) {
-    cosineSims.set(row.rowid, 1 - row.distance / 2);
+  if (mode !== 'bm25') {
+    const vecRows = db.prepare(`
+      SELECT v.rowid, v.distance
+      FROM vec_chunks v
+      WHERE v.embedding MATCH ?
+        AND k = ?
+      ORDER BY v.distance
+    `).all(float32Buffer(queryVector), chunkLimit) as Array<{ rowid: number; distance: number }>;
+
+    for (const row of vecRows) {
+      cosineSims.set(row.rowid, 1 - row.distance / 2);
+    }
   }
 
   // ── Content Axis: BM25 ────────────────────────────────────────────────────
-  const queryTokens = tokenise(queryText);
-  const bm25Scores = scoreBm25(db, queryTokens);
+  const queryTokens = tokenise(params.query);
+  const bm25Scores: Map<number, { score: number }> = mode === 'semantic'
+    ? new Map()
+    : scoreBm25(db, queryTokens);
 
   // ── Merge chunk IDs from both content signals ─────────────────────────────
   const allChunkIds = new Set([...cosineSims.keys(), ...bm25Scores.keys()]);
-  if (allChunkIds.size === 0 && queryText.trim().length === 0) return [];
+  if (allChunkIds.size === 0 && params.query.trim().length === 0) return [];
 
   // ── Filename Axis ─────────────────────────────────────────────────────────
-  const filenameScores = scoreFilenames(db, queryText);
+  // BM25 mode: exact case-insensitive substring on relative path (no Levenshtein).
+  // Other modes: Levenshtein trigram similarity.
+  const filenameScores: Map<string, { score: number }> = mode === 'bm25'
+    ? (() => {
+        const m = new Map<string, { score: number }>();
+        const q = params.query.toLowerCase();
+        if (q.length === 0) return m;
+        const allFiles = db.prepare(`SELECT file_path FROM files`).all() as Array<{ file_path: string }>;
+        for (const { file_path } of allFiles) {
+          if (extractRelPath(file_path).toLowerCase().includes(q)) {
+            m.set(file_path, { score: 1.0 });
+          }
+        }
+        return m;
+      })()
+    : scoreFilenames(db, params.query) as Map<string, { score: number }>;
 
   // If we have no content matches and no filename matches, nothing to return
   if (allChunkIds.size === 0 && filenameScores.size === 0) return [];
@@ -607,8 +656,9 @@ export function twoAxisSearch(
     const data = chunkDataMap.get(chunkId);
     if (!data) continue;
 
-    // Apply startPath filter
-    if (startPath && !data.file_path.startsWith(startPath)) continue;
+    // Apply startPath and filePattern filters
+    if (params.startPath && !data.file_path.startsWith(params.startPath)) continue;
+    if (filePatternRe && !filePatternRe.test(extractRelPath(data.file_path))) continue;
 
     const semantic = cosineSims.get(chunkId) ?? 0;
     const bm25 = bm25Scores.get(chunkId)?.score ?? 0;
@@ -634,7 +684,8 @@ export function twoAxisSearch(
 
   // Add filename-only files (matched by filename but no content chunks)
   for (const [filePath] of filenameScores) {
-    if (startPath && !filePath.startsWith(startPath)) continue;
+    if (params.startPath && !filePath.startsWith(params.startPath)) continue;
+    if (filePatternRe && !filePatternRe.test(extractRelPath(filePath))) continue;
     if (!fileMap.has(filePath)) {
       fileMap.set(filePath, { bestContentScore: 0, chunks: [] });
     }
@@ -663,6 +714,93 @@ export function twoAxisSearch(
   }
 
   results.sort((a, b) => b.score - a.score);
+  if (results.length > maxResults) results.length = maxResults;
+
+  return results;
+}
+
+/**
+ * Regex search: full-table scan of chunk text and file paths using a JS RegExp.
+ * All matching chunks/files receive score 1.0.
+ * Results are sorted alphabetically by file path.
+ */
+export function regexSearch(db: SiloDatabase, params: SearchParams): TwoAxisFileResult[] {
+  const flags = params.regexFlags ?? 'i';
+  let contentRe: RegExp;
+  try {
+    contentRe = new RegExp(params.query, flags);
+  } catch {
+    return [];
+  }
+  const filePatternRe = params.filePattern ? globToRegex(params.filePattern) : null;
+  const maxResults = params.limit ?? 10;
+
+  // Track whether each file has chunk matches (content) vs path-only matches (filename)
+  const fileMap = new Map<string, { chunks: TwoAxisChunk[]; pathOnly: boolean }>();
+
+  // ── Pass 1: scan chunk text ───────────────────────────────────────────────
+  const rows = db.prepare(`
+    SELECT c.id, c.file_path, c.section_path, c.text, c.start_line, c.end_line
+    FROM chunks c
+  `).all() as Array<{
+    id: number;
+    file_path: string;
+    section_path: string;
+    text: string;
+    start_line: number;
+    end_line: number;
+  }>;
+
+  for (const row of rows) {
+    if (params.startPath && !row.file_path.startsWith(params.startPath)) continue;
+    if (filePatternRe && !filePatternRe.test(extractRelPath(row.file_path))) continue;
+    if (!contentRe.test(row.text)) continue;
+
+    const chunk: TwoAxisChunk = {
+      sectionPath: JSON.parse(row.section_path),
+      text: row.text,
+      startLine: row.start_line,
+      endLine: row.end_line,
+      scores: { semantic: 0, bm25: 1.0, best: 1.0, bestScorer: 'bm25' },
+    };
+
+    const existing = fileMap.get(row.file_path);
+    if (existing) {
+      existing.chunks.push(chunk);
+    } else {
+      fileMap.set(row.file_path, { chunks: [chunk], pathOnly: false });
+    }
+  }
+
+  // ── Pass 2: scan file paths ───────────────────────────────────────────────
+  const allFiles = db.prepare(`SELECT file_path FROM files`).all() as Array<{ file_path: string }>;
+  for (const { file_path } of allFiles) {
+    if (params.startPath && !file_path.startsWith(params.startPath)) continue;
+    if (filePatternRe && !filePatternRe.test(extractRelPath(file_path))) continue;
+    if (contentRe.test(extractRelPath(file_path)) && !fileMap.has(file_path)) {
+      fileMap.set(file_path, { chunks: [], pathOnly: true });
+    }
+  }
+
+  // ── Build results ─────────────────────────────────────────────────────────
+  const results: TwoAxisFileResult[] = [];
+
+  for (const [filePath, { chunks, pathOnly }] of fileMap) {
+    chunks.sort((a, b) => b.scores.best - a.scores.best);
+    if (chunks.length > MAX_CHUNKS_PER_FILE) chunks.length = MAX_CHUNKS_PER_FILE;
+
+    results.push({
+      filePath,
+      score: 1.0,
+      scoreSource: pathOnly ? 'filename' : 'content',
+      contentScore: pathOnly ? 0 : 1.0,
+      filenameScore: pathOnly ? 1.0 : 0,
+      chunks,
+    });
+  }
+
+  // Sort alphabetically for deterministic ordering
+  results.sort((a, b) => a.filePath.localeCompare(b.filePath));
   if (results.length > maxResults) results.length = maxResults;
 
   return results;

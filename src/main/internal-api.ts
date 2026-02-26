@@ -425,6 +425,7 @@ export class InternalApi {
     await service.ensureReady();
 
     const result = await mm.remember(topic, body.trim(), confidence, contextHint, service);
+    mm.touchPollBaseline();
     this.notifyMemoriesChanged();
     return result;
   }
@@ -436,13 +437,14 @@ export class InternalApi {
 
     const query = params.query as string;
     const maxResults = (params.maxResults as number | undefined) ?? 5;
+    const mode = (params.mode as 'hybrid' | 'semantic' | 'bm25' | undefined) ?? 'hybrid';
 
     if (!query?.trim()) throw new Error('Missing required parameter: query');
 
     const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
     await service.ensureReady();
 
-    return mm.recall(query.trim(), maxResults, service);
+    return mm.recall(query.trim(), maxResults, service, mode);
   }
 
   private async handleMemoryRevise(params: Record<string, unknown>): Promise<void> {
@@ -464,6 +466,7 @@ export class InternalApi {
     await service.ensureReady();
 
     await mm.revise(id, updates, service);
+    mm.touchPollBaseline();
     this.notifyMemoriesChanged();
   }
 
@@ -476,6 +479,7 @@ export class InternalApi {
     if (typeof id !== 'number') throw new Error('Missing required parameter: id');
 
     mm.forget(id);
+    mm.touchPollBaseline();
     this.notifyMemoriesChanged();
   }
 

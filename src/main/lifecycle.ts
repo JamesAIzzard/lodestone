@@ -55,6 +55,9 @@ export async function initializeBackend(ctx: AppContext): Promise<void> {
     ctx.memoryManager = new MemoryManager();
     try {
       ctx.memoryManager.connect(memoryDbPath);
+      ctx.memoryManager.startPolling(() => {
+        ctx.mainWindow?.webContents.send('memories:changed');
+      });
       console.log(`[main] Connected memory database: ${memoryDbPath}`);
     } catch (err) {
       console.error('[main] Failed to connect memory database:', err);

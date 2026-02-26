@@ -674,6 +674,9 @@ export function registerIpcHandlers(ctx: AppContext): void {
           ctx.memoryManager = new MemoryManager();
         }
         ctx.memoryManager.setup(dbPath);
+        ctx.memoryManager.startPolling(() => {
+          ctx.mainWindow?.webContents.send('memories:changed');
+        });
 
         if (ctx.config) {
           ctx.config.memory = { db_path: dbPath };
@@ -695,6 +698,9 @@ export function registerIpcHandlers(ctx: AppContext): void {
           ctx.memoryManager = new MemoryManager();
         }
         ctx.memoryManager.connect(dbPath);
+        ctx.memoryManager.startPolling(() => {
+          ctx.mainWindow?.webContents.send('memories:changed');
+        });
 
         if (ctx.config) {
           ctx.config.memory = { db_path: dbPath };

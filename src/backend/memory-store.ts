@@ -1,11 +1,12 @@
 /**
  * Memory store — SQLite persistence for Claude's memory system.
  *
- * Single database file with three parallel tables:
- *   - memories        — canonical record store
- *   - memories_fts    — FTS5 trigram index for BM25 search (manually synced)
- *   - memories_vec    — sqlite-vec virtual table for cosine similarity search
- *   - memory_metadata — model/dimensions at initialisation time
+ * Tables:
+ *   - memories         — canonical record store
+ *   - memories_vec     — sqlite-vec virtual table for cosine similarity search
+ *   - memory_terms     — inverted index: term → doc_freq (for hand-rolled BM25)
+ *   - memory_postings  — inverted index: (term, memory_id) → term_freq
+ *   - memory_metadata  — model/dimensions/corpus stats
  *
  * All functions are synchronous (better-sqlite3).
  */
@@ -14,6 +15,7 @@ import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import fs from 'node:fs';
 import path from 'node:path';
+import { tokenise } from './tokeniser';
 
 // ── Extension Path ────────────────────────────────────────────────────────────
 // Production ASAR builds need the .dll/.so unpacked from app.asar.
@@ -48,19 +50,15 @@ export interface MemoryRecord {
   updatedAt: string;
 }
 
-export interface MemorySearchResult extends MemoryRecord {
-  score: number;
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Pack a float[] into a Float32Array buffer for sqlite-vec. */
-function float32Buffer(values: number[]): Buffer {
+export function float32Buffer(values: number[]): Buffer {
   return Buffer.from(new Float32Array(values).buffer);
 }
 
 /** Convert a raw DB row to a typed MemoryRecord. */
-function rowToRecord(row: Record<string, unknown>): MemoryRecord {
+export function rowToRecord(row: Record<string, unknown>): MemoryRecord {
   return {
     id: row.id as number,
     topic: row.topic as string,
@@ -108,14 +106,12 @@ export function createMemoryDatabase(dbPath: string): MemoryDatabase {
   // Migration: add vec_rowid column to existing databases that predate this schema.
   try { db.exec(`ALTER TABLE memories ADD COLUMN vec_rowid INTEGER`); } catch { /* already exists */ }
 
-  // FTS5 trigram table — manually synced with memories.
-  // Non-content table: body stored here independently (minimal overhead for
-  // short memory entries, avoids external-content sync complexity).
-  const ftExists = db.prepare(
+  // Migration: drop legacy FTS5 table (replaced by hand-rolled BM25 with inverted index).
+  const ftsExists = db.prepare(
     `SELECT 1 FROM sqlite_master WHERE type='table' AND name='memories_fts'`,
   ).get();
-  if (!ftExists) {
-    db.exec(`CREATE VIRTUAL TABLE memories_fts USING fts5(body, tokenize='trigram')`);
+  if (ftsExists) {
+    db.exec(`DROP TABLE memories_fts`);
   }
 
   // vec0 — must be created conditionally (CREATE VIRTUAL TABLE IF NOT EXISTS
@@ -127,11 +123,39 @@ export function createMemoryDatabase(dbPath: string): MemoryDatabase {
     db.exec(`CREATE VIRTUAL TABLE memories_vec USING vec0(embedding float[${MEMORY_DIMENSIONS}])`);
   }
 
+  // Inverted index for hand-rolled BM25 scoring (mirrors silo store pattern).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_terms (
+      term     TEXT PRIMARY KEY,
+      doc_freq INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_postings (
+      term      TEXT    NOT NULL,
+      memory_id INTEGER NOT NULL,
+      term_freq INTEGER NOT NULL,
+      PRIMARY KEY (term, memory_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_memory_postings_memory ON memory_postings(memory_id);
+  `);
+
+  // Migration: add token_count column to existing databases.
+  try { db.exec(`ALTER TABLE memories ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
+
   // Store model metadata on first creation (idempotent).
   db.prepare(`INSERT OR IGNORE INTO memory_metadata (key, value) VALUES (?, ?)`)
     .run('model', MEMORY_MODEL);
   db.prepare(`INSERT OR IGNORE INTO memory_metadata (key, value) VALUES (?, ?)`)
     .run('dimensions', String(MEMORY_DIMENSIONS));
+
+  // Backfill: if there are memories but no postings, rebuild the inverted index.
+  // This handles existing databases that predate the inverted index schema.
+  const memCount = (db.prepare(`SELECT COUNT(*) as cnt FROM memories`).get() as { cnt: number }).cnt;
+  const postCount = (db.prepare(`SELECT COUNT(*) as cnt FROM memory_postings`).get() as { cnt: number }).cnt;
+  if (memCount > 0 && postCount === 0) {
+    backfillInvertedIndex(db);
+  }
 
   return db;
 }
@@ -194,6 +218,91 @@ export function readMemoryMeta(dbPath: string): { model: string; dimensions: num
   }
 }
 
+// ── Inverted Index Helpers ─────────────────────────────────────────────────────
+
+/**
+ * Add a memory's body text to the inverted index.
+ * Tokenises the text, computes term frequencies, upserts into postings/terms,
+ * and updates the memory's token_count.
+ */
+function addToInvertedIndex(db: MemoryDatabase, memoryId: number, body: string): void {
+  const tokens = tokenise(body);
+
+  db.prepare(`UPDATE memories SET token_count = ? WHERE id = ?`).run(tokens.length, memoryId);
+
+  const termFreqs = new Map<string, number>();
+  for (const token of tokens) {
+    termFreqs.set(token, (termFreqs.get(token) ?? 0) + 1);
+  }
+
+  const upsertTerm = db.prepare(
+    `INSERT INTO memory_terms (term, doc_freq) VALUES (?, 1)
+     ON CONFLICT(term) DO UPDATE SET doc_freq = doc_freq + 1`,
+  );
+  const insertPosting = db.prepare(
+    `INSERT OR REPLACE INTO memory_postings (term, memory_id, term_freq) VALUES (?, ?, ?)`,
+  );
+
+  for (const [term, freq] of termFreqs) {
+    upsertTerm.run(term);
+    insertPosting.run(term, memoryId, freq);
+  }
+}
+
+/**
+ * Remove a memory from the inverted index.
+ * Decrements doc_freq in memory_terms and deletes terms that reach 0.
+ */
+function removeFromInvertedIndex(db: MemoryDatabase, memoryId: number): void {
+  const affectedTerms = db.prepare(
+    `SELECT DISTINCT term FROM memory_postings WHERE memory_id = ?`,
+  ).all(memoryId) as Array<{ term: string }>;
+
+  db.prepare(`DELETE FROM memory_postings WHERE memory_id = ?`).run(memoryId);
+
+  for (const { term } of affectedTerms) {
+    const remaining = db.prepare(
+      `SELECT COUNT(*) as cnt FROM memory_postings WHERE term = ?`,
+    ).get(term) as { cnt: number };
+
+    if (remaining.cnt === 0) {
+      db.prepare(`DELETE FROM memory_terms WHERE term = ?`).run(term);
+    } else {
+      db.prepare(`UPDATE memory_terms SET doc_freq = ? WHERE term = ?`).run(remaining.cnt, term);
+    }
+  }
+}
+
+/**
+ * Recompute corpus-level BM25 statistics and store in memory_metadata.
+ */
+function updateMemoryCorpusStats(db: MemoryDatabase): void {
+  const stats = db.prepare(
+    `SELECT COUNT(*) AS cnt, COALESCE(AVG(token_count), 0) AS avg_tc FROM memories`,
+  ).get() as { cnt: number; avg_tc: number };
+
+  const upsert = db.prepare(
+    `INSERT OR REPLACE INTO memory_metadata (key, value) VALUES (?, ?)`,
+  );
+  upsert.run('corpus_memory_count', String(stats.cnt));
+  upsert.run('corpus_avg_token_count', String(stats.avg_tc));
+}
+
+/**
+ * Backfill inverted index for existing memories that predate this schema.
+ * Runs inside a single transaction for efficiency.
+ */
+function backfillInvertedIndex(db: MemoryDatabase): void {
+  const allMemories = db.prepare(`SELECT id, body FROM memories`).all() as Array<{ id: number; body: string }>;
+
+  db.transaction(() => {
+    for (const mem of allMemories) {
+      addToInvertedIndex(db, mem.id, mem.body);
+    }
+    updateMemoryCorpusStats(db);
+  })();
+}
+
 // ── Write Operations ──────────────────────────────────────────────────────────
 
 /**
@@ -223,8 +332,9 @@ export function insertMemory(
     ).run(vecRowid, topic, body, confidence, contextHint);
     const id = Number(memResult.lastInsertRowid);
 
-    // Sync FTS using the memories id as rowid
-    db.prepare(`INSERT INTO memories_fts(rowid, body) VALUES (?, ?)`).run(id, body);
+    // Build inverted index for BM25 scoring
+    addToInvertedIndex(db, id, body);
+    updateMemoryCorpusStats(db);
 
     return id;
   })();
@@ -262,10 +372,11 @@ export function updateMemory(
     vals.push(id);
     db.prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
 
-    // Re-sync FTS if body changed
+    // Re-sync inverted index if body changed
     if (updates.body !== undefined) {
-      db.prepare(`DELETE FROM memories_fts WHERE rowid = ?`).run(id);
-      db.prepare(`INSERT INTO memories_fts(rowid, body) VALUES (?, ?)`).run(id, updates.body);
+      removeFromInvertedIndex(db, id);
+      addToInvertedIndex(db, id, updates.body);
+      updateMemoryCorpusStats(db);
     }
 
     // Re-sync vec if embedding provided: delete old vec row, insert new one,
@@ -291,8 +402,9 @@ export function deleteMemory(db: MemoryDatabase, id: number): void {
     if (memRow?.vec_rowid != null) {
       db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`).run(memRow.vec_rowid);
     }
-    db.prepare(`DELETE FROM memories_fts WHERE rowid = ?`).run(id);
+    removeFromInvertedIndex(db, id);
     db.prepare(`DELETE FROM memories WHERE id = ?`).run(id);
+    updateMemoryCorpusStats(db);
   })();
 }
 
@@ -344,113 +456,6 @@ export function findSimilarMemory(
   // Join back to memories via vec_rowid (not id — they differ after embedding updates)
   const memRow = db.prepare(`SELECT * FROM memories WHERE vec_rowid = ?`).get(vecRow.rowid) as Record<string, unknown> | undefined;
   return memRow ? rowToRecord(memRow) : null;
-}
-
-// ── Hybrid Search ─────────────────────────────────────────────────────────────
-
-/**
- * Hybrid search over memories: BM25 (FTS5) + cosine (vec0), fused by weighted-max.
- *
- * Mirrors the two-axis approach used in silo search:
- *   content score = max(normalised_cosine, normalised_bm25) per memory.
- *
- * Returns up to maxResults memories sorted by score descending.
- */
-export function hybridSearchMemory(
-  db: MemoryDatabase,
-  queryVector: number[],
-  query: string,
-  maxResults: number,
-): MemorySearchResult[] {
-  const count = getMemoryCount(db);
-  if (count === 0) return [];
-
-  const k = Math.max(maxResults * 5, 20);
-
-  // ── Cosine scores from vec0 → mapped to memories.id ─────────────────────
-  // vec0 returns vec_rowid; look up memories.id via the vec_rowid column.
-  const cosineById = new Map<number, number>();
-  try {
-    const vecRows = db.prepare(`
-      SELECT rowid, distance
-      FROM memories_vec
-      WHERE embedding MATCH ?
-        AND k = ?
-    `).all(float32Buffer(queryVector), k) as Array<{ rowid: number; distance: number }>;
-
-    if (vecRows.length > 0) {
-      const vecRowids = vecRows.map((r) => r.rowid);
-      const ph = vecRowids.map(() => '?').join(', ');
-      const mappings = db.prepare(
-        `SELECT id, vec_rowid FROM memories WHERE vec_rowid IN (${ph})`,
-      ).all(...vecRowids) as Array<{ id: number; vec_rowid: number }>;
-
-      const vecDistMap = new Map(vecRows.map((r) => [r.rowid, r.distance]));
-      for (const m of mappings) {
-        const dist = vecDistMap.get(m.vec_rowid) ?? 2;
-        cosineById.set(m.id, 1 - dist / 2);
-      }
-    }
-  } catch {
-    // vec0 may fail if table is empty or query is malformed — continue with BM25 only
-  }
-
-  // ── BM25 scores from FTS5 (keyed by memories.id = FTS rowid) ─────────────
-  const bm25Scores = new Map<number, number>();
-  try {
-    const sanitisedQuery = query.trim().replace(/["*()]/g, ' ').trim();
-    if (sanitisedQuery.length >= 3) {
-      const ftsRows = db.prepare(`
-        SELECT rowid, -bm25(memories_fts) AS raw_bm25
-        FROM memories_fts
-        WHERE memories_fts MATCH ?
-        ORDER BY raw_bm25 DESC
-        LIMIT ?
-      `).all(`"${sanitisedQuery}"`, k) as Array<{ rowid: number; raw_bm25: number }>;
-
-      if (ftsRows.length > 0) {
-        const maxBm25 = ftsRows[0].raw_bm25;
-        if (maxBm25 > 0) {
-          for (const row of ftsRows) {
-            bm25Scores.set(row.rowid, Math.min(row.raw_bm25 / maxBm25, 1.0));
-          }
-        }
-      }
-    }
-  } catch {
-    // FTS5 query may fail on unusual input — continue with cosine only
-  }
-
-  // ── Fuse scores by memories.id ────────────────────────────────────────────
-  const allIds = new Set([...cosineById.keys(), ...bm25Scores.keys()]);
-  if (allIds.size === 0) return [];
-
-  const scored: Array<{ id: number; score: number }> = [];
-  for (const id of allIds) {
-    const cosine = cosineById.get(id) ?? 0;
-    const bm25 = bm25Scores.get(id) ?? 0;
-    scored.push({ id, score: Math.max(cosine, bm25) });
-  }
-
-  scored.sort((a, b) => b.score - a.score);
-  const top = scored.slice(0, maxResults);
-
-  // ── Fetch full records by memories.id ─────────────────────────────────────
-  if (top.length === 0) return [];
-
-  const placeholders = top.map(() => '?').join(', ');
-  const rows = db.prepare(
-    `SELECT * FROM memories WHERE id IN (${placeholders})`,
-  ).all(...top.map((r) => r.id)) as Record<string, unknown>[];
-
-  const rowMap = new Map(rows.map((r) => [r.id as number, r]));
-
-  return top
-    .filter((r) => rowMap.has(r.id))
-    .map((r) => ({
-      ...rowToRecord(rowMap.get(r.id)!),
-      score: r.score,
-    }));
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────

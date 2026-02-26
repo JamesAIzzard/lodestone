@@ -207,6 +207,8 @@ export interface MemoryRecord {
 
 export interface MemorySearchResult extends MemoryRecord {
   score: number;
+  scoreLabel: string;
+  signals: Record<string, number>;
 }
 
 export interface MemoryStatus {

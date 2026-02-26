@@ -65,10 +65,11 @@ export interface McpServerDeps {
     confidence?: number;
     contextHint?: string;
   }) => Promise<{ id: number; updated: boolean }>;
-  /** Hybrid search over memories. */
+  /** Search memories using the decaying-sum signal pipeline. */
   memoryRecall: (params: {
     query: string;
     maxResults?: number;
+    mode?: 'hybrid' | 'semantic' | 'bm25';
   }) => Promise<MemorySearchResult[]>;
   /** Explicitly update a memory by id. */
   memoryRevise: (params: {
@@ -1603,22 +1604,38 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       'Parameters:',
       '  query       — Natural language search query',
       '  max_results — Maximum memories to return. Default: 5',
+      '  mode        — Search mode: hybrid (default, vector + BM25), bm25 (keyword-only), semantic (vector-only)',
     ].join('\n'),
     {
       query: z.string().describe('Search query — natural language, use concepts and short sentences not keywords'),
       max_results: z.number().min(1).max(50).optional().describe('Maximum results to return. Default: 5'),
+      mode: z.enum(['hybrid', 'bm25', 'semantic']).optional()
+        .describe('Search mode: hybrid (default, vector + BM25), bm25 (keyword-only), semantic (vector-only)'),
     },
-    async ({ query, max_results }) => {
+    async ({ query, max_results, mode }) => {
       try {
         deps.notifyActivity?.({ channel: 'memory' });
-        const results = await deps.memoryRecall({ query, maxResults: max_results });
+        const results = await deps.memoryRecall({ query, maxResults: max_results, mode });
         if (results.length === 0) {
           return { content: [{ type: 'text' as const, text: 'No memories found.' }] };
         }
         const lines: string[] = [];
         for (const r of results) {
           const pct = Math.round(r.score * 100);
-          lines.push(`## [${r.id}] ${r.topic} (${pct}%, confidence: ${r.confidence})`);
+          // Show signal breakdown: "62% convergence: semantic 58%, bm25 45%"
+          // or single-signal: "58% semantic"
+          const signalEntries = Object.entries(r.signals);
+          let scoreStr: string;
+          if (signalEntries.length <= 1) {
+            scoreStr = `${pct}% ${r.scoreLabel}`;
+          } else {
+            const breakdown = signalEntries
+              .sort(([, a], [, b]) => b - a)
+              .map(([name, val]) => `${name} ${Math.round(val * 100)}%`)
+              .join(', ');
+            scoreStr = `${pct}% ${r.scoreLabel}: ${breakdown}`;
+          }
+          lines.push(`## [${r.id}] ${r.topic} (${scoreStr}, confidence: ${r.confidence})`);
           lines.push(r.body);
           lines.push(`_Updated: ${r.updatedAt}_`);
           lines.push('');

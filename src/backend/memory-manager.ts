@@ -9,6 +9,7 @@
  * All writes happen inline — memory entries are small and infrequent.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import type { EmbeddingService } from './embedding';
 import { MEMORY_MODEL } from './memory-store';
@@ -16,7 +17,6 @@ import {
   createMemoryDatabase,
   openMemoryDatabase,
   validateMemoryDatabase,
-  hybridSearchMemory,
   insertMemory,
   updateMemory,
   deleteMemory,
@@ -26,8 +26,8 @@ import {
   getMemoryDatabaseSizeBytes,
   type MemoryDatabase,
   type MemoryRecord,
-  type MemorySearchResult,
 } from './memory-store';
+import { searchMemory, type MemorySearchResult, type MemorySearchMode } from './memory-search';
 
 // ── Status ────────────────────────────────────────────────────────────────────
 
@@ -40,9 +40,15 @@ export interface MemoryStatus {
 
 // ── Manager ───────────────────────────────────────────────────────────────────
 
+/** Default poll interval for detecting external DB changes (30 seconds). */
+const POLL_INTERVAL_MS = 30_000;
+
 export class MemoryManager {
   private db: MemoryDatabase | null = null;
   private dbPath: string | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private lastPollMtimeMs = 0;
+  private onChange: (() => void) | null = null;
 
   // ── Connection ─────────────────────────────────────────────────────────────
 
@@ -70,7 +76,8 @@ export class MemoryManager {
     if (!db) throw new Error(`Failed to open memory database: ${dbPath}`);
 
     // Apply any schema additions for forward compatibility
-    createMemoryDatabase(dbPath); // idempotent — only creates missing tables
+    const migrationDb = createMemoryDatabase(dbPath); // idempotent — only creates missing tables
+    migrationDb.close();
     db.close();
     this.db = openMemoryDatabase(dbPath)!;
     this.dbPath = dbPath;
@@ -102,6 +109,55 @@ export class MemoryManager {
 
   getDbPath(): string | null {
     return this.dbPath;
+  }
+
+  // ── External Change Detection ─────────────────────────────────────────────
+
+  /**
+   * Start polling for external changes to the memory database file.
+   * Detects Google Drive syncs, other processes, etc. by checking the file's
+   * mtime. Calls `onChange` when a change is detected.
+   */
+  startPolling(onChange: () => void): void {
+    this.stopPolling();
+    this.onChange = onChange;
+    this.lastPollMtimeMs = this.getDbMtimeMs();
+    this.pollTimer = setInterval(() => this.pollForChanges(), POLL_INTERVAL_MS);
+  }
+
+  stopPolling(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    this.onChange = null;
+  }
+
+  private pollForChanges(): void {
+    if (!this.dbPath) return;
+    const currentMtime = this.getDbMtimeMs();
+    if (currentMtime !== this.lastPollMtimeMs) {
+      this.lastPollMtimeMs = currentMtime;
+      this.onChange?.();
+    }
+  }
+
+  /** Get the DB file's mtime in ms, or 0 if unavailable. */
+  private getDbMtimeMs(): number {
+    if (!this.dbPath) return 0;
+    try {
+      return fs.statSync(this.dbPath).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Mark the current mtime as "seen" — call after local writes to avoid
+   * a spurious change notification on the next poll cycle.
+   */
+  touchPollBaseline(): void {
+    this.lastPollMtimeMs = this.getDbMtimeMs();
   }
 
   // ── Memory Operations ──────────────────────────────────────────────────────
@@ -144,21 +200,27 @@ export class MemoryManager {
   }
 
   /**
-   * Hybrid search over memories: cosine + BM25 fused by weighted-max.
-   * Returns up to maxResults memories sorted by relevance.
+   * Search memories using the decaying-sum signal pipeline.
+   * Supports mode selection: hybrid (default), semantic, bm25.
    */
   async recall(
     query: string,
     maxResults: number,
     embeddingService: EmbeddingService,
+    mode: MemorySearchMode = 'hybrid',
   ): Promise<MemorySearchResult[]> {
     this.assertConnected();
 
-    const prefix = embeddingService.modelName === MEMORY_MODEL
-      ? 'search_query: '
-      : '';
-    const queryVector = await embeddingService.embed(prefix + query);
-    return hybridSearchMemory(this.db!, queryVector, query, maxResults);
+    // BM25 mode doesn't need an embedding vector
+    let queryVector: number[] = [];
+    if (mode !== 'bm25') {
+      const prefix = embeddingService.modelName === MEMORY_MODEL
+        ? 'search_query: '
+        : '';
+      queryVector = await embeddingService.embed(prefix + query);
+    }
+
+    return searchMemory(this.db!, queryVector, query, maxResults, mode);
   }
 
   /**
@@ -205,6 +267,7 @@ export class MemoryManager {
   // ── Private ────────────────────────────────────────────────────────────────
 
   private disconnectQuiet(): void {
+    this.stopPolling();
     if (this.db) {
       try { this.db.close(); } catch { /* ignore */ }
       this.db = null;

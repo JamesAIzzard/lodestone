@@ -21,6 +21,7 @@ import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import type { SearchResult, DirectoryResult, SiloStatus, MemoryRecord, MemorySearchResult } from '../shared/types';
 import type { EditOperation, EditResult } from './edit';
+import { tokenise } from './tokeniser';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,8 @@ export interface McpServerDeps {
   memoryForget: (params: { id: number }) => Promise<void>;
   /** Return N most recently updated memories. */
   memoryOrient: (params: { maxResults?: number }) => Promise<MemoryRecord[]>;
+  /** Fetch a single memory record by id (for lodestone_read of m-puids). */
+  memoryGetById: (params: { id: number }) => Promise<MemoryRecord | null>;
   /** Fire-and-forget notification to the GUI to trigger the shimmer on a card. */
   notifyActivity?: (params: { channel: 'silo' | 'memory'; siloName?: string }) => void;
 }
@@ -239,6 +242,22 @@ function isDirPuid(id: string): boolean {
   return /^d\d+$/.test(id);
 }
 
+function isMemoryPuid(id: string): boolean {
+  return /^m\d+$/.test(id);
+}
+
+/** Extract the memory DB primary key from an m-prefixed puid (e.g. "m5" → 5). */
+function parseMemoryId(id: string): number {
+  return parseInt(id.slice(1), 10);
+}
+
+/** Resolve a memory id parameter that may be a number or m-prefixed string. */
+function resolveMemoryIdParam(id: number | string): number {
+  if (typeof id === 'number') return id;
+  if (isMemoryPuid(id)) return parseMemoryId(id);
+  throw new Error(`Invalid memory id "${id}". Expected a number or m-prefixed id (e.g. "m5").`);
+}
+
 const IMAGE_MIME: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
@@ -247,6 +266,27 @@ const IMAGE_MIME: Record<string, string> = {
 /** Return the MIME type if the file is an image, or null for text files. */
 function imageMimeType(filePath: string): string | null {
   return IMAGE_MIME[path.extname(filePath).toLowerCase()] ?? null;
+}
+
+// ── Memory truncation ────────────────────────────────────────────────────────
+
+/** Maximum characters to show in memory previews before truncating. */
+const MEMORY_PREVIEW_CHARS = 200;
+
+/** Truncate a memory body for preview, appending ellipsis if needed. */
+function truncateMemoryBody(body: string, limit: number = MEMORY_PREVIEW_CHARS): string {
+  if (body.length <= limit) return body;
+  return body.slice(0, limit) + '\u2026';
+}
+
+/** Token threshold above which a body length warning is emitted. */
+const MEMORY_BODY_WARN_TOKENS = 200;
+
+/** Return a warning string if the memory body exceeds the token threshold, otherwise empty. */
+function memoryBodyWarning(body: string): string {
+  const count = tokenise(body).length;
+  if (count <= MEMORY_BODY_WARN_TOKENS) return '';
+  return `\n\n\u26a0\ufe0f This memory is ${count} tokens \u2014 consider splitting into smaller, atomic memories for better search precision.`;
 }
 
 // ── Formatting ───────────────────────────────────────────────────────────────
@@ -426,9 +466,13 @@ const READ_DESCRIPTION = [
   'Note: d-prefixed IDs (d1, d2, ...) are directory references from lodestone_explore.',
   'They cannot be read \u2014 use lodestone_explore with startPath to browse directories.',
   '',
+  'Note: m-prefixed IDs (m1, m2, ...) are memory references from lodestone_recall or lodestone_orient.',
+  'Use lodestone_read with an m-puid to retrieve the full memory body when the preview is truncated.',
+  '',
   'Examples:',
   '  \u2022 ["r1", "r3"] \u2014 read two files from the last search',
   '  \u2022 [{ id: "r2", startLine: 10, endLine: 50 }] \u2014 read a specific line range',
+  '  \u2022 ["m5", "r3"] \u2014 read memory m5 and file r3',
   '  \u2022 ["C:/Users/me/docs/notes.md"] \u2014 read a file directly by path (no search needed)',
 ].join('\n');
 
@@ -600,6 +644,34 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           const id = typeof entry === 'string' ? entry : entry.id;
           const startLine = typeof entry === 'object' ? entry.startLine : undefined;
           const endLine = typeof entry === 'object' ? entry.endLine : undefined;
+
+          // Resolve memory puids — fetch full body from memory database
+          if (isMemoryPuid(id)) {
+            const memId = parseMemoryId(id);
+            try {
+              const memory = await deps.memoryGetById({ id: memId });
+              if (!memory) {
+                content.push({
+                  type: 'text' as const,
+                  text: `## ${id}\nError: Memory ${memId} not found. It may have been deleted.`,
+                });
+              } else {
+                content.push({
+                  type: 'text' as const,
+                  text: [
+                    `## ${id}: ${memory.topic}`,
+                    memory.body,
+                    '',
+                    `_Confidence: ${memory.confidence} | Updated: ${memory.updatedAt}_`,
+                  ].join('\n'),
+                });
+              }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              content.push({ type: 'text' as const, text: `## ${id}\nError: ${msg}` });
+            }
+            continue;
+          }
 
           // Reject directory puids — direct the LLM to use lodestone_explore
           if (isDirPuid(id)) {
@@ -1579,8 +1651,9 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
           contextHint: context_hint,
         });
         const action = result.updated ? 'Updated' : 'Created';
+        const warning = memoryBodyWarning(body);
         return {
-          content: [{ type: 'text' as const, text: `${action} memory ${result.id}.` }],
+          content: [{ type: 'text' as const, text: `${action} memory m${result.id}.${warning}` }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -1594,8 +1667,9 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
     [
       'Hybrid search over memories: BM25 (FTS5) + cosine similarity, fused by weighted-max.',
       '',
-      'Returns ranked memory records with id, topic, body, confidence, timestamps, and score.',
+      'Returns ranked memory records with m-prefixed id, topic, truncated body preview, confidence, and score.',
       'Use this when you have a specific question or topic to retrieve context for.',
+      'Results show truncated previews. Use lodestone_read with the m-prefixed ID (e.g. "m3") to read the full body.',
       '',
       'Query with natural language — use concepts, short sentences, or brief descriptions',
       'of what you are looking for (e.g. "how does the search pipeline compose scores"',
@@ -1635,8 +1709,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
               .join(', ');
             scoreStr = `${pct}% ${r.scoreLabel}: ${breakdown}`;
           }
-          lines.push(`## [${r.id}] ${r.topic} (${scoreStr}, confidence: ${r.confidence})`);
-          lines.push(r.body);
+          lines.push(`## [m${r.id}] ${r.topic} (${scoreStr}, confidence: ${r.confidence})`);
+          lines.push(truncateMemoryBody(r.body));
           lines.push(`_Updated: ${r.updatedAt}_`);
           lines.push('');
         }
@@ -1664,16 +1738,18 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       '  context_hint — New context hint (optional, pass null to clear)',
     ].join('\n'),
     {
-      id: z.number().int().describe('Memory id to update'),
+      id: z.union([z.number().int(), z.string()]).describe('Memory id to update (number or m-prefixed id like "m5")'),
       body: z.string().optional().describe('New body text'),
       confidence: z.number().min(0).max(1).optional().describe('New confidence value 0–1'),
       context_hint: z.union([z.string(), z.null()]).optional().describe('New context hint (null to clear)'),
     },
-    async ({ id, body, confidence, context_hint }) => {
+    async ({ id: rawId, body, confidence, context_hint }) => {
       try {
         deps.notifyActivity?.({ channel: 'memory' });
+        const id = resolveMemoryIdParam(rawId);
         await deps.memoryRevise({ id, body, confidence, contextHint: context_hint });
-        return { content: [{ type: 'text' as const, text: `Memory ${id} revised.` }] };
+        const warning = body ? memoryBodyWarning(body) : '';
+        return { content: [{ type: 'text' as const, text: `Memory m${id} revised.${warning}` }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
@@ -1693,13 +1769,14 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       '  id — Memory id (from lodestone_recall or lodestone_orient)',
     ].join('\n'),
     {
-      id: z.number().int().describe('Memory id to delete'),
+      id: z.union([z.number().int(), z.string()]).describe('Memory id to delete (number or m-prefixed id like "m5")'),
     },
-    async ({ id }) => {
+    async ({ id: rawId }) => {
       try {
         deps.notifyActivity?.({ channel: 'memory' });
+        const id = resolveMemoryIdParam(rawId);
         await deps.memoryForget({ id });
-        return { content: [{ type: 'text' as const, text: `Memory ${id} deleted.` }] };
+        return { content: [{ type: 'text' as const, text: `Memory m${id} deleted.` }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
@@ -1716,6 +1793,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       'before there is enough context to form a meaningful recall query,',
       'to ground yourself in recent and active working context.',
       '',
+      'Results show truncated previews. Use lodestone_read with the m-prefixed ID (e.g. "m3") to read the full body.',
+      '',
       'Parameters:',
       '  max_results — Maximum memories to return. Default: 10',
     ].join('\n'),
@@ -1731,8 +1810,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
         }
         const lines: string[] = [];
         for (const r of results) {
-          lines.push(`## [${r.id}] ${r.topic} (confidence: ${r.confidence})`);
-          lines.push(r.body);
+          lines.push(`## [m${r.id}] ${r.topic} (confidence: ${r.confidence})`);
+          lines.push(truncateMemoryBody(r.body));
           lines.push(`_Updated: ${r.updatedAt}_`);
           lines.push('');
         }

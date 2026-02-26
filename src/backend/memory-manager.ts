@@ -21,6 +21,7 @@ import {
   updateMemory,
   deleteMemory,
   getRecentMemories,
+  getMemory,
   findSimilarMemory,
   getMemoryCount,
   getMemoryDatabaseSizeBytes,
@@ -262,6 +263,15 @@ export class MemoryManager {
   orient(maxResults: number): MemoryRecord[] {
     this.assertConnected();
     return getRecentMemories(this.db!, maxResults);
+  }
+
+  /**
+   * Fetch a single memory by its primary key.
+   * Used by lodestone_read to resolve m-prefixed puids.
+   */
+  getById(id: number): MemoryRecord | null {
+    this.assertConnected();
+    return getMemory(this.db!, id);
   }
 
   // ── Private ────────────────────────────────────────────────────────────────

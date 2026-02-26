@@ -165,6 +165,9 @@ export class InternalApi {
         case 'memory.orient':
           result = this.handleMemoryOrient(req.params ?? {});
           break;
+        case 'memory.getById':
+          result = this.handleMemoryGetById(req.params ?? {});
+          break;
         default:
           this.sendResponse(socket, req.id, undefined, `Unknown method: ${req.method}`);
           return;
@@ -490,6 +493,16 @@ export class InternalApi {
 
     const maxResults = (params.maxResults as number | undefined) ?? 10;
     return mm.orient(maxResults);
+  }
+
+  private handleMemoryGetById(params: Record<string, unknown>): MemoryRecord | null {
+    const mm = this.ctx.memoryManager;
+    if (!mm?.isConnected()) throw new Error('No memory database connected');
+
+    const id = params.id as number;
+    if (typeof id !== 'number') throw new Error('Missing required parameter: id');
+
+    return mm.getById(id);
   }
 
   private notifyMemoriesChanged(): void {

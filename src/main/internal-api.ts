@@ -412,7 +412,7 @@ export class InternalApi {
 
   // ── Memory Method Handlers ───────────────────────────────────────────────
 
-  private async handleMemoryRemember(params: Record<string, unknown>): Promise<{ id: number; updated: boolean }> {
+  private async handleMemoryRemember(params: Record<string, unknown>): Promise<Record<string, unknown>> {
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
     const mm = this.ctx.memoryManager;
     if (!mm?.isConnected()) throw new Error('No memory database connected');
@@ -421,15 +421,24 @@ export class InternalApi {
     const body = params.body as string;
     const confidence = (params.confidence as number | undefined) ?? 1.0;
     const contextHint = (params.contextHint as string | undefined) ?? null;
+    const force = (params.force as boolean | undefined) ?? false;
+    const actionDate = (params.actionDate as string | null | undefined) ?? null;
+    const recurrence = (params.recurrence as string | null | undefined) ?? null;
+    const priority = (params.priority as number | null | undefined) ?? null;
 
     if (!body?.trim()) throw new Error('Missing required parameter: body');
 
     const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
     await service.ensureReady();
 
-    const result = await mm.remember(topic, body.trim(), confidence, contextHint, service);
-    mm.touchPollBaseline();
-    this.notifyMemoriesChanged();
+    const result = await mm.remember(topic, body.trim(), confidence, contextHint, service, force, actionDate, recurrence, priority);
+
+    // Only notify the renderer when a memory was actually written
+    if (result.status === 'created') {
+      mm.touchPollBaseline();
+      this.notifyMemoriesChanged();
+    }
+
     return result;
   }
 
@@ -444,10 +453,23 @@ export class InternalApi {
 
     if (!query?.trim()) throw new Error('Missing required parameter: query');
 
+    // Date-range filters (already normalised to ISO 8601 by the MCP tool handler)
+    const dateFilters: Record<string, string> = {};
+    if (typeof params.updatedAfter === 'string') dateFilters.updatedAfter = params.updatedAfter;
+    if (typeof params.updatedBefore === 'string') dateFilters.updatedBefore = params.updatedBefore;
+    if (typeof params.actionAfter === 'string') dateFilters.actionAfter = params.actionAfter;
+    if (typeof params.actionBefore === 'string') dateFilters.actionBefore = params.actionBefore;
+
     const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
     await service.ensureReady();
 
-    return mm.recall(query.trim(), maxResults, service, mode);
+    return mm.recall(
+      query.trim(),
+      maxResults,
+      service,
+      mode,
+      Object.keys(dateFilters).length > 0 ? dateFilters : undefined,
+    );
   }
 
   private async handleMemoryRevise(params: Record<string, unknown>): Promise<void> {
@@ -458,10 +480,22 @@ export class InternalApi {
     const id = params.id as number;
     if (typeof id !== 'number') throw new Error('Missing required parameter: id');
 
-    const updates: { body?: string; confidence?: number; contextHint?: string | null } = {};
+    const updates: {
+      body?: string;
+      confidence?: number;
+      contextHint?: string | null;
+      actionDate?: string | null;
+      recurrence?: string | null;
+      priority?: number | null;
+      topic?: string;
+    } = {};
     if (typeof params.body === 'string') updates.body = params.body;
     if (typeof params.confidence === 'number') updates.confidence = params.confidence;
     if ('contextHint' in params) updates.contextHint = params.contextHint as string | null;
+    if ('actionDate' in params) updates.actionDate = params.actionDate as string | null;
+    if ('recurrence' in params) updates.recurrence = params.recurrence as string | null;
+    if ('priority' in params) updates.priority = params.priority as number | null;
+    if (typeof params.topic === 'string') updates.topic = params.topic;
 
     if (Object.keys(updates).length === 0) throw new Error('No fields to update');
 

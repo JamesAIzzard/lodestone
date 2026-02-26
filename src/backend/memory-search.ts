@@ -12,7 +12,7 @@
  */
 
 import type { MemoryDatabase } from './memory-store';
-import { float32Buffer, getMemoryCount, rowToRecord } from './memory-store';
+import { float32Buffer, getMemoryCount, rowToRecord, filterMemoryIdsByDate } from './memory-store';
 import { summariseDecay } from './scorers/decaying-sum';
 import { tokenise } from './tokeniser';
 import type { MemorySearchResult } from '../shared/types';
@@ -22,6 +22,14 @@ import type { MemorySearchResult } from '../shared/types';
 export type { MemorySearchResult };
 export type MemorySearchMode = 'hybrid' | 'semantic' | 'bm25';
 
+/** Optional date-range filters applied before the search pipeline runs. */
+export interface MemoryDateFilters {
+  updatedAfter?: string;
+  updatedBefore?: string;
+  actionAfter?: string;
+  actionBefore?: string;
+}
+
 /** Everything a memory signal needs to produce its scores. */
 interface MemorySignalContext {
   db: MemoryDatabase;
@@ -29,6 +37,8 @@ interface MemorySignalContext {
   queryVector: number[];
   queryTokens: string[];
   maxResults: number;
+  /** If non-null, only these memory IDs are candidates. */
+  allowedIds: Set<number> | null;
 }
 
 /** A scoring signal that produces per-memory scores. */
@@ -202,6 +212,7 @@ const MODE_SIGNALS: Record<MemorySearchMode, MemorySignal[]> = {
  * @param query       Raw query string.
  * @param maxResults  Maximum results to return.
  * @param mode        Search mode (default: 'hybrid').
+ * @param dateFilters Optional date-range filters applied before scoring.
  * @returns Ranked memory results with signal breakdown.
  */
 export function searchMemory(
@@ -210,9 +221,15 @@ export function searchMemory(
   query: string,
   maxResults: number,
   mode: MemorySearchMode = 'hybrid',
+  dateFilters?: MemoryDateFilters,
 ): MemorySearchResult[] {
   const count = getMemoryCount(db);
   if (count === 0) return [];
+
+  // Pre-filter by date if any date constraints are active
+  const allowedIds = dateFilters ? filterMemoryIdsByDate(db, dateFilters) : null;
+  // If date filters were specified but no memories match, return empty
+  if (allowedIds !== null && allowedIds.size === 0) return [];
 
   const signals = MODE_SIGNALS[mode] ?? MODE_SIGNALS.hybrid;
 
@@ -222,6 +239,7 @@ export function searchMemory(
     queryVector,
     queryTokens: tokenise(query),
     maxResults,
+    allowedIds,
   };
 
   // ── Run all signals ────────────────────────────────────────────────
@@ -233,7 +251,12 @@ export function searchMemory(
   // ── Collect all memory IDs that appear in any signal ───────────────
   const allIds = new Set<number>();
   for (const sr of signalResults) {
-    for (const id of sr.scores.keys()) allIds.add(id);
+    for (const id of sr.scores.keys()) {
+      // Apply date-range pre-filter: only include IDs in the allowed set
+      if (ctx.allowedIds === null || ctx.allowedIds.has(id)) {
+        allIds.add(id);
+      }
+    }
   }
 
   if (allIds.size === 0) return [];

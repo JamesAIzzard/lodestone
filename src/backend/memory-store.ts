@@ -30,11 +30,11 @@ export const MEMORY_MODEL = 'nomic-embed-text-v1.5';
 export const MEMORY_DIMENSIONS = 768;
 
 /** Cosine similarity threshold for dedup check in lodestone_remember. */
-export const DEDUP_THRESHOLD = 0.88;
+export const DEDUP_THRESHOLD = 0.80;
 
 /** Equivalent vec0 distance upper bound for DEDUP_THRESHOLD.
  *  vec0 stores cosine distance where cosine_sim = 1 - distance/2. */
-const DEDUP_MAX_DISTANCE = 2 * (1 - DEDUP_THRESHOLD); // 0.24
+const DEDUP_MAX_DISTANCE = 2 * (1 - DEDUP_THRESHOLD); // 0.40
 
 export type MemoryDatabase = Database.Database;
 
@@ -46,6 +46,9 @@ export interface MemoryRecord {
   body: string;
   confidence: number;
   contextHint: string | null;
+  actionDate: string | null;
+  recurrence: string | null;
+  priority: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -65,6 +68,9 @@ export function rowToRecord(row: Record<string, unknown>): MemoryRecord {
     body: row.body as string,
     confidence: row.confidence as number,
     contextHint: (row.context_hint as string | null) ?? null,
+    actionDate: (row.action_date as string | null) ?? null,
+    recurrence: (row.recurrence as string | null) ?? null,
+    priority: (row.priority as number | null) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -142,6 +148,14 @@ export function createMemoryDatabase(dbPath: string): MemoryDatabase {
 
   // Migration: add token_count column to existing databases.
   try { db.exec(`ALTER TABLE memories ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
+
+  // Migration: add action_date column for temporal/deadline tagging.
+  try { db.exec(`ALTER TABLE memories ADD COLUMN action_date TEXT`); } catch { /* already exists */ }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_action_date ON memories(action_date) WHERE action_date IS NOT NULL`);
+
+  // Migration: add recurrence and priority columns.
+  try { db.exec(`ALTER TABLE memories ADD COLUMN recurrence TEXT`); } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE memories ADD COLUMN priority INTEGER`); } catch { /* already exists */ }
 
   // Store model metadata on first creation (idempotent).
   db.prepare(`INSERT OR IGNORE INTO memory_metadata (key, value) VALUES (?, ?)`)
@@ -316,6 +330,9 @@ export function insertMemory(
   confidence: number,
   contextHint: string | null,
   embedding: number[],
+  actionDate: string | null = null,
+  recurrence: string | null = null,
+  priority: number | null = null,
 ): number {
   const result = db.transaction(() => {
     // Insert into vec0 first — it auto-assigns a rowid. Store that rowid in
@@ -328,8 +345,8 @@ export function insertMemory(
 
     // Insert into main table; id is auto-assigned by AUTOINCREMENT.
     const memResult = db.prepare(
-      `INSERT INTO memories (vec_rowid, topic, body, confidence, context_hint) VALUES (?, ?, ?, ?, ?)`,
-    ).run(vecRowid, topic, body, confidence, contextHint);
+      `INSERT INTO memories (vec_rowid, topic, body, confidence, context_hint, action_date, recurrence, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(vecRowid, topic, body, confidence, contextHint, actionDate, recurrence, priority);
     const id = Number(memResult.lastInsertRowid);
 
     // Build inverted index for BM25 scoring
@@ -349,7 +366,15 @@ export function insertMemory(
 export function updateMemory(
   db: MemoryDatabase,
   id: number,
-  updates: { body?: string; confidence?: number; contextHint?: string | null },
+  updates: {
+    body?: string;
+    confidence?: number;
+    contextHint?: string | null;
+    actionDate?: string | null;
+    recurrence?: string | null;
+    priority?: number | null;
+    topic?: string;
+  },
   embedding?: number[],
 ): void {
   db.transaction(() => {
@@ -367,6 +392,22 @@ export function updateMemory(
     if (updates.contextHint !== undefined) {
       sets.push('context_hint = ?');
       vals.push(updates.contextHint);
+    }
+    if (updates.actionDate !== undefined) {
+      sets.push('action_date = ?');
+      vals.push(updates.actionDate);
+    }
+    if (updates.recurrence !== undefined) {
+      sets.push('recurrence = ?');
+      vals.push(updates.recurrence);
+    }
+    if (updates.priority !== undefined) {
+      sets.push('priority = ?');
+      vals.push(updates.priority);
+    }
+    if (updates.topic !== undefined) {
+      sets.push('topic = ?');
+      vals.push(updates.topic);
     }
 
     vals.push(id);
@@ -430,17 +471,88 @@ export function getRecentMemories(db: MemoryDatabase, maxResults: number): Memor
   return rows.map(rowToRecord);
 }
 
+/**
+ * Return memories with action_date in the given range, ordered by action_date ASC.
+ * Used by orient to surface upcoming deadlines.
+ */
+export function getMemoriesByActionDateRange(
+  db: MemoryDatabase,
+  fromDate: string,
+  toDate: string,
+  maxResults: number,
+): MemoryRecord[] {
+  const rows = db.prepare(
+    `SELECT * FROM memories
+     WHERE action_date IS NOT NULL
+       AND action_date >= ?
+       AND action_date <= ?
+     ORDER BY action_date ASC
+     LIMIT ?`,
+  ).all(fromDate, toDate, maxResults) as Record<string, unknown>[];
+  return rows.map(rowToRecord);
+}
+
+/**
+ * Return the set of memory IDs that match the given date-range filters.
+ * Used to pre-filter candidates before the search pipeline runs.
+ * Returns null if no date filters are active (meaning "no restriction").
+ */
+export function filterMemoryIdsByDate(
+  db: MemoryDatabase,
+  filters: {
+    updatedAfter?: string;
+    updatedBefore?: string;
+    actionAfter?: string;
+    actionBefore?: string;
+  },
+): Set<number> | null {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+
+  if (filters.updatedAfter) {
+    clauses.push(`updated_at >= ?`);
+    params.push(filters.updatedAfter);
+  }
+  if (filters.updatedBefore) {
+    // Add a day to make the comparison inclusive for date-only values
+    // since updated_at is a datetime like "2026-02-26 15:30:00"
+    clauses.push(`updated_at <= ? || ' 23:59:59'`);
+    params.push(filters.updatedBefore);
+  }
+  if (filters.actionAfter) {
+    clauses.push(`action_date IS NOT NULL AND action_date >= ?`);
+    params.push(filters.actionAfter);
+  }
+  if (filters.actionBefore) {
+    clauses.push(`action_date IS NOT NULL AND action_date <= ?`);
+    params.push(filters.actionBefore);
+  }
+
+  if (clauses.length === 0) return null; // no filters active
+
+  const sql = `SELECT id FROM memories WHERE ${clauses.join(' AND ')}`;
+  const rows = db.prepare(sql).all(...params) as Array<{ id: number }>;
+  return new Set(rows.map(r => r.id));
+}
+
 // ── Dedup Check ───────────────────────────────────────────────────────────────
+
+/** Result of a dedup similarity check. */
+export interface SimilarMemoryResult {
+  record: MemoryRecord;
+  /** Cosine similarity in [0, 1] (1 = identical). */
+  similarity: number;
+}
 
 /**
  * Find an existing memory that is closely similar to the given embedding.
- * Uses vec0 cosine distance — returns the closest match if it is within
- * DEDUP_THRESHOLD, otherwise null.
+ * Uses vec0 cosine distance — returns the closest match with similarity
+ * score if it is within DEDUP_THRESHOLD, otherwise null.
  */
 export function findSimilarMemory(
   db: MemoryDatabase,
   embedding: number[],
-): MemoryRecord | null {
+): SimilarMemoryResult | null {
   const count = getMemoryCount(db);
   if (count === 0) return null;
 
@@ -455,7 +567,11 @@ export function findSimilarMemory(
 
   // Join back to memories via vec_rowid (not id — they differ after embedding updates)
   const memRow = db.prepare(`SELECT * FROM memories WHERE vec_rowid = ?`).get(vecRow.rowid) as Record<string, unknown> | undefined;
-  return memRow ? rowToRecord(memRow) : null;
+  if (!memRow) return null;
+
+  // Convert vec0 cosine distance to similarity: sim = 1 - distance/2
+  const similarity = 1 - vecRow.distance / 2;
+  return { record: rowToRecord(memRow), similarity };
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────

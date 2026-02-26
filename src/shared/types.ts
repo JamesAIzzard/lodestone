@@ -201,6 +201,9 @@ export interface MemoryRecord {
   body: string;
   confidence: number;
   contextHint: string | null;
+  actionDate: string | null;
+  recurrence: string | null;
+  priority: number | null;
   createdAt: string;
   updatedAt: string;
 }

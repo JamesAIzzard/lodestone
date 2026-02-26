@@ -267,14 +267,13 @@ export class InternalApi {
       siloName: r.siloName,
       score: r.score,
       scoreSource: r.scoreSource,
-      contentScore: r.contentScore,
-      filenameScore: r.filenameScore,
+      axes: r.axes,
       chunks: r.chunks.map((c) => ({
         sectionPath: c.sectionPath,
         text: c.text,
         startLine: c.startLine,
         endLine: c.endLine,
-        scores: c.scores,
+        content: c.content,
       })),
     }));
 
@@ -347,8 +346,7 @@ export class InternalApi {
       siloName: r.siloName,
       score: r.score,
       scoreSource: r.scoreSource,
-      segmentScore: r.segmentScore,
-      keywordScore: r.keywordScore,
+      axes: r.axes,
       fileCount: r.fileCount,
       subdirCount: r.subdirCount,
       depth: r.depth,

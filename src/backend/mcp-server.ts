@@ -267,11 +267,8 @@ function formatSearchResults(results: SearchResult[]): string {
     const puid = assignFilePuid(result.filePath);
     lines.push(`## ${puid}: ${result.filePath}`);
     const pct = Math.round(result.score * 100);
-    const sourceLabel = result.scoreSource === 'filename' ? 'filename' : 'content';
-    const scorerLabel = result.scoreSource === 'filename'
-      ? 'levenshtein'
-      : (result.chunks[0]?.scores.bestScorer ?? 'semantic');
-    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${sourceLabel}, ${scorerLabel})`);
+    const scorerLabel = result.axes[result.scoreSource]?.bestSignal ?? result.scoreSource;
+    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${result.scoreSource}, ${scorerLabel})`);
     lines.push('');
 
     for (const chunk of result.chunks) {
@@ -331,8 +328,8 @@ function formatExploreResults(results: DirectoryResult[], fullContents: boolean)
 
     lines.push(`## ${dirPuid}: ${result.dirPath}${parentSuffix}`);
     const pct = Math.round(result.score * 100);
-    const sourceLabel = result.scoreSource === 'keyword' ? 'keyword' : 'segment';
-    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${sourceLabel}) | ${result.fileCount} files \u00B7 ${result.subdirCount} subdirs`);
+    const dirScorerLabel = result.axes[result.scoreSource]?.bestSignal ?? result.scoreSource;
+    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${result.scoreSource}, ${dirScorerLabel}) | ${result.fileCount} files \u00B7 ${result.subdirCount} subdirs`);
     lines.push('');
 
     if (fullContents) {

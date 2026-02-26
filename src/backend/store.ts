@@ -19,10 +19,11 @@ import * as sqliteVec from 'sqlite-vec';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ChunkRecord } from './pipeline-types';
-import type { SearchParams } from '../shared/types';
+import type { SearchParams, FusedScore } from '../shared/types';
 import { tokenise } from './tokeniser';
 import { scoreBm25 } from './scorers/bm25';
 import { scoreFilenames } from './scorers/filename';
+import { fuseChunkScores, CONTENT_RECIPE } from './scorers/recipes';
 
 // ── Portable Path Utilities ──────────────────────────────────────────────────
 
@@ -510,37 +511,23 @@ export function flushPreparedFiles(
 
 // ── Search ─────────────────────────────────────────────────────────
 
-export interface TwoAxisChunkScore {
-  /** Cosine similarity to query vector (0 if chunk not in semantic results). */
-  semantic: number;
-  /** Normalised BM25 score (0 if chunk has no query term matches). */
-  bm25: number;
-  /** max(semantic, bm25) — the winning content score for this chunk. */
-  best: number;
-  /** Which scorer produced the best score. */
-  bestScorer: 'semantic' | 'bm25';
-}
-
 export interface TwoAxisChunk {
   sectionPath: string[];
   text: string;
   startLine: number;
   endLine: number;
-  scores: TwoAxisChunkScore;
+  /** Fused content score for this chunk. */
+  content: FusedScore;
 }
-
-export type TwoAxisScoreSource = 'content' | 'filename';
 
 export interface TwoAxisFileResult {
   filePath: string;
-  /** Overall file score: max(contentScore, filenameScore). */
+  /** Overall file score: max across all axes. */
   score: number;
-  /** Which axis drove the file's ranking. */
-  scoreSource: TwoAxisScoreSource;
-  /** Best chunk's content score (max of semantic/BM25 across chunks). */
-  contentScore: number;
-  /** Levenshtein filename similarity (0 if no filename match). */
-  filenameScore: number;
+  /** Which axis drove the file's ranking (e.g. 'content', 'filename'). */
+  scoreSource: string;
+  /** Per-axis fused scores: { content: {...}, filename: {...} }. */
+  axes: Record<string, FusedScore>;
   /** Top chunks sorted by content score descending. */
   chunks: TwoAxisChunk[];
 }
@@ -592,21 +579,21 @@ export function twoAxisSearch(
 
   // ── Filename Axis ─────────────────────────────────────────────────────────
   // BM25 mode: exact case-insensitive substring on relative path (no Levenshtein).
-  // Other modes: Levenshtein trigram similarity.
-  const filenameScores: Map<string, { score: number }> = mode === 'bm25'
+  // Other modes: recipe-based scoring (Levenshtein + token coverage).
+  const filenameScores: Map<string, FusedScore> = mode === 'bm25'
     ? (() => {
-        const m = new Map<string, { score: number }>();
+        const m = new Map<string, FusedScore>();
         const q = params.query.toLowerCase();
         if (q.length === 0) return m;
         const allFiles = db.prepare(`SELECT file_path FROM files`).all() as Array<{ file_path: string }>;
         for (const { file_path } of allFiles) {
           if (extractRelPath(file_path).toLowerCase().includes(q)) {
-            m.set(file_path, { score: 1.0 });
+            m.set(file_path, { best: 1.0, bestSignal: 'substring', signals: { substring: 1.0 } });
           }
         }
         return m;
       })()
-    : scoreFilenames(db, params.query) as Map<string, { score: number }>;
+    : scoreFilenames(db, params.query);
 
   // If we have no content matches and no filename matches, nothing to return
   if (allChunkIds.size === 0 && filenameScores.size === 0) return [];
@@ -646,9 +633,19 @@ export function twoAxisSearch(
     }
   }
 
+  // ── Build per-chunk signal maps for the content recipe ───────────────────
+  const semanticMap = new Map<number, number>();
+  const bm25Map = new Map<number, number>();
+  for (const chunkId of allChunkIds) {
+    semanticMap.set(chunkId, cosineSims.get(chunkId) ?? 0);
+    bm25Map.set(chunkId, bm25Scores.get(chunkId)?.score ?? 0);
+  }
+  const contentSignalMaps: Record<string, Map<number, number>> = { semantic: semanticMap, bm25: bm25Map };
+
   // ── Build per-file aggregation ────────────────────────────────────────────
   const fileMap = new Map<string, {
     bestContentScore: number;
+    bestContentFused: FusedScore | null;
     chunks: TwoAxisChunk[];
   }>();
 
@@ -660,25 +657,25 @@ export function twoAxisSearch(
     if (params.startPath && !data.file_path.startsWith(params.startPath)) continue;
     if (filePatternRe && !filePatternRe.test(extractRelPath(data.file_path))) continue;
 
-    const semantic = cosineSims.get(chunkId) ?? 0;
-    const bm25 = bm25Scores.get(chunkId)?.score ?? 0;
-    const best = Math.max(semantic, bm25);
-    const bestScorer: 'semantic' | 'bm25' = semantic >= bm25 ? 'semantic' : 'bm25';
+    const content = fuseChunkScores(CONTENT_RECIPE, contentSignalMaps, chunkId);
 
     const chunk: TwoAxisChunk = {
       sectionPath: JSON.parse(data.section_path),
       text: data.text,
       startLine: data.start_line,
       endLine: data.end_line,
-      scores: { semantic, bm25, best, bestScorer },
+      content,
     };
 
     const existing = fileMap.get(data.file_path);
     if (existing) {
       existing.chunks.push(chunk);
-      if (best > existing.bestContentScore) existing.bestContentScore = best;
+      if (content.best > existing.bestContentScore) {
+        existing.bestContentScore = content.best;
+        existing.bestContentFused = content;
+      }
     } else {
-      fileMap.set(data.file_path, { bestContentScore: best, chunks: [chunk] });
+      fileMap.set(data.file_path, { bestContentScore: content.best, bestContentFused: content, chunks: [chunk] });
     }
   }
 
@@ -687,28 +684,36 @@ export function twoAxisSearch(
     if (params.startPath && !filePath.startsWith(params.startPath)) continue;
     if (filePatternRe && !filePatternRe.test(extractRelPath(filePath))) continue;
     if (!fileMap.has(filePath)) {
-      fileMap.set(filePath, { bestContentScore: 0, chunks: [] });
+      fileMap.set(filePath, { bestContentScore: 0, bestContentFused: null, chunks: [] });
     }
   }
 
   // ── Compute final file scores and sort ────────────────────────────────────
+  const zeroContent: FusedScore = { best: 0, bestSignal: 'semantic', signals: { semantic: 0, bm25: 0 } };
+  const zeroFilename: FusedScore = { best: 0, bestSignal: 'levenshtein', signals: { levenshtein: 0, tokenCoverage: 0 } };
+
   const results: TwoAxisFileResult[] = [];
 
-  for (const [filePath, { bestContentScore, chunks }] of fileMap) {
-    const filenameScore = filenameScores.get(filePath)?.score ?? 0;
+  for (const [filePath, { bestContentScore, bestContentFused, chunks }] of fileMap) {
+    const filenameFused = filenameScores.get(filePath) ?? null;
+    const filenameScore = filenameFused?.best ?? 0;
     const score = Math.max(bestContentScore, filenameScore);
-    const scoreSource: TwoAxisScoreSource = filenameScore > bestContentScore ? 'filename' : 'content';
+    const scoreSource = filenameScore > bestContentScore ? 'filename' : 'content';
+
+    // Build axes bag — only include axes that have non-zero scores
+    const axes: Record<string, FusedScore> = {};
+    axes.content = bestContentFused ?? zeroContent;
+    axes.filename = filenameFused ?? zeroFilename;
 
     // Sort chunks by content score descending, cap at MAX_CHUNKS_PER_FILE
-    chunks.sort((a, b) => b.scores.best - a.scores.best);
+    chunks.sort((a, b) => b.content.best - a.content.best);
     if (chunks.length > MAX_CHUNKS_PER_FILE) chunks.length = MAX_CHUNKS_PER_FILE;
 
     results.push({
       filePath,
       score,
       scoreSource,
-      contentScore: bestContentScore,
-      filenameScore,
+      axes,
       chunks,
     });
   }
@@ -734,6 +739,10 @@ export function regexSearch(db: SiloDatabase, params: SearchParams): TwoAxisFile
   }
   const filePatternRe = params.filePattern ? globToRegex(params.filePattern) : null;
   const maxResults = params.limit ?? 10;
+
+  const regexContentMatch: FusedScore = { best: 1.0, bestSignal: 'regex', signals: { regex: 1.0 } };
+  const regexFilenameMatch: FusedScore = { best: 1.0, bestSignal: 'regex', signals: { regex: 1.0 } };
+  const regexZero: FusedScore = { best: 0, bestSignal: 'regex', signals: { regex: 0 } };
 
   // Track whether each file has chunk matches (content) vs path-only matches (filename)
   const fileMap = new Map<string, { chunks: TwoAxisChunk[]; pathOnly: boolean }>();
@@ -761,7 +770,7 @@ export function regexSearch(db: SiloDatabase, params: SearchParams): TwoAxisFile
       text: row.text,
       startLine: row.start_line,
       endLine: row.end_line,
-      scores: { semantic: 0, bm25: 1.0, best: 1.0, bestScorer: 'bm25' },
+      content: regexContentMatch,
     };
 
     const existing = fileMap.get(row.file_path);
@@ -786,15 +795,17 @@ export function regexSearch(db: SiloDatabase, params: SearchParams): TwoAxisFile
   const results: TwoAxisFileResult[] = [];
 
   for (const [filePath, { chunks, pathOnly }] of fileMap) {
-    chunks.sort((a, b) => b.scores.best - a.scores.best);
+    chunks.sort((a, b) => b.content.best - a.content.best);
     if (chunks.length > MAX_CHUNKS_PER_FILE) chunks.length = MAX_CHUNKS_PER_FILE;
 
     results.push({
       filePath,
       score: 1.0,
       scoreSource: pathOnly ? 'filename' : 'content',
-      contentScore: pathOnly ? 0 : 1.0,
-      filenameScore: pathOnly ? 1.0 : 0,
+      axes: {
+        content: pathOnly ? regexZero : regexContentMatch,
+        filename: pathOnly ? regexFilenameMatch : regexZero,
+      },
       chunks,
     });
   }

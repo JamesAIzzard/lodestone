@@ -47,43 +47,41 @@ export interface SiloStatus {
   resolvedModel: string;
 }
 
-// ── Search (Two-Axis Model) ──────────────────────────────────────────────────
+// ── Scoring Primitives ───────────────────────────────────────────────────────
 
-/** Per-chunk score breakdown: semantic and BM25 sub-scores, plus the winning scorer. */
-export interface ChunkScore {
-  /** Cosine similarity to query vector [0,1]. */
-  semantic: number;
-  /** Normalised BM25 score [0,1]. */
-  bm25: number;
-  /** max(semantic, bm25) — the chunk's content score. */
+/** Signal name → [0,1] score. */
+export type SignalScores = Record<string, number>;
+
+/** Fused result of running multiple signals through a recipe. */
+export interface FusedScore {
+  /** max() of all signal scores (or whatever the recipe's fuse function produces). */
   best: number;
-  /** Which scorer produced the best score. */
-  bestScorer: 'semantic' | 'bm25';
+  /** Name of the signal that produced the best score. */
+  bestSignal: string;
+  /** Full breakdown: { semantic: 0.82, bm25: 0.45, ... } */
+  signals: SignalScores;
 }
+
+// ── Search (Two-Axis Model) ──────────────────────────────────────────────────
 
 export interface SearchResultChunk {
   sectionPath: string[];
   text: string;
   startLine: number;
   endLine: number;
-  /** Per-scorer breakdown for this chunk. */
-  scores: ChunkScore;
+  /** Fused content score for this chunk (semantic + BM25 etc.). */
+  content: FusedScore;
 }
-
-/** What drove this file's ranking score: a filename/path match or content signals. */
-export type ScoreSource = 'content' | 'filename';
 
 export interface SearchResult {
   filePath: string;
   siloName: string;
-  /** Overall file score: max(contentScore, filenameScore) [0,1]. */
+  /** Overall file score: max across all axes [0,1]. */
   score: number;
-  /** Which axis drove the file's ranking. */
-  scoreSource: ScoreSource;
-  /** Best chunk content score across all chunks. */
-  contentScore: number;
-  /** Levenshtein filename similarity [0,1] (0 if no filename match). */
-  filenameScore: number;
+  /** Which axis drove the file's ranking (e.g. 'content', 'filename'). */
+  scoreSource: string;
+  /** Per-axis fused scores: { content: {...}, filename: {...} }. */
+  axes: Record<string, FusedScore>;
   /** Top chunks sorted by content score descending. */
   chunks: SearchResultChunk[];
 }
@@ -113,9 +111,6 @@ export interface DirectoryTreeNode {
   files?: DirectoryFileEntry[];
 }
 
-/** What drove a directory's ranking: a segment name match or keyword coverage. */
-export type DirectoryScoreSource = 'segment' | 'keyword';
-
 export interface DirectoryResult {
   /** Absolute filesystem path of the matched directory */
   dirPath: string;
@@ -123,14 +118,12 @@ export interface DirectoryResult {
   dirName: string;
   /** Silo this directory belongs to */
   siloName: string;
-  /** Overall directory score: max(segmentScore, keywordScore) [0,1]. */
+  /** Overall directory score: max across all axes [0,1]. */
   score: number;
-  /** Which axis drove the directory's ranking. */
-  scoreSource: DirectoryScoreSource;
-  /** Best path-segment Levenshtein similarity [0,1]. */
-  segmentScore: number;
-  /** Path token coverage score [0,1]. */
-  keywordScore: number;
+  /** Which axis drove the directory's ranking (e.g. 'segment'). */
+  scoreSource: string;
+  /** Per-axis fused scores: { segment: {...} }. */
+  axes: Record<string, FusedScore>;
   /** Number of files directly in this directory */
   fileCount: number;
   /** Number of immediate subdirectories */

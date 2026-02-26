@@ -25,15 +25,24 @@ function handleOpenFile(filePath: string) {
 
 // ── Score source colours ──────────────────────────────────────────────────────
 
-const SOURCE_COLORS = {
+const SOURCE_COLORS: Record<string, { bar: string; badge: string; label: string }> = {
   content:  { bar: 'bg-blue-400', badge: 'bg-blue-500/15 text-blue-400', label: 'content' },
   filename: { bar: 'bg-cyan-400', badge: 'bg-cyan-500/15 text-cyan-400', label: 'filename' },
-} as const;
+};
 
-const SCORER_COLORS = {
-  semantic: 'text-blue-400',
-  bm25:     'text-amber-400',
-} as const;
+const DEFAULT_SOURCE = { bar: 'bg-gray-400', badge: 'bg-gray-500/15 text-gray-400', label: 'score' };
+
+/** Data-driven signal display config: colour and short label per signal name. */
+const SIGNAL_DISPLAY: Record<string, { color: string; label: string }> = {
+  semantic:      { color: 'text-blue-400',  label: 'sem' },
+  bm25:          { color: 'text-amber-400', label: 'bm25' },
+  levenshtein:   { color: 'text-cyan-400',  label: 'lev' },
+  tokenCoverage: { color: 'text-teal-400',  label: 'token' },
+  regex:         { color: 'text-orange-400', label: 'regex' },
+  substring:     { color: 'text-gray-400',  label: 'substr' },
+};
+
+const DEFAULT_SIGNAL = { color: 'text-muted-foreground', label: '?' };
 
 const DIR_BAR_COLOR = 'bg-purple-400';
 
@@ -287,7 +296,7 @@ export default function SearchView() {
 
               {results.map((result, i) => {
                 const isExpanded = expandedResults.has(i);
-                const source = SOURCE_COLORS[result.scoreSource];
+                const source = SOURCE_COLORS[result.scoreSource] ?? DEFAULT_SOURCE;
 
                 return (
                   <div key={`${result.filePath}-${i}`}>
@@ -363,19 +372,20 @@ export default function SearchView() {
                     {/* Expanded view */}
                     {isExpanded && (
                       <div className="ml-[26px] border-l-2 border-accent/40 pl-4 pb-2">
-                        {/* Two-axis score summary */}
+                        {/* Per-axis score summary */}
                         <div className="mt-1.5 mb-1 flex items-center gap-2 text-[10px]">
-                          <span className={cn(
-                            result.scoreSource === 'content' ? 'text-blue-400' : 'text-muted-foreground/40',
-                          )}>
-                            content {scorePercent(result.contentScore)}
-                          </span>
-                          <span className="text-muted-foreground/20">·</span>
-                          <span className={cn(
-                            result.scoreSource === 'filename' ? 'text-cyan-400' : 'text-muted-foreground/40',
-                          )}>
-                            filename {scorePercent(result.filenameScore)}
-                          </span>
+                          {Object.entries(result.axes).map(([axis, fused], ai) => {
+                            const isWinning = axis === result.scoreSource;
+                            const sigDisplay = SIGNAL_DISPLAY[fused.bestSignal] ?? DEFAULT_SIGNAL;
+                            return (
+                              <span key={axis}>
+                                {ai > 0 && <span className="text-muted-foreground/20 mr-2">·</span>}
+                                <span className={cn(isWinning ? sigDisplay.color : 'text-muted-foreground/40')}>
+                                  {axis} {scorePercent(fused.best)}
+                                </span>
+                              </span>
+                            );
+                          })}
                         </div>
 
                         {/* Chunks */}
@@ -391,22 +401,22 @@ export default function SearchView() {
                                     {chunk.sectionPath.join(' > ')}
                                   </span>
                                 )}
-                                {/* Per-scorer badges */}
-                                <span className={cn(
-                                  'text-[10px]',
-                                  chunk.scores.bestScorer === 'semantic' ? SCORER_COLORS.semantic : 'text-muted-foreground/30',
-                                )}>
-                                  sem {scorePercent(chunk.scores.semantic)}
-                                </span>
-                                <span className={cn(
-                                  'text-[10px]',
-                                  chunk.scores.bestScorer === 'bm25' ? SCORER_COLORS.bm25 : 'text-muted-foreground/30',
-                                )}>
-                                  bm25 {scorePercent(chunk.scores.bm25)}
-                                </span>
+                                {/* Per-signal badges — data-driven from FusedScore.signals */}
+                                {Object.entries(chunk.content.signals).map(([sigName, sigScore]) => {
+                                  const display = SIGNAL_DISPLAY[sigName] ?? DEFAULT_SIGNAL;
+                                  const isWinner = sigName === chunk.content.bestSignal;
+                                  return (
+                                    <span
+                                      key={sigName}
+                                      className={cn('text-[10px]', isWinner ? display.color : 'text-muted-foreground/30')}
+                                    >
+                                      {display.label} {scorePercent(sigScore)}
+                                    </span>
+                                  );
+                                })}
                               </div>
                               <span className="shrink-0 text-[10px] text-muted-foreground/50">
-                                {scorePercent(chunk.scores.best)}
+                                {scorePercent(chunk.content.best)}
                               </span>
                             </div>
                             <p className="whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/70">

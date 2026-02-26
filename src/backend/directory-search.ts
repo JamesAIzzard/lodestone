@@ -21,9 +21,8 @@
 
 import type { SiloDatabase } from './store';
 import { getFilesInDirectory } from './store';
-import type { DirectoryTreeNode, DirectoryScoreSource } from '../shared/types';
-import { levenshteinDistance } from './scorers/filename';
-import { tokenise } from './tokeniser';
+import type { DirectoryTreeNode, FusedScore } from '../shared/types';
+import { runTextRecipe, DIRECTORY_NAME_RECIPE } from './scorers/recipes';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,65 +38,16 @@ export interface SiloDirectorySearchResult {
   dirPath: string;
   dirName: string;
   score: number;
-  scoreSource: DirectoryScoreSource;
-  segmentScore: number;
-  keywordScore: number;
+  /** Which axis drove the directory's ranking. */
+  scoreSource: string;
+  /** Per-axis fused scores. */
+  axes: Record<string, FusedScore>;
   fileCount: number;
   subdirCount: number;
   depth: number;
   children: DirectoryTreeNode[];
   /** Files directly inside this directory (only present when fullContents=true) */
   files?: Array<{ filePath: string; fileName: string }>;
-}
-
-// ── Scorers ──────────────────────────────────────────────────────────────────
-
-/**
- * Score a directory by comparing its own name (leaf segment) against the query
- * using normalised Levenshtein distance.
- *
- * Only the leaf is scored — ancestor segments are ignored so that searching
- * "src" doesn't give every directory under src/ a perfect score.
- *
- * Example: query "chunkers", dirName "chunkers" → 1.0
- */
-function scoreSegmentLevenshtein(queryLower: string, dirName: string): number {
-  const nameLower = dirName.toLowerCase();
-  const maxLen = Math.max(queryLower.length, nameLower.length);
-  if (maxLen === 0) return 0;
-  const dist = levenshteinDistance(queryLower, nameLower);
-  return 1 - dist / maxLen;
-}
-
-/**
- * Score a directory by token coverage on its own name (leaf segment) —
- * what fraction of query tokens appear in the directory name.
- *
- * Only the leaf name is tokenised — ancestor segments are ignored so that
- * "src" doesn't match every directory under src/.
- *
- * Example: query "nutrient calculator", dirName "calculator" → 0.5
- * (one of two query tokens matched).
- */
-function scoreNameTokenCoverage(queryTokens: string[], dirName: string): number {
-  if (queryTokens.length === 0) return 0;
-  const nameTokens = tokenise(dirName);
-  let matched = 0;
-  for (const qt of queryTokens) {
-    if (nameTokens.includes(qt)) {
-      matched++;
-      continue;
-    }
-    let found = false;
-    for (const nt of nameTokens) {
-      if (nt.includes(qt) || qt.includes(nt)) {
-        found = true;
-        break;
-      }
-    }
-    if (found) matched++;
-  }
-  return matched / queryTokens.length;
 }
 
 // ── Main Search Function ────────────────────────────────────────────────────
@@ -121,11 +71,10 @@ export function directorySearchSilo(
   }
 
   const queryLower = query.trim().toLowerCase();
-  const queryTokens = tokenise(query);
 
   // ── Fetch all directories ──
   // Directory tables are small (dozens to hundreds of rows) so we score
-  // every entry with Levenshtein rather than prefiltering. This ensures
+  // every entry with the recipe rather than prefiltering. This ensures
   // fuzzy matches like "chunkr" → "chunkers" are never missed.
 
   const dirRows = db.prepare(`
@@ -143,18 +92,14 @@ export function directorySearchSilo(
   for (const dir of dirRows) {
     if (startPath && !dir.dir_path.includes(startPath)) continue;
 
-    const segmentScore = scoreSegmentLevenshtein(queryLower, dir.dir_name);
-    const keywordScore = scoreNameTokenCoverage(queryTokens, dir.dir_name);
-    const score = Math.max(segmentScore, keywordScore);
-    const scoreSource: DirectoryScoreSource = segmentScore >= keywordScore ? 'segment' : 'keyword';
+    const fused = runTextRecipe(DIRECTORY_NAME_RECIPE, queryLower, dir.dir_name.toLowerCase());
 
     scored.push({
       dirPath: dir.dir_path,
       dirName: dir.dir_name,
-      score,
-      scoreSource,
-      segmentScore,
-      keywordScore,
+      score: fused.best,
+      scoreSource: DIRECTORY_NAME_RECIPE.axis,
+      axes: { [DIRECTORY_NAME_RECIPE.axis]: fused },
       fileCount: dir.file_count,
       subdirCount: dir.subdir_count,
       depth: dir.depth,
@@ -207,6 +152,8 @@ function broadQueryFallback(
     `).all(fetchLimit);
   }
 
+  const broadFallbackFused: FusedScore = { best: 0, bestSignal: 'levenshtein', signals: { levenshtein: 0, tokenCoverage: 0 } };
+
   const results = (rows as Array<{
     id: number; dir_path: string; dir_name: string;
     depth: number; file_count: number; subdir_count: number;
@@ -214,9 +161,8 @@ function broadQueryFallback(
     dirPath: r.dir_path,
     dirName: r.dir_name,
     score: 1.0,
-    scoreSource: 'segment' as DirectoryScoreSource,
-    segmentScore: 0,
-    keywordScore: 0,
+    scoreSource: DIRECTORY_NAME_RECIPE.axis,
+    axes: { [DIRECTORY_NAME_RECIPE.axis]: broadFallbackFused },
     fileCount: r.file_count,
     subdirCount: r.subdir_count,
     depth: r.depth,

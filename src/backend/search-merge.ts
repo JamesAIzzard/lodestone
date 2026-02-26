@@ -7,7 +7,8 @@
 
 import type { EmbeddingService } from './embedding';
 import type { SiloManager } from './silo-manager';
-import type { TwoAxisScoreSource, TwoAxisChunk } from './store';
+import type { TwoAxisChunk } from './store';
+import type { FusedScore } from '../shared/types';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 import type { SearchParams } from '../shared/types';
 
@@ -34,9 +35,9 @@ export interface TwoAxisSiloResult {
   filePath: string;
   siloName: string;
   score: number;
-  scoreSource: TwoAxisScoreSource;
-  contentScore: number;
-  filenameScore: number;
+  scoreSource: string;
+  /** Per-axis fused scores: { content: {...}, filename: {...} }. */
+  axes: Record<string, FusedScore>;
   chunks: TwoAxisChunk[];
 }
 
@@ -75,8 +76,7 @@ export async function dispatchTwoAxisSearch(
             siloName: name,
             score: r.score,
             scoreSource: r.scoreSource,
-            contentScore: r.contentScore,
-            filenameScore: r.filenameScore,
+            axes: r.axes,
             chunks: r.chunks,
           });
         }
@@ -107,8 +107,7 @@ export function dispatchRegexSearch(
           siloName: name,
           score: r.score,
           scoreSource: r.scoreSource,
-          contentScore: r.contentScore,
-          filenameScore: r.filenameScore,
+          axes: r.axes,
           chunks: r.chunks,
         });
       }

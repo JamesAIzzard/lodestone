@@ -23,6 +23,12 @@ import type { AppContext } from './context';
 /** Must match the pipe name in internal-api.ts (GUI side). */
 const GUI_PIPE_NAME = '\\\\.\\pipe\\lodestone-gui';
 
+/** Timeout for individual RPC calls to the GUI process (ms). */
+const RPC_TIMEOUT_MS = 30_000;
+
+/** Timeout for initial pipe connections (ms). */
+const CONNECT_TIMEOUT_MS = 10_000;
+
 // ── Line Buffer ─────────────────────────────────────────────────────────────
 
 /** Accumulates data chunks and splits on newline boundaries. */
@@ -70,9 +76,14 @@ class GuiPipeClient {
     const id = this.nextId++;
     const msg = JSON.stringify({ id, method, params }) + '\n';
     return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`RPC call '${method}' timed out after ${RPC_TIMEOUT_MS / 1000}s — is the Lodestone GUI responsive?`));
+      }, RPC_TIMEOUT_MS);
+
       this.pending.set(id, {
-        resolve: resolve as (result: unknown) => void,
-        reject,
+        resolve: (result: unknown) => { clearTimeout(timer); resolve(result as T); },
+        reject: (err: Error) => { clearTimeout(timer); reject(err); },
       });
       this.socket.write(msg);
     });
@@ -139,11 +150,18 @@ export async function startMcpMode(_ctx: AppContext): Promise<void> {
   const wrapperSocket = createConnection(ipcPath);
 
   await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      wrapperSocket.destroy();
+      reject(new Error(`Connection to MCP wrapper pipe timed out after ${CONNECT_TIMEOUT_MS / 1000}s`));
+    }, CONNECT_TIMEOUT_MS);
+
     wrapperSocket.once('connect', () => {
+      clearTimeout(timer);
       console.log(`[main] Connected to MCP wrapper pipe: ${ipcPath}`);
       resolve();
     });
     wrapperSocket.once('error', (err) => {
+      clearTimeout(timer);
       console.error('[main] Failed to connect to MCP wrapper pipe:', err);
       reject(err);
     });
@@ -215,10 +233,15 @@ export async function startMcpMode(_ctx: AppContext): Promise<void> {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Connect to a named pipe, returning the socket on success. */
-function connectToPipe(pipeName: string): Promise<Socket> {
+function connectToPipe(pipeName: string, timeoutMs = CONNECT_TIMEOUT_MS): Promise<Socket> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(pipeName);
-    socket.once('connect', () => resolve(socket));
-    socket.once('error', (err) => reject(err));
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`Connection to ${pipeName} timed out after ${timeoutMs / 1000}s`));
+    }, timeoutMs);
+
+    socket.once('connect', () => { clearTimeout(timer); resolve(socket); });
+    socket.once('error', (err) => { clearTimeout(timer); reject(err); });
   });
 }

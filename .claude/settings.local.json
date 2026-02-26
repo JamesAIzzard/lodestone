@@ -30,7 +30,9 @@
       "Bash(npx electron-forge make:*)",
       "Bash(xargs basename:*)",
       "Bash(find:*)",
-      "mcp__lodestone__lodestone_search"
+      "mcp__lodestone__lodestone_search",
+      "mcp__lodestone__lodestone_orient",
+      "mcp__9ad966e2-d3a6-4faf-ba2e-4573f886ddd6__gmail_list_drafts"
     ]
   }
 }

@@ -18,35 +18,6 @@ export interface TextSignal {
   score(query: string, candidate: string): number;
 }
 
-// ── Utility Functions ───────────────────────────────────────────────────────
-
-/**
- * Generate character trigrams from a string.
- * e.g. "store" → {"sto", "tor", "ore"}
- */
-export function computeTrigrams(s: string): Set<string> {
-  const trigrams = new Set<string>();
-  for (let i = 0; i <= s.length - 3; i++) {
-    trigrams.add(s.slice(i, i + 3));
-  }
-  return trigrams;
-}
-
-/**
- * Compute Jaccard similarity between two sets: |A ∩ B| / |A ∪ B|.
- */
-export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 0;
-  let intersection = 0;
-  const smaller = a.size <= b.size ? a : b;
-  const larger = a.size <= b.size ? b : a;
-  for (const item of smaller) {
-    if (larger.has(item)) intersection++;
-  }
-  const union = a.size + b.size - intersection;
-  return union === 0 ? 0 : intersection / union;
-}
-
 /**
  * Compute the Levenshtein edit distance between two strings.
  * O(m*n) time and O(min(m,n)) space — fine for short strings (filenames).

@@ -47,7 +47,7 @@ export interface SiloStatus {
   resolvedModel: string;
 }
 
-// ── Scoring Primitives ───────────────────────────────────────────────────────
+// ── Directory Scoring Primitives ─────────────────────────────────────────────
 
 /** Signal name → [0,1] score. */
 export type SignalScores = Record<string, number>;
@@ -61,8 +61,6 @@ export interface FusedScore {
   /** Full breakdown: { semantic: 0.82, bm25: 0.45, ... } */
   signals: SignalScores;
 }
-
-// ── Search (legacy two-axis types removed) ──────────────────────────────────
 
 // ── Directory Exploration ────────────────────────────────────────────────
 

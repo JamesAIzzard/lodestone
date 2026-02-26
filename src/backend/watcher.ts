@@ -16,7 +16,6 @@ import { prepareFile, type PreparedFile } from './pipeline';
 import {
   makeStoredKey, makeStoredDirKey, resolveStoredKey,
   flushPreparedFiles, insertDirEntry, deleteDirEntry,
-  flushDirectoryFts,
   type SiloDatabase,
 } from './store';
 import type { ResolvedSiloConfig } from './config';
@@ -274,22 +273,6 @@ export class SiloWatcher {
           }
         } catch (err) {
           console.error(`[watcher] Error removing directory ${storedDirKey}:`, err);
-        }
-      }
-
-      // Sync FTS entries for any newly-created directories
-      // (from file upserts via maintainDirectoriesOnUpsert, or from addDir events above).
-      const needsDirFts = upserts.length > 0 || pendingDirAdds.length > 0;
-      if (needsDirFts) {
-        try {
-          const allDirs = this.db.prepare(
-            `SELECT id, dir_path, dir_name FROM directories`,
-          ).all() as Array<{ id: number; dir_path: string; dir_name: string }>;
-          if (allDirs.length > 0) {
-            flushDirectoryFts(this.db, allDirs.map((d) => ({ id: d.id, dirPath: d.dir_path, dirName: d.dir_name })));
-          }
-        } catch (err) {
-          console.error(`[watcher] Error syncing directory FTS:`, err);
         }
       }
 

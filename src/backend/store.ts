@@ -5,7 +5,6 @@
  *   - `chunks` table for chunk data
  *   - `terms` / `postings` tables for hand-rolled BM25 scoring
  *   - `files` table tracking indexed file paths and basenames
- *   - `files_fts` FTS5 virtual table for filepath/filename trigram search
  *   - `vec_chunks` sqlite-vec virtual table for vector similarity search
  *   - `mtimes` table for file modification times
  *   - `meta` table for silo metadata
@@ -76,16 +75,13 @@ export function insertDirEntry(db: SiloDatabase, dirPath: string): boolean {
 }
 
 /**
- * Delete a single directory entry (and its FTS row) by stored dir-key.
+ * Delete a single directory entry by stored dir-key.
  * Returns the deleted directory id, or null if not found.
  */
 export function deleteDirEntry(db: SiloDatabase, dirPath: string): number | null {
   const row = db.prepare(`SELECT id FROM directories WHERE dir_path = ?`).get(dirPath) as { id: number } | undefined;
   if (!row) return null;
-  db.transaction(() => {
-    try { db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`).run(row.id); } catch { /* ignore */ }
-    db.prepare(`DELETE FROM directories WHERE id = ?`).run(row.id);
-  })();
+  db.prepare(`DELETE FROM directories WHERE id = ?`).run(row.id);
   return row.id;
 }
 
@@ -109,9 +105,6 @@ export function resolveStoredKey(storedKey: string, directories: string[]): stri
 
 export type SiloDatabase = Database.Database;
 
-// ── Search Constants ─────────────────────────────────────────────────────────
-
-/** Candidate fan-out: retrieve this many × maxResults chunks before aggregating by file. */
 /** Extract the relative-path portion from a stored key ("{dirIndex}:{relPath}"). */
 export function extractRelPath(storedKey: string): string {
   const colon = storedKey.indexOf(':');
@@ -222,12 +215,6 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
       file_name TEXT NOT NULL
     );
 
-    CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
-      file_path,
-      file_name,
-      tokenize='trigram'
-    );
-
     CREATE TABLE IF NOT EXISTS directories (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       dir_path     TEXT UNIQUE NOT NULL,
@@ -284,20 +271,13 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
     db.exec(`CREATE VIRTUAL TABLE vec_chunks USING vec0(embedding float[${dimensions}])`);
   }
 
-  // dirs_fts: trigram search on directory paths and names
-  const dirsFtsExists = db.prepare(
-    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='dirs_fts'`,
-  ).get();
-  if (!dirsFtsExists) {
-    db.exec(`CREATE VIRTUAL TABLE dirs_fts USING fts5(dir_path, dir_name, tokenize='trigram')`);
-  }
-
-  // Drop legacy dirs_vec if it exists (no longer used — directory search uses string scorers)
-  const dirsVecExists = db.prepare(
-    `SELECT 1 FROM sqlite_master WHERE type='table' AND name='dirs_vec'`,
-  ).get();
-  if (dirsVecExists) {
-    db.exec(`DROP TABLE dirs_vec`);
+  // Drop legacy FTS/vec tables if they exist (no longer used — search uses
+  // plain table scans with application-side scoring)
+  for (const legacy of ['files_fts', 'dirs_fts', 'dirs_vec']) {
+    const exists = db.prepare(
+      `SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`,
+    ).get(legacy);
+    if (exists) db.exec(`DROP TABLE "${legacy}"`);
   }
 
   return db;
@@ -336,14 +316,9 @@ function upsertFileInner(
   db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
 
   // 5. Ensure file entry exists in files table (insert once per unique path)
-  const fileResult = db.prepare(
+  db.prepare(
     `INSERT OR IGNORE INTO files (file_path, file_name) VALUES (?, ?)`,
   ).run(filePath, fileBasename(filePath));
-  if (fileResult.changes > 0) {
-    const fileRow = db.prepare(`SELECT id FROM files WHERE file_path = ?`).get(filePath) as { id: number };
-    db.prepare(`INSERT INTO files_fts(rowid, file_path, file_name) VALUES(?, ?, ?)`)
-      .run(fileRow.id, filePath, fileBasename(filePath));
-  }
 
   // 6. Insert new chunks
   //    Insert into vec_chunks first (auto-assigns rowid), then use that
@@ -425,12 +400,8 @@ function deleteFileInner(db: SiloDatabase, filePath: string, deleteMtimeEntry?: 
 
   db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
 
-  // Remove file entry from files + files_fts
-  const fileRow = db.prepare(`SELECT id FROM files WHERE file_path = ?`).get(filePath) as { id: number } | undefined;
-  if (fileRow) {
-    db.prepare(`DELETE FROM files_fts WHERE rowid = ?`).run(fileRow.id);
-    db.prepare(`DELETE FROM files WHERE file_path = ?`).run(filePath);
-  }
+  // Remove file entry
+  db.prepare(`DELETE FROM files WHERE file_path = ?`).run(filePath);
 
   if (deleteMtimeEntry) {
     db.prepare(`DELETE FROM mtimes WHERE file_path = ?`).run(filePath);
@@ -464,14 +435,9 @@ function clearChunksKeepFile(db: SiloDatabase, filePath: string, mtimeMs?: numbe
   db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
 
   // Ensure file row exists (insert if missing)
-  const fileResult = db.prepare(
+  db.prepare(
     `INSERT OR IGNORE INTO files (file_path, file_name) VALUES (?, ?)`,
   ).run(filePath, fileBasename(filePath));
-  if (fileResult.changes > 0) {
-    const fileRow = db.prepare(`SELECT id FROM files WHERE file_path = ?`).get(filePath) as { id: number };
-    db.prepare(`INSERT INTO files_fts(rowid, file_path, file_name) VALUES(?, ?, ?)`)
-      .run(fileRow.id, filePath, fileBasename(filePath));
-  }
 
   // Persist mtime so the watcher knows the file is up to date
   if (mtimeMs !== undefined) {
@@ -905,27 +871,6 @@ export function getFilesInDirectory(
 }
 
 /**
- * Flush FTS entries for a batch of directories.
- * Called after directories are synced to ensure dirs_fts is up to date.
- */
-export function flushDirectoryFts(
-  db: SiloDatabase,
-  entries: Array<{ id: number; dirPath: string; dirName: string }>,
-): void {
-  if (entries.length === 0) return;
-
-  db.transaction(() => {
-    const deleteOldFts = db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`);
-    const insertFts = db.prepare(`INSERT INTO dirs_fts(rowid, dir_path, dir_name) VALUES (?, ?, ?)`);
-
-    for (const entry of entries) {
-      deleteOldFts.run(entry.id);
-      insertFts.run(entry.id, entry.dirPath, entry.dirName);
-    }
-  })();
-}
-
-/**
  * Sync the directories table with a set of directory paths found on disk.
  * - Inserts any new directories not yet in the table
  * - Removes directories no longer present on disk
@@ -955,9 +900,9 @@ export function syncDirectoriesWithDisk(
     const toRemove = allDbDirs.filter((d) => !diskSet.has(d.dir_path));
 
     // Remove orphaned directories
+    const deleteDir = db.prepare(`DELETE FROM directories WHERE id = ?`);
     for (const d of toRemove) {
-      db.prepare(`DELETE FROM dirs_fts WHERE rowid = ?`).run(d.id);
-      db.prepare(`DELETE FROM directories WHERE id = ?`).run(d.id);
+      deleteDir.run(d.id);
     }
 
     // Recompute all counts in one pass

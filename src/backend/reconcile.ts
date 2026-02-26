@@ -14,7 +14,7 @@ import path from 'node:path';
 import { prepareFile, type PreparedFile } from './pipeline';
 import {
   makeStoredKey, resolveStoredKey, flushPreparedFiles,
-  syncDirectoriesWithDisk, flushDirectoryFts,
+  syncDirectoriesWithDisk,
   type SiloDatabase,
 } from './store';
 import type { EmbeddingService } from './embedding';
@@ -269,13 +269,6 @@ export async function reconcile(
       }
     }
 
-    // 9. Sync FTS entries for all directories (no embeddings needed)
-    const allDirs = db.prepare(
-      `SELECT id, dir_path, dir_name FROM directories`,
-    ).all() as Array<{ id: number; dir_path: string; dir_name: string }>;
-    if (allDirs.length > 0) {
-      flushDirectoryFts(db, allDirs.map((d) => ({ id: d.id, dirPath: d.dir_path, dirName: d.dir_name })));
-    }
   }
 
   onProgress?.({ phase: 'done', current: totalWork, total: totalWork });

@@ -282,150 +282,181 @@ export default function SearchView() {
           />
         )}
 
-        {!searching && hasSearched && !isDirectoryMode && (() => {
-          const stoppedSilos = silos.filter((s) => s.watcherState === 'stopped');
-          const stoppedSkipped = selectedSilo === 'all'
-            ? stoppedSilos
-            : stoppedSilos.filter((s) => s.config.name === selectedSilo);
-          const stoppedHint = stoppedSkipped.length > 0
-            ? `${stoppedSkipped.map((s) => s.config.name).join(', ')} ${stoppedSkipped.length === 1 ? 'is' : 'are'} stopped and ${stoppedSkipped.length === 1 ? 'was' : 'were'} not searched.`
-            : null;
+        {!searching && hasSearched && !isDirectoryMode && (
+          <FileResultsView
+            results={results}
+            silos={silos}
+            selectedSilo={selectedSilo}
+            siloColorMap={siloColorMap}
+            expandedResults={expandedResults}
+            toggleExpand={toggleExpand}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
 
-          return results.length === 0 ? (
-            <div>
-              <p className="text-sm text-muted-foreground">No results found.</p>
-              {stoppedHint && (
-                <p className="mt-1 text-xs text-muted-foreground/50">{stoppedHint}</p>
+// ── File Results View ────────────────────────────────────────────────────────
+
+function FileResultsView({
+  results,
+  silos,
+  selectedSilo,
+  siloColorMap,
+  expandedResults,
+  toggleExpand,
+}: {
+  results: SearchResult[];
+  silos: SiloStatus[];
+  selectedSilo: string;
+  siloColorMap: Map<string, SiloColor>;
+  expandedResults: Set<number>;
+  toggleExpand: (i: number) => void;
+}) {
+  const stoppedSilos = silos.filter((s) => s.watcherState === 'stopped');
+  const stoppedSkipped = selectedSilo === 'all'
+    ? stoppedSilos
+    : stoppedSilos.filter((s) => s.config.name === selectedSilo);
+  const stoppedHint = stoppedSkipped.length > 0
+    ? `${stoppedSkipped.map((s) => s.config.name).join(', ')} ${stoppedSkipped.length === 1 ? 'is' : 'are'} stopped and ${stoppedSkipped.length === 1 ? 'was' : 'were'} not searched.`
+    : null;
+
+  if (results.length === 0) {
+    return (
+      <div>
+        <p className="text-sm text-muted-foreground">No results found.</p>
+        {stoppedHint && (
+          <p className="mt-1 text-xs text-muted-foreground/50">{stoppedHint}</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="mb-3">
+        <p className="text-xs text-muted-foreground">
+          {results.length} result{results.length !== 1 && 's'}
+        </p>
+        {stoppedHint && (
+          <p className="mt-0.5 text-[10px] text-muted-foreground/50">{stoppedHint}</p>
+        )}
+      </div>
+
+      {results.map((result, i) => {
+        const isExpanded = expandedResults.has(i);
+        const sigColor = SIGNAL_COLORS[result.scoreLabel] ?? DEFAULT_SIGNAL_COLOR;
+
+        return (
+          <div key={`${result.filePath}-${i}`}>
+            {/* Collapsed result row */}
+            <button
+              onClick={() => toggleExpand(i)}
+              className={cn(
+                'group flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors',
+                'hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                isExpanded && 'bg-accent/20',
               )}
-            </div>
-          ) : (
-            <div className="flex flex-col gap-1">
-              <div className="mb-3">
-                <p className="text-xs text-muted-foreground">
-                  {results.length} result{results.length !== 1 && 's'}
-                </p>
-                {stoppedHint && (
-                  <p className="mt-0.5 text-[10px] text-muted-foreground/50">{stoppedHint}</p>
-                )}
+            >
+              {isExpanded
+                ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              }
+
+              <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium text-foreground">
+                    {fileName(result.filePath)}
+                  </span>
+                  <span className={cn(
+                    'shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px]',
+                    sigColor.badge,
+                  )}>
+                    {sigColor.label}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground/50">
+                  <span className="truncate">{dirPath(result.filePath)}</span>
+                  <span className={cn(
+                    'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
+                    (() => {
+                      const c = siloColorMap.get(result.siloName) ?? DEFAULT_SILO_COLOR;
+                      const classes = SILO_COLOR_MAP[c];
+                      return `${classes.bgSoft} ${classes.text}`;
+                    })(),
+                  )}>
+                    {result.siloName}
+                  </span>
+                </div>
               </div>
 
-              {results.map((result, i) => {
-                const isExpanded = expandedResults.has(i);
-                const sigColor = SIGNAL_COLORS[result.scoreLabel] ?? DEFAULT_SIGNAL_COLOR;
+              {/* Score bar + percentage */}
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+                  <div
+                    className={cn('h-full rounded-full', sigColor.bar)}
+                    style={{ width: `${Math.round(result.score * 100)}%` }}
+                  />
+                </div>
+                <span className="w-8 text-right text-xs text-muted-foreground">
+                  {scorePercent(result.score)}
+                </span>
+              </div>
 
-                return (
-                  <div key={`${result.filePath}-${i}`}>
-                    {/* Collapsed result row */}
-                    <button
-                      onClick={() => toggleExpand(i)}
-                      className={cn(
-                        'group flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors',
-                        'hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                        isExpanded && 'bg-accent/20',
-                      )}
-                    >
-                      {isExpanded
-                        ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      }
+              <ExternalLink
+                className="h-3.5 w-3.5 shrink-0 text-muted-foreground/30 opacity-0 transition-opacity group-hover:opacity-100"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenFile(result.filePath);
+                }}
+              />
+            </button>
 
-                      <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-sm font-medium text-foreground">
-                            {fileName(result.filePath)}
-                          </span>
-                          <span className={cn(
-                            'shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px]',
-                            sigColor.badge,
-                          )}>
-                            {sigColor.label}
-                          </span>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground/50">
-                          <span className="truncate">{dirPath(result.filePath)}</span>
-                          <span className={cn(
-                            'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
-                            (() => {
-                              const c = siloColorMap.get(result.siloName) ?? DEFAULT_SILO_COLOR;
-                              const classes = SILO_COLOR_MAP[c];
-                              return `${classes.bgSoft} ${classes.text}`;
-                            })(),
-                          )}>
-                            {result.siloName}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Score bar + percentage */}
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
-                          <div
-                            className={cn('h-full rounded-full', sigColor.bar)}
-                            style={{ width: `${Math.round(result.score * 100)}%` }}
-                          />
-                        </div>
-                        <span className="w-8 text-right text-xs text-muted-foreground">
-                          {scorePercent(result.score)}
-                        </span>
-                      </div>
-
-                      <ExternalLink
-                        className="h-3.5 w-3.5 shrink-0 text-muted-foreground/30 opacity-0 transition-opacity group-hover:opacity-100"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleOpenFile(result.filePath);
-                        }}
-                      />
-                    </button>
-
-                    {/* Expanded view — signal breakdown + hint */}
-                    {isExpanded && (
-                      <div className="ml-[26px] border-l-2 border-accent/40 pl-4 pb-2">
-                        {/* Per-signal score bars */}
-                        <div className="mt-2 space-y-1">
-                          {Object.entries(result.signals)
-                            .sort(([, a], [, b]) => b - a)
-                            .map(([name, score]) => {
-                              const sc = SIGNAL_COLORS[name] ?? DEFAULT_SIGNAL_COLOR;
-                              return (
-                                <div key={name} className="flex items-center gap-2">
-                                  <span className="w-16 text-[10px] text-muted-foreground/60 text-right">{sc.label}</span>
-                                  <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
-                                    <div
-                                      className={cn('h-full rounded-full', sc.bar)}
-                                      style={{ width: `${Math.round(score * 100)}%` }}
-                                    />
-                                  </div>
-                                  <span className="w-8 text-[10px] text-muted-foreground/50 text-right">
-                                    {scorePercent(score)}
-                                  </span>
-                                </div>
-                              );
-                            })}
-                        </div>
-
-                        {/* Hint — line range + section path */}
-                        {result.hint && result.hint.startLine != null && (
-                          <div className="mt-2 text-xs text-muted-foreground/60">
-                            Lines {result.hint.startLine}–{result.hint.endLine}
-                            {result.hint.sectionPath && result.hint.sectionPath.length > 0 && (
-                              <span className="ml-1.5 text-muted-foreground/40">
-                                — {result.hint.sectionPath.join(' > ')}
-                              </span>
-                            )}
+            {/* Expanded view — signal breakdown + hint */}
+            {isExpanded && (
+              <div className="ml-[26px] border-l-2 border-accent/40 pl-4 pb-2">
+                {/* Per-signal score bars */}
+                <div className="mt-2 space-y-1">
+                  {Object.entries(result.signals)
+                    .sort(([, a], [, b]) => b - a)
+                    .map(([name, score]) => {
+                      const sc = SIGNAL_COLORS[name] ?? DEFAULT_SIGNAL_COLOR;
+                      return (
+                        <div key={name} className="flex items-center gap-2">
+                          <span className="w-16 text-[10px] text-muted-foreground/60 text-right">{sc.label}</span>
+                          <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
+                            <div
+                              className={cn('h-full rounded-full', sc.bar)}
+                              style={{ width: `${Math.round(score * 100)}%` }}
+                            />
                           </div>
-                        )}
-                      </div>
+                          <span className="w-8 text-[10px] text-muted-foreground/50 text-right">
+                            {scorePercent(score)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                </div>
+
+                {/* Hint — line range + section path */}
+                {result.hint && result.hint.startLine != null && (
+                  <div className="mt-2 text-xs text-muted-foreground/60">
+                    Lines {result.hint.startLine}–{result.hint.endLine}
+                    {result.hint.sectionPath && result.hint.sectionPath.length > 0 && (
+                      <span className="ml-1.5 text-muted-foreground/40">
+                        — {result.hint.sectionPath.join(' > ')}
+                      </span>
                     )}
                   </div>
-                );
-              })}
-            </div>
-          );
-        })()}
-      </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

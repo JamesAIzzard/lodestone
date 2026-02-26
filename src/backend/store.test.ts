@@ -239,7 +239,7 @@ describe('store', () => {
     expect(meta).not.toBeNull();
     expect(meta!.model).toBe('arctic-xs');
     expect(meta!.dimensions).toBe(384);
-    expect(meta!.version).toBe(1);
+    expect(meta!.version).toBe(2);
     expect(meta!.createdAt).toBeTruthy();
   });
 

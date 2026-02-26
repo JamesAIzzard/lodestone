@@ -19,11 +19,7 @@ import * as sqliteVec from 'sqlite-vec';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ChunkRecord } from './pipeline-types';
-import type { SearchParams, FusedScore } from '../shared/types';
 import { tokenise } from './tokeniser';
-import { scoreBm25 } from './scorers/bm25';
-import { scoreFilenames } from './scorers/filename';
-import { fuseChunkScores, CONTENT_RECIPE } from './scorers/recipes';
 
 // ── Portable Path Utilities ──────────────────────────────────────────────────
 
@@ -116,13 +112,8 @@ export type SiloDatabase = Database.Database;
 // ── Search Constants ─────────────────────────────────────────────────────────
 
 /** Candidate fan-out: retrieve this many × maxResults chunks before aggregating by file. */
-const CHUNK_FANOUT = 5;
-
-/** Maximum chunks returned per file in search results. */
-export const MAX_CHUNKS_PER_FILE = 5;
-
 /** Extract the relative-path portion from a stored key ("{dirIndex}:{relPath}"). */
-function extractRelPath(storedKey: string): string {
+export function extractRelPath(storedKey: string): string {
   const colon = storedKey.indexOf(':');
   return colon === -1 ? storedKey : storedKey.slice(colon + 1);
 }
@@ -456,6 +447,47 @@ function deleteFileInner(db: SiloDatabase, filePath: string, deleteMtimeEntry?: 
 }
 
 /**
+ * Remove all chunks for a file but ensure it retains a row in the `files`
+ * table (and `files_fts`) so it remains discoverable by filepath search.
+ * Used for empty or un-chunkable files that still exist on disk.
+ */
+function clearChunksKeepFile(db: SiloDatabase, filePath: string, mtimeMs?: number): void {
+  const existingIds = db.prepare(
+    `SELECT id FROM chunks WHERE file_path = ?`,
+  ).all(filePath) as Array<{ id: number }>;
+
+  if (existingIds.length > 0) {
+    removeFromInvertedIndex(db, existingIds.map((r) => r.id));
+    const vecDelete = db.prepare(`DELETE FROM vec_chunks WHERE rowid = ?`);
+    for (const row of existingIds) vecDelete.run(row.id);
+  }
+  db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath);
+
+  // Ensure file row exists (insert if missing)
+  const fileResult = db.prepare(
+    `INSERT OR IGNORE INTO files (file_path, file_name) VALUES (?, ?)`,
+  ).run(filePath, fileBasename(filePath));
+  if (fileResult.changes > 0) {
+    const fileRow = db.prepare(`SELECT id FROM files WHERE file_path = ?`).get(filePath) as { id: number };
+    db.prepare(`INSERT INTO files_fts(rowid, file_path, file_name) VALUES(?, ?, ?)`)
+      .run(fileRow.id, filePath, fileBasename(filePath));
+  }
+
+  // Persist mtime so the watcher knows the file is up to date
+  if (mtimeMs !== undefined) {
+    db.prepare(`INSERT OR REPLACE INTO mtimes (file_path, mtime_ms) VALUES (?, ?)`).run(filePath, mtimeMs);
+  }
+
+  updateCorpusStats(db);
+
+  const dirPaths = extractDirectoryPaths(filePath);
+  if (dirPaths.length > 0) {
+    updateDirectoryCounts(db, dirPaths);
+    maintainDirectoriesOnUpsert(db, filePath);
+  }
+}
+
+/**
  * Remove all existing chunks for a file and insert new ones.
  * Wraps the operation in a single transaction.
  */
@@ -496,7 +528,8 @@ export function flushPreparedFiles(
   db.transaction(() => {
     for (const file of upserts) {
       if (file.chunks.length === 0) {
-        deleteFileInner(db, file.filePath, file.mtimeMs !== undefined);
+        // Empty file — remove chunks but keep the file row so it's findable by path
+        clearChunksKeepFile(db, file.filePath, file.mtimeMs);
       } else {
         upsertFileInner(db, file.filePath, file.chunks, file.embeddings, file.mtimeMs);
       }
@@ -509,312 +542,40 @@ export function flushPreparedFiles(
   })();
 }
 
-// ── Search ─────────────────────────────────────────────────────────
+// ── Search (old two-axis functions removed — see search.ts) ─────────
 
-export interface TwoAxisChunk {
-  sectionPath: string[];
-  text: string;
-  startLine: number;
-  endLine: number;
-  /** Fused content score for this chunk. */
-  content: FusedScore;
-}
+// ── Chunk Metadata (shared by signal implementations) ───────────────────────
 
-export interface TwoAxisFileResult {
-  filePath: string;
-  /** Overall file score: max across all axes. */
-  score: number;
-  /** Which axis drove the file's ranking (e.g. 'content', 'filename'). */
-  scoreSource: string;
-  /** Per-axis fused scores: { content: {...}, filename: {...} }. */
-  axes: Record<string, FusedScore>;
-  /** Top chunks sorted by content score descending. */
-  chunks: TwoAxisChunk[];
+/** Minimal chunk metadata needed by signal implementations for hints. */
+export interface ChunkMeta {
+  id: number;
+  file_path: string;
+  section_path: string;
+  start_line: number;
+  end_line: number;
 }
 
 /**
- * Two-axis search: replaces the 5-signal RRF pipeline.
- *
- * Content axis: max(cosine_similarity, normalised_bm25) per chunk.
- * Filename axis: Levenshtein similarity on file basenames (trigram prefiltered).
- * File score: max(best_chunk_content_score, filename_score).
- *
- * All scores are transparent [0,1] values.
+ * Fetch chunk metadata for a set of chunk IDs.
+ * Uses a temp table for efficient batch lookup.
  */
-export function twoAxisSearch(
-  db: SiloDatabase,
-  queryVector: number[],
-  params: SearchParams,
-): TwoAxisFileResult[] {
-  const maxResults = params.limit ?? 10;
-  const chunkLimit = maxResults * CHUNK_FANOUT;
-  const mode = params.mode ?? 'hybrid';
-  const filePatternRe = params.filePattern ? globToRegex(params.filePattern) : null;
+export function fetchChunkMeta(db: SiloDatabase, chunkIds: Set<number>): Map<number, ChunkMeta> {
+  const result = new Map<number, ChunkMeta>();
+  if (chunkIds.size === 0) return result;
 
-  // ── Content Axis: Semantic ────────────────────────────────────────────────
-  const cosineSims = new Map<number, number>();
-  if (mode !== 'bm25') {
-    const vecRows = db.prepare(`
-      SELECT v.rowid, v.distance
-      FROM vec_chunks v
-      WHERE v.embedding MATCH ?
-        AND k = ?
-      ORDER BY v.distance
-    `).all(float32Buffer(queryVector), chunkLimit) as Array<{ rowid: number; distance: number }>;
+  db.exec(`CREATE TEMP TABLE IF NOT EXISTS _signal_ids (id INTEGER PRIMARY KEY)`);
+  db.exec(`DELETE FROM _signal_ids`);
+  const insert = db.prepare(`INSERT INTO _signal_ids (id) VALUES (?)`);
+  for (const id of chunkIds) insert.run(id);
 
-    for (const row of vecRows) {
-      cosineSims.set(row.rowid, 1 - row.distance / 2);
-    }
-  }
-
-  // ── Content Axis: BM25 ────────────────────────────────────────────────────
-  const queryTokens = tokenise(params.query);
-  const bm25Scores: Map<number, { score: number }> = mode === 'semantic'
-    ? new Map()
-    : scoreBm25(db, queryTokens);
-
-  // ── Merge chunk IDs from both content signals ─────────────────────────────
-  const allChunkIds = new Set([...cosineSims.keys(), ...bm25Scores.keys()]);
-  if (allChunkIds.size === 0 && params.query.trim().length === 0) return [];
-
-  // ── Filename Axis ─────────────────────────────────────────────────────────
-  // BM25 mode: exact case-insensitive substring on relative path (no Levenshtein).
-  // Other modes: recipe-based scoring (Levenshtein + token coverage).
-  const filenameScores: Map<string, FusedScore> = mode === 'bm25'
-    ? (() => {
-        const m = new Map<string, FusedScore>();
-        const q = params.query.toLowerCase();
-        if (q.length === 0) return m;
-        const allFiles = db.prepare(`SELECT file_path FROM files`).all() as Array<{ file_path: string }>;
-        for (const { file_path } of allFiles) {
-          if (extractRelPath(file_path).toLowerCase().includes(q)) {
-            m.set(file_path, { best: 1.0, bestSignal: 'substring', signals: { substring: 1.0 } });
-          }
-        }
-        return m;
-      })()
-    : scoreFilenames(db, params.query);
-
-  // If we have no content matches and no filename matches, nothing to return
-  if (allChunkIds.size === 0 && filenameScores.size === 0) return [];
-
-  // ── Fetch chunk data for all content-matched chunks ───────────────────────
-  const chunkDataMap = new Map<number, {
-    file_path: string;
-    section_path: string;
-    text: string;
-    start_line: number;
-    end_line: number;
-  }>();
-
-  if (allChunkIds.size > 0) {
-    db.exec(`CREATE TEMP TABLE IF NOT EXISTS _twoaxis_ids (id INTEGER PRIMARY KEY)`);
-    db.exec(`DELETE FROM _twoaxis_ids`);
-    const insertId = db.prepare(`INSERT INTO _twoaxis_ids (id) VALUES (?)`);
-    for (const id of allChunkIds) {
-      insertId.run(id);
-    }
-
-    const chunkRows = db.prepare(`
-      SELECT c.id, c.file_path, c.section_path, c.text, c.start_line, c.end_line
-      FROM chunks c
-      JOIN _twoaxis_ids t ON t.id = c.id
-    `).all() as Array<{
-      id: number;
-      file_path: string;
-      section_path: string;
-      text: string;
-      start_line: number;
-      end_line: number;
-    }>;
-
-    for (const row of chunkRows) {
-      chunkDataMap.set(row.id, row);
-    }
-  }
-
-  // ── Build per-chunk signal maps for the content recipe ───────────────────
-  const semanticMap = new Map<number, number>();
-  const bm25Map = new Map<number, number>();
-  for (const chunkId of allChunkIds) {
-    semanticMap.set(chunkId, cosineSims.get(chunkId) ?? 0);
-    bm25Map.set(chunkId, bm25Scores.get(chunkId)?.score ?? 0);
-  }
-  const contentSignalMaps: Record<string, Map<number, number>> = { semantic: semanticMap, bm25: bm25Map };
-
-  // ── Build per-file aggregation ────────────────────────────────────────────
-  const fileMap = new Map<string, {
-    bestContentScore: number;
-    bestContentFused: FusedScore | null;
-    chunks: TwoAxisChunk[];
-  }>();
-
-  for (const chunkId of allChunkIds) {
-    const data = chunkDataMap.get(chunkId);
-    if (!data) continue;
-
-    // Apply startPath and filePattern filters
-    if (params.startPath && !data.file_path.startsWith(params.startPath)) continue;
-    if (filePatternRe && !filePatternRe.test(extractRelPath(data.file_path))) continue;
-
-    const content = fuseChunkScores(CONTENT_RECIPE, contentSignalMaps, chunkId);
-
-    const chunk: TwoAxisChunk = {
-      sectionPath: JSON.parse(data.section_path),
-      text: data.text,
-      startLine: data.start_line,
-      endLine: data.end_line,
-      content,
-    };
-
-    const existing = fileMap.get(data.file_path);
-    if (existing) {
-      existing.chunks.push(chunk);
-      if (content.best > existing.bestContentScore) {
-        existing.bestContentScore = content.best;
-        existing.bestContentFused = content;
-      }
-    } else {
-      fileMap.set(data.file_path, { bestContentScore: content.best, bestContentFused: content, chunks: [chunk] });
-    }
-  }
-
-  // Add filename-only files (matched by filename but no content chunks)
-  for (const [filePath] of filenameScores) {
-    if (params.startPath && !filePath.startsWith(params.startPath)) continue;
-    if (filePatternRe && !filePatternRe.test(extractRelPath(filePath))) continue;
-    if (!fileMap.has(filePath)) {
-      fileMap.set(filePath, { bestContentScore: 0, bestContentFused: null, chunks: [] });
-    }
-  }
-
-  // ── Compute final file scores and sort ────────────────────────────────────
-  const zeroContent: FusedScore = { best: 0, bestSignal: 'semantic', signals: { semantic: 0, bm25: 0 } };
-  const zeroFilename: FusedScore = { best: 0, bestSignal: 'levenshtein', signals: { levenshtein: 0, tokenCoverage: 0 } };
-
-  const results: TwoAxisFileResult[] = [];
-
-  for (const [filePath, { bestContentScore, bestContentFused, chunks }] of fileMap) {
-    const filenameFused = filenameScores.get(filePath) ?? null;
-    const filenameScore = filenameFused?.best ?? 0;
-    const score = Math.max(bestContentScore, filenameScore);
-    const scoreSource = filenameScore > bestContentScore ? 'filename' : 'content';
-
-    // Build axes bag — only include axes that have non-zero scores
-    const axes: Record<string, FusedScore> = {};
-    axes.content = bestContentFused ?? zeroContent;
-    axes.filename = filenameFused ?? zeroFilename;
-
-    // Sort chunks by content score descending, cap at MAX_CHUNKS_PER_FILE
-    chunks.sort((a, b) => b.content.best - a.content.best);
-    if (chunks.length > MAX_CHUNKS_PER_FILE) chunks.length = MAX_CHUNKS_PER_FILE;
-
-    results.push({
-      filePath,
-      score,
-      scoreSource,
-      axes,
-      chunks,
-    });
-  }
-
-  results.sort((a, b) => b.score - a.score);
-  if (results.length > maxResults) results.length = maxResults;
-
-  return results;
-}
-
-/**
- * Regex search: full-table scan of chunk text and file paths using a JS RegExp.
- * All matching chunks/files receive score 1.0.
- * Results are sorted alphabetically by file path.
- */
-export function regexSearch(db: SiloDatabase, params: SearchParams): TwoAxisFileResult[] {
-  const flags = params.regexFlags ?? 'i';
-  let contentRe: RegExp;
-  try {
-    contentRe = new RegExp(params.query, flags);
-  } catch {
-    return [];
-  }
-  const filePatternRe = params.filePattern ? globToRegex(params.filePattern) : null;
-  const maxResults = params.limit ?? 10;
-
-  const regexContentMatch: FusedScore = { best: 1.0, bestSignal: 'regex', signals: { regex: 1.0 } };
-  const regexFilenameMatch: FusedScore = { best: 1.0, bestSignal: 'regex', signals: { regex: 1.0 } };
-  const regexZero: FusedScore = { best: 0, bestSignal: 'regex', signals: { regex: 0 } };
-
-  // Track whether each file has chunk matches (content) vs path-only matches (filename)
-  const fileMap = new Map<string, { chunks: TwoAxisChunk[]; pathOnly: boolean }>();
-
-  // ── Pass 1: scan chunk text ───────────────────────────────────────────────
   const rows = db.prepare(`
-    SELECT c.id, c.file_path, c.section_path, c.text, c.start_line, c.end_line
+    SELECT c.id, c.file_path, c.section_path, c.start_line, c.end_line
     FROM chunks c
-  `).all() as Array<{
-    id: number;
-    file_path: string;
-    section_path: string;
-    text: string;
-    start_line: number;
-    end_line: number;
-  }>;
+    JOIN _signal_ids t ON t.id = c.id
+  `).all() as ChunkMeta[];
 
-  for (const row of rows) {
-    if (params.startPath && !row.file_path.startsWith(params.startPath)) continue;
-    if (filePatternRe && !filePatternRe.test(extractRelPath(row.file_path))) continue;
-    if (!contentRe.test(row.text)) continue;
-
-    const chunk: TwoAxisChunk = {
-      sectionPath: JSON.parse(row.section_path),
-      text: row.text,
-      startLine: row.start_line,
-      endLine: row.end_line,
-      content: regexContentMatch,
-    };
-
-    const existing = fileMap.get(row.file_path);
-    if (existing) {
-      existing.chunks.push(chunk);
-    } else {
-      fileMap.set(row.file_path, { chunks: [chunk], pathOnly: false });
-    }
-  }
-
-  // ── Pass 2: scan file paths ───────────────────────────────────────────────
-  const allFiles = db.prepare(`SELECT file_path FROM files`).all() as Array<{ file_path: string }>;
-  for (const { file_path } of allFiles) {
-    if (params.startPath && !file_path.startsWith(params.startPath)) continue;
-    if (filePatternRe && !filePatternRe.test(extractRelPath(file_path))) continue;
-    if (contentRe.test(extractRelPath(file_path)) && !fileMap.has(file_path)) {
-      fileMap.set(file_path, { chunks: [], pathOnly: true });
-    }
-  }
-
-  // ── Build results ─────────────────────────────────────────────────────────
-  const results: TwoAxisFileResult[] = [];
-
-  for (const [filePath, { chunks, pathOnly }] of fileMap) {
-    chunks.sort((a, b) => b.content.best - a.content.best);
-    if (chunks.length > MAX_CHUNKS_PER_FILE) chunks.length = MAX_CHUNKS_PER_FILE;
-
-    results.push({
-      filePath,
-      score: 1.0,
-      scoreSource: pathOnly ? 'filename' : 'content',
-      axes: {
-        content: pathOnly ? regexZero : regexContentMatch,
-        filename: pathOnly ? regexFilenameMatch : regexZero,
-      },
-      chunks,
-    });
-  }
-
-  // Sort alphabetically for deterministic ordering
-  results.sort((a, b) => a.filePath.localeCompare(b.filePath));
-  if (results.length > maxResults) results.length = maxResults;
-
-  return results;
+  for (const row of rows) result.set(row.id, row);
+  return result;
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────
@@ -1029,7 +790,7 @@ function updateCorpusStats(db: SiloDatabase): void {
  * Convert a number[] to a Buffer wrapping a Float32Array.
  * better-sqlite3 requires Buffer (not Float32Array) for blob parameters.
  */
-function float32Buffer(vec: number[]): Buffer {
+export function float32Buffer(vec: number[]): Buffer {
   const f32 = new Float32Array(vec);
   return Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength);
 }

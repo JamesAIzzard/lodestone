@@ -35,7 +35,7 @@ export interface McpServerDeps {
     silo?: string;
     maxResults?: number;
     startPath?: string;
-    mode?: 'hybrid' | 'bm25' | 'semantic' | 'regex';
+    mode?: 'hybrid' | 'bm25' | 'semantic' | 'filepath' | 'regex';
     filePattern?: string;
     regexFlags?: string;
   }) => Promise<{ results: SearchResult[]; warnings: string[] }>;
@@ -267,22 +267,28 @@ function formatSearchResults(results: SearchResult[]): string {
     const puid = assignFilePuid(result.filePath);
     lines.push(`## ${puid}: ${result.filePath}`);
     const pct = Math.round(result.score * 100);
-    const scorerLabel = result.axes[result.scoreSource]?.bestSignal ?? result.scoreSource;
-    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${result.scoreSource}, ${scorerLabel})`);
-    lines.push('');
 
-    for (const chunk of result.chunks) {
-      const section = chunk.sectionPath.length > 0
-        ? chunk.sectionPath.join(' > ')
-        : '(top-level)';
-      lines.push(`### ${section} (lines ${chunk.startLine}\u2013${chunk.endLine})`);
-      lines.push('```');
-      lines.push(chunk.text.trim());
-      lines.push('```');
-      lines.push('');
+    // Build score parenthetical — show signal name or convergence breakdown
+    let scoreDetail: string;
+    if (result.scoreLabel === 'convergence') {
+      const parts = Object.entries(result.signals)
+        .sort(([, a], [, b]) => b - a)
+        .map(([name, s]) => `${name} ${Math.round(s * 100)}%`);
+      scoreDetail = `convergence: ${parts.join(', ')}`;
+    } else {
+      scoreDetail = result.scoreLabel;
     }
 
-    lines.push('---');
+    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${scoreDetail})`);
+
+    // Hint line — show line range and section path if available
+    if (result.hint) {
+      const section = result.hint.sectionPath && result.hint.sectionPath.length > 0
+        ? ` \u2014 "${result.hint.sectionPath.join(' > ')}"`
+        : '';
+      lines.push(`Hint: Lines ${result.hint.startLine}\u2013${result.hint.endLine}${section}`);
+    }
+
     lines.push('');
   }
 
@@ -518,7 +524,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       silo: z.string().optional().describe('Restrict search to a specific silo name (omit to search all)'),
       maxResults: z.number().min(1).max(50).optional().describe('Maximum results to return (default: 10)'),
       startPath: z.string().optional().describe('Filter results to files under this directory path. Accepts d-prefixed reference IDs (e.g. "d3") from lodestone_explore.'),
-      mode: z.enum(['hybrid', 'bm25', 'semantic', 'regex']).optional().describe('Search mode: hybrid (default, vector + BM25 + Levenshtein filename), bm25 (keyword-only), semantic (vector-only), or regex (full-table scan with JS RegExp)'),
+      mode: z.enum(['hybrid', 'bm25', 'semantic', 'filepath', 'regex']).optional().describe('Search mode: hybrid (default, vector + BM25 + Levenshtein filename), bm25 (keyword-only), semantic (vector-only), filepath (filename/path matching only), or regex (full-table scan with JS RegExp)'),
       filePattern: z.string().optional().describe('Glob pattern to filter results to matching file paths (e.g. "**/*.ts")'),
       regexFlags: z.string().optional().describe('JavaScript regex flags for regex mode (default: "i")'),
     },
@@ -1590,12 +1596,16 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
       'Returns ranked memory records with id, topic, body, confidence, timestamps, and score.',
       'Use this when you have a specific question or topic to retrieve context for.',
       '',
+      'Query with natural language — use concepts, short sentences, or brief descriptions',
+      'of what you are looking for (e.g. "how does the search pipeline compose scores"',
+      'not "decaying-sum"). Think about meaning, not keywords.',
+      '',
       'Parameters:',
       '  query       — Natural language search query',
       '  max_results — Maximum memories to return. Default: 5',
     ].join('\n'),
     {
-      query: z.string().describe('Search query — natural language'),
+      query: z.string().describe('Search query — natural language, use concepts and short sentences not keywords'),
       max_results: z.number().min(1).max(50).optional().describe('Maximum results to return. Default: 5'),
     },
     async ({ query, max_results }) => {

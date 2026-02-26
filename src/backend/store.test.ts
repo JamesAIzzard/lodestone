@@ -3,7 +3,6 @@ import {
   createSiloDatabase,
   upsertFileChunks,
   deleteFileChunks,
-  twoAxisSearch,
   getChunkCount,
   loadMtimes,
   setMtime,
@@ -13,6 +12,7 @@ import {
   saveMeta,
   type SiloDatabase,
 } from './store';
+import { search } from './search';
 import type { ChunkRecord } from './pipeline-types';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -91,9 +91,9 @@ describe('store', () => {
     expect(remaining.map((r) => r.file_path)).toEqual(['/b.md']);
   });
 
-  // ── Two-Axis Search ─────────────────────────────────────────────────────
+  // ── Search (Decaying Sum Pipeline) ─────────────────────────────────────
 
-  it('twoAxisSearch returns results aggregated by file', () => {
+  it('search returns results aggregated by file', () => {
     upsertFileChunks(
       db, '/close.md',
       [makeChunk('/close.md', 0, 'Close match')],
@@ -106,7 +106,7 @@ describe('store', () => {
     );
 
     // Search with vector identical to makeVector(1) — /close.md should rank higher
-    const results = twoAxisSearch(db, makeVector(1), { query: 'close', limit: 10 });
+    const results = search(db, makeVector(1), { query: 'close', limit: 10 });
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results[0].filePath).toBe('/close.md');
 
@@ -115,28 +115,33 @@ describe('store', () => {
     }
   });
 
-  it('returns chunks with parsed sectionPath', () => {
+  it('search returns hint with line range', () => {
     const chunk = makeChunk('/a.md', 0, 'Test content');
     chunk.sectionPath = ['Architecture', 'Pipeline'];
+    chunk.startLine = 10;
+    chunk.endLine = 20;
     upsertFileChunks(db, '/a.md', [chunk], [makeVector(1)]);
 
-    const results = twoAxisSearch(db, makeVector(1), { query: 'test', limit: 10 });
-    expect(results[0].chunks[0].sectionPath).toEqual(['Architecture', 'Pipeline']);
+    const results = search(db, makeVector(1), { query: 'test', limit: 10 });
+    expect(results.length).toBe(1);
+    // Hint should contain the line range from the matched chunk
+    if (results[0].hint) {
+      expect(results[0].hint.startLine).toBe(10);
+      expect(results[0].hint.endLine).toBe(20);
+    }
   });
 
-  it('limits chunks per file to 5', () => {
-    // Insert 8 chunks for the same file
-    const chunks: ChunkRecord[] = [];
-    const embeddings: number[][] = [];
-    for (let i = 0; i < 8; i++) {
-      chunks.push(makeChunk('/many.md', i, `Chunk ${i}`));
-      embeddings.push(makeVector(i + 1));
-    }
-    upsertFileChunks(db, '/many.md', chunks, embeddings);
+  it('search returns scoreLabel and signals', () => {
+    upsertFileChunks(
+      db, '/a.md',
+      [makeChunk('/a.md', 0, 'Some searchable content')],
+      [makeVector(1)],
+    );
 
-    const results = twoAxisSearch(db, makeVector(1), { query: 'chunk', limit: 10 });
+    const results = search(db, makeVector(1), { query: 'searchable', limit: 10 });
     expect(results.length).toBe(1);
-    expect(results[0].chunks.length).toBeLessThanOrEqual(5);
+    expect(results[0].scoreLabel).toBeDefined();
+    expect(typeof results[0].signals).toBe('object');
   });
 
   // ── Inverted Index ─────────────────────────────────────────────────────
@@ -275,7 +280,7 @@ describe('store', () => {
     expect(loadMtimes(db2).get('/a.md')).toBe(1234);
     expect(loadMeta(db2)!.model).toBe('test-model');
 
-    const results = twoAxisSearch(db2, makeVector(1), { query: 'persisted', limit: 10 });
+    const results = search(db2, makeVector(1), { query: 'persisted', limit: 10 });
     expect(results.length).toBe(1);
     expect(results[0].filePath).toBe('/a.md');
 

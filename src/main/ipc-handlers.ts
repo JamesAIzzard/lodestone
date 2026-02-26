@@ -18,7 +18,7 @@ import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/
 import { checkOllamaConnection } from '../backend/embedding';
 import type { SiloManager } from '../backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
-import { dispatchExplore, mergeDirectoryResults, dispatchTwoAxisSearch, dispatchRegexSearch, mergeTwoAxisResults } from '../backend/search-merge';
+import { dispatchExplore, mergeDirectoryResults, dispatchSearch, mergeSearchResults } from '../backend/search-merge';
 import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams, MemoryStatus } from '../shared/types';
 import { MemoryManager } from '../backend/memory-manager';
 import type { AppContext } from './context';
@@ -122,29 +122,30 @@ export function registerIpcHandlers(ctx: AppContext): void {
     if (ready.length === 0) return [];
 
     const limit = params.limit ?? 10;
-    const raw = params.mode === 'regex'
-      ? dispatchRegexSearch(params, ready)
-      : await dispatchTwoAxisSearch(
-          params,
-          ready,
-          (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
-        );
+    const mode = params.mode ?? 'hybrid';
 
-    const merged = mergeTwoAxisResults(raw, limit);
+    // Filepath and regex modes can search any ready silo; other modes need an embedding service
+    const searchable = mode === 'regex' || mode === 'filepath'
+      ? ready
+      : ready.filter(([, m]) => m.getEmbeddingService() !== null);
+
+    if (searchable.length === 0) return [];
+
+    const raw = await dispatchSearch(
+      params,
+      searchable,
+      (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+    );
+
+    const merged = mergeSearchResults(raw, limit);
 
     return merged.map((r) => ({
       filePath: r.filePath,
       siloName: r.siloName,
       score: r.score,
-      scoreSource: r.scoreSource,
-      axes: r.axes,
-      chunks: r.chunks.map((c) => ({
-        sectionPath: c.sectionPath,
-        text: c.text,
-        startLine: c.startLine,
-        endLine: c.endLine,
-        content: c.content,
-      })),
+      scoreLabel: r.scoreLabel,
+      signals: r.signals,
+      hint: r.hint,
     }));
   });
 

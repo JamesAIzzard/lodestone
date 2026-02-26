@@ -11,9 +11,10 @@
  * - Push notifications (GUI → MCP): { method, params } (no id)
  */
 
+import path from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
 import type { AppContext } from './context';
-import { dispatchExplore, mergeDirectoryResults, dispatchTwoAxisSearch, dispatchRegexSearch, mergeTwoAxisResults } from '../backend/search-merge';
+import { dispatchExplore, mergeDirectoryResults, dispatchSearch, mergeSearchResults } from '../backend/search-merge';
 import { resolveModelAlias } from '../backend/model-registry';
 import type { SearchResult, DirectoryResult, SiloStatus, SearchParams, MemoryRecord, MemorySearchResult } from '../shared/types';
 import type { EditOperation, EditResult } from '../backend/edit';
@@ -243,8 +244,8 @@ export class InternalApi {
       }
     }
 
-    // Regex mode can search any ready silo; other modes need an embedding service
-    const searchable = mode === 'regex'
+    // Filepath and regex modes can search any ready silo; other modes need an embedding service
+    const searchable = mode === 'regex' || mode === 'filepath'
       ? ready
       : ready.filter(([, m]) => m.getEmbeddingService() !== null);
 
@@ -252,29 +253,21 @@ export class InternalApi {
       return { results: [], warnings };
     }
 
-    const raw = mode === 'regex'
-      ? dispatchRegexSearch(searchParams, searchable)
-      : await dispatchTwoAxisSearch(
-          searchParams,
-          searchable,
-          (model) => this.ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
-        );
+    const raw = await dispatchSearch(
+      searchParams,
+      searchable,
+      (model) => this.ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+    );
 
-    const merged = mergeTwoAxisResults(raw, maxResults);
+    const merged = mergeSearchResults(raw, maxResults);
 
     const results: SearchResult[] = merged.map((r) => ({
       filePath: r.filePath,
       siloName: r.siloName,
       score: r.score,
-      scoreSource: r.scoreSource,
-      axes: r.axes,
-      chunks: r.chunks.map((c) => ({
-        sectionPath: c.sectionPath,
-        text: c.text,
-        startLine: c.startLine,
-        endLine: c.endLine,
-        content: c.content,
-      })),
+      scoreLabel: r.scoreLabel,
+      signals: r.signals,
+      hint: r.hint,
     }));
 
     return { results, warnings };
@@ -359,6 +352,8 @@ export class InternalApi {
 
   /**
    * Handle an edit request. Delegates to the edit module.
+   * After a successful text edit or create, triggers immediate reindexing
+   * so subsequent searches reflect the change without waiting for chokidar.
    */
   private async handleEdit(params: Record<string, unknown>): Promise<EditResult> {
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo' });
@@ -366,7 +361,35 @@ export class InternalApi {
     const operation = params.operation as EditOperation;
     const contextLines = (params.contextLines as number) ?? 10;
     const siloDirectories = (params.siloDirectories as string[]) ?? [];
-    return executeEdit(operation, contextLines, siloDirectories);
+    const result = await executeEdit(operation, contextLines, siloDirectories);
+
+    // Trigger immediate reindex for text edits and file creation
+    if (result.success && result.sourcePath) {
+      const op = (operation as { op: string }).op;
+      if (['str_replace', 'insert_at_line', 'overwrite', 'append', 'create'].includes(op)) {
+        this.reindexEditedFile(result.sourcePath);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Find the silo that owns a file path and trigger an immediate reindex.
+   * Fire-and-forget — errors are logged but don't affect the edit result.
+   */
+  private reindexEditedFile(filePath: string): void {
+    const resolved = path.resolve(filePath);
+    for (const manager of this.ctx.siloManagers.values()) {
+      const dirs = manager.getConfig().directories;
+      const isOwned = dirs.some(d => resolved.startsWith(path.resolve(d) + path.sep));
+      if (isOwned) {
+        manager.reindexFile(filePath).catch(err => {
+          console.error(`[internal-api] reindex failed for ${filePath}:`, err);
+        });
+        return;
+      }
+    }
   }
 
   /**

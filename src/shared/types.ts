@@ -62,29 +62,7 @@ export interface FusedScore {
   signals: SignalScores;
 }
 
-// ── Search (Two-Axis Model) ──────────────────────────────────────────────────
-
-export interface SearchResultChunk {
-  sectionPath: string[];
-  text: string;
-  startLine: number;
-  endLine: number;
-  /** Fused content score for this chunk (semantic + BM25 etc.). */
-  content: FusedScore;
-}
-
-export interface SearchResult {
-  filePath: string;
-  siloName: string;
-  /** Overall file score: max across all axes [0,1]. */
-  score: number;
-  /** Which axis drove the file's ranking (e.g. 'content', 'filename'). */
-  scoreSource: string;
-  /** Per-axis fused scores: { content: {...}, filename: {...} }. */
-  axes: Record<string, FusedScore>;
-  /** Top chunks sorted by content score descending. */
-  chunks: SearchResultChunk[];
-}
+// ── Search (legacy two-axis types removed) ──────────────────────────────────
 
 // ── Directory Exploration ────────────────────────────────────────────────
 
@@ -146,10 +124,38 @@ export interface ExploreParams {
   fullContents?: boolean;
 }
 
+// ── Search (Decaying Sum) ────────────────────────────────────────────────────
+
+/** Lightweight hint for where/why a file matched (no chunk text). */
+export interface SearchHint {
+  /** Start line of best-matching chunk (1-based). */
+  startLine?: number;
+  /** End line of best-matching chunk (1-based, inclusive). */
+  endLine?: number;
+  /** Section path of best-matching chunk. */
+  sectionPath?: string[];
+}
+
+/** Search result from the decaying-sum pipeline. */
+export interface SearchResult {
+  /** Absolute file path. */
+  filePath: string;
+  /** Silo this result belongs to. */
+  siloName: string;
+  /** Final decaying-sum score [0, 1]. */
+  score: number;
+  /** Human-readable score label: signal name (e.g. "semantic") or "convergence". */
+  scoreLabel: string;
+  /** Per-signal raw scores: { semantic: 0.6, bm25: 0.55, filepath: 0.5 }. */
+  signals: Record<string, number>;
+  /** Best-chunk hint from the winning content signal. */
+  hint?: SearchHint;
+}
+
 // ── Search Params ─────────────────────────────────────────────────────────────
 
 /** Controls which scoring signals are used for a search. */
-export type SearchMode = 'hybrid' | 'bm25' | 'semantic' | 'regex';
+export type SearchMode = 'hybrid' | 'bm25' | 'semantic' | 'filepath' | 'regex';
 
 export interface SearchParams {
   query: string;

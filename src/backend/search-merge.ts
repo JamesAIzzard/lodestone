@@ -1,5 +1,5 @@
 /**
- * Cross-silo merging for the two-axis search and directory exploration pipelines.
+ * Cross-silo merging for the search and directory exploration pipelines.
  *
  * All scores in both pipelines are absolute [0,1] values, so no cross-silo
  * calibration is needed — results are simply flattened, sorted, and truncated.
@@ -7,8 +7,7 @@
 
 import type { EmbeddingService } from './embedding';
 import type { SiloManager } from './silo-manager';
-import type { TwoAxisChunk } from './store';
-import type { FusedScore } from '../shared/types';
+import type { SearchHint } from '../shared/types';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 import type { SearchParams } from '../shared/types';
 
@@ -28,38 +27,36 @@ function groupByModel(
   return byModel;
 }
 
-// ── Two-Axis Search ─────────────────────────────────────────────────────────
+// ── Search Pipeline ─────────────────────────────────────────────────────────
 
-/** Per-file result from a single silo in the two-axis model. */
-export interface TwoAxisSiloResult {
+/** Per-file result from the decaying-sum pipeline with silo name attached. */
+export interface SiloSearchResult {
   filePath: string;
   siloName: string;
   score: number;
-  scoreSource: string;
-  /** Per-axis fused scores: { content: {...}, filename: {...} }. */
-  axes: Record<string, FusedScore>;
-  chunks: TwoAxisChunk[];
+  scoreLabel: string;
+  signals: Record<string, number>;
+  hint?: SearchHint;
 }
 
 /**
- * Run a two-axis search query across multiple silos, grouping by embedding
- * model so the query is only embedded once per model.
+ * Run a search across multiple silos using the decaying-sum pipeline.
  *
- * For 'bm25' mode the query vector is skipped entirely; all silos run with an
- * empty vector and the DB layer ignores it.
+ * Groups silos by embedding model so the query is only embedded once per model.
+ * For 'bm25' and 'regex' modes, embedding is skipped entirely.
  */
-export async function dispatchTwoAxisSearch(
+export async function dispatchSearch(
   params: SearchParams,
   managers: Iterable<[string, SiloManager]>,
   resolveService: (model: string) => EmbeddingService | null,
-): Promise<TwoAxisSiloResult[]> {
+): Promise<SiloSearchResult[]> {
+  const skipEmbedding = params.mode === 'bm25' || params.mode === 'filepath' || params.mode === 'regex';
   const byModel = groupByModel(managers);
 
-  const raw: TwoAxisSiloResult[] = [];
+  const raw: SiloSearchResult[] = [];
   for (const [model, group] of byModel) {
-    // BM25-only mode: skip embedding entirely, use an empty vector
     let queryVector: number[];
-    if (params.mode === 'bm25') {
+    if (skipEmbedding) {
       queryVector = [];
     } else {
       const service = resolveService(model);
@@ -69,15 +66,15 @@ export async function dispatchTwoAxisSearch(
 
     for (const [name, manager] of group) {
       try {
-        const siloResults = manager.searchTwoAxis(queryVector, params);
+        const siloResults = manager.search(queryVector, params);
         for (const r of siloResults) {
           raw.push({
             filePath: r.filePath,
             siloName: name,
             score: r.score,
-            scoreSource: r.scoreSource,
-            axes: r.axes,
-            chunks: r.chunks,
+            scoreLabel: r.scoreLabel,
+            signals: r.signals,
+            hint: r.hint,
           });
         }
       } catch (err) {
@@ -90,44 +87,13 @@ export async function dispatchTwoAxisSearch(
 }
 
 /**
- * Run a regex search across multiple silos synchronously.
- * No embeddings needed — full-table scan using JS RegExp.
+ * Merge search results from the decaying-sum pipeline across silos.
+ * Scores are absolute [0,1] — just flatten, sort, truncate.
  */
-export function dispatchRegexSearch(
-  params: SearchParams,
-  managers: Iterable<[string, SiloManager]>,
-): TwoAxisSiloResult[] {
-  const raw: TwoAxisSiloResult[] = [];
-  for (const [name, manager] of managers) {
-    try {
-      const siloResults = manager.searchRegex(params);
-      for (const r of siloResults) {
-        raw.push({
-          filePath: r.filePath,
-          siloName: name,
-          score: r.score,
-          scoreSource: r.scoreSource,
-          axes: r.axes,
-          chunks: r.chunks,
-        });
-      }
-    } catch (err) {
-      console.error(`[search] Error in regex search for silo "${name}":`, err);
-    }
-  }
-  return raw;
-}
-
-/**
- * Merge two-axis results from multiple silos.
- *
- * No calibration needed — scores are absolute [0,1] values.
- * Just flatten, sort by score descending, and truncate.
- */
-export function mergeTwoAxisResults(
-  raw: TwoAxisSiloResult[],
+export function mergeSearchResults(
+  raw: SiloSearchResult[],
   limit: number,
-): TwoAxisSiloResult[] {
+): SiloSearchResult[] {
   return raw
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);

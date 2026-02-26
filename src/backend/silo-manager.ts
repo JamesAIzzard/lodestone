@@ -13,8 +13,6 @@ import { validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import type { EmbeddingService } from './embedding';
 import {
   createSiloDatabase,
-  twoAxisSearch,
-  regexSearch,
   getChunkCount,
   loadMtimes,
   setMtime,
@@ -28,9 +26,10 @@ import {
   getFilesInDirectory,
   peekFileCount,
   type SiloDatabase,
-  type TwoAxisFileResult,
   type StoredSiloConfig,
 } from './store';
+import { search as searchV2, type FileResult } from './search';
+import { indexFile } from './pipeline';
 import { SiloWatcher, type WatcherEvent } from './watcher';
 import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
 import type { WatcherState, DirectoryTreeNode, SearchParams } from '../shared/types';
@@ -487,8 +486,8 @@ export class SiloManager {
     return this.watcherState === 'stopped';
   }
 
-  /** Two-axis search with a pre-computed query vector. */
-  searchTwoAxis(queryVector: number[], params: SearchParams): TwoAxisFileResult[] {
+  /** Decaying-sum search with a pre-computed query vector. */
+  search(queryVector: number[], params: SearchParams): FileResult[] {
     if (!this.db) return [];
     // Convert absolute startPath → stored key prefix for DB filtering
     let storedStartPath = params.startPath;
@@ -497,34 +496,29 @@ export class SiloManager {
       if (key) {
         storedStartPath = key;
       } else {
-        // startPath may be a silo root or already a stored key
         const rootIdx = this.config.directories.indexOf(params.startPath);
         if (rootIdx >= 0) {
           storedStartPath = `${rootIdx}:`;
         }
       }
     }
-    const results = twoAxisSearch(this.db, queryVector, { ...params, startPath: storedStartPath });
-    return this.resolveTwoAxisPaths(results);
+    const results = searchV2(this.db, queryVector, { ...params, startPath: storedStartPath });
+    // Resolve stored keys back to absolute file paths
+    return results.map((r) => ({
+      ...r,
+      filePath: resolveStoredKey(r.filePath, this.config.directories),
+    }));
   }
 
-  /** Regex search: full-table scan — no embedding needed. */
-  searchRegex(params: SearchParams): TwoAxisFileResult[] {
-    if (!this.db) return [];
-    let storedStartPath = params.startPath;
-    if (params.startPath) {
-      const key = makeStoredDirKey(params.startPath, this.config.directories);
-      if (key) {
-        storedStartPath = key;
-      } else {
-        const rootIdx = this.config.directories.indexOf(params.startPath);
-        if (rootIdx >= 0) {
-          storedStartPath = `${rootIdx}:`;
-        }
-      }
-    }
-    const results = regexSearch(this.db, { ...params, startPath: storedStartPath });
-    return this.resolveTwoAxisPaths(results);
+  /**
+   * Immediately re-index a single file after an edit.
+   * Fire-and-forget — caller should catch errors.
+   */
+  async reindexFile(absolutePath: string): Promise<void> {
+    if (!this.embeddingService || !this.db || this.stopped) return;
+    const storedKey = makeStoredKey(absolutePath, this.config.directories);
+    const stat = fs.statSync(absolutePath);
+    await indexFile(absolutePath, storedKey, this.embeddingService, this.db, stat.mtimeMs);
   }
 
   /**
@@ -592,14 +586,6 @@ export class SiloManager {
         })),
       };
     });
-  }
-
-  /** Resolve stored keys in two-axis search results back to absolute file paths. */
-  private resolveTwoAxisPaths(results: TwoAxisFileResult[]): TwoAxisFileResult[] {
-    return results.map((r) => ({
-      ...r,
-      filePath: resolveStoredKey(r.filePath, this.config.directories),
-    }));
   }
 
   /** Resolve stored-key dir paths in explore results back to absolute filesystem paths. */

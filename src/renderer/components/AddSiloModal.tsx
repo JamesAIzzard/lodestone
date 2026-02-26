@@ -15,6 +15,11 @@ import SiloAppearancePicker from './SiloAppearancePicker';
 import { autoAssignColor, DEFAULT_SILO_ICON, validateSiloColor, validateSiloIcon, type SiloColor, type SiloIconName } from '../../shared/silo-appearance';
 import type { StoredSiloConfigResponse } from '../../shared/electron-api';
 
+/** Extract the raw model ID from a display string like "model-id — Display Name". */
+function modelIdFromDisplay(display: string): string {
+  return display.split(' — ')[0].trim();
+}
+
 const NEW_STEPS = ['Mode', 'Name', 'Directories', 'Extensions', 'Model', 'Storage'] as const;
 const EXISTING_STEPS = ['Mode', 'Storage', 'Name', 'Directories', 'Extensions', 'Model'] as const;
 type Step = (typeof NEW_STEPS)[number] | (typeof EXISTING_STEPS)[number];
@@ -378,7 +383,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
               <label className="mb-2 block text-sm text-muted-foreground">
                 Embedding model
               </label>
-              {mode === 'existing' && dbModel && model !== dbModel && (
+              {mode === 'existing' && dbModel && modelIdFromDisplay(model) !== dbModel && (
                 <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-400">
                   <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
                   <span>
@@ -407,7 +412,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
                       )}
                     />
                     {m}
-                    {m === dbModel && mode === 'existing' && (
+                    {modelIdFromDisplay(m) === dbModel && mode === 'existing' && (
                       <span className="text-[10px] text-muted-foreground">(stored in DB)</span>
                     )}
                     {m.startsWith('snowflake-arctic-embed') && mode !== 'existing' && (

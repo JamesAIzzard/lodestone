@@ -40,6 +40,16 @@ export function priorityLabel(p: number): string {
   }
 }
 
+/** Map status string to a display label. */
+export function statusLabel(s: string): string {
+  switch (s) {
+    case 'open': return 'open';
+    case 'completed': return 'completed \u2713';
+    case 'cancelled': return 'cancelled';
+    default: return s;
+  }
+}
+
 // ── Read safety ──────────────────────────────────────────────────────────────
 
 /** Maximum file size in bytes for full reads via lodestone_read. */

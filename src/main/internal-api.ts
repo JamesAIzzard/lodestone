@@ -20,6 +20,7 @@ import type { SearchResult, DirectoryResult, SiloStatus, SearchParams, MemoryRec
 import type { EditOperation, EditResult } from '../backend/edit';
 import type { SiloManager } from '../backend/silo-manager';
 import { MEMORY_MODEL } from '../backend/memory-store';
+import { parseDateRange } from '../backend/date-parser';
 
 /** Windows named pipe path. */
 export const GUI_PIPE_NAME = '\\\\.\\pipe\\lodestone-gui';
@@ -167,6 +168,9 @@ export class InternalApi {
           break;
         case 'memory.getById':
           result = this.handleMemoryGetById(req.params ?? {});
+          break;
+        case 'memory.agenda':
+          result = this.handleMemoryAgenda(req.params ?? {});
           break;
         default:
           this.sendResponse(socket, req.id, undefined, `Unknown method: ${req.method}`);
@@ -425,13 +429,15 @@ export class InternalApi {
     const actionDate = (params.actionDate as string | null | undefined) ?? null;
     const recurrence = (params.recurrence as string | null | undefined) ?? null;
     const priority = (params.priority as number | null | undefined) ?? null;
+    const memStatus = (params.status as string | null | undefined) ?? null;
+    const completedOn = (params.completedOn as string | null | undefined) ?? null;
 
     if (!body?.trim()) throw new Error('Missing required parameter: body');
 
     const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
     await service.ensureReady();
 
-    const result = await mm.remember(topic, body.trim(), confidence, contextHint, service, force, actionDate, recurrence, priority);
+    const result = await mm.remember(topic, body.trim(), confidence, contextHint, service, force, actionDate, recurrence, priority, memStatus, completedOn);
 
     // Only notify the renderer when a memory was actually written
     if (result.status === 'created') {
@@ -454,11 +460,14 @@ export class InternalApi {
     if (!query?.trim()) throw new Error('Missing required parameter: query');
 
     // Date-range filters (already normalised to ISO 8601 by the MCP tool handler)
-    const dateFilters: Record<string, string> = {};
+    const dateFilters: Record<string, string | null> = {};
     if (typeof params.updatedAfter === 'string') dateFilters.updatedAfter = params.updatedAfter;
     if (typeof params.updatedBefore === 'string') dateFilters.updatedBefore = params.updatedBefore;
     if (typeof params.actionAfter === 'string') dateFilters.actionAfter = params.actionAfter;
     if (typeof params.actionBefore === 'string') dateFilters.actionBefore = params.actionBefore;
+    if (typeof params.completedAfter === 'string') dateFilters.completedAfter = params.completedAfter;
+    if (typeof params.completedBefore === 'string') dateFilters.completedBefore = params.completedBefore;
+    if ('status' in params) dateFilters.status = params.status as string | null;
 
     const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
     await service.ensureReady();
@@ -488,6 +497,8 @@ export class InternalApi {
       recurrence?: string | null;
       priority?: number | null;
       topic?: string;
+      status?: string | null;
+      completedOn?: string | null;
     } = {};
     if (typeof params.body === 'string') updates.body = params.body;
     if (typeof params.confidence === 'number') updates.confidence = params.confidence;
@@ -496,6 +507,8 @@ export class InternalApi {
     if ('recurrence' in params) updates.recurrence = params.recurrence as string | null;
     if ('priority' in params) updates.priority = params.priority as number | null;
     if (typeof params.topic === 'string') updates.topic = params.topic;
+    if ('status' in params) updates.status = params.status as string | null;
+    if ('completedOn' in params) updates.completedOn = params.completedOn as string | null;
 
     if (Object.keys(updates).length === 0) throw new Error('No fields to update');
 
@@ -527,6 +540,21 @@ export class InternalApi {
 
     const maxResults = (params.maxResults as number | undefined) ?? 10;
     return mm.orient(maxResults);
+  }
+
+  private handleMemoryAgenda(params: Record<string, unknown>): { overdue: MemoryRecord[]; upcoming: MemoryRecord[] } {
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
+    const mm = this.ctx.memoryManager;
+    if (!mm?.isConnected()) throw new Error('No memory database connected');
+
+    const when = (params.when as string | undefined) ?? 'this week';
+    const includeCompleted = (params.includeCompleted as boolean | undefined) ?? false;
+    const maxResults = (params.maxResults as number | undefined) ?? 20;
+
+    const whenRange = parseDateRange(when);
+    if (!whenRange) throw new Error(`Could not parse date range: "${when}"`);
+
+    return mm.agenda(whenRange, includeCompleted, maxResults);
   }
 
   private handleMemoryGetById(params: Record<string, unknown>): MemoryRecord | null {

@@ -215,6 +215,92 @@ export function parseFlexibleDate(input: string, now?: Date): string | null {
   return null;
 }
 
+// ── Date Range ──────────────────────────────────────────────────────────────
+
+/** A resolved date range with ISO 8601 start and end dates (inclusive). */
+export interface DateRange {
+  start: string;
+  end: string;
+}
+
+/** Sentinel returned when the keyword means "fetch overdue items" (past action_date). */
+export interface OverdueSentinel {
+  overdue: true;
+}
+
+export type DateRangeResult = DateRange | OverdueSentinel;
+
+/**
+ * Parse a date range expression into a { start, end } pair (or overdue sentinel).
+ *
+ * Supported range keywords:
+ *   - "overdue"     → sentinel (action_date before today, not completed)
+ *   - "today"       → today → today
+ *   - "tomorrow"    → tomorrow → tomorrow
+ *   - "this week"   → today → nearest upcoming Sunday (inclusive)
+ *   - "next week"   → next Monday → next Sunday
+ *   - "this month"  → 1st → last day of current month
+ *   - "next month"  → 1st → last day of next month
+ *   - Any single-date expression → that date → that date (via parseFlexibleDate)
+ *
+ * @returns DateRangeResult, or null if the expression cannot be parsed.
+ */
+export function parseDateRange(input: string, now?: Date): DateRangeResult | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const ref = now ?? new Date();
+  const today = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate());
+  const lower = trimmed.toLowerCase();
+
+  if (lower === 'overdue') {
+    return { overdue: true };
+  }
+
+  if (lower === 'today') {
+    const d = formatDate(today);
+    return { start: d, end: d };
+  }
+
+  if (lower === 'tomorrow') {
+    const d = new Date(today);
+    d.setDate(d.getDate() + 1);
+    const s = formatDate(d);
+    return { start: s, end: s };
+  }
+
+  if (lower === 'this week') {
+    // today → nearest upcoming Sunday (if today is Sunday, end = today)
+    const endOfWeek = new Date(today);
+    const daysUntilSunday = (7 - today.getDay()) % 7;
+    endOfWeek.setDate(today.getDate() + daysUntilSunday);
+    return { start: formatDate(today), end: formatDate(endOfWeek) };
+  }
+
+  if (lower === 'next week') {
+    // next Monday → next Sunday
+    const nextMonday = nextWeekday(today, 1);
+    const nextSunday = new Date(nextMonday);
+    nextSunday.setDate(nextMonday.getDate() + 6);
+    return { start: formatDate(nextMonday), end: formatDate(nextSunday) };
+  }
+
+  if (lower === 'this month') {
+    return { start: formatDate(startOfMonth(today)), end: formatDate(endOfMonth(today)) };
+  }
+
+  if (lower === 'next month') {
+    const firstOfNext = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    return { start: formatDate(firstOfNext), end: formatDate(endOfMonth(firstOfNext)) };
+  }
+
+  // Fall back to single-date resolution — returned as a single-day range
+  const single = parseFlexibleDate(trimmed, now);
+  if (single) return { start: single, end: single };
+
+  return null;
+}
+
 // ── Recurrence ──────────────────────────────────────────────────────────────
 
 /** Canonical day names indexed by JS day number (0=Sun). */

@@ -1,13 +1,13 @@
 /**
- * Memory tool registrations: remember, recall, revise, forget, orient.
+ * Memory tool registrations: remember, recall, revise, forget, orient, agenda.
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { parseFlexibleDate, parseRecurrence } from '../date-parser';
+import { parseFlexibleDate, parseRecurrence, parseDateRange } from '../date-parser';
 import type { McpServerDeps } from './types';
 import { PuidManager } from './puid-manager';
-import { truncateMemoryBody, memoryBodyWarning, priorityLabel } from './formatting';
+import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel } from './formatting';
 
 export function registerRememberTool(server: McpServer, deps: McpServerDeps): void {
   server.tool(
@@ -38,6 +38,12 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
       '                  "every monday", "every weekday", "every 3 days", "every 2 weeks".',
       '                  Requires action_date to be set. The action_date auto-advances on orient.',
       '  priority     \u2014 Optional urgency level: 1=low, 2=medium, 3=high, 4=critical.',
+      '  status       \u2014 Optional lifecycle status: "open", "completed", "cancelled".',
+      '                  Setting completed_on implies completed. Setting status="completed"',
+      '                  auto-fills completed_on with today if not provided.',
+      '                  Setting status="open" clears completed_on.',
+      '  completed_on \u2014 Optional date the memory was completed. Implies status="completed".',
+      '                  Accepts flexible expressions ("today", "yesterday", "2026-03-15").',
       '',
       'Returns: { id } on success, or details of a similar existing memory for review.',
     ].join('\n'),
@@ -50,8 +56,10 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
       action_date: z.string().optional().describe('Date when this memory is actionable. Flexible expressions accepted ("tomorrow", "next Monday", "2026-03-15"). Stored as ISO 8601.'),
       recurrence: z.string().optional().describe('Recurrence rule: "daily", "weekly", "biweekly", "monthly", "yearly", "every monday", "every weekday", "every N days", "every N weeks". Requires action_date.'),
       priority: z.number().int().min(1).max(4).optional().describe('Urgency: 1=low, 2=medium, 3=high, 4=critical'),
+      status: z.enum(['open', 'completed', 'cancelled']).optional().describe('Lifecycle status. "completed" auto-fills completed_on=today. "open" clears completed_on.'),
+      completed_on: z.string().optional().describe('Date completed. Flexible expressions accepted. Implies status="completed".'),
     },
-    async ({ topic, body, confidence, context_hint, force, action_date, recurrence, priority }) => {
+    async ({ topic, body, confidence, context_hint, force, action_date, recurrence, priority, status, completed_on }) => {
       try {
         deps.notifyActivity?.({ channel: 'memory' });
 
@@ -85,6 +93,18 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
           }
         }
 
+        // Parse flexible completed_on to ISO 8601
+        let parsedCompletedOn: string | null = null;
+        if (completed_on) {
+          parsedCompletedOn = parseFlexibleDate(completed_on);
+          if (!parsedCompletedOn) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: Could not parse completed_on "${completed_on}". Use ISO 8601 (YYYY-MM-DD) or relative expressions (today, yesterday).` }],
+              isError: true,
+            };
+          }
+        }
+
         const result = await deps.memoryRemember({
           topic,
           body,
@@ -94,6 +114,8 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
           actionDate: parsedActionDate,
           recurrence: parsedRecurrence,
           priority: priority ?? null,
+          status: status ?? null,
+          completedOn: parsedCompletedOn,
         });
 
         if (result.status === 'duplicate') {
@@ -106,6 +128,8 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
             meta.push(actionStr);
           }
           if (result.existing.priority) meta.push(`Priority: ${priorityLabel(result.existing.priority)}`);
+          if (result.existing.status) meta.push(`Status: ${statusLabel(result.existing.status)}`);
+          if (result.existing.completedOn) meta.push(`Completed: ${result.existing.completedOn}`);
           const lines = [
             `Similar memory found (${sim}% similarity):`,
             '',
@@ -130,6 +154,8 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
           extras.push(actionStr + '.');
         }
         if (priority) extras.push(`Priority: ${priorityLabel(priority)}.`);
+        if (status) extras.push(`Status: ${statusLabel(status)}.`);
+        if (parsedCompletedOn) extras.push(`Completed: ${parsedCompletedOn}.`);
         return {
           content: [{ type: 'text' as const, text: `Created memory m${result.id}.${extras.length ? ' ' + extras.join(' ') : ''}${warning}` }],
         };
@@ -161,10 +187,13 @@ export function registerRecallTool(server: McpServer, deps: McpServerDeps): void
       '  mode           \u2014 Search mode: hybrid (default, vector + BM25), bm25 (keyword-only), semantic (vector-only)',
       '  updated_after  \u2014 Filter to memories with updated_at >= this date',
       '  updated_before \u2014 Filter to memories with updated_at <= this date',
-      '  action_after   \u2014 Filter to memories with action_date >= this date',
-      '  action_before  \u2014 Filter to memories with action_date <= this date',
+      '  action_after     \u2014 Filter to memories with action_date >= this date',
+      '  action_before    \u2014 Filter to memories with action_date <= this date',
+      '  completed_after  \u2014 Filter to memories completed on or after this date',
+      '  completed_before \u2014 Filter to memories completed on or before this date',
+      '  status           \u2014 Filter by status: "open", "completed", "cancelled"',
       '',
-      'Date filters accept flexible expressions ("today", "yesterday", "last Monday",',
+      'All date filters accept flexible expressions ("today", "yesterday", "last Monday",',
       '"next Friday", "2026-03-15") which are normalised to ISO 8601 before querying.',
       'Combine freely: updated_after + action_before for memories updated recently with upcoming deadlines.',
     ].join('\n'),
@@ -177,14 +206,24 @@ export function registerRecallTool(server: McpServer, deps: McpServerDeps): void
       updated_before: z.string().optional().describe('Filter: updated_at <= this date. Flexible expressions accepted.'),
       action_after: z.string().optional().describe('Filter: action_date >= this date. Flexible expressions accepted.'),
       action_before: z.string().optional().describe('Filter: action_date <= this date. Flexible expressions accepted.'),
+      completed_after: z.string().optional().describe('Filter: completed_on >= this date. Flexible expressions accepted.'),
+      completed_before: z.string().optional().describe('Filter: completed_on <= this date. Flexible expressions accepted.'),
+      status: z.enum(['open', 'completed', 'cancelled']).optional().describe('Filter by status.'),
     },
-    async ({ query, max_results, mode, updated_after, updated_before, action_after, action_before }) => {
+    async ({ query, max_results, mode, updated_after, updated_before, action_after, action_before, completed_after, completed_before, status }) => {
       try {
         deps.notifyActivity?.({ channel: 'memory' });
 
         // Parse flexible date expressions to ISO 8601
         const dateFilters: Record<string, string> = {};
-        for (const [key, raw] of Object.entries({ updatedAfter: updated_after, updatedBefore: updated_before, actionAfter: action_after, actionBefore: action_before })) {
+        for (const [key, raw] of Object.entries({
+          updatedAfter: updated_after,
+          updatedBefore: updated_before,
+          actionAfter: action_after,
+          actionBefore: action_before,
+          completedAfter: completed_after,
+          completedBefore: completed_before,
+        })) {
           if (!raw) continue;
           const parsed = parseFlexibleDate(raw);
           if (!parsed) {
@@ -201,6 +240,7 @@ export function registerRecallTool(server: McpServer, deps: McpServerDeps): void
           maxResults: max_results,
           mode,
           ...dateFilters,
+          ...(status !== undefined ? { status } : {}),
         });
         if (results.length === 0) {
           return { content: [{ type: 'text' as const, text: 'No memories found.' }] };
@@ -230,6 +270,8 @@ export function registerRecallTool(server: McpServer, deps: McpServerDeps): void
             meta.push(actionStr);
           }
           if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
+          if (r.status) meta.push(`Status: ${statusLabel(r.status)}`);
+          if (r.completedOn) meta.push(`Completed: ${r.completedOn}`);
           lines.push(`_${meta.join(' | ')}_`);
           lines.push('');
         }
@@ -263,6 +305,9 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
       '                  every monday, every weekday, every N days, every N weeks.',
       '  priority     \u2014 New priority (optional, pass null to clear). 1=low, 2=medium, 3=high, 4=critical.',
       '  topic        \u2014 New topic label (optional).',
+      '  status       \u2014 New status (optional, pass null to clear): "open", "completed", "cancelled".',
+      '                  "completed" auto-fills completed_on=today. "open" clears completed_on.',
+      '  completed_on \u2014 New completion date (optional, pass null to clear). Flexible expressions accepted.',
     ].join('\n'),
     {
       id: z.union([z.number().int(), z.string()]).describe('Memory id to update (number or m-prefixed id like "m5")'),
@@ -273,8 +318,10 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
       recurrence: z.union([z.string(), z.null()]).optional().describe('New recurrence rule (null to clear). Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.'),
       priority: z.union([z.number().int().min(1).max(4), z.null()]).optional().describe('New priority (null to clear). 1=low, 2=medium, 3=high, 4=critical.'),
       topic: z.string().optional().describe('New topic label'),
+      status: z.union([z.enum(['open', 'completed', 'cancelled']), z.null()]).optional().describe('New status (null to clear). "completed" auto-fills completed_on. "open" clears completed_on.'),
+      completed_on: z.union([z.string(), z.null()]).optional().describe('New completion date (null to clear). Flexible expressions accepted.'),
     },
-    async ({ id: rawId, body, confidence, context_hint, action_date, recurrence, priority, topic }) => {
+    async ({ id: rawId, body, confidence, context_hint, action_date, recurrence, priority, topic, status, completed_on }) => {
       try {
         deps.notifyActivity?.({ channel: 'memory' });
         const id = PuidManager.resolveMemoryIdParam(rawId);
@@ -307,6 +354,20 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
           }
         }
 
+        // Parse flexible completed_on (null clears it)
+        let parsedCompletedOn: string | null | undefined;
+        if (completed_on === null) {
+          parsedCompletedOn = null;
+        } else if (completed_on !== undefined) {
+          parsedCompletedOn = parseFlexibleDate(completed_on);
+          if (!parsedCompletedOn) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: Could not parse completed_on "${completed_on}". Use ISO 8601 (YYYY-MM-DD) or relative expressions (today, yesterday).` }],
+              isError: true,
+            };
+          }
+        }
+
         await deps.memoryRevise({
           id,
           body,
@@ -316,6 +377,8 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
           recurrence: parsedRecurrence,
           priority,
           topic,
+          status,
+          completedOn: parsedCompletedOn,
         });
         const warning = body ? memoryBodyWarning(body) : '';
         return { content: [{ type: 'text' as const, text: `Memory m${id} revised.${warning}` }] };
@@ -406,4 +469,113 @@ export function registerOrientTool(server: McpServer, deps: McpServerDeps): void
       }
     },
   );
+}
+
+export function registerAgendaTool(server: McpServer, deps: McpServerDeps): void {
+  server.tool(
+    'lodestone_agenda',
+    [
+      'Return an agenda view: overdue items + upcoming items for the requested time window.',
+      '',
+      'Always surfaces overdue memories first (action_date before today, not completed/cancelled),',
+      'with a prompt to ask the user what to do about them.',
+      'Then lists upcoming items within the requested window, sorted by priority then date.',
+      'Completed and cancelled memories are excluded by default.',
+      '',
+      'Call this at the start of a work session or when the user asks what needs doing.',
+      'Use lodestone_orient for recent conversational context; use lodestone_agenda for tasks.',
+      '',
+      'Parameters:',
+      '  when             \u2014 Time window for upcoming items. Accepts:',
+      '                       Keywords: "today", "tomorrow", "this week" (default), "next week",',
+      '                                 "this month", "next month", "overdue" (only overdue items)',
+      '                       Single dates: "Monday", "next Friday", "March 15", "2026-03-15"',
+      '  include_completed \u2014 Include completed/cancelled items in upcoming. Default: false',
+      '  max_results      \u2014 Maximum items per section (overdue + upcoming each). Default: 20',
+    ].join('\n'),
+    {
+      when: z.string().optional().describe(
+        'Time window: "today", "tomorrow", "this week" (default), "next week", "this month", "next month", "overdue", or any date expression.',
+      ),
+      include_completed: z.boolean().optional().describe('Include completed/cancelled items. Default: false'),
+      max_results: z.number().int().min(1).max(50).optional().describe('Max items per section. Default: 20'),
+    },
+    async ({ when = 'this week', include_completed = false, max_results = 20 }) => {
+      try {
+        deps.notifyActivity?.({ channel: 'memory' });
+
+        const range = parseDateRange(when);
+        if (!range) {
+          return {
+            content: [{ type: 'text' as const, text: `Error: Could not parse "when" value "${when}". Use keywords (today, tomorrow, this week, next week, this month, next month, overdue) or a date expression.` }],
+            isError: true,
+          };
+        }
+
+        const result = await deps.memoryAgenda({
+          when,
+          includeCompleted: include_completed,
+          maxResults: max_results,
+        });
+
+        const lines: string[] = [];
+
+        // ── Overdue section ──────────────────────────────────────────────
+        if (result.overdue.length > 0) {
+          lines.push(`## \u26a0\ufe0f Overdue (${result.overdue.length})`);
+          lines.push('');
+          for (const r of result.overdue) {
+            lines.push(formatAgendaItem(r));
+          }
+          lines.push('> These items are overdue \u2014 consider asking the user what to do with them.');
+          lines.push('');
+        }
+
+        // ── Upcoming section ─────────────────────────────────────────────
+        if (!('overdue' in range)) {
+          const windowLabel = when.toLowerCase();
+          if (result.upcoming.length === 0) {
+            lines.push(`## \ud83d\udcc5 Upcoming (${windowLabel})`);
+            lines.push('');
+            lines.push('No upcoming items.');
+          } else {
+            lines.push(`## \ud83d\udcc5 Upcoming (${windowLabel}) \u2014 ${result.upcoming.length} item${result.upcoming.length === 1 ? '' : 's'}`);
+            lines.push('');
+            for (const r of result.upcoming) {
+              lines.push(formatAgendaItem(r));
+            }
+          }
+        }
+
+        if (lines.length === 0) {
+          return { content: [{ type: 'text' as const, text: `Nothing on the agenda for "${when}".` }] };
+        }
+
+        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+}
+
+/** Format a single agenda item as a compact markdown block. */
+function formatAgendaItem(r: { id: number; topic: string; body: string; actionDate: string | null; recurrence: string | null; priority: number | null; status: string | null; completedOn: string | null; confidence: number }): string {
+  const meta: string[] = [];
+  if (r.actionDate) {
+    let actionStr = `Action: ${r.actionDate}`;
+    if (r.recurrence) actionStr += ` (${r.recurrence})`;
+    meta.push(actionStr);
+  }
+  if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
+  if (r.status) meta.push(`Status: ${statusLabel(r.status)}`);
+  if (r.completedOn) meta.push(`Completed: ${r.completedOn}`);
+  const lines = [
+    `### [m${r.id}] ${r.topic}`,
+    truncateMemoryBody(r.body),
+    `_${meta.join(' | ')}_`,
+    '',
+  ];
+  return lines.join('\n');
 }

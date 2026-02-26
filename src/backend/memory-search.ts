@@ -28,6 +28,10 @@ export interface MemoryDateFilters {
   updatedBefore?: string;
   actionAfter?: string;
   actionBefore?: string;
+  completedAfter?: string;
+  completedBefore?: string;
+  /** Filter by status. Use 'completed' to match completed_on IS NOT NULL too. Null = unclassified. */
+  status?: string | null;
 }
 
 /** Everything a memory signal needs to produce its scores. */

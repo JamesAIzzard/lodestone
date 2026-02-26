@@ -204,6 +204,8 @@ export interface MemoryRecord {
   actionDate: string | null;
   recurrence: string | null;
   priority: number | null;
+  status: string | null;        // 'open' | 'completed' | 'cancelled' | null
+  completedOn: string | null;   // ISO 8601 date — implies completed when set
   createdAt: string;
   updatedAt: string;
 }

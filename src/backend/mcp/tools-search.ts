@@ -10,7 +10,7 @@ import { PuidManager } from './puid-manager';
 import {
   SEARCH_DESCRIPTION, READ_DESCRIPTION, EXPLORE_DESCRIPTION,
   formatSearchResults, formatExploreResults,
-  formatBytes, memoryNudge, truncateMemoryBody, priorityLabel,
+  formatBytes, memoryNudge, truncateMemoryBody, priorityLabel, statusLabel,
   MAX_READ_BYTES, PREVIEW_LINES,
 } from './formatting';
 
@@ -149,6 +149,8 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
                   memMeta.push(actionStr);
                 }
                 if (memory.priority) memMeta.push(`Priority: ${priorityLabel(memory.priority)}`);
+                if (memory.status) memMeta.push(`Status: ${statusLabel(memory.status)}`);
+                if (memory.completedOn) memMeta.push(`Completed: ${memory.completedOn}`);
                 content.push({
                   type: 'text' as const,
                   text: [

@@ -20,8 +20,10 @@ import {
   insertMemory,
   updateMemory,
   deleteMemory,
-  getRecentMemories,
+  getRecentActiveMemories,
   getMemoriesByActionDateRange,
+  getActiveUpcomingMemories,
+  getOverdueMemories,
   getMemory,
   findSimilarMemory,
   getMemoryCount,
@@ -31,7 +33,7 @@ import {
   type SimilarMemoryResult,
 } from './memory-store';
 import { searchMemory, type MemorySearchResult, type MemorySearchMode, type MemoryDateFilters } from './memory-search';
-import { advanceRecurrence } from './date-parser';
+import { advanceRecurrence, parseDateRange, type DateRangeResult } from './date-parser';
 
 // ── Status ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,15 @@ export interface MemoryStatus {
   dbPath: string | null;
   memoryCount: number;
   databaseSizeBytes: number;
+}
+
+// ── Agenda ────────────────────────────────────────────────────────────────────
+
+export interface AgendaResult {
+  /** Items whose action_date is before today and are not completed or cancelled. */
+  overdue: MemoryRecord[];
+  /** Items whose action_date falls within the requested time window. */
+  upcoming: MemoryRecord[];
 }
 
 // ── Manager ───────────────────────────────────────────────────────────────────
@@ -207,11 +218,18 @@ export class MemoryManager {
     actionDate: string | null = null,
     recurrence: string | null = null,
     priority: number | null = null,
+    memStatus: string | null = null,
+    completedOn: string | null = null,
   ): Promise<
     | { status: 'created'; id: number }
     | { status: 'duplicate'; existing: MemoryRecord; similarity: number }
   > {
     this.assertConnected();
+
+    // Sync status ↔ completedOn before writing
+    const synced = syncStatusAndCompletedOn(memStatus, completedOn);
+    memStatus = synced.status;
+    completedOn = synced.completedOn;
 
     const prefix = embeddingService.modelName === MEMORY_MODEL
       ? 'search_document: '
@@ -227,7 +245,7 @@ export class MemoryManager {
       }
     }
 
-    const id = insertMemory(this.db!, topic, body, confidence, contextHint, embedding, actionDate, recurrence, priority);
+    const id = insertMemory(this.db!, topic, body, confidence, contextHint, embedding, actionDate, recurrence, priority, memStatus, completedOn);
     console.log(`[memory] Created new memory ${id} [${topic}]`);
     return { status: 'created', id };
   }
@@ -271,10 +289,22 @@ export class MemoryManager {
       recurrence?: string | null;
       priority?: number | null;
       topic?: string;
+      status?: string | null;
+      completedOn?: string | null;
     },
     embeddingService: EmbeddingService,
   ): Promise<void> {
     this.assertConnected();
+
+    // Sync status ↔ completedOn before writing
+    if (updates.status !== undefined || updates.completedOn !== undefined) {
+      const synced = syncStatusAndCompletedOn(
+        updates.status,
+        updates.completedOn,
+      );
+      updates.status = synced.status;
+      updates.completedOn = synced.completedOn;
+    }
 
     let embedding: number[] | undefined;
     if (updates.body !== undefined) {
@@ -301,8 +331,8 @@ export class MemoryManager {
    * Return the N most recently updated memories, plus any with upcoming action dates.
    *
    * 1. Auto-advance recurring memories whose action_date is in the past.
-   * 2. Fetch memories with action_date in [today, today+7], ordered by action_date ASC.
-   * 3. Fetch the most recently updated memories.
+   * 2. Fetch active (non-completed, non-cancelled) memories with action_date in [today, today+7].
+   * 3. Fetch the most recently updated active memories.
    * 4. Merge the two sets (action-date memories first, sorted by priority), deduplicated by id.
    * 5. Return up to maxResults entries.
    */
@@ -318,8 +348,8 @@ export class MemoryManager {
     // Auto-advance recurring memories before fetching upcoming
     this.autoAdvanceRecurringMemories(today, todayStr);
 
-    // Upcoming action-date memories (prioritised)
-    const upcoming = getMemoriesByActionDateRange(this.db!, todayStr, nextWeekStr, maxResults);
+    // Upcoming active action-date memories (prioritised, excludes completed/cancelled)
+    const upcoming = getActiveUpcomingMemories(this.db!, todayStr, nextWeekStr, maxResults);
 
     // Sort upcoming: higher priority first, then by action_date ASC
     upcoming.sort((a, b) => {
@@ -329,8 +359,8 @@ export class MemoryManager {
       return (a.actionDate ?? '').localeCompare(b.actionDate ?? '');
     });
 
-    // Recent memories (existing behaviour)
-    const recent = getRecentMemories(this.db!, maxResults);
+    // Recent active memories (excludes completed/cancelled)
+    const recent = getRecentActiveMemories(this.db!, maxResults);
 
     // Merge: action-date memories first, then recent, deduplicated
     const seen = new Set<number>();
@@ -350,6 +380,44 @@ export class MemoryManager {
     }
 
     return merged;
+  }
+
+  /**
+   * Return agenda items: overdue memories + upcoming memories in the requested window.
+   * Overdue = action_date before today, not completed, not cancelled.
+   * Upcoming = action_date within the resolved date range.
+   */
+  agenda(
+    when: DateRangeResult,
+    includeCompleted: boolean,
+    maxResults: number,
+  ): AgendaResult {
+    this.assertConnected();
+
+    const today = new Date();
+    const todayStr = formatDateISO(today);
+
+    // Auto-advance recurring memories
+    this.autoAdvanceRecurringMemories(today, todayStr);
+
+    // Always fetch overdue items (active only)
+    const overdue = getOverdueMemories(this.db!, todayStr, maxResults);
+    overdue.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || (a.actionDate ?? '').localeCompare(b.actionDate ?? ''));
+
+    // Fetch upcoming items for the requested window (unless "overdue" sentinel)
+    let upcoming: MemoryRecord[] = [];
+    if (!('overdue' in when)) {
+      const { start, end } = when;
+      if (includeCompleted) {
+        // Use the raw date-range query (includes completed/cancelled)
+        upcoming = getMemoriesByActionDateRange(this.db!, start, end, maxResults);
+      } else {
+        upcoming = getActiveUpcomingMemories(this.db!, start, end, maxResults);
+      }
+      upcoming.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || (a.actionDate ?? '').localeCompare(b.actionDate ?? ''));
+    }
+
+    return { overdue, upcoming };
   }
 
   /**
@@ -413,4 +481,36 @@ function formatDateISO(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+/**
+ * Sync status and completedOn so they stay consistent:
+ *   - completedOn set         → status forced to 'completed'
+ *   - status='completed'      → completedOn auto-filled to today if not provided
+ *   - status='open'           → completedOn cleared to null
+ *   - completedOn=null        → status cleared to null (if not explicitly set)
+ */
+function syncStatusAndCompletedOn(
+  status: string | null | undefined,
+  completedOn: string | null | undefined,
+): { status: string | null | undefined; completedOn: string | null | undefined } {
+  const today = formatDateISO(new Date());
+  let s = status;
+  let co = completedOn;
+
+  if (co !== undefined && co !== null) {
+    // completedOn being set → must be completed
+    s = 'completed';
+  } else if (s === 'completed') {
+    // status=completed but no completedOn provided → auto-fill today
+    if (co === undefined) co = today;
+  } else if (s === 'open') {
+    // Reopening → clear completedOn
+    co = null;
+  } else if (co === null && s === undefined) {
+    // Clearing completedOn without setting status → clear status too
+    s = null;
+  }
+
+  return { status: s, completedOn: co };
 }

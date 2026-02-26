@@ -49,6 +49,8 @@ export interface MemoryRecord {
   actionDate: string | null;
   recurrence: string | null;
   priority: number | null;
+  status: string | null;
+  completedOn: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -71,6 +73,8 @@ export function rowToRecord(row: Record<string, unknown>): MemoryRecord {
     actionDate: (row.action_date as string | null) ?? null,
     recurrence: (row.recurrence as string | null) ?? null,
     priority: (row.priority as number | null) ?? null,
+    status: (row.status as string | null) ?? null,
+    completedOn: (row.completed_on as string | null) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -156,6 +160,12 @@ export function createMemoryDatabase(dbPath: string): MemoryDatabase {
   // Migration: add recurrence and priority columns.
   try { db.exec(`ALTER TABLE memories ADD COLUMN recurrence TEXT`); } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE memories ADD COLUMN priority INTEGER`); } catch { /* already exists */ }
+
+  // Migration: add status and completed_on columns.
+  try { db.exec(`ALTER TABLE memories ADD COLUMN status TEXT`); } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE memories ADD COLUMN completed_on TEXT`); } catch { /* already exists */ }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status) WHERE status IS NOT NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_completed_on ON memories(completed_on) WHERE completed_on IS NOT NULL`);
 
   // Store model metadata on first creation (idempotent).
   db.prepare(`INSERT OR IGNORE INTO memory_metadata (key, value) VALUES (?, ?)`)
@@ -333,6 +343,8 @@ export function insertMemory(
   actionDate: string | null = null,
   recurrence: string | null = null,
   priority: number | null = null,
+  status: string | null = null,
+  completedOn: string | null = null,
 ): number {
   const result = db.transaction(() => {
     // Insert into vec0 first — it auto-assigns a rowid. Store that rowid in
@@ -345,8 +357,8 @@ export function insertMemory(
 
     // Insert into main table; id is auto-assigned by AUTOINCREMENT.
     const memResult = db.prepare(
-      `INSERT INTO memories (vec_rowid, topic, body, confidence, context_hint, action_date, recurrence, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(vecRowid, topic, body, confidence, contextHint, actionDate, recurrence, priority);
+      `INSERT INTO memories (vec_rowid, topic, body, confidence, context_hint, action_date, recurrence, priority, status, completed_on) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(vecRowid, topic, body, confidence, contextHint, actionDate, recurrence, priority, status, completedOn);
     const id = Number(memResult.lastInsertRowid);
 
     // Build inverted index for BM25 scoring
@@ -374,6 +386,8 @@ export function updateMemory(
     recurrence?: string | null;
     priority?: number | null;
     topic?: string;
+    status?: string | null;
+    completedOn?: string | null;
   },
   embedding?: number[],
 ): void {
@@ -408,6 +422,14 @@ export function updateMemory(
     if (updates.topic !== undefined) {
       sets.push('topic = ?');
       vals.push(updates.topic);
+    }
+    if (updates.status !== undefined) {
+      sets.push('status = ?');
+      vals.push(updates.status);
+    }
+    if (updates.completedOn !== undefined) {
+      sets.push('completed_on = ?');
+      vals.push(updates.completedOn);
     }
 
     vals.push(id);
@@ -504,6 +526,9 @@ export function filterMemoryIdsByDate(
     updatedBefore?: string;
     actionAfter?: string;
     actionBefore?: string;
+    completedAfter?: string;
+    completedBefore?: string;
+    status?: string | null;
   },
 ): Set<number> | null {
   const clauses: string[] = [];
@@ -527,12 +552,86 @@ export function filterMemoryIdsByDate(
     clauses.push(`action_date IS NOT NULL AND action_date <= ?`);
     params.push(filters.actionBefore);
   }
+  if (filters.completedAfter) {
+    clauses.push(`completed_on IS NOT NULL AND completed_on >= ?`);
+    params.push(filters.completedAfter);
+  }
+  if (filters.completedBefore) {
+    clauses.push(`completed_on IS NOT NULL AND completed_on <= ?`);
+    params.push(filters.completedBefore);
+  }
+  if (filters.status !== undefined) {
+    if (filters.status === 'completed') {
+      clauses.push(`(status = 'completed' OR completed_on IS NOT NULL)`);
+    } else if (filters.status === null) {
+      clauses.push(`(status IS NULL AND completed_on IS NULL)`);
+    } else {
+      clauses.push(`status = ?`);
+      params.push(filters.status);
+    }
+  }
 
   if (clauses.length === 0) return null; // no filters active
 
   const sql = `SELECT id FROM memories WHERE ${clauses.join(' AND ')}`;
   const rows = db.prepare(sql).all(...params) as Array<{ id: number }>;
   return new Set(rows.map(r => r.id));
+}
+
+/** Return memories with action_date before today that are not completed or cancelled.
+ *  Used by agenda to surface overdue items. */
+export function getOverdueMemories(
+  db: MemoryDatabase,
+  beforeDate: string,
+  maxResults: number,
+): MemoryRecord[] {
+  const rows = db.prepare(
+    `SELECT * FROM memories
+     WHERE action_date IS NOT NULL
+       AND action_date < ?
+       AND completed_on IS NULL
+       AND (status IS NULL OR status = 'open')
+     ORDER BY COALESCE(priority, 0) DESC, action_date ASC
+     LIMIT ?`,
+  ).all(beforeDate, maxResults) as Record<string, unknown>[];
+  return rows.map(rowToRecord);
+}
+
+/** Return upcoming memories (action_date in range) excluding completed and cancelled.
+ *  Used by agenda and orient. */
+export function getActiveUpcomingMemories(
+  db: MemoryDatabase,
+  fromDate: string,
+  toDate: string,
+  maxResults: number,
+): MemoryRecord[] {
+  const rows = db.prepare(
+    `SELECT * FROM memories
+     WHERE action_date IS NOT NULL
+       AND action_date >= ?
+       AND action_date <= ?
+       AND completed_on IS NULL
+       AND (status IS NULL OR status = 'open')
+     ORDER BY action_date ASC
+     LIMIT ?`,
+  ).all(fromDate, toDate, maxResults) as Record<string, unknown>[];
+  return rows.map(rowToRecord);
+}
+
+/** Return N most recently updated memories, excluding completed and cancelled.
+ *  Used by orient. */
+export function getRecentActiveMemories(
+  db: MemoryDatabase,
+  maxResults: number,
+): MemoryRecord[] {
+  const rows = db.prepare(
+    `SELECT * FROM memories
+     WHERE completed_on IS NULL
+       AND (status IS NULL OR status = 'open')
+     ORDER BY updated_at DESC
+     LIMIT ?`,
+  ).all(maxResults) as Record<string, unknown>[];
+  return rows.map(rowToRecord);
 }
 
 // ── Dedup Check ───────────────────────────────────────────────────────────────

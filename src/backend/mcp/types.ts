@@ -50,6 +50,8 @@ export interface McpServerDeps {
     actionDate?: string | null;
     recurrence?: string | null;
     priority?: number | null;
+    status?: string | null;
+    completedOn?: string | null;
   }) => Promise<
     | { status: 'created'; id: number }
     | { status: 'duplicate'; existing: MemoryRecord; similarity: number }
@@ -65,6 +67,9 @@ export interface McpServerDeps {
     updatedBefore?: string;
     actionAfter?: string;
     actionBefore?: string;
+    completedAfter?: string;
+    completedBefore?: string;
+    status?: string | null;
   }) => Promise<MemorySearchResult[]>;
   /** Explicitly update a memory by id. */
   memoryRevise: (params: {
@@ -76,11 +81,19 @@ export interface McpServerDeps {
     recurrence?: string | null;
     priority?: number | null;
     topic?: string;
+    status?: string | null;
+    completedOn?: string | null;
   }) => Promise<void>;
   /** Delete a memory by id. */
   memoryForget: (params: { id: number }) => Promise<void>;
   /** Return N most recently updated memories. */
   memoryOrient: (params: { maxResults?: number }) => Promise<MemoryRecord[]>;
+  /** Return agenda items grouped by overdue and upcoming. */
+  memoryAgenda: (params: {
+    when: string;
+    includeCompleted?: boolean;
+    maxResults?: number;
+  }) => Promise<{ overdue: MemoryRecord[]; upcoming: MemoryRecord[] }>;
   /** Fetch a single memory record by id (for lodestone_read of m-puids). */
   memoryGetById: (params: { id: number }) => Promise<MemoryRecord | null>;
   /** Fire-and-forget notification to the GUI to trigger the shimmer on a card. */

@@ -184,6 +184,7 @@ export async function startMcpMode(_ctx: AppContext): Promise<void> {
     memoryRevise: (params) => gui.call<void>('memory.revise', params as Record<string, unknown>),
     memoryForget: (params) => gui.call<void>('memory.forget', params as Record<string, unknown>),
     memoryOrient: (params) => gui.call<MemoryRecord[]>('memory.orient', params as Record<string, unknown>),
+    memoryAgenda: (params) => gui.call<{ overdue: MemoryRecord[]; upcoming: MemoryRecord[] }>('memory.agenda', params as Record<string, unknown>),
     memoryGetById: (params) => gui.call<MemoryRecord | null>('memory.getById', params as Record<string, unknown>),
     isMemoryConnected: () => true, // Proxy mode: assume connected; errors are handled gracefully
     notifyActivity: (params) => { gui.call('notify.activity', params as Record<string, unknown>).catch(() => {}); },

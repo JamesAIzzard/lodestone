@@ -1,0 +1,409 @@
+/**
+ * Memory tool registrations: remember, recall, revise, forget, orient.
+ */
+
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
+import { parseFlexibleDate, parseRecurrence } from '../date-parser';
+import type { McpServerDeps } from './types';
+import { PuidManager } from './puid-manager';
+import { truncateMemoryBody, memoryBodyWarning, priorityLabel } from './formatting';
+
+export function registerRememberTool(server: McpServer, deps: McpServerDeps): void {
+  server.tool(
+    'lodestone_remember',
+    [
+      'Write a new memory or update an existing similar one.',
+      '',
+      'Before inserting, checks cosine similarity against existing memories.',
+      'If a closely related entry is found, its details are returned so you can',
+      'decide whether to update it (via lodestone_revise) or force-create a new one.',
+      '',
+      'Keep memories atomic \u2014 each should capture a single concept or decision.',
+      'If a memory grows beyond ~200 tokens, consider splitting it into multiple',
+      'memories that reference each other by m-id (e.g. "see m12 for the schema',
+      'details"). Memory IDs are stable primary keys and safe to reference.',
+      '',
+      'Parameters:',
+      '  topic        \u2014 Short label categorising the memory (e.g. "JAMES - THINKING STYLE")',
+      '  body         \u2014 The memory content (plain text)',
+      '  confidence   \u2014 Float 0\u20131. 1.0 = reliable, lower = tentative. Default: 1.0',
+      '  context_hint \u2014 Optional short string recording the conversational context',
+      '  force        \u2014 Skip dedup check and always create a new memory. Default: false',
+      '  action_date  \u2014 Optional date for when this memory is actionable. Accepts flexible',
+      '                  expressions ("tomorrow", "next Monday", "2026-03-15"). Stored as',
+      '                  ISO 8601 (YYYY-MM-DD).',
+      '  recurrence   \u2014 Optional recurrence rule for repeating action dates. Accepted formats:',
+      '                  "daily", "weekly", "biweekly", "monthly", "yearly",',
+      '                  "every monday", "every weekday", "every 3 days", "every 2 weeks".',
+      '                  Requires action_date to be set. The action_date auto-advances on orient.',
+      '  priority     \u2014 Optional urgency level: 1=low, 2=medium, 3=high, 4=critical.',
+      '',
+      'Returns: { id } on success, or details of a similar existing memory for review.',
+    ].join('\n'),
+    {
+      topic: z.string().describe('Short label categorising the memory (e.g. "LODESTONE", "JAMES - THINKING STYLE")'),
+      body: z.string().describe('The memory content'),
+      confidence: z.number().min(0).max(1).optional().describe('Epistemic confidence 0\u20131. Default: 1.0'),
+      context_hint: z.string().optional().describe('Short string recording the conversational context (not searchable)'),
+      force: z.boolean().optional().describe('Skip dedup check and always create a new memory. Default: false'),
+      action_date: z.string().optional().describe('Date when this memory is actionable. Flexible expressions accepted ("tomorrow", "next Monday", "2026-03-15"). Stored as ISO 8601.'),
+      recurrence: z.string().optional().describe('Recurrence rule: "daily", "weekly", "biweekly", "monthly", "yearly", "every monday", "every weekday", "every N days", "every N weeks". Requires action_date.'),
+      priority: z.number().int().min(1).max(4).optional().describe('Urgency: 1=low, 2=medium, 3=high, 4=critical'),
+    },
+    async ({ topic, body, confidence, context_hint, force, action_date, recurrence, priority }) => {
+      try {
+        deps.notifyActivity?.({ channel: 'memory' });
+
+        // Parse flexible action_date to ISO 8601
+        let parsedActionDate: string | null = null;
+        if (action_date) {
+          parsedActionDate = parseFlexibleDate(action_date);
+          if (!parsedActionDate) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: Could not parse action_date "${action_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }],
+              isError: true,
+            };
+          }
+        }
+
+        // Parse and validate recurrence rule
+        let parsedRecurrence: string | null = null;
+        if (recurrence) {
+          parsedRecurrence = parseRecurrence(recurrence);
+          if (!parsedRecurrence) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: Could not parse recurrence "${recurrence}". Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.` }],
+              isError: true,
+            };
+          }
+          if (!parsedActionDate) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: recurrence requires action_date to be set. Provide an action_date for the first occurrence.` }],
+              isError: true,
+            };
+          }
+        }
+
+        const result = await deps.memoryRemember({
+          topic,
+          body,
+          confidence,
+          contextHint: context_hint,
+          force,
+          actionDate: parsedActionDate,
+          recurrence: parsedRecurrence,
+          priority: priority ?? null,
+        });
+
+        if (result.status === 'duplicate') {
+          const sim = Math.round(result.similarity * 100);
+          const preview = truncateMemoryBody(result.existing.body);
+          const meta: string[] = [];
+          if (result.existing.actionDate) {
+            let actionStr = `Action: ${result.existing.actionDate}`;
+            if (result.existing.recurrence) actionStr += ` (${result.existing.recurrence})`;
+            meta.push(actionStr);
+          }
+          if (result.existing.priority) meta.push(`Priority: ${priorityLabel(result.existing.priority)}`);
+          const lines = [
+            `Similar memory found (${sim}% similarity):`,
+            '',
+            `## [m${result.existing.id}] ${result.existing.topic} (confidence: ${result.existing.confidence})`,
+            preview,
+            ...(meta.length > 0 ? [`_${meta.join(' | ')}_`] : []),
+            '',
+            'Consider:',
+            `- Use lodestone_revise(id: "m${result.existing.id}", body: "...") to update the existing memory.`,
+            '- Use lodestone_remember with force: true to create a new memory despite the similarity.',
+          ];
+          return {
+            content: [{ type: 'text' as const, text: lines.join('\n') }],
+          };
+        }
+
+        const warning = memoryBodyWarning(body);
+        const extras: string[] = [];
+        if (parsedActionDate) {
+          let actionStr = `Action date: ${parsedActionDate}`;
+          if (parsedRecurrence) actionStr += ` (${parsedRecurrence})`;
+          extras.push(actionStr + '.');
+        }
+        if (priority) extras.push(`Priority: ${priorityLabel(priority)}.`);
+        return {
+          content: [{ type: 'text' as const, text: `Created memory m${result.id}.${extras.length ? ' ' + extras.join(' ') : ''}${warning}` }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+}
+
+export function registerRecallTool(server: McpServer, deps: McpServerDeps): void {
+  server.tool(
+    'lodestone_recall',
+    [
+      'Hybrid search over memories: BM25 (FTS5) + cosine similarity, fused by weighted-max.',
+      '',
+      'Returns ranked memory records with m-prefixed id, topic, truncated body preview, confidence, and score.',
+      'Use this when you have a specific question or topic to retrieve context for.',
+      'Results show truncated previews. Use lodestone_read with the m-prefixed ID (e.g. "m3") to read the full body.',
+      '',
+      'Query with natural language \u2014 use concepts, short sentences, or brief descriptions',
+      'of what you are looking for (e.g. "how does the search pipeline compose scores"',
+      'not "decaying-sum"). Think about meaning, not keywords.',
+      '',
+      'Parameters:',
+      '  query          \u2014 Natural language search query',
+      '  max_results    \u2014 Maximum memories to return. Default: 5',
+      '  mode           \u2014 Search mode: hybrid (default, vector + BM25), bm25 (keyword-only), semantic (vector-only)',
+      '  updated_after  \u2014 Filter to memories with updated_at >= this date',
+      '  updated_before \u2014 Filter to memories with updated_at <= this date',
+      '  action_after   \u2014 Filter to memories with action_date >= this date',
+      '  action_before  \u2014 Filter to memories with action_date <= this date',
+      '',
+      'Date filters accept flexible expressions ("today", "yesterday", "last Monday",',
+      '"next Friday", "2026-03-15") which are normalised to ISO 8601 before querying.',
+      'Combine freely: updated_after + action_before for memories updated recently with upcoming deadlines.',
+    ].join('\n'),
+    {
+      query: z.string().describe('Search query \u2014 natural language, use concepts and short sentences not keywords'),
+      max_results: z.number().min(1).max(50).optional().describe('Maximum results to return. Default: 5'),
+      mode: z.enum(['hybrid', 'bm25', 'semantic']).optional()
+        .describe('Search mode: hybrid (default, vector + BM25), bm25 (keyword-only), semantic (vector-only)'),
+      updated_after: z.string().optional().describe('Filter: updated_at >= this date. Flexible expressions accepted.'),
+      updated_before: z.string().optional().describe('Filter: updated_at <= this date. Flexible expressions accepted.'),
+      action_after: z.string().optional().describe('Filter: action_date >= this date. Flexible expressions accepted.'),
+      action_before: z.string().optional().describe('Filter: action_date <= this date. Flexible expressions accepted.'),
+    },
+    async ({ query, max_results, mode, updated_after, updated_before, action_after, action_before }) => {
+      try {
+        deps.notifyActivity?.({ channel: 'memory' });
+
+        // Parse flexible date expressions to ISO 8601
+        const dateFilters: Record<string, string> = {};
+        for (const [key, raw] of Object.entries({ updatedAfter: updated_after, updatedBefore: updated_before, actionAfter: action_after, actionBefore: action_before })) {
+          if (!raw) continue;
+          const parsed = parseFlexibleDate(raw);
+          if (!parsed) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: Could not parse date filter "${raw}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }],
+              isError: true,
+            };
+          }
+          dateFilters[key] = parsed;
+        }
+
+        const results = await deps.memoryRecall({
+          query,
+          maxResults: max_results,
+          mode,
+          ...dateFilters,
+        });
+        if (results.length === 0) {
+          return { content: [{ type: 'text' as const, text: 'No memories found.' }] };
+        }
+        const lines: string[] = [];
+        for (const r of results) {
+          const pct = Math.round(r.score * 100);
+          // Show signal breakdown: "62% convergence: semantic 58%, bm25 45%"
+          // or single-signal: "58% semantic"
+          const signalEntries = Object.entries(r.signals);
+          let scoreStr: string;
+          if (signalEntries.length <= 1) {
+            scoreStr = `${pct}% ${r.scoreLabel}`;
+          } else {
+            const breakdown = signalEntries
+              .sort(([, a], [, b]) => b - a)
+              .map(([name, val]) => `${name} ${Math.round(val * 100)}%`)
+              .join(', ');
+            scoreStr = `${pct}% ${r.scoreLabel}: ${breakdown}`;
+          }
+          lines.push(`## [m${r.id}] ${r.topic} (${scoreStr}, confidence: ${r.confidence})`);
+          lines.push(truncateMemoryBody(r.body));
+          const meta = [`Updated: ${r.updatedAt}`];
+          if (r.actionDate) {
+            let actionStr = `Action: ${r.actionDate}`;
+            if (r.recurrence) actionStr += ` (${r.recurrence})`;
+            meta.push(actionStr);
+          }
+          if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
+          lines.push(`_${meta.join(' | ')}_`);
+          lines.push('');
+        }
+        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+}
+
+export function registerReviseTool(server: McpServer, deps: McpServerDeps): void {
+  server.tool(
+    'lodestone_revise',
+    [
+      'Explicitly update a specific memory by id.',
+      '',
+      'Use this when you have recalled a memory and want to correct or extend it with',
+      'precision, bypassing the similarity-based upsert of lodestone_remember.',
+      'Also use it to adjust confidence on an existing memory without rewriting the body.',
+      '',
+      'Parameters:',
+      '  id           \u2014 Memory id (from lodestone_recall or lodestone_orient)',
+      '  body         \u2014 New body text (optional)',
+      '  confidence   \u2014 New confidence value 0\u20131 (optional)',
+      '  context_hint \u2014 New context hint (optional, pass null to clear)',
+      '  action_date  \u2014 New action date (optional, pass null to clear). Flexible expressions accepted.',
+      '  recurrence   \u2014 New recurrence rule (optional, pass null to clear).',
+      '                  Accepted: daily, weekly, biweekly, monthly, yearly,',
+      '                  every monday, every weekday, every N days, every N weeks.',
+      '  priority     \u2014 New priority (optional, pass null to clear). 1=low, 2=medium, 3=high, 4=critical.',
+      '  topic        \u2014 New topic label (optional).',
+    ].join('\n'),
+    {
+      id: z.union([z.number().int(), z.string()]).describe('Memory id to update (number or m-prefixed id like "m5")'),
+      body: z.string().optional().describe('New body text'),
+      confidence: z.number().min(0).max(1).optional().describe('New confidence value 0\u20131'),
+      context_hint: z.union([z.string(), z.null()]).optional().describe('New context hint (null to clear)'),
+      action_date: z.union([z.string(), z.null()]).optional().describe('New action date (null to clear). Flexible expressions accepted.'),
+      recurrence: z.union([z.string(), z.null()]).optional().describe('New recurrence rule (null to clear). Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.'),
+      priority: z.union([z.number().int().min(1).max(4), z.null()]).optional().describe('New priority (null to clear). 1=low, 2=medium, 3=high, 4=critical.'),
+      topic: z.string().optional().describe('New topic label'),
+    },
+    async ({ id: rawId, body, confidence, context_hint, action_date, recurrence, priority, topic }) => {
+      try {
+        deps.notifyActivity?.({ channel: 'memory' });
+        const id = PuidManager.resolveMemoryIdParam(rawId);
+
+        // Parse flexible action_date to ISO 8601 (null clears it)
+        let parsedActionDate: string | null | undefined;
+        if (action_date === null) {
+          parsedActionDate = null; // explicitly clear
+        } else if (action_date !== undefined) {
+          parsedActionDate = parseFlexibleDate(action_date);
+          if (!parsedActionDate) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: Could not parse action_date "${action_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }],
+              isError: true,
+            };
+          }
+        }
+
+        // Parse recurrence rule (null clears it)
+        let parsedRecurrence: string | null | undefined;
+        if (recurrence === null) {
+          parsedRecurrence = null; // explicitly clear
+        } else if (recurrence !== undefined) {
+          parsedRecurrence = parseRecurrence(recurrence);
+          if (!parsedRecurrence) {
+            return {
+              content: [{ type: 'text' as const, text: `Error: Could not parse recurrence "${recurrence}". Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.` }],
+              isError: true,
+            };
+          }
+        }
+
+        await deps.memoryRevise({
+          id,
+          body,
+          confidence,
+          contextHint: context_hint,
+          actionDate: parsedActionDate,
+          recurrence: parsedRecurrence,
+          priority,
+          topic,
+        });
+        const warning = body ? memoryBodyWarning(body) : '';
+        return { content: [{ type: 'text' as const, text: `Memory m${id} revised.${warning}` }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+}
+
+export function registerForgetTool(server: McpServer, deps: McpServerDeps): void {
+  server.tool(
+    'lodestone_forget',
+    [
+      'Remove a specific memory by id.',
+      '',
+      'Use when something is definitively wrong, no longer relevant,',
+      'or has been superseded by a revised memory.',
+      '',
+      'Parameters:',
+      '  id \u2014 Memory id (from lodestone_recall or lodestone_orient)',
+    ].join('\n'),
+    {
+      id: z.union([z.number().int(), z.string()]).describe('Memory id to delete (number or m-prefixed id like "m5")'),
+    },
+    async ({ id: rawId }) => {
+      try {
+        deps.notifyActivity?.({ channel: 'memory' });
+        const id = PuidManager.resolveMemoryIdParam(rawId);
+        await deps.memoryForget({ id });
+        return { content: [{ type: 'text' as const, text: `Memory m${id} deleted.` }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+}
+
+export function registerOrientTool(server: McpServer, deps: McpServerDeps): void {
+  server.tool(
+    'lodestone_orient',
+    [
+      'Return the N most recently updated memories, regardless of query.',
+      '',
+      'This is the orientation tool \u2014 call it at the start of a conversation,',
+      'before there is enough context to form a meaningful recall query,',
+      'to ground yourself in recent and active working context.',
+      '',
+      'Also surfaces memories with action dates in the next 7 days, so upcoming',
+      'deadlines and planned actions are visible at conversation start.',
+      'Recurring memories auto-advance their action_date when it falls behind today.',
+      '',
+      'Results show truncated previews. Use lodestone_read with the m-prefixed ID (e.g. "m3") to read the full body.',
+      '',
+      'Parameters:',
+      '  max_results \u2014 Maximum memories to return. Default: 10',
+    ].join('\n'),
+    {
+      max_results: z.number().min(1).max(50).optional().describe('Maximum memories to return. Default: 10'),
+    },
+    async ({ max_results }) => {
+      try {
+        deps.notifyActivity?.({ channel: 'memory' });
+        const results = await deps.memoryOrient({ maxResults: max_results });
+        if (results.length === 0) {
+          return { content: [{ type: 'text' as const, text: 'No memories stored yet.' }] };
+        }
+        const lines: string[] = [];
+        for (const r of results) {
+          lines.push(`## [m${r.id}] ${r.topic} (confidence: ${r.confidence})`);
+          lines.push(truncateMemoryBody(r.body));
+          const meta = [`Updated: ${r.updatedAt}`];
+          if (r.actionDate) {
+            let actionStr = `Action: ${r.actionDate}`;
+            if (r.recurrence) actionStr += ` (${r.recurrence})`;
+            meta.push(actionStr);
+          }
+          if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
+          lines.push(`_${meta.join(' | ')}_`);
+          lines.push('');
+        }
+        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+}

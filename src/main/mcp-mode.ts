@@ -15,7 +15,7 @@
 
 import { app } from 'electron';
 import { createConnection, type Socket } from 'node:net';
-import { startMcpServer } from '../backend/mcp-server';
+import { startMcpServer } from '../backend/mcp';
 import type { SearchResult, DirectoryResult, SiloStatus, MemoryRecord, MemorySearchResult } from '../shared/types';
 import type { EditResult } from '../backend/edit';
 import type { AppContext } from './context';

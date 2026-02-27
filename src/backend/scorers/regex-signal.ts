@@ -26,14 +26,13 @@ export const regexSignal: Signal = {
 
     // ── Pass 1: scan chunk text ──────────────────────────────────────
     const rows = ctx.db.prepare(`
-      SELECT c.id, c.file_path, c.section_path, c.start_line, c.end_line, c.text
+      SELECT c.id, c.file_path, c.section_path, c.location_hint, c.text
       FROM chunks c
     `).all() as Array<{
       id: number;
       file_path: string;
       section_path: string;
-      start_line: number;
-      end_line: number;
+      location_hint: string | null;
       text: string;
     }>;
 
@@ -46,8 +45,7 @@ export const regexSignal: Signal = {
       if (!scores.has(row.file_path)) {
         scores.set(row.file_path, 1.0);
         hints.set(row.file_path, {
-          startLine: row.start_line,
-          endLine: row.end_line,
+          locationHint: row.location_hint ? JSON.parse(row.location_hint) : null,
           sectionPath: JSON.parse(row.section_path),
         });
       }

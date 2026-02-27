@@ -304,8 +304,7 @@ function parseAndChunk(
         chunkIndex: chunks.length,
         sectionPath: seg.sectionPath,
         text,
-        startLine: seg.startLine + metadataLineCount,
-        endLine: seg.endLine + metadataLineCount,
+        locationHint: { type: 'lines', start: seg.startLine + metadataLineCount, end: seg.endLine + metadataLineCount },
         metadata,
         contentHash: hashText(text),
       });
@@ -320,8 +319,7 @@ function parseAndChunk(
           chunkIndex: chunks.length,
           sectionPath: seg.sectionPath,
           text: sub,
-          startLine: seg.startLine + metadataLineCount,
-          endLine: seg.endLine + metadataLineCount,
+          locationHint: { type: 'lines', start: seg.startLine + metadataLineCount, end: seg.endLine + metadataLineCount },
           metadata,
           contentHash: hashText(sub),
         });

@@ -6,6 +6,8 @@
  *   Chunker   — structured text → semantic pieces under a token limit
  */
 
+import type { LocationHint } from '../shared/types';
+
 // ── Extraction ───────────────────────────────────────────────────────────────
 
 /**
@@ -36,10 +38,8 @@ export interface ChunkRecord {
   sectionPath: string[];
   /** The chunk text content (for embedding) */
   text: string;
-  /** Start line in the source file (1-based) */
-  startLine: number;
-  /** End line in the source file (1-based, inclusive) */
-  endLine: number;
+  /** Location of this chunk within the source file. */
+  locationHint: LocationHint;
   /** Extracted metadata from the file (shared across all chunks of the same file) */
   metadata: Record<string, unknown>;
   /** SHA-256 hash of the chunk text (for change detection) */

@@ -71,8 +71,7 @@ export const semanticSignal: Signal = {
     for (const [filePath, { sim, meta }] of bestChunk) {
       scores.set(filePath, sim);
       hints.set(filePath, {
-        startLine: meta.start_line,
-        endLine: meta.end_line,
+        locationHint: meta.location_hint ? JSON.parse(meta.location_hint) : null,
         sectionPath: JSON.parse(meta.section_path),
       });
     }

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { parseFlexibleDate, parseRecurrence, parseDateRange } from '../date-parser';
 import type { McpServerDeps } from './types';
 import { PuidManager } from './puid-manager';
-import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, CROSS_SEARCH_THRESHOLD } from './formatting';
+import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, CROSS_SEARCH_THRESHOLD, buildDateContext } from './formatting';
 
 export function registerRememberTool(server: McpServer, deps: McpServerDeps): void {
   server.tool(
@@ -540,6 +540,8 @@ export function registerOrientTool(server: McpServer, deps: McpServerDeps): void
           return { content: [{ type: 'text' as const, text: 'No memories stored yet.' }] };
         }
         const lines: string[] = [];
+        lines.push(buildDateContext());
+        lines.push('');
         for (const r of results) {
           lines.push(`## [m${r.id}] ${r.topic} (confidence: ${r.confidence})`);
           lines.push(truncateMemoryBody(r.body));
@@ -610,6 +612,8 @@ export function registerAgendaTool(server: McpServer, deps: McpServerDeps): void
         });
 
         const lines: string[] = [];
+        lines.push(buildDateContext());
+        lines.push('');
 
         // ── Overdue section ──────────────────────────────────────────────
         if (result.overdue.length > 0) {
@@ -638,7 +642,7 @@ export function registerAgendaTool(server: McpServer, deps: McpServerDeps): void
           }
         }
 
-        if (lines.length === 0) {
+        if (result.overdue.length === 0 && 'overdue' in range) {
           return { content: [{ type: 'text' as const, text: `Nothing on the agenda for "${when}".` }] };
         }
 

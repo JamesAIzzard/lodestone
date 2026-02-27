@@ -49,8 +49,7 @@ export const bm25Signal: Signal = {
     for (const [filePath, { score, meta }] of bestChunk) {
       scores.set(filePath, score);
       hints.set(filePath, {
-        startLine: meta.start_line,
-        endLine: meta.end_line,
+        locationHint: meta.location_hint ? JSON.parse(meta.location_hint) : null,
         sectionPath: JSON.parse(meta.section_path),
       });
     }

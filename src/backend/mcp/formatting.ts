@@ -3,10 +3,42 @@
  */
 
 import path from 'node:path';
-import type { SearchResult, DirectoryResult } from '../../shared/types';
+import type { SearchResult, DirectoryResult, LocationHint } from '../../shared/types';
 import { tokenise } from '../tokeniser';
 import type { McpServerDeps } from './types';
 import type { PuidManager } from './puid-manager';
+
+// ── Date context ─────────────────────────────────────────────────────────────
+
+const FULL_DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const FULL_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const SHORT_MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatDateFull(d: Date): string {
+  return `${FULL_DAY_NAMES[d.getDay()]} ${d.getDate()} ${FULL_MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+function formatDateShort(d: Date): string {
+  return `${FULL_DAY_NAMES[d.getDay()].slice(0, 3)} ${d.getDate()} ${SHORT_MONTH_NAMES[d.getMonth()]}`;
+}
+
+/**
+ * Build a compact date reference line to prepend to orient/agenda output.
+ * Anchors the LLM on today's date and key relative offsets, preventing
+ * errors when reasoning about "yesterday", "tomorrow", and overdue items.
+ */
+export function buildDateContext(): string {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+
+  return `📅 Today: ${formatDateFull(today)} | Yesterday: ${formatDateShort(yesterday)} | Tomorrow: ${formatDateShort(tomorrow)}`;
+}
 
 // ── Memory truncation ────────────────────────────────────────────────────────
 
@@ -99,6 +131,16 @@ export function getParentDirPath(dirPath: string): string | null {
   return parent;
 }
 
+/** Format a LocationHint union into a human-readable string. */
+function formatLocationHint(hint: LocationHint): string {
+  if (!hint) return '';
+  switch (hint.type) {
+    case 'lines': return `Lines ${hint.start}\u2013${hint.end}`;
+    case 'page':  return `Page ${hint.page}`;
+    case 'slide': return `Slide ${hint.slide}`;
+  }
+}
+
 /**
  * Format search results into a readable text block for the MCP tool response.
  *
@@ -130,12 +172,16 @@ export function formatSearchResults(results: SearchResult[], puid: PuidManager):
 
     lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${scoreDetail})`);
 
-    // Hint line — show line range and section path if available
+    // Hint line — show location and section path if available
     if (result.hint) {
+      const locationStr = formatLocationHint(result.hint.locationHint ?? null);
       const section = result.hint.sectionPath && result.hint.sectionPath.length > 0
-        ? ` \u2014 "${result.hint.sectionPath.join(' > ')}"`
+        ? `"${result.hint.sectionPath.join(' > ')}"`
         : '';
-      lines.push(`Hint: Lines ${result.hint.startLine}\u2013${result.hint.endLine}${section}`);
+      const parts = [locationStr, section].filter(Boolean);
+      if (parts.length > 0) {
+        lines.push(`Hint: ${parts.join(' \u2014 ')}`);
+      }
     }
 
     lines.push('');

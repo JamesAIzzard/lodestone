@@ -124,12 +124,17 @@ export interface ExploreParams {
 
 // ── Search (Decaying Sum) ────────────────────────────────────────────────────
 
+/** Discriminated union describing where a chunk lives within its source file. */
+export type LocationHint =
+  | { type: 'lines'; start: number; end: number }
+  | { type: 'page';  page: number }
+  | { type: 'slide'; slide: number }
+  | null;
+
 /** Lightweight hint for where/why a file matched (no chunk text). */
 export interface SearchHint {
-  /** Start line of best-matching chunk (1-based). */
-  startLine?: number;
-  /** End line of best-matching chunk (1-based, inclusive). */
-  endLine?: number;
+  /** Location of the best-matching chunk within the source file. */
+  locationHint?: LocationHint;
   /** Section path of best-matching chunk. */
   sectionPath?: string[];
 }

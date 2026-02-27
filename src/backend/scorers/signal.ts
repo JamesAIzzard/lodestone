@@ -7,15 +7,14 @@
  */
 
 import type { SiloDatabase } from '../store';
+import type { LocationHint } from '../../shared/types';
 
 // ── Hint ────────────────────────────────────────────────────────────────────
 
 /** Lightweight metadata about where/why a file matched, without chunk text. */
 export interface SignalHint {
-  /** Start line of best-matching chunk (1-based). */
-  startLine?: number;
-  /** End line of best-matching chunk (1-based, inclusive). */
-  endLine?: number;
+  /** Location of the best-matching chunk within the source file. */
+  locationHint?: LocationHint;
   /** Section path of best-matching chunk (e.g. ["## Heading", "### Sub"]). */
   sectionPath?: string[];
 }

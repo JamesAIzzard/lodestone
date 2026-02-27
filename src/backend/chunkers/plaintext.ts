@@ -36,8 +36,7 @@ export function chunkPlaintext(
       chunkIndex: 0,
       sectionPath: [filename],
       text: body,
-      startLine: 1 + metadataLineCount,
-      endLine: lineCount + metadataLineCount,
+      locationHint: { type: 'lines', start: 1 + metadataLineCount, end: lineCount + metadataLineCount },
       metadata,
       contentHash: hashText(body),
     }];
@@ -68,8 +67,7 @@ export function chunkPlaintext(
       chunkIndex: chunks.length,
       sectionPath: [filename],
       text,
-      startLine: lineOffset,
-      endLine: lineOffset + lineCount - 1,
+      locationHint: { type: 'lines', start: lineOffset, end: lineOffset + lineCount - 1 },
       metadata,
       contentHash: hashText(text),
     });

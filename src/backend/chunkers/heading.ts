@@ -54,8 +54,7 @@ export function chunkByHeading(
         chunkIndex: chunks.length,
         sectionPath: section.sectionPath,
         text,
-        startLine: section.startLine + metadataLineCount,
-        endLine: section.endLine + metadataLineCount,
+        locationHint: { type: 'lines', start: section.startLine + metadataLineCount, end: section.endLine + metadataLineCount },
         metadata,
         contentHash: hashText(text),
       });
@@ -68,8 +67,7 @@ export function chunkByHeading(
           chunkIndex: chunks.length,
           sectionPath: section.sectionPath,
           text: sub,
-          startLine: section.startLine + metadataLineCount,
-          endLine: section.endLine + metadataLineCount,
+          locationHint: { type: 'lines', start: section.startLine + metadataLineCount, end: section.endLine + metadataLineCount },
           metadata,
           contentHash: hashText(sub),
         });

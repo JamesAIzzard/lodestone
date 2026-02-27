@@ -181,8 +181,10 @@ Paragraph 1.
 Paragraph 2.`;
 
     const chunks = chunkMarkdown('/test/lines.md', content, 8192);
-    expect(chunks[0].startLine).toBe(1);
-    expect(chunks[1].startLine).toBeGreaterThan(1);
+    const h0 = chunks[0].locationHint;
+    const h1 = chunks[1].locationHint;
+    expect(h0).toEqual(expect.objectContaining({ type: 'lines', start: 1 }));
+    expect(h1?.type === 'lines' && h1.start).toBeGreaterThan(1);
   });
 
   // ── Oversized chunk sub-splitting ────────────────────────────────────────

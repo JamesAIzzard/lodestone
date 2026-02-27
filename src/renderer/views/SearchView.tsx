@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Search, FileText, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
-import type { SiloStatus, SearchResult, DirectoryResult, DirectoryTreeNode, ExploreParams, SearchMode } from '../../shared/types';
+import type { SiloStatus, SearchResult, DirectoryResult, DirectoryTreeNode, ExploreParams, SearchMode, LocationHint } from '../../shared/types';
 
 function fileName(p: string): string {
   return p.split(/[/\\]/).pop() ?? p;
@@ -21,6 +21,15 @@ function scorePercent(score: number): string {
 
 function handleOpenFile(filePath: string) {
   window.electronAPI?.openPath(filePath);
+}
+
+function renderLocationHint(hint: LocationHint): string {
+  if (!hint) return '';
+  switch (hint.type) {
+    case 'lines': return `Lines ${hint.start}\u2013${hint.end}`;
+    case 'page':  return `Page ${hint.page}`;
+    case 'slide': return `Slide ${hint.slide}`;
+  }
 }
 
 // ── Signal colours ──────────────────────────────────────────────────────────
@@ -441,10 +450,10 @@ function FileResultsView({
                     })}
                 </div>
 
-                {/* Hint — line range + section path */}
-                {result.hint && result.hint.startLine != null && (
+                {/* Hint — location + section path */}
+                {result.hint && result.hint.locationHint && (
                   <div className="mt-2 text-xs text-muted-foreground/60">
-                    Lines {result.hint.startLine}–{result.hint.endLine}
+                    {renderLocationHint(result.hint.locationHint)}
                     {result.hint.sectionPath && result.hint.sectionPath.length > 0 && (
                       <span className="ml-1.5 text-muted-foreground/40">
                         — {result.hint.sectionPath.join(' > ')}

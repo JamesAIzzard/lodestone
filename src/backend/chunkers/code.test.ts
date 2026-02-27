@@ -162,8 +162,10 @@ function second(): void {
 
     expect(first).toBeDefined();
     expect(second).toBeDefined();
-    expect(first!.startLine).toBe(1);
-    expect(second!.startLine).toBeGreaterThan(first!.endLine);
+    const fh = first!.locationHint;
+    const sh = second!.locationHint;
+    expect(fh).toEqual(expect.objectContaining({ type: 'lines', start: 1 }));
+    expect(sh?.type === 'lines' && sh.start).toBeGreaterThan(fh?.type === 'lines' ? fh.end : 0);
   });
 
   it('generates unique content hashes', async () => {

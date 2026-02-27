@@ -10,7 +10,7 @@
 
 import type { SiloDatabase } from './store';
 import { globToRegex } from './store';
-import type { SearchParams } from '../shared/types';
+import type { SearchParams, LocationHint } from '../shared/types';
 import type { Signal, SignalContext, SignalHint } from './scorers/signal';
 import { summariseDecay } from './scorers/decaying-sum';
 import { semanticSignal } from './scorers/semantic-signal';
@@ -43,8 +43,7 @@ export interface FileResult {
   signals: Record<string, number>;
   /** Best-chunk hint from the highest-scoring signal that has one. */
   hint?: {
-    startLine: number;
-    endLine: number;
+    locationHint: LocationHint;
     sectionPath?: string[];
   };
 }
@@ -113,7 +112,7 @@ export function search(
     for (const sr of signalResults) {
       const score = sr.scores.get(filePath) ?? 0;
       const hint = sr.hints.get(filePath);
-      if (hint && hint.startLine !== undefined && score > bestHintScore) {
+      if (hint && hint.locationHint && score > bestHintScore) {
         bestHint = hint;
         bestHintScore = score;
       }
@@ -124,9 +123,8 @@ export function search(
       score: summary.score,
       scoreLabel: summary.label,
       signals: perSignal,
-      hint: bestHint?.startLine !== undefined ? {
-        startLine: bestHint.startLine!,
-        endLine: bestHint.endLine!,
+      hint: bestHint?.locationHint ? {
+        locationHint: bestHint.locationHint,
         sectionPath: bestHint.sectionPath,
       } : undefined,
     });

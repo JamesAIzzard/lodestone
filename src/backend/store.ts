@@ -200,8 +200,7 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
       chunk_index   INTEGER NOT NULL,
       section_path  TEXT    NOT NULL,
       text          TEXT    NOT NULL,
-      start_line    INTEGER NOT NULL,
-      end_line      INTEGER NOT NULL,
+      location_hint TEXT,
       metadata      TEXT    NOT NULL DEFAULT '{}',
       content_hash  TEXT    NOT NULL,
       token_count   INTEGER NOT NULL DEFAULT 0
@@ -258,6 +257,27 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
   ).get();
   if (!hasTokenCount) {
     db.exec(`ALTER TABLE chunks ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  // Migrate start_line/end_line → location_hint (JSON discriminated union).
+  const hasLocationHint = db.prepare(
+    `SELECT 1 FROM pragma_table_info('chunks') WHERE name='location_hint'`,
+  ).get();
+  if (!hasLocationHint) {
+    db.exec(`ALTER TABLE chunks ADD COLUMN location_hint TEXT`);
+    // Migrate existing rows: convert integer pairs to JSON location hints
+    const hasStartLine = db.prepare(
+      `SELECT 1 FROM pragma_table_info('chunks') WHERE name='start_line'`,
+    ).get();
+    if (hasStartLine) {
+      db.exec(`
+        UPDATE chunks
+        SET location_hint = json_object('type', 'lines', 'start', start_line, 'end', end_line)
+        WHERE start_line IS NOT NULL
+      `);
+      db.exec(`ALTER TABLE chunks DROP COLUMN start_line`);
+      db.exec(`ALTER TABLE chunks DROP COLUMN end_line`);
+    }
   }
 
   // sqlite-vec virtual table — must be created separately because
@@ -327,8 +347,8 @@ function upsertFileInner(
     `INSERT INTO vec_chunks(embedding) VALUES (?)`,
   );
   const insertChunk = db.prepare(`
-    INSERT INTO chunks (id, file_path, chunk_index, section_path, text, start_line, end_line, metadata, content_hash, token_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO chunks (id, file_path, chunk_index, section_path, text, location_hint, metadata, content_hash, token_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const insertPosting = db.prepare(
@@ -351,8 +371,7 @@ function upsertFileInner(
       chunk.chunkIndex,
       JSON.stringify(chunk.sectionPath),
       chunk.text,
-      chunk.startLine,
-      chunk.endLine,
+      JSON.stringify(chunk.locationHint),
       JSON.stringify(chunk.metadata),
       chunk.contentHash,
       tokenCount,
@@ -517,8 +536,7 @@ export interface ChunkMeta {
   id: number;
   file_path: string;
   section_path: string;
-  start_line: number;
-  end_line: number;
+  location_hint: string | null;
 }
 
 /**
@@ -535,7 +553,7 @@ export function fetchChunkMeta(db: SiloDatabase, chunkIds: Set<number>): Map<num
   for (const id of chunkIds) insert.run(id);
 
   const rows = db.prepare(`
-    SELECT c.id, c.file_path, c.section_path, c.start_line, c.end_line
+    SELECT c.id, c.file_path, c.section_path, c.location_hint
     FROM chunks c
     JOIN _signal_ids t ON t.id = c.id
   `).all() as ChunkMeta[];

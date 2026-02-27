@@ -19,7 +19,15 @@ const STARTUP_GUIDE = `# Lodestone Startup Guide
 
 At the start of every conversation, call \`lodestone_orient\` with \`max_results: 10\`. This surfaces the most recently updated memories and any upcoming action-date items (tasks, reminders, recurring habits).
 
-Memory and knowledge location is the absolute foundation of our workflow. Lodestone is built on a powerful hybrid search algorithm, meaning semantic and keyword-based search are combined for optimal results. Before producing any response, always use \`lodestone_recall\` with a natural language query to retrieve relevant memories, and \`lodestone_search\` to find notes in our knowledge base. Seaching for notes will surface related memories alongside, and searching for memories will surface related notes. This is memory first work practice is the absolute foundation of our success. Check lodestone before falling back to web search for any query that may be covered in the user's knowledge base.`;
+Memory and knowledge location is the absolute foundation of our workflow. Lodestone is built on a powerful hybrid search algorithm, meaning semantic and keyword-based search are combined for optimal results. Before producing any response, always use \`lodestone_recall\` with a natural language query to retrieve relevant memories, and \`lodestone_search\` to find notes in our knowledge base. Searching for notes will surface related memories alongside, and searching for memories will surface related notes. This memory-first work practice is the absolute foundation of our success. Check lodestone before falling back to web search for any query that may be covered in the user's knowledge base.
+
+## Detailed Guides
+
+Three further guides are available on demand via \`lodestone_guide\`. Fetch the relevant one before undertaking that type of work — do not load all of them at startup.
+
+- **memory** — how to store, revise, and cross-reference memories; reminders. Fetch when storing or managing memories.
+- **tasks** — creating tasks, completing, recurring tasks, overdue handling. Fetch when working with the agenda or action-date memories.
+- **notes** — searching and browsing silos, editing files, note-writing conventions. Fetch before creating or editing any note in the knowledge base.`;
 
 const MEMORY_GUIDE = `# Lodestone Memory Guide
 

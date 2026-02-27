@@ -28,8 +28,7 @@ function makeChunk(filePath: string, index: number, text: string): ChunkRecord {
     chunkIndex: index,
     sectionPath: ['Section'],
     text,
-    startLine: 1,
-    endLine: 5,
+    locationHint: { type: 'lines', start: 1, end: 5 },
     metadata: {},
     contentHash: `hash-${filePath}-${index}`,
   };
@@ -118,16 +117,14 @@ describe('store', () => {
   it('search returns hint with line range', () => {
     const chunk = makeChunk('/a.md', 0, 'Test content');
     chunk.sectionPath = ['Architecture', 'Pipeline'];
-    chunk.startLine = 10;
-    chunk.endLine = 20;
+    chunk.locationHint = { type: 'lines', start: 10, end: 20 };
     upsertFileChunks(db, '/a.md', [chunk], [makeVector(1)]);
 
     const results = search(db, makeVector(1), { query: 'test', limit: 10 });
     expect(results.length).toBe(1);
-    // Hint should contain the line range from the matched chunk
+    // Hint should contain the location from the matched chunk
     if (results[0].hint) {
-      expect(results[0].hint.startLine).toBe(10);
-      expect(results[0].hint.endLine).toBe(20);
+      expect(results[0].hint.locationHint).toEqual({ type: 'lines', start: 10, end: 20 });
     }
   });
 

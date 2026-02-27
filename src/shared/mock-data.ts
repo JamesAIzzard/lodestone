@@ -110,7 +110,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.91,
     scoreLabel: 'semantic',
     signals: { semantic: 0.91, bm25: 0.52, filepath: 0 },
-    hint: { startLine: 45, endLine: 52, sectionPath: ['Architecture', 'Vector Store Design'] },
+    hint: { locationHint: { type: 'lines', start: 45, end: 52 }, sectionPath: ['Architecture', 'Vector Store Design'] },
   },
   {
     filePath: '/home/james/projects/codiet-optimiser/src/solver/constraint_handler.py',
@@ -118,7 +118,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.91,
     scoreLabel: 'semantic',
     signals: { semantic: 0.91, bm25: 0.18, filepath: 0 },
-    hint: { startLine: 88, endLine: 102, sectionPath: ['ConstraintHandler.validate'] },
+    hint: { locationHint: { type: 'lines', start: 88, end: 102 }, sectionPath: ['ConstraintHandler.validate'] },
   },
   {
     filePath: '/home/james/vault/notes/embedding-models-comparison.md',
@@ -126,7 +126,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.87,
     scoreLabel: 'semantic',
     signals: { semantic: 0.87, bm25: 0.62, filepath: 0 },
-    hint: { startLine: 34, endLine: 39, sectionPath: ['Embedding Models', 'Nomic Embed Text'] },
+    hint: { locationHint: { type: 'lines', start: 34, end: 39 }, sectionPath: ['Embedding Models', 'Nomic Embed Text'] },
   },
   {
     filePath: '/home/james/projects/codiet-core/src/nutrients/calculator.py',
@@ -134,7 +134,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.87,
     scoreLabel: 'semantic',
     signals: { semantic: 0.87, bm25: 0.24, filepath: 0 },
-    hint: { startLine: 120, endLine: 135, sectionPath: ['NutrientCalculator', 'NutrientCalculator.compute_totals'] },
+    hint: { locationHint: { type: 'lines', start: 120, end: 135 }, sectionPath: ['NutrientCalculator', 'NutrientCalculator.compute_totals'] },
   },
   {
     filePath: '/home/james/papers/retrieval-augmented-generation-survey-2024.pdf',
@@ -142,7 +142,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.85,
     scoreLabel: 'bm25',
     signals: { semantic: 0.08, bm25: 0.85, filepath: 0 },
-    hint: { startLine: 1, endLine: 8 },
+    hint: { locationHint: { type: 'page', page: 1 } },
   },
   {
     filePath: '/home/james/projects/codiet-types/src/food_item.py',
@@ -150,7 +150,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.84,
     scoreLabel: 'convergence',
     signals: { semantic: 0.80, bm25: 0.35, filepath: 0.83 },
-    hint: { startLine: 15, endLine: 22, sectionPath: ['FoodItem'] },
+    hint: { locationHint: { type: 'lines', start: 15, end: 22 }, sectionPath: ['FoodItem'] },
   },
   {
     filePath: '/home/james/vault/daily/2025-02-14.md',
@@ -158,7 +158,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.82,
     scoreLabel: 'semantic',
     signals: { semantic: 0.82, bm25: 0.41, filepath: 0 },
-    hint: { startLine: 12, endLine: 18, sectionPath: ['Chunking Strategy Notes'] },
+    hint: { locationHint: { type: 'lines', start: 12, end: 18 }, sectionPath: ['Chunking Strategy Notes'] },
   },
   {
     filePath: '/home/james/vault/projects/lodestone/mcp-tool-design.md',
@@ -166,7 +166,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.78,
     scoreLabel: 'filepath',
     signals: { semantic: 0.71, bm25: 0.38, filepath: 0.78 },
-    hint: { startLine: 22, endLine: 28, sectionPath: ['MCP Tool Design', 'Search Tool Parameters'] },
+    hint: { locationHint: { type: 'lines', start: 22, end: 28 }, sectionPath: ['MCP Tool Design', 'Search Tool Parameters'] },
   },
   {
     filePath: '/home/james/vault/references/chokidar-watcher-patterns.md',
@@ -174,7 +174,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.75,
     scoreLabel: 'bm25',
     signals: { semantic: 0.10, bm25: 0.75, filepath: 0 },
-    hint: { startLine: 28, endLine: 33, sectionPath: ['Chokidar Patterns', 'Debounce Configuration'] },
+    hint: { locationHint: { type: 'lines', start: 28, end: 33 }, sectionPath: ['Chokidar Patterns', 'Debounce Configuration'] },
   },
   {
     filePath: '/home/james/projects/codiet-data/seeds/usda_nutrients.toml',
@@ -182,7 +182,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.75,
     scoreLabel: 'semantic',
     signals: { semantic: 0.75, bm25: 0.22, filepath: 0 },
-    hint: { startLine: 1, endLine: 12 },
+    hint: { locationHint: { type: 'lines', start: 1, end: 12 } },
   },
   {
     filePath: '/home/james/papers/dense-passage-retrieval-karpukhin-2020.pdf',
@@ -190,7 +190,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.70,
     scoreLabel: 'semantic',
     signals: { semantic: 0.70, bm25: 0.58, filepath: 0 },
-    hint: { startLine: 1, endLine: 6 },
+    hint: { locationHint: { type: 'page', page: 3 } },
   },
   {
     filePath: '/home/james/projects/codiet-optimiser/src/solver/objective.py',
@@ -198,7 +198,7 @@ export const mockSearchResults: SearchResult[] = [
     score: 0.68,
     scoreLabel: 'semantic',
     signals: { semantic: 0.68, bm25: 0.15, filepath: 0 },
-    hint: { startLine: 44, endLine: 58, sectionPath: ['ObjectiveFunction', 'ObjectiveFunction.__call__'] },
+    hint: { locationHint: { type: 'lines', start: 44, end: 58 }, sectionPath: ['ObjectiveFunction', 'ObjectiveFunction.__call__'] },
   },
 ];
 

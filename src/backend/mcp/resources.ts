@@ -19,9 +19,7 @@ const STARTUP_GUIDE = `# Lodestone Startup Guide
 
 At the start of every conversation, call \`lodestone_orient\` with \`max_results: 10\`. This surfaces the most recently updated memories and any upcoming action-date items (tasks, reminders, recurring habits).
 
-Before answering a question that might relate to past context, use \`lodestone_recall\` with a natural language query to retrieve relevant memories. Check lodestone before falling back to web search for any query that may be covered in James's knowledge base.
-
-Before asking James a question, check memories first in case it has been discussed before.`;
+Memory and knowledge location is the absolute foundation of our workflow. Lodestone is built on a powerful hybrid search algorithm, meaning semantic and keyword-based search are combined for optimal results. Before producing any response, always use \`lodestone_recall\` with a natural language query to retrieve relevant memories, and \`lodestone_search\` to find notes in our knowledge base. Seaching for notes will surface related memories alongside, and searching for memories will surface related notes. This is memory first work practice is the absolute foundation of our success. Check lodestone before falling back to web search for any query that may be covered in the user's knowledge base.`;
 
 const MEMORY_GUIDE = `# Lodestone Memory Guide
 
@@ -35,7 +33,7 @@ Cross-referencing by m-id is a first-class pattern: embed "see m42" or "related:
 
 ## Tasks and Agenda
 
-Tasks are stored as memories with an \`action_date\`, \`priority\`, and \`status\`. Use \`lodestone_agenda\` at the start of a work session or when James asks what needs doing. Overdue items surface first.
+Tasks are stored as memories with an \`action_date\`, \`priority\`, and \`status\`. Use \`lodestone_agenda\` at the start of a work session or when the user asks what needs doing. Overdue items surface first.
 
 Recurring tasks use the \`recurrence\` field. They advance explicitly:
 - **Complete**: Use \`lodestone_revise\` with \`status: "completed"\`. This creates an immutable completion record and resets the task to open with the next \`action_date\`.
@@ -114,7 +112,7 @@ Use \`lodestone_skip\` when an occurrence should be skipped without recording a 
 
 ## Handling Overdue Items
 
-When reviewing overdue tasks with James, ask what to do with each one:
+When reviewing overdue tasks with the user, ask what to do with each one:
 - Done: \`lodestone_revise(status: "completed")\`
 - No longer relevant this cycle: \`lodestone_skip\`
 - Cancelled permanently: \`lodestone_revise(status: "cancelled")\`

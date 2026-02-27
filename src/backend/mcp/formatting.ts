@@ -50,6 +50,15 @@ export function statusLabel(s: string): string {
   }
 }
 
+// ── Cross-search threshold ───────────────────────────────────────────────────
+
+/**
+ * Minimum score [0,1] for a result to appear in a cross-type sidebar.
+ * Applied to memory hits shown during silo search, and to silo note hits
+ * shown during memory recall. Keeps sidebars signal-positive only.
+ */
+export const CROSS_SEARCH_THRESHOLD = 0.45;
+
 // ── Read safety ──────────────────────────────────────────────────────────────
 
 /** Maximum file size in bytes for full reads via lodestone_read. */

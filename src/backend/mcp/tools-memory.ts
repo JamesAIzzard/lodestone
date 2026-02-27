@@ -4,10 +4,11 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import path from 'node:path';
 import { parseFlexibleDate, parseRecurrence, parseDateRange } from '../date-parser';
 import type { McpServerDeps } from './types';
 import { PuidManager } from './puid-manager';
-import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel } from './formatting';
+import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, CROSS_SEARCH_THRESHOLD } from './formatting';
 
 export function registerRememberTool(server: McpServer, deps: McpServerDeps): void {
   server.tool(
@@ -172,7 +173,7 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
   );
 }
 
-export function registerRecallTool(server: McpServer, deps: McpServerDeps): void {
+export function registerRecallTool(server: McpServer, deps: McpServerDeps, puid: PuidManager): void {
   server.tool(
     'lodestone_recall',
     [
@@ -247,39 +248,65 @@ export function registerRecallTool(server: McpServer, deps: McpServerDeps): void
           ...dateFilters,
           ...(status !== undefined ? { status } : {}),
         });
-        if (results.length === 0) {
-          return { content: [{ type: 'text' as const, text: 'No memories found.' }] };
-        }
         const lines: string[] = [];
-        for (const r of results) {
-          const pct = Math.round(r.score * 100);
-          // Show signal breakdown: "62% convergence: semantic 58%, bm25 45%"
-          // or single-signal: "58% semantic"
-          const signalEntries = Object.entries(r.signals);
-          let scoreStr: string;
-          if (signalEntries.length <= 1) {
-            scoreStr = `${pct}% ${r.scoreLabel}`;
-          } else {
-            const breakdown = signalEntries
-              .sort(([, a], [, b]) => b - a)
-              .map(([name, val]) => `${name} ${Math.round(val * 100)}%`)
-              .join(', ');
-            scoreStr = `${pct}% ${r.scoreLabel}: ${breakdown}`;
+        if (results.length === 0) {
+          lines.push('No memories found.');
+        } else {
+          for (const r of results) {
+            const pct = Math.round(r.score * 100);
+            // Show signal breakdown: "62% convergence: semantic 58%, bm25 45%"
+            // or single-signal: "58% semantic"
+            const signalEntries = Object.entries(r.signals);
+            let scoreStr: string;
+            if (signalEntries.length <= 1) {
+              scoreStr = `${pct}% ${r.scoreLabel}`;
+            } else {
+              const breakdown = signalEntries
+                .sort(([, a], [, b]) => b - a)
+                .map(([name, val]) => `${name} ${Math.round(val * 100)}%`)
+                .join(', ');
+              scoreStr = `${pct}% ${r.scoreLabel}: ${breakdown}`;
+            }
+            lines.push(`## [m${r.id}] ${r.topic} (${scoreStr}, confidence: ${r.confidence})`);
+            lines.push(truncateMemoryBody(r.body));
+            const meta = [`Updated: ${r.updatedAt}`];
+            if (r.actionDate) {
+              let actionStr = `Action: ${r.actionDate}`;
+              if (r.recurrence) actionStr += ` (${r.recurrence})`;
+              meta.push(actionStr);
+            }
+            if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
+            if (r.status) meta.push(`Status: ${statusLabel(r.status)}`);
+            if (r.completedOn) meta.push(`Completed: ${r.completedOn}`);
+            lines.push(`_${meta.join(' | ')}_`);
+            lines.push('');
           }
-          lines.push(`## [m${r.id}] ${r.topic} (${scoreStr}, confidence: ${r.confidence})`);
-          lines.push(truncateMemoryBody(r.body));
-          const meta = [`Updated: ${r.updatedAt}`];
-          if (r.actionDate) {
-            let actionStr = `Action: ${r.actionDate}`;
-            if (r.recurrence) actionStr += ` (${r.recurrence})`;
-            meta.push(actionStr);
-          }
-          if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
-          if (r.status) meta.push(`Status: ${statusLabel(r.status)}`);
-          if (r.completedOn) meta.push(`Completed: ${r.completedOn}`);
-          lines.push(`_${meta.join(' | ')}_`);
-          lines.push('');
         }
+
+        // Silo notes sidebar — inverse mirror of the memory sidebar in lodestone_search
+        try {
+          const { results: siloResults } = await deps.search({ query, maxResults: 5 });
+          const siloHits = siloResults.filter(r => r.score >= CROSS_SEARCH_THRESHOLD);
+          if (siloHits.length > 0) {
+            lines.push('');
+            lines.push('---');
+            lines.push('Related notes (use lodestone_search for deeper search):');
+            lines.push('');
+            for (const r of siloHits) {
+              const pct = Math.round(r.score * 100);
+              const filename = path.basename(r.filePath, path.extname(r.filePath));
+              const id = puid.assignFilePuid(r.filePath);
+              lines.push(`- [${id}] ${filename} (${r.siloName}, ${pct}%)`);
+              if (r.hint?.sectionPath && r.hint.sectionPath.length > 0) {
+                lines.push(`  ${r.hint.sectionPath.join(' > ')}`);
+              }
+              lines.push('');
+            }
+          }
+        } catch {
+          // Silo search failure should not break recall results
+        }
+
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

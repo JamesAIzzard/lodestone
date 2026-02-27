@@ -11,7 +11,7 @@ import {
   SEARCH_DESCRIPTION, READ_DESCRIPTION, EXPLORE_DESCRIPTION,
   formatSearchResults, formatExploreResults,
   formatBytes, memoryNudge, truncateMemoryBody, priorityLabel, statusLabel,
-  MAX_READ_BYTES, PREVIEW_LINES,
+  MAX_READ_BYTES, PREVIEW_LINES, CROSS_SEARCH_THRESHOLD,
 } from './formatting';
 
 export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid: PuidManager): void {
@@ -65,7 +65,8 @@ export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid:
         const sidebarModes = new Set(['hybrid', 'bm25', 'semantic', undefined]);
         if (deps.isMemoryConnected?.() && sidebarModes.has(mode)) {
           try {
-            const memories = await deps.memoryRecall({ query, maxResults: 5 });
+            const memories = (await deps.memoryRecall({ query, maxResults: 5 }))
+              .filter(m => m.score >= CROSS_SEARCH_THRESHOLD);
             if (memories.length > 0) {
               const memLines = [
                 '',

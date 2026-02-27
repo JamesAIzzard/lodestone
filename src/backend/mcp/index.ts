@@ -54,7 +54,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
   registerExploreTool(server, deps, puid);
   registerEditTool(server, deps, puid);
   registerRememberTool(server, deps);
-  registerRecallTool(server, deps);
+  registerRecallTool(server, deps, puid);
   registerReviseTool(server, deps);
   registerForgetTool(server, deps);
   registerSkipTool(server, deps);

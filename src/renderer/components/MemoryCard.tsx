@@ -110,44 +110,42 @@ export default function MemoryCard({ status, onDone, shimmerKey }: MemoryCardPro
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-violet-500/10 text-violet-500">
           <Brain className="h-4 w-4" />
         </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-foreground">Claude's Memory</p>
-          <p className="text-xs text-muted-foreground">
-            {loading ?? (
-              <>
-                {status.memoryCount.toLocaleString()}{' '}
-                {status.memoryCount === 1 ? 'memory' : 'memories'}
-                {' · '}
-                {formatBytes(status.databaseSizeBytes)}
-              </>
-            )}
-          </p>
-        </div>
-        <div className="flex items-center gap-1">
+        <p className="flex-1 min-w-0 text-sm font-medium text-foreground">Claude's Memory</p>
+        <div className="flex shrink-0 items-center gap-1">
           {status.dbPath && (
             <Button
               size="sm"
               variant="ghost"
-              className="h-7 px-2 text-xs text-muted-foreground"
+              className="h-7 w-7 p-0 text-muted-foreground"
+              title="Locate database file"
               onClick={() => window.electronAPI?.showItemInFolder(status.dbPath!)}
               disabled={!!loading}
             >
               <FolderOpen className="h-3.5 w-3.5" />
-              Locate
             </Button>
           )}
           <Button
             size="sm"
             variant="ghost"
-            className="h-7 px-2 text-xs text-muted-foreground"
+            className="h-7 w-7 p-0 text-muted-foreground"
+            title="Disconnect memory database"
             onClick={handleDisconnect}
             disabled={!!loading}
           >
             <Unplug className="h-3.5 w-3.5" />
-            Disconnect
           </Button>
         </div>
       </div>
+      <p className="pl-11 text-xs text-muted-foreground">
+        {loading ?? (
+          <>
+            {status.memoryCount.toLocaleString()}{' '}
+            {status.memoryCount === 1 ? 'memory' : 'memories'}
+            {' · '}
+            {formatBytes(status.databaseSizeBytes)}
+          </>
+        )}
+      </p>
       {error && <p className="text-xs text-destructive pl-11">{error}</p>}
 
       {/* Neural shimmer — violet-tinted pulse when Claude accesses memory via MCP */}

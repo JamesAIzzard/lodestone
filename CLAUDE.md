@@ -2,21 +2,12 @@
 
 ## Memory: Use Lodestone Memory Tools
 
-You have access to persistent memory via the lodestone MCP tools. **Use them proactively:**
+- **Start of every conversation**: call `lodestone_orient` before anything else.
+- **Before asking James a question**: check `lodestone_recall` first — it may already be answered.
+- **As you work**: save learnings with `lodestone_remember`, update with `lodestone_revise`, remove stale entries with `lodestone_forget`.
+- **Do NOT** use MEMORY.md for new memories — use the lodestone tools instead.
 
-- **`lodestone_orient`** — Call at the start of every conversation to ground yourself in recent working context before doing anything else.
-- **`lodestone_recall`** — Search memories when you need context about past decisions, architecture, patterns, or user preferences. Do this before asking the user questions you might already have answers to. **Recall uses semantic search** — query with natural language concepts, short sentences, or brief descriptions of what you're looking for (e.g., "how does the search pipeline compose scores" not "decaying-sum"). Think about meaning, not keywords.
-- **`lodestone_remember`** — Save new learnings, decisions, and patterns as you work. Don't batch these up — save as you go.
-- **`lodestone_revise`** — Update existing memories when information changes (e.g., a phase is completed, a decision is revised).
-- **`lodestone_forget`** — Remove memories that are wrong or no longer relevant.
-
-**When to use memory:**
-- Start of conversation: `lodestone_orient` to see recent context
-- Before exploring unfamiliar code: `lodestone_recall` to check if you've seen it before
-- After completing significant work: `lodestone_remember` or `lodestone_revise` to record what changed
-- When the user shares a preference or decision: `lodestone_remember` immediately
-
-**Do NOT** use the auto-memory markdown files (MEMORY.md) for new memories. Use the lodestone tools instead — they're searchable, revisable, and more efficient.
+For detailed guidance: call `lodestone_guide` with topic `"memory"` (storage, cross-referencing, reminders) or `"tasks"` (agenda, recurring, overdue handling).
 
 ## Code Search: Use Lodestone
 

@@ -10,7 +10,7 @@ export function createWindow(ctx: AppContext): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
-    minWidth: 800,
+    minWidth: 400,
     minHeight: 600,
     backgroundColor: '#1a1a1a',
     icon: path.join(app.getAppPath(), 'assets', 'icon.ico'),

@@ -1,15 +1,17 @@
 /**
  * MCP Resources — exposes usage guide documents as MCP resources.
  *
- * Three resources cover the full set of use cases:
+ * Four resources cover the full set of use cases:
  *   lodestone://guide/startup  — session startup pattern
- *   lodestone://guide/memory   — memory, task, and agenda management
+ *   lodestone://guide/memory   — memory storage, cross-referencing, reminders
+ *   lodestone://guide/tasks    — task and agenda management, recurring tasks
  *   lodestone://guide/notes    — knowledge base search, file editing, note conventions
  *
  * Content is hardcoded to avoid filesystem dependencies at runtime.
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 
 // ── Guide content ──────────────────────────────────────────────────────
 
@@ -79,7 +81,75 @@ $$M_f = \\mu \\cdot P \\cdot d_m$$
 - Comments use \`%%\`.
 - Paragraphs are preferred over bullet lists unless a list is genuinely the clearer format.`;
 
+
+const TASKS_GUIDE = `# Lodestone Tasks & Agenda Guide
+
+## Creating Tasks
+
+Tasks are memories with an \`action_date\`. Create with \`lodestone_remember\`:
+- \`action_date\` — when the task is due or actionable (flexible: "tomorrow", "next Monday", "2026-03-15")
+- \`priority\` — 1=low, 2=medium, 3=high, 4=critical
+- \`status\` — "open" (default on creation)
+- \`recurrence\` — for repeating tasks: "daily", "weekly", "every monday", "every 3 days", etc.
+
+Use a short descriptive \`topic\` (e.g. "TASK - Send invoice"). Check \`lodestone_recall\` first to avoid duplicating an existing task.
+
+## Viewing the Agenda
+
+Call \`lodestone_agenda\` at the start of a work session or when James asks what needs doing. It surfaces overdue items first, then upcoming items sorted by priority then date. The \`when\` parameter accepts: "today", "tomorrow", "this week" (default), "next week", "this month", "overdue".
+
+## Completing Tasks
+
+**Non-recurring**: \`lodestone_revise\` with \`status: "completed"\`. Auto-fills \`completed_on\` with today.
+
+**Recurring**: same call — \`lodestone_revise\` with \`status: "completed"\`. This automatically:
+1. Creates an immutable completion record referencing the task by m-id.
+2. Resets the task to status="open" with \`action_date\` advanced to the next occurrence.
+
+No further action needed after a single revise call.
+
+## Skipping a Recurring Task
+
+Use \`lodestone_skip\` when an occurrence should be skipped without recording a completion (e.g. holiday, postponed). The \`action_date\` advances to the next occurrence. Pass a \`reason\` to append an audit note to the memory body.
+
+## Handling Overdue Items
+
+When reviewing overdue tasks with James, ask what to do with each one:
+- Done: \`lodestone_revise(status: "completed")\`
+- No longer relevant this cycle: \`lodestone_skip\`
+- Cancelled permanently: \`lodestone_revise(status: "cancelled")\`
+- Needs rescheduling: \`lodestone_revise(action_date: "new date")\``;
+
+
 // ── Registration ───────────────────────────────────────────────────────
+
+
+const GUIDES = { startup: STARTUP_GUIDE, memory: MEMORY_GUIDE, notes: NOTES_GUIDE, tasks: TASKS_GUIDE } as const;
+
+export function registerGuideTool(server: McpServer): void {
+  server.tool(
+    'lodestone_guide',
+    [
+      'Retrieve a detailed usage guide for a part of the Lodestone toolset.',
+      '',
+      'Call this on demand when you need instructions for a specific capability.',
+      'Do not load guides at startup — fetch only when you need them.',
+      '',
+      'Topics:',
+      '  startup — Session startup pattern: when to call orient, recall-first workflow.',
+      '  memory  — Memory management: storing, revising, cross-referencing, reminders.',
+      '  tasks   — Task and agenda management: creating, completing, recurring, overdue handling.',
+      '  notes   — Knowledge base: searching, editing files, note-writing conventions.',
+    ].join('\n'),
+    {
+      topic: z.enum(['startup', 'memory', 'tasks', 'notes']).describe('Guide topic to retrieve.'),
+    },
+    async ({ topic }) => ({
+      content: [{ type: 'text' as const, text: GUIDES[topic] }],
+    }),
+  );
+}
+
 
 export function registerResources(server: McpServer): void {
   server.resource(
@@ -97,6 +167,15 @@ export function registerResources(server: McpServer): void {
     { description: 'Memory management: recall-first pattern, storing/revising, tasks, agenda, reminders, recurring habits.' },
     async (uri) => ({
       contents: [{ uri: uri.href, mimeType: 'text/markdown', text: MEMORY_GUIDE }],
+    }),
+  );
+
+  server.resource(
+    'guide-tasks',
+    'lodestone://guide/tasks',
+    { description: 'Task and agenda management: creating tasks, completing, recurring tasks, overdue handling.' },
+    async (uri) => ({
+      contents: [{ uri: uri.href, mimeType: 'text/markdown', text: TASKS_GUIDE }],
     }),
   );
 

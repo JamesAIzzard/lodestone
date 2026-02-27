@@ -32,7 +32,9 @@
       "Bash(find:*)",
       "mcp__lodestone__lodestone_search",
       "mcp__lodestone__lodestone_orient",
-      "mcp__9ad966e2-d3a6-4faf-ba2e-4573f886ddd6__gmail_list_drafts"
+      "mcp__9ad966e2-d3a6-4faf-ba2e-4573f886ddd6__gmail_list_drafts",
+      "mcp__plugin_playwright_playwright__browser_evaluate",
+      "mcp__lodestone__lodestone_remember"
     ]
   }
 }

@@ -3,6 +3,7 @@
  */
 
 import { app, Menu, nativeImage, Tray } from 'electron';
+import path from 'node:path';
 import type { AppContext } from './context';
 import { createWindow } from './window';
 import { stopSilo, wakeSilo } from './lifecycle';
@@ -77,9 +78,8 @@ export function buildTrayMenu(ctx: AppContext): Menu {
 }
 
 export function createTray(ctx: AppContext): Tray {
-  const icon = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAQElEQVR4nGNgGNTg////W0CYIs1kGYKkEQaINwSLZuINwaOZsCFEaMZvCMUGUOwFqgQiHkMoSguUp0ayNNMNAADkCUHcy6YwLAAAAABJRU5ErkJggg==',
-  );
+  const iconPath = path.join(app.getAppPath(), 'assets', 'icon.png');
+  const icon = nativeImage.createFromPath(iconPath);
   const tray = new Tray(icon);
   tray.setToolTip('Lodestone');
   tray.setContextMenu(buildTrayMenu(ctx));

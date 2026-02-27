@@ -2,7 +2,7 @@
  * Electron window creation and close-to-tray behaviour.
  */
 
-import { BrowserWindow } from 'electron';
+import { app, BrowserWindow } from 'electron';
 import path from 'node:path';
 import type { AppContext } from './context';
 
@@ -13,6 +13,7 @@ export function createWindow(ctx: AppContext): BrowserWindow {
     minWidth: 800,
     minHeight: 600,
     backgroundColor: '#1a1a1a',
+    icon: path.join(app.getAppPath(), 'assets', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
     },

@@ -24,6 +24,11 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
       'memories that reference each other by m-id (e.g. "see m12 for the schema',
       'details"). Memory IDs are stable primary keys and safe to reference.',
       '',
+      'Cross-referencing by m-id is a first-class pattern: embed "see m42" or',
+      '"related: m7, m15" directly in the body to build a navigable knowledge graph.',
+      'lodestone_read m-id returns the full body plus the top-5 related memories by',
+      'cosine similarity, so cross-references surface automatically during exploration.',
+      '',
       'Parameters:',
       '  topic        \u2014 Short label categorising the memory (e.g. "JAMES - THINKING STYLE")',
       '  body         \u2014 The memory content (plain text)',
@@ -294,6 +299,13 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
       'precision, bypassing the similarity-based upsert of lodestone_remember.',
       'Also use it to adjust confidence on an existing memory without rewriting the body.',
       '',
+      'Auto-advance on complete: when status="completed" is set on a memory that has a',
+      'recurrence rule, the server automatically (1) creates an immutable completion record',
+      'referencing this memory by m-id, and (2) resets the recurring task to status="open"',
+      'with action_date advanced to the next occurrence. The LLM does not need to take any',
+      'further action — a single revise call handles everything. Use lodestone_skip instead',
+      'if the occurrence should be skipped without recording a completion.',
+      '',
       'Parameters:',
       '  id           \u2014 Memory id (from lodestone_recall or lodestone_orient)',
       '  body         \u2014 New body text (optional)',
@@ -368,7 +380,7 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
           }
         }
 
-        await deps.memoryRevise({
+        const reviseResult = await deps.memoryRevise({
           id,
           body,
           confidence,
@@ -381,7 +393,11 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
           completedOn: parsedCompletedOn,
         });
         const warning = body ? memoryBodyWarning(body) : '';
-        return { content: [{ type: 'text' as const, text: `Memory m${id} revised.${warning}` }] };
+        let msg = `Memory m${id} revised.`;
+        if (reviseResult.completionRecordId !== undefined) {
+          msg += ` Completion recorded as m${reviseResult.completionRecordId}. Next occurrence: ${reviseResult.nextActionDate}.`;
+        }
+        return { content: [{ type: 'text' as const, text: msg + warning }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
@@ -394,23 +410,70 @@ export function registerForgetTool(server: McpServer, deps: McpServerDeps): void
   server.tool(
     'lodestone_forget',
     [
-      'Remove a specific memory by id.',
+      'Soft-delete a specific memory by id.',
       '',
       'Use when something is definitively wrong, no longer relevant,',
       'or has been superseded by a revised memory.',
       '',
+      'The memory is not permanently removed. It is marked deleted and becomes',
+      'invisible to recall, orient, agenda, and dedup checks. It can still be',
+      'read via lodestone_read (using its m-id), which will show the body alongside',
+      'a deletion notice. This preserves reference integrity: any memory that',
+      'cross-references this one by m-id will still resolve correctly.',
+      '',
       'Parameters:',
-      '  id \u2014 Memory id (from lodestone_recall or lodestone_orient)',
+      '  id     \u2014 Memory id (from lodestone_recall or lodestone_orient)',
+      '  reason \u2014 Optional brief explanation of why the memory was deleted',
+      '             (e.g. "superseded by m45", "information was incorrect", "task cancelled").',
+      '             Stored on the record and shown in the deletion notice.',
     ].join('\n'),
     {
       id: z.union([z.number().int(), z.string()]).describe('Memory id to delete (number or m-prefixed id like "m5")'),
+      reason: z.string().optional().describe('Optional brief explanation of why this memory is being deleted.'),
     },
-    async ({ id: rawId }) => {
+    async ({ id: rawId, reason }) => {
       try {
         deps.notifyActivity?.({ channel: 'memory' });
         const id = PuidManager.resolveMemoryIdParam(rawId);
-        await deps.memoryForget({ id });
-        return { content: [{ type: 'text' as const, text: `Memory m${id} deleted.` }] };
+        await deps.memoryForget({ id, reason });
+        const reasonSuffix = reason ? ` Reason: ${reason}` : '';
+        return { content: [{ type: 'text' as const, text: `Memory m${id} soft-deleted.${reasonSuffix}` }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+      }
+    },
+  );
+}
+
+export function registerSkipTool(server: McpServer, deps: McpServerDeps): void {
+  server.tool(
+    'lodestone_skip',
+    [
+      'Advance a recurring memory to its next occurrence without recording a completion.',
+      '',
+      'Use this when an occurrence of a recurring task is intentionally skipped \u2014',
+      'the task is not done, but it should not remain overdue. Use lodestone_revise',
+      'with status="completed" instead when the task was actually completed.',
+      '',
+      'Only valid for memories with a recurrence rule. Returns an error for non-recurring memories.',
+      '',
+      'Parameters:',
+      '  id     \u2014 Memory id of the recurring memory to skip (number or m-prefixed, e.g. "m5")',
+      '  reason \u2014 Optional brief explanation of why this occurrence was skipped.',
+      '             If provided, a skip note is appended to the memory body for audit purposes.',
+    ].join('\n'),
+    {
+      id: z.union([z.number().int(), z.string()]).describe('Memory id of the recurring memory to skip (number or m-prefixed id like "m5")'),
+      reason: z.string().optional().describe('Optional explanation of why this occurrence was skipped. Appended to the memory body.'),
+    },
+    async ({ id: rawId, reason }) => {
+      try {
+        deps.notifyActivity?.({ channel: 'memory' });
+        const id = PuidManager.resolveMemoryIdParam(rawId);
+        const result = await deps.memorySkip({ id, reason });
+        const reasonSuffix = reason ? ` Reason: ${reason}.` : '';
+        return { content: [{ type: 'text' as const, text: `Memory m${id} skipped. Next occurrence: ${result.nextActionDate}.${reasonSuffix}` }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
@@ -431,7 +494,8 @@ export function registerOrientTool(server: McpServer, deps: McpServerDeps): void
       '',
       'Also surfaces memories with action dates in the next 7 days, so upcoming',
       'deadlines and planned actions are visible at conversation start.',
-      'Recurring memories auto-advance their action_date when it falls behind today.',
+      'Recurring tasks advance their action_date when completed via lodestone_revise',
+      '(status: "completed"), not automatically on orient.',
       '',
       'Results show truncated previews. Use lodestone_read with the m-prefixed ID (e.g. "m3") to read the full body.',
       '',

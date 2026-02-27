@@ -172,6 +172,12 @@ export class InternalApi {
         case 'memory.agenda':
           result = this.handleMemoryAgenda(req.params ?? {});
           break;
+        case 'memory.findRelated':
+          result = this.handleMemoryFindRelated(req.params ?? {});
+          break;
+        case 'memory.skip':
+          result = await this.handleMemorySkip(req.params ?? {});
+          break;
         default:
           this.sendResponse(socket, req.id, undefined, `Unknown method: ${req.method}`);
           return;
@@ -481,7 +487,7 @@ export class InternalApi {
     );
   }
 
-  private async handleMemoryRevise(params: Record<string, unknown>): Promise<void> {
+  private async handleMemoryRevise(params: Record<string, unknown>): Promise<{ completionRecordId?: number; nextActionDate?: string }> {
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
     const mm = this.ctx.memoryManager;
     if (!mm?.isConnected()) throw new Error('No memory database connected');
@@ -515,9 +521,28 @@ export class InternalApi {
     const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
     await service.ensureReady();
 
-    await mm.revise(id, updates, service);
+    const result = await mm.revise(id, updates, service);
     mm.touchPollBaseline();
     this.notifyMemoriesChanged();
+    return result;
+  }
+
+  private async handleMemorySkip(params: Record<string, unknown>): Promise<{ nextActionDate: string }> {
+    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
+    const mm = this.ctx.memoryManager;
+    if (!mm?.isConnected()) throw new Error('No memory database connected');
+
+    const id = params.id as number;
+    if (typeof id !== 'number') throw new Error('Missing required parameter: id');
+    const reason = typeof params.reason === 'string' ? params.reason : undefined;
+
+    const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
+    await service.ensureReady();
+
+    const result = await mm.skip(id, reason, service);
+    mm.touchPollBaseline();
+    this.notifyMemoriesChanged();
+    return result;
   }
 
   private handleMemoryForget(params: Record<string, unknown>): void {
@@ -528,7 +553,8 @@ export class InternalApi {
     const id = params.id as number;
     if (typeof id !== 'number') throw new Error('Missing required parameter: id');
 
-    mm.forget(id);
+    const reason = typeof params.reason === 'string' ? params.reason : undefined;
+    mm.forget(id, reason);
     mm.touchPollBaseline();
     this.notifyMemoriesChanged();
   }
@@ -565,6 +591,17 @@ export class InternalApi {
     if (typeof id !== 'number') throw new Error('Missing required parameter: id');
 
     return mm.getById(id);
+  }
+
+  private handleMemoryFindRelated(params: Record<string, unknown>): import('../backend/memory-store').RelatedMemoryResult[] {
+    const mm = this.ctx.memoryManager;
+    if (!mm?.isConnected()) throw new Error('No memory database connected');
+
+    const id = params.id as number;
+    if (typeof id !== 'number') throw new Error('Missing required parameter: id');
+
+    const topN = typeof params.topN === 'number' ? params.topN : 5;
+    return mm.findRelated(id, topN);
   }
 
   private notifyMemoriesChanged(): void {

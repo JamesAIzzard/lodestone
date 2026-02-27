@@ -53,6 +53,8 @@ export interface MemoryRecord {
   completedOn: string | null;
   createdAt: string;
   updatedAt: string;
+  deletedAt: string | null;      // ISO 8601 datetime — set on soft delete, null for active
+  deletionReason: string | null;  // optional explanation stored on soft delete
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -77,6 +79,8 @@ export function rowToRecord(row: Record<string, unknown>): MemoryRecord {
     completedOn: (row.completed_on as string | null) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
+    deletedAt: (row.deleted_at as string | null) ?? null,
+    deletionReason: (row.deletion_reason as string | null) ?? null,
   };
 }
 
@@ -166,6 +170,11 @@ export function createMemoryDatabase(dbPath: string): MemoryDatabase {
   try { db.exec(`ALTER TABLE memories ADD COLUMN completed_on TEXT`); } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status) WHERE status IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_completed_on ON memories(completed_on) WHERE completed_on IS NOT NULL`);
+
+  // Migration: add soft-delete columns.
+  try { db.exec(`ALTER TABLE memories ADD COLUMN deleted_at TEXT`); } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE memories ADD COLUMN deletion_reason TEXT`); } catch { /* already exists */ }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_deleted ON memories(deleted_at) WHERE deleted_at IS NOT NULL`);
 
   // Store model metadata on first creation (idempotent).
   db.prepare(`INSERT OR IGNORE INTO memory_metadata (key, value) VALUES (?, ?)`)
@@ -302,7 +311,7 @@ function removeFromInvertedIndex(db: MemoryDatabase, memoryId: number): void {
  */
 function updateMemoryCorpusStats(db: MemoryDatabase): void {
   const stats = db.prepare(
-    `SELECT COUNT(*) AS cnt, COALESCE(AVG(token_count), 0) AS avg_tc FROM memories`,
+    `SELECT COUNT(*) AS cnt, COALESCE(AVG(token_count), 0) AS avg_tc FROM memories WHERE deleted_at IS NULL`,
   ).get() as { cnt: number; avg_tc: number };
 
   const upsert = db.prepare(
@@ -457,16 +466,18 @@ export function updateMemory(
 }
 
 /**
- * Delete a memory by id and remove it from FTS + vec tables.
+ * Soft-delete a memory by id. Sets deleted_at to the current timestamp and
+ * stores an optional reason. Removes the memory from the inverted index so
+ * BM25 corpus stats stay accurate. The vec0 entry is retained (the join-back
+ * query filters by deleted_at IS NULL, so it is never surfaced).
  */
-export function deleteMemory(db: MemoryDatabase, id: number): void {
+export function deleteMemory(db: MemoryDatabase, id: number, reason?: string): void {
   db.transaction(() => {
-    const memRow = db.prepare(`SELECT vec_rowid FROM memories WHERE id = ?`).get(id) as { vec_rowid: number | null } | undefined;
-    if (memRow?.vec_rowid != null) {
-      db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`).run(memRow.vec_rowid);
-    }
+    const now = new Date().toISOString();
+    db.prepare(
+      `UPDATE memories SET deleted_at = ?, deletion_reason = ? WHERE id = ?`,
+    ).run(now, reason ?? null, id);
     removeFromInvertedIndex(db, id);
-    db.prepare(`DELETE FROM memories WHERE id = ?`).run(id);
     updateMemoryCorpusStats(db);
   })();
 }
@@ -479,16 +490,16 @@ export function getMemory(db: MemoryDatabase, id: number): MemoryRecord | null {
   return row ? rowToRecord(row) : null;
 }
 
-/** Count all memories. */
+/** Count active (non-deleted) memories. */
 export function getMemoryCount(db: MemoryDatabase): number {
-  const row = db.prepare(`SELECT COUNT(*) as cnt FROM memories`).get() as { cnt: number };
+  const row = db.prepare(`SELECT COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL`).get() as { cnt: number };
   return row.cnt;
 }
 
-/** Return N most recently updated memories (for lodestone_orient). */
+/** Return N most recently updated active memories. */
 export function getRecentMemories(db: MemoryDatabase, maxResults: number): MemoryRecord[] {
   const rows = db.prepare(
-    `SELECT * FROM memories ORDER BY updated_at DESC LIMIT ?`,
+    `SELECT * FROM memories WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT ?`,
   ).all(maxResults) as Record<string, unknown>[];
   return rows.map(rowToRecord);
 }
@@ -505,7 +516,8 @@ export function getMemoriesByActionDateRange(
 ): MemoryRecord[] {
   const rows = db.prepare(
     `SELECT * FROM memories
-     WHERE action_date IS NOT NULL
+     WHERE deleted_at IS NULL
+       AND action_date IS NOT NULL
        AND action_date >= ?
        AND action_date <= ?
      ORDER BY action_date ASC
@@ -573,7 +585,7 @@ export function filterMemoryIdsByDate(
 
   if (clauses.length === 0) return null; // no filters active
 
-  const sql = `SELECT id FROM memories WHERE ${clauses.join(' AND ')}`;
+  const sql = `SELECT id FROM memories WHERE deleted_at IS NULL AND ${clauses.join(' AND ')}`;
   const rows = db.prepare(sql).all(...params) as Array<{ id: number }>;
   return new Set(rows.map(r => r.id));
 }
@@ -587,7 +599,8 @@ export function getOverdueMemories(
 ): MemoryRecord[] {
   const rows = db.prepare(
     `SELECT * FROM memories
-     WHERE action_date IS NOT NULL
+     WHERE deleted_at IS NULL
+       AND action_date IS NOT NULL
        AND action_date < ?
        AND completed_on IS NULL
        AND (status IS NULL OR status = 'open')
@@ -607,7 +620,8 @@ export function getActiveUpcomingMemories(
 ): MemoryRecord[] {
   const rows = db.prepare(
     `SELECT * FROM memories
-     WHERE action_date IS NOT NULL
+     WHERE deleted_at IS NULL
+       AND action_date IS NOT NULL
        AND action_date >= ?
        AND action_date <= ?
        AND completed_on IS NULL
@@ -626,7 +640,8 @@ export function getRecentActiveMemories(
 ): MemoryRecord[] {
   const rows = db.prepare(
     `SELECT * FROM memories
-     WHERE completed_on IS NULL
+     WHERE deleted_at IS NULL
+       AND completed_on IS NULL
        AND (status IS NULL OR status = 'open')
      ORDER BY updated_at DESC
      LIMIT ?`,
@@ -664,13 +679,80 @@ export function findSimilarMemory(
 
   if (!vecRow || vecRow.distance > DEDUP_MAX_DISTANCE) return null;
 
-  // Join back to memories via vec_rowid (not id — they differ after embedding updates)
-  const memRow = db.prepare(`SELECT * FROM memories WHERE vec_rowid = ?`).get(vecRow.rowid) as Record<string, unknown> | undefined;
+  // Join back to active memories via vec_rowid (not id — they differ after embedding updates).
+  // Soft-deleted memories are excluded so dedup never surfaces a deleted entry.
+  const memRow = db.prepare(`SELECT * FROM memories WHERE vec_rowid = ? AND deleted_at IS NULL`).get(vecRow.rowid) as Record<string, unknown> | undefined;
   if (!memRow) return null;
 
   // Convert vec0 cosine distance to similarity: sim = 1 - distance/2
   const similarity = 1 - vecRow.distance / 2;
   return { record: rowToRecord(memRow), similarity };
+}
+
+// ── Related Memory Hints ──────────────────────────────────────────────────────
+
+export interface RelatedMemoryResult {
+  id: number;
+  topic: string;
+  /** Cosine similarity in [0, 1]. */
+  similarity: number;
+}
+
+/**
+ * Find the top-N most similar active memories to a given memory, by cosine
+ * similarity. Uses the stored vec0 embedding directly — no re-embedding needed.
+ * Excludes the source memory itself and any soft-deleted memories.
+ */
+export function findRelatedMemories(
+  db: MemoryDatabase,
+  memoryId: number,
+  topN = 5,
+): RelatedMemoryResult[] {
+  // Get the vec_rowid for this memory
+  const mem = db.prepare(
+    `SELECT vec_rowid FROM memories WHERE id = ?`,
+  ).get(memoryId) as { vec_rowid: number | null } | undefined;
+  if (!mem?.vec_rowid) return [];
+
+  // Fetch the stored embedding blob from vec0 (direct rowid lookup)
+  const vecRow = db.prepare(
+    `SELECT embedding FROM memories_vec WHERE rowid = ?`,
+  ).get(mem.vec_rowid) as { embedding: Buffer } | undefined;
+  if (!vecRow) return [];
+
+  // KNN search — fetch topN + 1 to have room to exclude self
+  let candidates: Array<{ rowid: number; distance: number }>;
+  try {
+    candidates = db.prepare(`
+      SELECT rowid, distance
+      FROM memories_vec
+      WHERE embedding MATCH ?
+        AND k = ?
+    `).all(vecRow.embedding, topN + 1) as Array<{ rowid: number; distance: number }>;
+  } catch {
+    return []; // vec0 may fail if table is near-empty
+  }
+
+  if (candidates.length === 0) return [];
+
+  // Map vec_rowids → active memory records, excluding self
+  const vecRowids = candidates.map(r => r.rowid);
+  const ph = vecRowids.map(() => '?').join(', ');
+  const mappings = db.prepare(
+    `SELECT id, vec_rowid, topic FROM memories WHERE vec_rowid IN (${ph}) AND deleted_at IS NULL AND id != ?`,
+  ).all(...vecRowids, memoryId) as Array<{ id: number; vec_rowid: number; topic: string }>;
+
+  if (mappings.length === 0) return [];
+
+  const distMap = new Map(candidates.map(r => [r.rowid, r.distance]));
+  return mappings
+    .map(m => ({
+      id: m.id,
+      topic: m.topic,
+      similarity: 1 - (distMap.get(m.vec_rowid) ?? 2) / 2,
+    }))
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, topN);
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────

@@ -26,11 +26,13 @@ import {
   getOverdueMemories,
   getMemory,
   findSimilarMemory,
+  findRelatedMemories,
   getMemoryCount,
   getMemoryDatabaseSizeBytes,
   type MemoryDatabase,
   type MemoryRecord,
   type SimilarMemoryResult,
+  type RelatedMemoryResult,
 } from './memory-store';
 import { searchMemory, type MemorySearchResult, type MemorySearchMode, type MemoryDateFilters } from './memory-search';
 import { advanceRecurrence, parseDateRange, type DateRangeResult } from './date-parser';
@@ -278,6 +280,15 @@ export class MemoryManager {
   /**
    * Explicitly update a specific memory by id.
    * If body is changed, re-embeds and re-syncs the vec table.
+   *
+   * Special case — recurring completion:
+   * When status is set to 'completed' on a memory that has a recurrence rule,
+   * the server automatically:
+   *   1. Creates an immutable completion record referencing this memory.
+   *   2. Resets the recurring memory to status='open', clears completed_on, and
+   *      advances action_date to the next occurrence.
+   * All three writes happen in a single DB transaction. Returns the completion
+   * record id and next action date when this path is taken.
    */
   async revise(
     id: number,
@@ -293,7 +304,7 @@ export class MemoryManager {
       completedOn?: string | null;
     },
     embeddingService: EmbeddingService,
-  ): Promise<void> {
+  ): Promise<{ completionRecordId?: number; nextActionDate?: string }> {
     this.assertConnected();
 
     // Sync status ↔ completedOn before writing
@@ -306,25 +317,108 @@ export class MemoryManager {
       updates.completedOn = synced.completedOn;
     }
 
+    const prefix = embeddingService.modelName === MEMORY_MODEL ? 'search_document: ' : '';
+
     let embedding: number[] | undefined;
     if (updates.body !== undefined) {
-      const prefix = embeddingService.modelName === MEMORY_MODEL
-        ? 'search_document: '
-        : '';
+      embedding = await embeddingService.embed(prefix + updates.body);
+    }
+
+    // ── Recurring completion: auto-advance + create completion record ─────────
+    if (updates.status === 'completed') {
+      const existing = getMemory(this.db!, id);
+      if (existing?.recurrence && existing.actionDate) {
+        const today = formatDateISO(new Date());
+        // Use tomorrow as reference so the date always advances past today,
+        // even when completing on the same day as the action_date.
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const nextActionDate = advanceRecurrence(existing.actionDate, existing.recurrence, tomorrow);
+        const completionBody = `Completed occurrence of m${id} (${existing.topic}) on ${today}.`;
+        const completionEmbedding = await embeddingService.embed(prefix + completionBody);
+
+        // Override: recurring task resets to open with advanced date rather than staying completed
+        updates.status = 'open';
+        updates.completedOn = null;
+        updates.actionDate = nextActionDate;
+
+        // Atomic: revise recurring task + insert completion record in one transaction
+        const completionRecordId = this.db!.transaction(() => {
+          updateMemory(this.db!, id, updates, embedding);
+          return insertMemory(
+            this.db!,
+            `COMPLETED: ${existing.topic}`,
+            completionBody,
+            1.0,
+            null,
+            completionEmbedding,
+            null, null, null,
+            'completed',
+            today,
+          );
+        })() as number;
+
+        console.log(`[memory] Completed recurring memory m${id}: completion record m${completionRecordId}, next occurrence ${nextActionDate}`);
+        return { completionRecordId, nextActionDate };
+      }
+    }
+
+    // ── Standard revise ───────────────────────────────────────────────────────
+    updateMemory(this.db!, id, updates, embedding);
+    console.log(`[memory] Revised memory ${id}`);
+    return {};
+  }
+
+  /**
+   * Advance a recurring memory to its next occurrence without creating a
+   * completion record. Covers the case where an occurrence is intentionally
+   * skipped rather than completed.
+   *
+   * If reason is provided, appends a skip note to the memory body so there
+   * is a lightweight audit trail without a separate record.
+   */
+  async skip(
+    id: number,
+    reason: string | undefined,
+    embeddingService: EmbeddingService,
+  ): Promise<{ nextActionDate: string }> {
+    this.assertConnected();
+
+    const existing = getMemory(this.db!, id);
+    if (!existing) throw new Error(`Memory m${id} not found`);
+    if (!existing.recurrence) throw new Error(`Memory m${id} is not a recurring memory`);
+    if (!existing.actionDate) throw new Error(`Memory m${id} has no action_date to advance`);
+
+    const today = formatDateISO(new Date());
+    // Use the day after the action_date as reference so the date always advances
+    // by at least one step — even if the action_date is in the future.
+    const [y, m, d] = existing.actionDate.split('-').map(Number);
+    const dayAfterAction = new Date(y, m - 1, d + 1);
+    const nextActionDate = advanceRecurrence(existing.actionDate, existing.recurrence, dayAfterAction);
+
+    const updates: { actionDate: string; body?: string } = { actionDate: nextActionDate };
+    let embedding: number[] | undefined;
+
+    if (reason) {
+      const skipNote = `\n\nSkipped occurrence on ${today}: ${reason}.`;
+      updates.body = existing.body + skipNote;
+      const prefix = embeddingService.modelName === MEMORY_MODEL ? 'search_document: ' : '';
       embedding = await embeddingService.embed(prefix + updates.body);
     }
 
     updateMemory(this.db!, id, updates, embedding);
-    console.log(`[memory] Revised memory ${id}`);
+    console.log(`[memory] Skipped recurring memory m${id}: next occurrence ${nextActionDate}`);
+    return { nextActionDate };
   }
 
   /**
-   * Delete a memory by id.
+   * Soft-delete a memory by id. The row is retained but marked deleted_at,
+   * making it invisible to all queries while still readable via lodestone_read.
    */
-  forget(id: number): void {
+  forget(id: number, reason?: string): void {
     this.assertConnected();
-    deleteMemory(this.db!, id);
-    console.log(`[memory] Forgot memory ${id}`);
+    deleteMemory(this.db!, id, reason);
+    console.log(`[memory] Soft-deleted memory ${id}${reason ? ` (${reason})` : ''}`);
   }
 
   /**
@@ -344,9 +438,6 @@ export class MemoryManager {
     const nextWeek = new Date(today);
     nextWeek.setDate(nextWeek.getDate() + 7);
     const nextWeekStr = formatDateISO(nextWeek);
-
-    // Auto-advance recurring memories before fetching upcoming
-    this.autoAdvanceRecurringMemories(today, todayStr);
 
     // Upcoming active action-date memories (prioritised, excludes completed/cancelled)
     const upcoming = getActiveUpcomingMemories(this.db!, todayStr, nextWeekStr, maxResults);
@@ -397,9 +488,6 @@ export class MemoryManager {
     const today = new Date();
     const todayStr = formatDateISO(today);
 
-    // Auto-advance recurring memories
-    this.autoAdvanceRecurringMemories(today, todayStr);
-
     // Always fetch overdue items (active only)
     const overdue = getOverdueMemories(this.db!, todayStr, maxResults);
     overdue.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || (a.actionDate ?? '').localeCompare(b.actionDate ?? ''));
@@ -421,40 +509,21 @@ export class MemoryManager {
   }
 
   /**
-   * Auto-advance recurring memories whose action_date has fallen behind today.
-   * Computes the next valid occurrence and persists the updated action_date.
-   */
-  private autoAdvanceRecurringMemories(today: Date, todayStr: string): void {
-    if (!this.db) return;
-
-    const stale = this.db.prepare(
-      `SELECT * FROM memories WHERE recurrence IS NOT NULL AND action_date IS NOT NULL AND action_date < ?`,
-    ).all(todayStr) as Record<string, unknown>[];
-
-    for (const row of stale) {
-      try {
-        const id = row.id as number;
-        const oldDate = row.action_date as string;
-        const rule = row.recurrence as string;
-        const newDate = advanceRecurrence(oldDate, rule, today);
-        if (newDate !== oldDate) {
-          updateMemory(this.db!, id, { actionDate: newDate });
-          console.log(`[memory] Auto-advanced recurring memory m${id}: ${oldDate} → ${newDate} (${rule})`);
-        }
-      } catch (err) {
-        const id = row.id ?? '?';
-        console.error(`[memory] Failed to auto-advance memory m${id}:`, err);
-      }
-    }
-  }
-
-  /**
    * Fetch a single memory by its primary key.
    * Used by lodestone_read to resolve m-prefixed puids.
    */
   getById(id: number): MemoryRecord | null {
     this.assertConnected();
     return getMemory(this.db!, id);
+  }
+
+  /**
+   * Find the top-N most similar active memories to the given memory id.
+   * Used by lodestone_read to append related-memory hints on single m-id reads.
+   */
+  findRelated(id: number, topN = 5): RelatedMemoryResult[] {
+    this.assertConnected();
+    return findRelatedMemories(this.db!, id, topN);
   }
 
   // ── Private ────────────────────────────────────────────────────────────────

@@ -208,12 +208,21 @@ export interface MemoryRecord {
   completedOn: string | null;   // ISO 8601 date — implies completed when set
   createdAt: string;
   updatedAt: string;
+  deletedAt: string | null;      // ISO 8601 datetime — set on soft delete, null for active
+  deletionReason: string | null;  // optional explanation stored on soft delete
 }
 
 export interface MemorySearchResult extends MemoryRecord {
   score: number;
   scoreLabel: string;
   signals: Record<string, number>;
+}
+
+export interface RelatedMemoryResult {
+  id: number;
+  topic: string;
+  /** Cosine similarity in [0, 1]. */
+  similarity: number;
 }
 
 export interface MemoryStatus {

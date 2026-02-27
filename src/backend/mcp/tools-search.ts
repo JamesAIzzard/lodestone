@@ -139,7 +139,22 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
               if (!memory) {
                 content.push({
                   type: 'text' as const,
-                  text: `## ${id}\nError: Memory ${memId} not found. It may have been deleted.`,
+                  text: `## ${id}\nError: Memory ${memId} not found.`,
+                });
+              } else if (memory.deletedAt) {
+                // Soft-deleted memory — show body with deletion notice so reference
+                // chains through deleted memories remain navigable.
+                const deletedNote = memory.deletionReason
+                  ? `Deleted: ${memory.deletedAt} — ${memory.deletionReason}`
+                  : `Deleted: ${memory.deletedAt}`;
+                content.push({
+                  type: 'text' as const,
+                  text: [
+                    `## ${id}: ${memory.topic} [DELETED]`,
+                    `> ⚠️ ${deletedNote}`,
+                    '',
+                    memory.body,
+                  ].join('\n'),
                 });
               } else {
                 const memMeta = [`Confidence: ${memory.confidence}`, `Updated: ${memory.updatedAt}`];
@@ -151,15 +166,31 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
                 if (memory.priority) memMeta.push(`Priority: ${priorityLabel(memory.priority)}`);
                 if (memory.status) memMeta.push(`Status: ${statusLabel(memory.status)}`);
                 if (memory.completedOn) memMeta.push(`Completed: ${memory.completedOn}`);
-                content.push({
-                  type: 'text' as const,
-                  text: [
-                    `## ${id}: ${memory.topic}`,
-                    memory.body,
-                    '',
-                    `_${memMeta.join(' | ')}_`,
-                  ].join('\n'),
-                });
+                const lines = [
+                  `## ${id}: ${memory.topic}`,
+                  memory.body,
+                  '',
+                  `_${memMeta.join(' | ')}_`,
+                ];
+
+                // Append related-memory hints on single m-id reads only (batch reads stay clean).
+                if (refs.length === 1 && deps.memoryFindRelated) {
+                  try {
+                    const related = await deps.memoryFindRelated({ id: memId, topN: 5 });
+                    if (related.length > 0) {
+                      lines.push('');
+                      lines.push('Related memories (top 5 by similarity):');
+                      for (const r of related) {
+                        const pct = Math.round(r.similarity * 100);
+                        lines.push(`  [m${r.id}] ${r.topic} (${pct}%)`);
+                      }
+                    }
+                  } catch {
+                    // Related hints are best-effort — never break the read
+                  }
+                }
+
+                content.push({ type: 'text' as const, text: lines.join('\n') });
               }
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);

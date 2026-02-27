@@ -80,11 +80,11 @@ const memorySemanticSignal: MemorySignal = {
 
     if (vecRows.length === 0) return scores;
 
-    // Map vec_rowid → memories.id
+    // Map vec_rowid → memories.id, excluding soft-deleted memories.
     const vecRowids = vecRows.map(r => r.rowid);
     const ph = vecRowids.map(() => '?').join(', ');
     const mappings = ctx.db.prepare(
-      `SELECT id, vec_rowid FROM memories WHERE vec_rowid IN (${ph})`,
+      `SELECT id, vec_rowid FROM memories WHERE vec_rowid IN (${ph}) AND deleted_at IS NULL`,
     ).all(...vecRowids) as Array<{ id: number; vec_rowid: number }>;
 
     const vecDistMap = new Map(vecRows.map(r => [r.rowid, r.distance]));
@@ -292,10 +292,10 @@ export function searchMemory(
 
   if (scored.length === 0) return [];
 
-  // ── Fetch full records ────────────────────────────────────────────
+  // ── Fetch full records (exclude soft-deleted) ─────────────────────
   const placeholders = scored.map(() => '?').join(', ');
   const rows = db.prepare(
-    `SELECT * FROM memories WHERE id IN (${placeholders})`,
+    `SELECT * FROM memories WHERE id IN (${placeholders}) AND deleted_at IS NULL`,
   ).all(...scored.map(r => r.id)) as Record<string, unknown>[];
 
   const rowMap = new Map(rows.map(r => [r.id as number, r]));

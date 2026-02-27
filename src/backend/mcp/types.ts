@@ -3,7 +3,7 @@
  */
 
 import type { Readable, Writable } from 'node:stream';
-import type { SearchResult, DirectoryResult, SiloStatus, MemoryRecord, MemorySearchResult } from '../../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus, MemoryRecord, MemorySearchResult, RelatedMemoryResult } from '../../shared/types';
 import type { EditOperation, EditResult } from '../edit';
 
 export interface McpServerDeps {
@@ -83,9 +83,14 @@ export interface McpServerDeps {
     topic?: string;
     status?: string | null;
     completedOn?: string | null;
-  }) => Promise<void>;
-  /** Delete a memory by id. */
-  memoryForget: (params: { id: number }) => Promise<void>;
+  }) => Promise<{ completionRecordId?: number; nextActionDate?: string }>;
+  /** Soft-delete a memory by id. */
+  memoryForget: (params: { id: number; reason?: string }) => Promise<void>;
+  /**
+   * Advance a recurring memory to its next occurrence without completing it.
+   * Records a skip note in the body if reason is provided.
+   */
+  memorySkip: (params: { id: number; reason?: string }) => Promise<{ nextActionDate: string }>;
   /** Return N most recently updated memories. */
   memoryOrient: (params: { maxResults?: number }) => Promise<MemoryRecord[]>;
   /** Return agenda items grouped by overdue and upcoming. */
@@ -96,6 +101,8 @@ export interface McpServerDeps {
   }) => Promise<{ overdue: MemoryRecord[]; upcoming: MemoryRecord[] }>;
   /** Fetch a single memory record by id (for lodestone_read of m-puids). */
   memoryGetById: (params: { id: number }) => Promise<MemoryRecord | null>;
+  /** Find the top-N most similar active memories to a given memory id. */
+  memoryFindRelated: (params: { id: number; topN?: number }) => Promise<RelatedMemoryResult[]>;
   /** Fire-and-forget notification to the GUI to trigger the shimmer on a card. */
   notifyActivity?: (params: { channel: 'silo' | 'memory'; siloName?: string }) => void;
 }

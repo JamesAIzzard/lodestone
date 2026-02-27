@@ -21,7 +21,7 @@ import type { McpServerDeps, McpServerHandle } from './types';
 import { PuidManager } from './puid-manager';
 import { registerSearchTool, registerReadTool, registerStatusTool, registerExploreTool } from './tools-search';
 import { registerEditTool } from './tools-edit';
-import { registerRememberTool, registerRecallTool, registerReviseTool, registerForgetTool, registerOrientTool, registerAgendaTool } from './tools-memory';
+import { registerRememberTool, registerRecallTool, registerReviseTool, registerForgetTool, registerSkipTool, registerOrientTool, registerAgendaTool } from './tools-memory';
 
 /**
  * Create and start an MCP server that exposes Lodestone search as a tool.
@@ -55,6 +55,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
   registerRecallTool(server, deps);
   registerReviseTool(server, deps);
   registerForgetTool(server, deps);
+  registerSkipTool(server, deps);
   registerOrientTool(server, deps);
   registerAgendaTool(server, deps);
 

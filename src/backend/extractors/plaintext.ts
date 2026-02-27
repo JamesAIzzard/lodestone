@@ -15,6 +15,5 @@ export function extractPlaintext(content: string): ExtractionResult {
   return {
     body: content.trim(),
     metadata: {},
-    metadataLineCount: 0,
   };
 }

@@ -11,7 +11,7 @@ function chunkMarkdown(filePath: string, content: string, maxChunkTokens: number
 // ── extractMarkdown ──────────────────────────────────────────────────────────
 
 describe('extractMarkdown', () => {
-  it('strips YAML frontmatter and returns body + metadata', () => {
+  it('parses YAML frontmatter into metadata and keeps it in body', () => {
     const content = `---
 title: Test Note
 tags:
@@ -24,7 +24,8 @@ Body text here.`;
     expect(result.metadata).toEqual({ title: 'Test Note', tags: ['lodestone'] });
     expect(result.body).toContain('# Heading');
     expect(result.body).toContain('Body text here.');
-    expect(result.body).not.toContain('title: Test Note');
+    // Frontmatter is now included in the body so tags/aliases are searchable
+    expect(result.body).toContain('title: Test Note');
   });
 
   it('handles files with no frontmatter', () => {
@@ -112,11 +113,11 @@ Content here.`;
 
     const chunks = chunkMarkdown('/test/note.md', content, 8192);
 
-    expect(chunks.length).toBe(1);
+    // Frontmatter is in the body, so remark parses it as pre-heading content.
+    // At least one chunk must contain the heading content.
+    expect(chunks.length).toBeGreaterThanOrEqual(1);
     expect(chunks[0].metadata).toEqual({ title: 'My Note' });
-    expect(chunks[0].text).toContain('Content here');
-    // Frontmatter should not appear in chunk text
-    expect(chunks[0].text).not.toContain('title: My Note');
+    expect(chunks.some(c => c.text.includes('Content here'))).toBe(true);
   });
 
   it('returns empty array for empty files', () => {

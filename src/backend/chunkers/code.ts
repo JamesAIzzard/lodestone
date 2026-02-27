@@ -222,7 +222,7 @@ export async function chunkCodeAsync(
   extraction: ExtractionResult,
   maxChunkTokens: number,
 ): Promise<ChunkRecord[]> {
-  const { body, metadata, metadataLineCount } = extraction;
+  const { body, metadata } = extraction;
 
   if (body.length === 0) return [];
 
@@ -244,7 +244,7 @@ export async function chunkCodeAsync(
   }
 
   try {
-    return parseAndChunk(filePath, body, language, definitionTypes, metadata, metadataLineCount, maxChunkTokens);
+    return parseAndChunk(filePath, body, language, definitionTypes, metadata, maxChunkTokens);
   } catch (err) {
     console.warn(`[code-chunker] Parse failed for ${filePath}, falling back to plaintext:`, err);
     return chunkPlaintext(filePath, extraction, maxChunkTokens);
@@ -270,7 +270,6 @@ function parseAndChunk(
   language: Parser.Language,
   definitionTypes: string[],
   metadata: Record<string, unknown>,
-  metadataLineCount: number,
   maxChunkTokens: number,
 ): ChunkRecord[] {
   if (!ParserClass) throw new Error('Tree-sitter not initialised');
@@ -304,7 +303,7 @@ function parseAndChunk(
         chunkIndex: chunks.length,
         sectionPath: seg.sectionPath,
         text,
-        locationHint: { type: 'lines', start: seg.startLine + metadataLineCount, end: seg.endLine + metadataLineCount },
+        locationHint: { type: 'lines', start: seg.startLine, end: seg.endLine },
         metadata,
         contentHash: hashText(text),
       });
@@ -319,7 +318,7 @@ function parseAndChunk(
           chunkIndex: chunks.length,
           sectionPath: seg.sectionPath,
           text: sub,
-          locationHint: { type: 'lines', start: seg.startLine + metadataLineCount, end: seg.endLine + metadataLineCount },
+          locationHint: { type: 'lines', start: seg.startLine, end: seg.endLine },
           metadata,
           contentHash: hashText(sub),
         });

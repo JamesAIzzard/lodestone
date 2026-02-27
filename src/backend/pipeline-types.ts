@@ -12,16 +12,14 @@ import type { LocationHint } from '../shared/types';
 
 /**
  * Result of extracting structured text from a raw file.
- * The extractor strips format-specific wrappers (YAML frontmatter, PDF headers, etc.)
- * and returns clean body text plus any metadata discovered.
+ * The extractor returns the full file body plus any structured metadata discovered.
+ * Body coordinates are identical to raw-file coordinates for all text formats.
  */
 export interface ExtractionResult {
-  /** Clean body text (format-specific wrappers removed) */
+  /** Body text (full file content for text formats; extracted text for binary formats) */
   body: string;
-  /** Extracted metadata (YAML frontmatter, PDF properties, etc.) */
+  /** Extracted metadata (YAML frontmatter fields, PDF properties, etc.) */
   metadata: Record<string, unknown>;
-  /** Number of lines the metadata occupies in the original file (for line-number offsetting) */
-  metadataLineCount: number;
 }
 
 // ── Chunking ─────────────────────────────────────────────────────────────────

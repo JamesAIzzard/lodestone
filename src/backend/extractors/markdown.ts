@@ -1,5 +1,5 @@
 /**
- * Markdown extractor — strips YAML frontmatter via gray-matter.
+ * Markdown extractor — parses YAML frontmatter via gray-matter.
  */
 
 import matter from 'gray-matter';
@@ -8,27 +8,15 @@ import type { ExtractionResult } from '../pipeline-types';
 /**
  * Extract structured text from a Markdown file.
  *
- * Strips YAML frontmatter (--- delimited) and returns the clean body
- * plus parsed metadata. The metadataLineCount tells callers how many
- * lines the frontmatter occupies, so chunk line numbers can be offset
- * to match the original file.
+ * Returns the full file content as the body so that YAML frontmatter
+ * (tags, aliases, custom properties) is visible to the embedding and
+ * BM25 index. The parsed YAML is also stored in `metadata` for
+ * structured access elsewhere.
  */
 export function extractMarkdown(content: string): ExtractionResult {
-  const { data, content: body } = matter(content);
-
-  // Count frontmatter lines: everything before the body in the original content.
-  // gray-matter strips the --- delimiters and YAML block.
-  let metadataLineCount = 0;
-  if (content !== body) {
-    const bodyStart = content.indexOf(body);
-    if (bodyStart > 0) {
-      metadataLineCount = content.substring(0, bodyStart).split('\n').length - 1;
-    }
-  }
-
+  const { data } = matter(content);
   return {
-    body: body.trim(),
+    body: content.trim(),
     metadata: data as Record<string, unknown>,
-    metadataLineCount,
   };
 }

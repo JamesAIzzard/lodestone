@@ -20,7 +20,7 @@ export function chunkPlaintext(
   extraction: ExtractionResult,
   maxChunkTokens: number,
 ): ChunkRecord[] {
-  const { body, metadata, metadataLineCount } = extraction;
+  const { body, metadata } = extraction;
 
   if (body.length === 0) {
     return [];
@@ -36,7 +36,7 @@ export function chunkPlaintext(
       chunkIndex: 0,
       sectionPath: [filename],
       text: body,
-      locationHint: { type: 'lines', start: 1 + metadataLineCount, end: lineCount + metadataLineCount },
+      locationHint: { type: 'lines', start: 1, end: lineCount },
       metadata,
       contentHash: hashText(body),
     }];
@@ -58,7 +58,7 @@ export function chunkPlaintext(
 
   // Build ChunkRecords with approximate line numbers
   const chunks: ChunkRecord[] = [];
-  let lineOffset = 1 + metadataLineCount;
+  let lineOffset = 1;
 
   for (const text of segments) {
     const lineCount = text.split('\n').length;

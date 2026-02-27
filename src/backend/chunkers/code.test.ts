@@ -16,32 +16,28 @@ async function chunkCode(
 // ── extractCode ──────────────────────────────────────────────────────────────
 
 describe('extractCode', () => {
-  it('passes through code content with no shebang', () => {
+  it('passes through code content unchanged', () => {
     const content = 'function hello() {\n  console.log("hi");\n}';
     const result = extractCode(content);
     expect(result.body).toBe(content);
     expect(result.metadata).toEqual({});
-    expect(result.metadataLineCount).toBe(0);
   });
 
-  it('strips shebang line and sets metadataLineCount', () => {
+  it('keeps shebang lines in body', () => {
     const content = '#!/usr/bin/env python3\nimport os\n\ndef main():\n    pass';
     const result = extractCode(content);
-    expect(result.body).not.toContain('#!/usr/bin/env');
+    expect(result.body).toContain('#!/usr/bin/env');
     expect(result.body).toContain('import os');
-    expect(result.metadataLineCount).toBe(1);
   });
 
   it('handles file that is only a shebang', () => {
     const result = extractCode('#!/bin/bash');
-    expect(result.body).toBe('');
-    expect(result.metadataLineCount).toBe(1);
+    expect(result.body).toBe('#!/bin/bash');
   });
 
   it('handles empty content', () => {
     const result = extractCode('');
     expect(result.body).toBe('');
-    expect(result.metadataLineCount).toBe(0);
   });
 });
 
@@ -253,7 +249,7 @@ def decorated_function():
     expect(decoratedChunk!.text).toContain('@decorator');
   });
 
-  it('handles shebang lines correctly', async () => {
+  it('handles files starting with shebangs', async () => {
     const content = `#!/usr/bin/env python3
 
 def main():
@@ -265,14 +261,10 @@ if __name__ == "__main__":
 
     const chunks = await chunkCode('/test/script.py', content);
 
-    // Shebang should be stripped by extractor
-    for (const chunk of chunks) {
-      expect(chunk.text).not.toContain('#!/usr/bin/env');
-    }
-
-    // Line numbers should be offset by 1 for the shebang
+    // The main function should be found and chunked correctly
     const mainFn = chunks.find(c => c.sectionPath.includes('main'));
     expect(mainFn).toBeDefined();
+    expect(mainFn!.text).toContain('def main');
   });
 });
 
@@ -324,7 +316,6 @@ describe('chunkCodeAsync — edge cases', () => {
     const extraction: ExtractionResult = {
       body: content,
       metadata: {},
-      metadataLineCount: 0,
     };
     const chunks = await chunkCodeAsync('/test/unknown.xyz', extraction, 8192);
 

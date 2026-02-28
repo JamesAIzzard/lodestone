@@ -74,6 +74,7 @@ export default function SiloDetailView() {
 
   // Action state
   const [isStopping, setIsStopping]       = useState(false);
+  const [isWaking, setIsWaking]           = useState(false);
   const [rebuilding, setRebuilding]       = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting]           = useState(false);
@@ -123,10 +124,10 @@ export default function SiloDetailView() {
     fetchSilo();
   }, [name]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Polling — active only while indexing or waiting
+  // Polling — active while indexing, waiting, or during stop/wake transitions
   useEffect(() => {
     if (!silo) return;
-    const active = silo.watcherState === 'indexing' || silo.watcherState === 'waiting';
+    const active = silo.watcherState === 'indexing' || silo.watcherState === 'waiting' || isStopping || isWaking;
     if (active && !pollRef.current) {
       pollRef.current = setInterval(fetchSilo, 2000);
     } else if (!active && pollRef.current) {
@@ -136,7 +137,14 @@ export default function SiloDetailView() {
     return () => {
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     };
-  }, [silo?.watcherState]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [silo?.watcherState, isStopping, isWaking]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear isWaking once the backend state moves past 'stopped'
+  useEffect(() => {
+    if (isWaking && silo && silo.watcherState !== 'stopped') {
+      setIsWaking(false);
+    }
+  }, [silo?.watcherState, isWaking]);
 
   // Initialise editable form state once per silo (not on every poll tick)
   useEffect(() => {
@@ -175,20 +183,22 @@ export default function SiloDetailView() {
 
   // ── Handlers ────────────────────────────────────────────────────────────────
 
-  async function handleStopToggle() {
+  function handleStopToggle() {
     if (!silo) return;
-    const isStop = silo.watcherState !== 'stopped';
-    if (isStop) setIsStopping(true);
-    try {
-      if (silo.watcherState === 'stopped') {
-        await window.electronAPI?.wakeSilo(siloName);
-      } else {
-        await window.electronAPI?.stopSilo(siloName);
-      }
-      fetchSilo();
-    } finally {
-      if (isStop) setIsStopping(false);
+    if (silo.watcherState === 'stopped') {
+      // Wake is long-running (startup + reconciliation). Fire-and-forget
+      // so the UI can poll state transitions (waiting → indexing → ready).
+      setIsWaking(true);
+      window.electronAPI?.wakeSilo(siloName).catch(() => {}).finally(() => setIsWaking(false));
+    } else {
+      // Stop may take a moment (awaiting in-flight indexing). Fire-and-forget
+      // so the badge can track the transition via polling.
+      setIsStopping(true);
+      window.electronAPI?.stopSilo(siloName).catch(() => {}).finally(() => setIsStopping(false));
     }
+    // Kick off a poll after a short delay so the backend has time to
+    // update its state synchronously before we read it.
+    setTimeout(fetchSilo, 300);
   }
 
   async function handleRename() {
@@ -334,9 +344,10 @@ export default function SiloDetailView() {
   const isOverride    = effectiveModel !== defaultModel;
   const modelOptions  = serverStatus?.availableModels ?? [];
   const progress      = silo.reconcileProgress;
-  const progressPct   = progress && progress.total > 0
+  const progressPctRaw = progress && progress.total > 0
     ? Math.round((progress.current / progress.total) * 100)
     : null;
+  const progressPct = progressPctRaw !== null ? Math.min(progressPctRaw, 99) : null;
 
   // ── Render ───────────────────────────────────────────────────────────────────
 
@@ -411,11 +422,13 @@ export default function SiloDetailView() {
               'bg-gray-400 animate-pulse': isWaiting,
             })} />
             {isActive && progressPct !== null
-              ? `Indexing ${progressPct}%`
+              ? (progress?.fileStage === 'compacting' ? 'Compacting…'
+                : progress?.fileStage === 'flushing' ? 'Saving…'
+                : `Indexing ${progressPct}%`)
               : silo.watcherState.charAt(0).toUpperCase() + silo.watcherState.slice(1)}
           </Badge>
 
-          {silo.watcherState !== 'waiting' && (
+          {silo.watcherState !== 'waiting' && !isWaking && (
             <Button variant="outline" size="sm" disabled={isStopping} onClick={handleStopToggle}>
               {isStopping
                 ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Stopping…</>
@@ -463,9 +476,16 @@ export default function SiloDetailView() {
               style={{ width: `${progressPct ?? 0}%` }}
             />
           </div>
-          <span className="text-[10px] text-muted-foreground">
-            {progress.current.toLocaleString()} / {progress.total.toLocaleString()} files
-          </span>
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+            <span>
+              {progress.current.toLocaleString()} / {progress.total.toLocaleString()} files
+            </span>
+            {progress.fileStage === 'embedding' && progress.embedTotal != null && progress.embedTotal > 0 && (
+              <span className="text-muted-foreground/60">
+                Embedding {progress.embedDone?.toLocaleString()}/{progress.embedTotal.toLocaleString()} chunks
+              </span>
+            )}
+          </div>
         </div>
       )}
 

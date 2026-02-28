@@ -46,6 +46,8 @@ export interface SiloManagerStatus {
     filePath?: string;
     fileStage?: string;
     elapsedMs?: number;
+    embedDone?: number;
+    embedTotal?: number;
   };
   /** True when the configured model differs from the model used to build the index */
   modelMismatch?: boolean;
@@ -76,6 +78,8 @@ export class SiloManager {
     fileSize?: number;
     fileStage?: string;
     elapsedMs?: number;
+    embedDone?: number;
+    embedTotal?: number;
   };
   private mtimes = new Map<string, number>();
   private cachedFileCount = 0;
@@ -113,6 +117,8 @@ export class SiloManager {
   private pendingWatcherEnqueue = false;
   /** Cancel function for a pending live-watcher queue slot. */
   private cancelWatcherEnqueue: (() => void) | null = null;
+  /** Resolves when the current watcher IndexingQueue task finishes. */
+  private watcherIndexingDone: Promise<void> | null = null;
 
   constructor(
     private config: ResolvedSiloConfig,
@@ -370,17 +376,29 @@ export class SiloManager {
             // Yield so the renderer can process the "done" state before the
             // potentially expensive WAL checkpoint blocks the event loop.
             await new Promise<void>((r) => setImmediate(r));
+
+            const sizeBefore = this.readFileSizeFromDisk();
+
             // Checkpoint and truncate the WAL after reconciliation.
             const tCheckpoint = performance.now();
             await storeProxy.checkpoint(this.siloId, 'TRUNCATE');
-            console.log(`[silo:${this.config.name}] Post-reconcile: WAL checkpoint(TRUNCATE) took ${(performance.now() - tCheckpoint).toFixed(1)}ms`);
+            const sizeAfterCkpt = this.readFileSizeFromDisk();
+            console.log(
+              `[silo:${this.config.name}] Post-reconcile: WAL checkpoint(TRUNCATE) took ${(performance.now() - tCheckpoint).toFixed(1)}ms` +
+              ` — ${(sizeBefore / 1048576).toFixed(1)}MB → ${(sizeAfterCkpt / 1048576).toFixed(1)}MB`,
+            );
 
-            // VACUUM reclaims page bloat from sqlite-vec's BLOB growth pattern
-            // during batch inserts. Only run when files were actually indexed.
-            if (result.filesAdded > 0 || result.filesUpdated > 0) {
+            // VACUUM reclaims free pages left by deletions/updates. Skip after
+            // pure-insert reconciliations (initial index) — there are no free
+            // pages to reclaim, so VACUUM just rewrites the entire DB for nothing.
+            if (result.filesRemoved > 0 || result.filesUpdated > 0) {
               const tVacuum = performance.now();
               await storeProxy.vacuum(this.siloId);
-              console.log(`[silo:${this.config.name}] Post-reconcile: VACUUM took ${(performance.now() - tVacuum).toFixed(1)}ms`);
+              const sizeAfterVac = this.readFileSizeFromDisk();
+              console.log(
+                `[silo:${this.config.name}] Post-reconcile: VACUUM took ${(performance.now() - tVacuum).toFixed(1)}ms` +
+                ` — ${(sizeAfterCkpt / 1048576).toFixed(1)}MB → ${(sizeAfterVac / 1048576).toFixed(1)}MB`,
+              );
             }
 
             this.maintenanceInProgress = false;
@@ -414,10 +432,28 @@ export class SiloManager {
   async stop(): Promise<void> {
     this.stopped = true;
 
+    // Cancel any queued-but-not-yet-running watcher enqueue so it doesn't
+    // block the IndexingQueue for other silos while we're shutting down.
+    if (this.cancelWatcherEnqueue) {
+      this.cancelWatcherEnqueue();
+      this.cancelWatcherEnqueue = null;
+      this.pendingWatcherEnqueue = false;
+      // Task was still queued (never started), so there's nothing to await.
+      this.watcherIndexingDone = null;
+    }
+
     // Wait for start() to finish so we don't tear down underneath it.
     if (this.startPromise) {
       await this.startPromise.catch(() => {});
       this.startPromise = null;
+    }
+
+    // Wait for any in-flight watcher indexing task to wind down.
+    // The task checks shouldStop (→ this.stopped) between embedding
+    // batches and will exit quickly — at most one batch duration.
+    if (this.watcherIndexingDone) {
+      await this.watcherIndexingDone.catch(() => {});
+      this.watcherIndexingDone = null;
     }
 
     if (this.watcher) {
@@ -445,19 +481,14 @@ export class SiloManager {
 
   /** Stop the silo and mark it as stopped (persisted by the caller via config). */
   async freeze(): Promise<void> {
-    // Cancel any pending live-watcher queue slot so the IndexingQueue
-    // can move on to the next silo without waiting for us.
-    this.cancelWatcherEnqueue?.();
-    this.cancelWatcherEnqueue = null;
-    this.pendingWatcherEnqueue = false;
-
     // Cache stats before releasing resources
     this.cachedFileCount = this.mtimes.size;
     this.cachedChunkCount = this.dbOpen ? await storeProxy.getChunkCount(this.siloId) : 0;
     this.cachedSizeBytes = this.readFileSizeFromDisk();
+    // stop() handles cancelling any pending watcher queue slot and
+    // awaiting in-flight indexing before closing resources.
     await this.stop();
     this.watcherState = 'stopped';
-    console.log(`[silo:${this.config.name}] Stopped`);
   }
 
   /** Restart a stopped silo: reload database, reconcile, start watching. */
@@ -773,6 +804,8 @@ export class SiloManager {
         fileSize: progress.fileSize,
         fileStage: progress.fileStage,
         elapsedMs: progress.elapsedMs,
+        embedDone: progress.embedDone,
+        embedTotal: progress.embedTotal,
       };
       if (progress.total > 0 && progress.current % 10 === 0) {
         console.log(`[silo:${this.config.name}] Reconcile: ${progress.current}/${progress.total}`);
@@ -847,6 +880,10 @@ export class SiloManager {
     if (this.pendingWatcherEnqueue) return;
     this.pendingWatcherEnqueue = true;
 
+    // Track the in-flight task so stop() can await it before closing resources.
+    let resolveIndexingDone!: () => void;
+    this.watcherIndexingDone = new Promise<void>((r) => { resolveIndexingDone = r; });
+
     this.cancelWatcherEnqueue = this.indexingQueue.enqueue(
       this.config.name,
       () => { if (!this.stopped) this.watcherState = 'waiting'; },
@@ -856,12 +893,30 @@ export class SiloManager {
         this.cancelWatcherEnqueue = null;
         try {
           if (this.watcher && !this.stopped) {
-            await this.watcher.runQueue();
+            await this.watcher.runQueue(
+              (progress) => {
+                this.reconcileProgress = {
+                  current: progress.current,
+                  total: progress.total,
+                  filePath: progress.filePath,
+                  fileSize: progress.fileSize,
+                  fileStage: progress.fileStage,
+                  batchChunks: progress.batchChunks,
+                  batchChunkLimit: progress.batchChunkLimit,
+                  embedDone: progress.embedDone,
+                  embedTotal: progress.embedTotal,
+                };
+              },
+              () => this.stopped,
+            );
           }
         } catch (err) {
           // Log but don't propagate — ensures we always reach the state-recovery below
           console.error(`[silo:${this.config.name}] Watcher runQueue error:`, err);
         }
+        this.reconcileProgress = undefined;
+        this.watcherIndexingDone = null;
+        resolveIndexingDone();
         // runQueue() re-fires onQueueFilled if items arrived mid-run,
         // which schedules another turn. Set ready only if truly idle.
         if (!this.stopped && (!this.watcher || this.watcher.queueLength === 0)) {

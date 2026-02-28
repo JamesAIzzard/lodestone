@@ -57,8 +57,23 @@ export type Extractor = (content: string) => ExtractionResult;
  * An async extractor — same contract as Extractor but takes a Buffer and
  * returns a Promise. Used for binary formats (e.g. PDF) that require
  * async parsing libraries.
+ *
+ * The optional `shouldStop` callback allows the caller to request early
+ * cancellation (e.g. user clicked "Stop indexing"). Extractors that accept
+ * it should check periodically and throw `CancellationError` to bail out.
  */
-export type AsyncExtractor = (content: Buffer) => Promise<ExtractionResult>;
+export type AsyncExtractor = (content: Buffer, shouldStop?: () => boolean) => Promise<ExtractionResult>;
+
+/**
+ * Lightweight error thrown when a pipeline operation is cancelled via shouldStop.
+ * Callers catch this to distinguish cancellation from real failures.
+ */
+export class CancellationError extends Error {
+  constructor(message = 'Cancelled') {
+    super(message);
+    this.name = 'CancellationError';
+  }
+}
 
 /**
  * A chunker splits extracted text into semantic pieces under a token limit.

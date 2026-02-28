@@ -44,6 +44,10 @@ export interface SiloStatus {
     fileSize?: number;
     fileStage?: string;
     elapsedMs?: number;
+    /** Chunks embedded so far for the current file (only during 'embedding' stage). */
+    embedDone?: number;
+    /** Total chunks to embed for the current file. */
+    embedTotal?: number;
   };
   /** True when the configured model differs from the model that built the index */
   modelMismatch?: boolean;

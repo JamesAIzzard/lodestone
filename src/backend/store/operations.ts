@@ -41,50 +41,58 @@ export function flushPreparedFiles(
   let cleared = 0;
   let deleted = 0;
 
+  // ── Instrumentation accumulators ────────────────────────────────────
+  let tPhase1 = 0, tPhase2 = 0, tPhase3 = 0, tPhase5 = 0, tPhase6 = 0;
+  let tVecInsert = 0, tChunkSql = 0, tCompress = 0;
+  let tTermFreqMap = 0, tTermResolve = 0, tDirEntries = 0;
+  let totalChunks = 0, totalPostings = 0, totalDirtyTerms = 0;
+  let addedTokenSum = 0, removedTokenSum = 0, removedChunkCount = 0;
+  let subTxCount = 0;
+
+  // ── Prepared statements (reused across all sub-transactions) ──────────
+
+  const upsertFile = db.prepare(`
+    INSERT INTO files (stored_key, file_name, mtime_ms) VALUES (?, ?, ?)
+    ON CONFLICT(stored_key) DO UPDATE SET mtime_ms = excluded.mtime_ms
+    RETURNING id
+  `);
+  const selectFileId = db.prepare(
+    'SELECT id FROM files WHERE stored_key = ?',
+  );
+  const selectChunksByFile = db.prepare(
+    'SELECT id FROM chunks WHERE file_id = ?',
+  );
+  const deleteVecChunk = db.prepare(
+    'DELETE FROM vec_chunks WHERE rowid = ?',
+  );
+  const deleteChunksByFile = db.prepare(
+    'DELETE FROM chunks WHERE file_id = ?',
+  );
+  const deleteFileRow = db.prepare(
+    'DELETE FROM files WHERE id = ?',
+  );
+  const insertVec = db.prepare(
+    'INSERT INTO vec_chunks(embedding) VALUES (vec_int8(?))',
+  );
+  const insertChunk = db.prepare(`
+    INSERT INTO chunks (id, file_id, chunk_index, section_path, text, location_hint, metadata, content_hash, token_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertPosting = db.prepare(
+    'INSERT INTO postings (term_id, chunk_id, term_freq) VALUES (?, ?, ?)',
+  );
+
+  // State accumulated across sub-transactions
+  const dirtyTermIds = new Set<number>();
+  const allPostings: Array<{ termId: number; chunkId: number; freq: number }> = [];
+  const upsertFileIds: number[] = [];
+  const allOldChunkIds: number[] = [];
+  const deleteFileIdMap: Array<{ fileId: number; storedKey: string }> = [];
+
+  // ── Transaction 1: Resolve files + delete old chunks ───────────────────
+
   db.transaction(() => {
-    // Term IDs whose doc_freq needs recomputing after all mutations
-    const dirtyTermIds = new Set<number>();
-
-    // All chunk IDs to delete (across upserts + deletes), collected in phase 1
-    const allOldChunkIds: number[] = [];
-
-    // Per-upsert state: file_id resolved in phase 1, used in phase 2
-    const upsertFileIds: number[] = [];
-
-    // ── Prepared statements ──────────────────────────────────────────────
-
-    const upsertFile = db.prepare(`
-      INSERT INTO files (stored_key, file_name, mtime_ms) VALUES (?, ?, ?)
-      ON CONFLICT(stored_key) DO UPDATE SET mtime_ms = excluded.mtime_ms
-      RETURNING id
-    `);
-    const selectFileId = db.prepare(
-      'SELECT id FROM files WHERE stored_key = ?',
-    );
-    const selectChunksByFile = db.prepare(
-      'SELECT id FROM chunks WHERE file_id = ?',
-    );
-    const deleteVecChunk = db.prepare(
-      'DELETE FROM vec_chunks WHERE rowid = ?',
-    );
-    const deleteChunksByFile = db.prepare(
-      'DELETE FROM chunks WHERE file_id = ?',
-    );
-    const deleteFileRow = db.prepare(
-      'DELETE FROM files WHERE id = ?',
-    );
-    const insertVec = db.prepare(
-      'INSERT INTO vec_chunks(embedding) VALUES (vec_int8(?))',
-    );
-    const insertChunk = db.prepare(`
-      INSERT INTO chunks (id, file_id, chunk_index, section_path, text, location_hint, metadata, content_hash, token_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const insertPosting = db.prepare(
-      'INSERT INTO postings (term_id, chunk_id, term_freq) VALUES (?, ?, ?)',
-    );
-
-    // ── Phase 1: Resolve files and collect existing chunk IDs ─────────────
+    const p1 = performance.now();
 
     // 1a. Upserts — resolve file_id and collect old chunk IDs
     for (const up of upserts) {
@@ -100,7 +108,6 @@ export function flushPreparedFiles(
     }
 
     // 1b. Deletes — collect old chunk IDs
-    const deleteFileIdMap: Array<{ fileId: number; storedKey: string }> = [];
     for (const del of deletes) {
       const fileRow = selectFileId.get(del.storedKey) as { id: number } | undefined;
       if (!fileRow) continue;
@@ -110,30 +117,35 @@ export function flushPreparedFiles(
       for (const { id } of oldChunks) allOldChunkIds.push(id);
     }
 
-    // ── Phase 2: Batch-delete old postings and chunks ────────────────────
+    tPhase1 = performance.now() - p1;
+
+    // Phase 2: Batch-delete old postings and chunks
+    const p2 = performance.now();
 
     if (allOldChunkIds.length > 0) {
-      // Load chunk IDs into a temp table for efficient batch operations
       db.exec('CREATE TEMP TABLE IF NOT EXISTS _del_chunks (id INTEGER PRIMARY KEY)');
       db.exec('DELETE FROM _del_chunks');
       const insertDelId = db.prepare('INSERT INTO _del_chunks (id) VALUES (?)');
       for (const id of allOldChunkIds) insertDelId.run(id);
 
-      // Collect affected term_ids before deleting postings
+      // Sum token_counts of chunks about to be deleted (for incremental corpus stats)
+      const removedStats = db.prepare(
+        'SELECT COUNT(*) AS cnt, COALESCE(SUM(token_count), 0) AS total_tc FROM chunks WHERE id IN (SELECT id FROM _del_chunks)',
+      ).get() as { cnt: number; total_tc: number };
+      removedChunkCount = removedStats.cnt;
+      removedTokenSum = removedStats.total_tc;
+
       const affectedTerms = db.prepare(
         'SELECT DISTINCT term_id FROM postings WHERE chunk_id IN (SELECT id FROM _del_chunks)',
       ).all() as Array<{ term_id: number }>;
       for (const { term_id } of affectedTerms) dirtyTermIds.add(term_id);
 
-      // Batch-delete postings
       db.prepare(
         'DELETE FROM postings WHERE chunk_id IN (SELECT id FROM _del_chunks)',
       ).run();
 
-      // Delete vec_chunks one-by-one (sqlite-vec virtual table requirement)
       for (const id of allOldChunkIds) deleteVecChunk.run(id);
 
-      // Delete chunk rows per file
       for (let i = 0; i < upserts.length; i++) {
         deleteChunksByFile.run(upsertFileIds[i]);
       }
@@ -142,79 +154,141 @@ export function flushPreparedFiles(
       }
     }
 
-    // ── Phase 3: Insert new chunks and accumulate postings ───────────────
+    tPhase2 = performance.now() - p2;
+  })();
 
-    // Buffer all postings in memory, then sort by term_id for sequential
-    // B-tree writes (reduces random page access).
-    const allPostings: Array<{ termId: number; chunkId: number; freq: number }> = [];
+  // ── Phase 3: Insert chunks in sub-transactions ─────────────────────────
+  //
+  // Large batches (2303 chunks from a big PDF) cause catastrophic slowdowns
+  // in a single transaction: the WAL grows huge, every subsequent INSERT
+  // gets slower. Splitting into sub-transactions of ~500 chunks keeps each
+  // transaction small and allows PASSIVE WAL checkpoints between batches.
 
-    for (let i = 0; i < upserts.length; i++) {
-      const up = upserts[i];
-      const fileId = upsertFileIds[i];
+  const SUB_TX_LIMIT = 500;
+  const p3 = performance.now();
+  let chunksInSubTx = 0;
+  let subTxOpen = false;
 
-      if (up.chunks.length === 0) {
-        // Empty file — chunks removed, file row kept for filepath search
-        cleared++;
-        ensureAncestorDirectories(db, up.storedKey);
-        continue;
-      }
+  const beginSubTx = () => { db.exec('BEGIN IMMEDIATE'); subTxOpen = true; chunksInSubTx = 0; };
+  const commitSubTx = () => {
+    db.exec('COMMIT');
+    subTxOpen = false;
+    subTxCount++;
+    // Passive WAL checkpoint between sub-transactions keeps the WAL small
+    try { db.pragma('wal_checkpoint(PASSIVE)'); } catch { /* non-critical */ }
+  };
 
-      for (let j = 0; j < up.chunks.length; j++) {
-        const chunk = up.chunks[j];
-        const embedding = up.embeddings[j];
+  beginSubTx();
 
-        // Insert quantized int8 vector → get rowid (becomes chunk.id)
-        const vecResult = insertVec.run(quantizeInt8(embedding));
-        const chunkId = Number(vecResult.lastInsertRowid);
+  for (let i = 0; i < upserts.length; i++) {
+    const up = upserts[i];
+    const fileId = upsertFileIds[i];
 
-        // Tokenise once — used for both token_count and term frequencies
-        const tokens = tokenise(chunk.text);
-
-        // Insert chunk row with compressed text and binary hash
-        insertChunk.run(
-          chunkId,
-          fileId,
-          chunk.chunkIndex,
-          JSON.stringify(chunk.sectionPath),
-          compressText(chunk.text),
-          JSON.stringify(chunk.locationHint),
-          JSON.stringify(chunk.metadata),
-          hashToBlob(chunk.contentHash),
-          tokens.length,
-        );
-
-        // Build term frequency map for this chunk
-        const termFreqs = new Map<string, number>();
-        for (const token of tokens) {
-          termFreqs.set(token, (termFreqs.get(token) ?? 0) + 1);
-        }
-
-        // Resolve term IDs via TermCache (O(1) hit, INSERT on miss)
-        for (const [term, freq] of termFreqs) {
-          const termId = termCache.getOrInsert(db, term);
-          allPostings.push({ termId, chunkId, freq });
-          dirtyTermIds.add(termId);
-        }
-      }
-
+    if (up.chunks.length === 0) {
+      cleared++;
+      const dS = performance.now();
       ensureAncestorDirectories(db, up.storedKey);
-      upserted++;
+      tDirEntries += performance.now() - dS;
+      continue;
     }
 
+    for (let j = 0; j < up.chunks.length; j++) {
+      const chunk = up.chunks[j];
+
+      // Compress, serialize, quantize inline (one chunk at a time — no OOM risk)
+      let s = performance.now();
+      const compressedText = compressText(chunk.text);
+      const sectionPathJson = JSON.stringify(chunk.sectionPath);
+      const locationHintJson = JSON.stringify(chunk.locationHint);
+      const metadataJson = JSON.stringify(chunk.metadata);
+      const hashBlob = hashToBlob(chunk.contentHash);
+      const quantizedVec = quantizeInt8(up.embeddings[j]);
+      const tokens = tokenise(chunk.text);
+      tCompress += performance.now() - s;
+
+      // Insert quantized int8 vector → get rowid (becomes chunk.id)
+      s = performance.now();
+      const vecResult = insertVec.run(quantizedVec);
+      const chunkId = Number(vecResult.lastInsertRowid);
+      tVecInsert += performance.now() - s;
+
+      // Insert chunk row
+      s = performance.now();
+      insertChunk.run(
+        chunkId,
+        fileId,
+        chunk.chunkIndex,
+        sectionPathJson,
+        compressedText,
+        locationHintJson,
+        metadataJson,
+        hashBlob,
+        tokens.length,
+      );
+      tChunkSql += performance.now() - s;
+      addedTokenSum += tokens.length;
+
+      // Build term frequency map for this chunk
+      s = performance.now();
+      const termFreqs = new Map<string, number>();
+      for (const token of tokens) {
+        termFreqs.set(token, (termFreqs.get(token) ?? 0) + 1);
+      }
+      tTermFreqMap += performance.now() - s;
+
+      // Resolve term IDs via TermCache (O(1) hit, INSERT on miss)
+      s = performance.now();
+      for (const [term, freq] of termFreqs) {
+        const termId = termCache.getOrInsert(db, term);
+        allPostings.push({ termId, chunkId, freq });
+        dirtyTermIds.add(termId);
+      }
+      tTermResolve += performance.now() - s;
+
+      totalChunks++;
+      chunksInSubTx++;
+
+      // Commit sub-transaction when limit reached (but not on the very last chunk)
+      if (chunksInSubTx >= SUB_TX_LIMIT && !(i === upserts.length - 1 && j === up.chunks.length - 1)) {
+        commitSubTx();
+        beginSubTx();
+      }
+    }
+
+    const dS = performance.now();
+    ensureAncestorDirectories(db, up.storedKey);
+    tDirEntries += performance.now() - dS;
+    upserted++;
+  }
+
+  if (subTxOpen) commitSubTx();
+
+  tPhase3 = performance.now() - p3;
+
+  // ── Final transaction: postings, cleanup, doc_freq, corpus stats ───────
+
+  db.transaction(() => {
     // Sort postings by term_id for sequential B-tree page access
+    let sPost = performance.now();
     allPostings.sort((a, b) => a.termId - b.termId);
+    const tPostingSort = performance.now() - sPost;
+
+    sPost = performance.now();
     for (const p of allPostings) {
       insertPosting.run(p.termId, p.chunkId, p.freq);
     }
+    const tPostingInsert = performance.now() - sPost;
 
-    // ── Phase 4: Finalize deletes (remove file rows) ─────────────────────
+    totalPostings = allPostings.length;
 
+    // Phase 4: Finalize deletes (remove file rows)
     for (const { fileId } of deleteFileIdMap) {
       deleteFileRow.run(fileId);
       deleted++;
     }
 
-    // ── Phase 5: Recompute doc_freq for affected terms ───────────────────
+    // Phase 5: Recompute doc_freq for affected terms
+    const p5 = performance.now();
 
     if (dirtyTermIds.size > 0) {
       const recomputeFreq = db.prepare(
@@ -224,13 +298,46 @@ export function flushPreparedFiles(
         recomputeFreq.run(termId, termId);
       }
 
-      // Remove terms with zero postings from both DB and TermCache
       termCache.removeZeroFreq(db);
     }
 
-    // ── Phase 6: Update corpus-level BM25 stats ──────────────────────────
+    totalDirtyTerms = dirtyTermIds.size;
+    tPhase5 = performance.now() - p5;
 
-    updateCorpusStats(db);
+    // Phase 6: Update corpus-level BM25 stats
+    const p6 = performance.now();
+
+    updateCorpusStats(db, {
+      addedChunks: totalChunks,
+      addedTokenSum,
+      removedChunks: removedChunkCount,
+      removedTokenSum,
+    });
+
+    tPhase6 = performance.now() - p6;
+
+    // ── Instrumentation log ──────────────────────────────────────────────
+
+    const total = performance.now() - t;
+    console.log(
+      `\n[FLUSH TIMING] ${totalChunks} chunks, ${totalPostings} postings, ${totalDirtyTerms} dirty terms` +
+      ` (${subTxCount} sub-transactions)\n` +
+      `  Phase 1 (resolve files):     ${tPhase1.toFixed(1)} ms\n` +
+      `  Phase 2 (delete old):        ${tPhase2.toFixed(1)} ms  (${allOldChunkIds.length} old chunks)\n` +
+      `  Phase 3 (insert chunks):     ${tPhase3.toFixed(1)} ms\n` +
+      `    ├─ compress+tok+quant:        ${tCompress.toFixed(1)} ms\n` +
+      `    ├─ vecInsert (SQL only):      ${tVecInsert.toFixed(1)} ms\n` +
+      `    ├─ chunkSQL (INSERT only):    ${tChunkSql.toFixed(1)} ms  (${totalChunks > 0 ? (tChunkSql / totalChunks).toFixed(1) : '0.0'} ms/chunk)\n` +
+      `    ├─ termFreqMap:               ${tTermFreqMap.toFixed(1)} ms\n` +
+      `    ├─ termResolve (TermCache):   ${tTermResolve.toFixed(1)} ms\n` +
+      `    └─ dirEntries:                ${tDirEntries.toFixed(1)} ms\n` +
+      `  Final tx (postings+cleanup):\n` +
+      `    ├─ postingSort:               ${tPostingSort.toFixed(1)} ms\n` +
+      `    ├─ postingInsert:             ${tPostingInsert.toFixed(1)} ms\n` +
+      `    ├─ doc_freq recomp:           ${tPhase5.toFixed(1)} ms  (${totalDirtyTerms} terms)\n` +
+      `    └─ corpus stats:              ${tPhase6.toFixed(1)} ms\n` +
+      `  TOTAL:                        ${total.toFixed(1)} ms`,
+    );
   })();
 
   return { upserted, cleared, deleted, durationMs: performance.now() - t };
@@ -330,8 +437,14 @@ export function loadConfigBlob(db: SiloDatabase): StoredSiloConfig | null {
 
 // ── Stats ────────────────────────────────────────────────────────────────────
 
-/** Total number of chunks in the database. */
+/**
+ * Total number of chunks in the database.
+ * Uses the cached corpus_chunk_count from meta when available (O(1)),
+ * falls back to COUNT(*) scan otherwise.
+ */
 export function getChunkCount(db: SiloDatabase): number {
+  const meta = db.prepare("SELECT value FROM meta WHERE key = 'corpus_chunk_count'").get() as { value: string } | undefined;
+  if (meta) return parseInt(meta.value, 10);
   const row = db.prepare('SELECT COUNT(*) as cnt FROM chunks').get() as { cnt: number };
   return row.cnt;
 }
@@ -343,17 +456,49 @@ export function getFileCount(db: SiloDatabase): number {
 }
 
 /**
- * Recompute corpus-level BM25 statistics and store in the meta table.
- * Called once per batch flush (not per file).
+ * Incrementally update corpus-level BM25 statistics in the meta table.
+ *
+ * Instead of a full `SELECT COUNT(*), AVG(token_count) FROM chunks` scan
+ * (which took 104s on a 16 GB database), we maintain running totals and
+ * apply deltas from the current flush batch.
+ *
+ * Falls back to a full recount if the stored totals are missing (first flush
+ * or after a schema migration).
  */
-export function updateCorpusStats(db: SiloDatabase): void {
-  const stats = db.prepare(
-    'SELECT COUNT(*) AS cnt, COALESCE(AVG(token_count), 0) AS avg_tc FROM chunks',
-  ).get() as { cnt: number; avg_tc: number };
-
+export function updateCorpusStats(
+  db: SiloDatabase,
+  delta?: { addedChunks: number; addedTokenSum: number; removedChunks: number; removedTokenSum: number },
+): void {
   const upsert = db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)');
+
+  if (delta) {
+    // Try incremental path — read existing totals from meta
+    const countRow = db.prepare("SELECT value FROM meta WHERE key = 'corpus_chunk_count'").get() as { value: string } | undefined;
+    const sumRow = db.prepare("SELECT value FROM meta WHERE key = 'corpus_total_token_count'").get() as { value: string } | undefined;
+
+    if (countRow && sumRow) {
+      const oldCount = parseInt(countRow.value, 10);
+      const oldSum = parseInt(sumRow.value, 10);
+      const newCount = Math.max(0, oldCount + delta.addedChunks - delta.removedChunks);
+      const newSum = Math.max(0, oldSum + delta.addedTokenSum - delta.removedTokenSum);
+      const newAvg = newCount > 0 ? newSum / newCount : 0;
+
+      upsert.run('corpus_chunk_count', String(newCount));
+      upsert.run('corpus_total_token_count', String(newSum));
+      upsert.run('corpus_avg_token_count', String(newAvg));
+      return;
+    }
+    // Fall through to full scan if meta keys are missing
+  }
+
+  // Full scan fallback (first flush or missing meta keys)
+  const stats = db.prepare(
+    'SELECT COUNT(*) AS cnt, COALESCE(SUM(token_count), 0) AS total_tc FROM chunks',
+  ).get() as { cnt: number; total_tc: number };
+
   upsert.run('corpus_chunk_count', String(stats.cnt));
-  upsert.run('corpus_avg_token_count', String(stats.avg_tc));
+  upsert.run('corpus_total_token_count', String(stats.total_tc));
+  upsert.run('corpus_avg_token_count', String(stats.cnt > 0 ? stats.total_tc / stats.cnt : 0));
 }
 
 // ── Chunk Metadata (for signal implementations) ──────────────────────────────

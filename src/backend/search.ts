@@ -74,7 +74,7 @@ function locationKey(hint: LocationHint): string {
  * - Filters by relative threshold (≥ 50% of best chunk score)
  * - Caps at 10 chunks
  * - Scales relevance by the file's overall score (best chunk = fileScore%)
- * - Returns undefined if fewer than 2 unique chunks
+ * - Returns undefined only when no chunks survive filtering
  */
 function collectChunks(
   allChunks: Array<{ score: number; locationHint: LocationHint; sectionPath?: string[] }>,
@@ -95,14 +95,14 @@ function collectChunks(
   // Sort descending by score
   const deduped = [...byLocation.values()].sort((a, b) => b.score - a.score);
 
-  if (deduped.length < 2) return undefined;
+  if (deduped.length === 0) return undefined;
 
   // Filter by relative threshold
   const bestScore = deduped[0].score;
   const threshold = bestScore * MIN_RELATIVE_SCORE;
   const filtered = deduped.filter(c => c.score >= threshold);
 
-  if (filtered.length < 2) return undefined;
+  if (filtered.length === 0) return undefined;
 
   // Cap and convert to absolute relevance (scaled by file score)
   const capped = filtered.slice(0, MAX_CHUNKS_PER_FILE);
@@ -205,6 +205,7 @@ export function search(
         }
       }
     }
+
 
     results.push({
       filePath,

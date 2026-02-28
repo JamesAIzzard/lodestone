@@ -2,19 +2,19 @@
  * File watcher for a single silo.
  *
  * Watches configured directories for file changes, debounces events,
- * and dispatches to the indexing pipeline. Files are processed sequentially
- * to avoid overwhelming the embedding service.
+ * and dispatches to the shared indexing loop. Files are processed
+ * sequentially to avoid overwhelming the embedding service.
  *
- * V2: The watcher no longer touches the database directly. It prepares files
- * and then calls the onFlush callback, which routes through the store proxy.
- * Database writes are batched: all queued files are prepared first, then
- * flushed via the proxy in a single transaction when the queue drains.
+ * V2: The watcher no longer touches the database directly. It feeds
+ * queued file changes into indexFileLoop() which handles prepare →
+ * batch → flush. Database writes are batched automatically.
  */
 
 import { watch, type FSWatcher } from 'chokidar';
+import fs from 'node:fs';
 import path from 'node:path';
 import type { EmbeddingService } from './embedding';
-import { prepareFile, type PreparedFile } from './pipeline';
+import { indexFileLoop, type IndexLoopProgress } from './pipeline';
 import { makeStoredKey, makeStoredDirKey, resolveStoredKey } from './store/paths';
 import type { FlushUpsert, FlushDelete, FlushResult } from './store/types';
 import type { ResolvedSiloConfig } from './config';
@@ -41,6 +41,9 @@ export interface WatcherStoreOps {
   insertDirEntry(dirPath: string): Promise<boolean>;
   deleteDirEntry(dirPath: string): Promise<number | null>;
 }
+
+// Re-export for the silo-manager's progress callback signature.
+export type { IndexLoopProgress };
 
 // ── SiloWatcher ──────────────────────────────────────────────────────────────
 
@@ -200,53 +203,84 @@ export class SiloWatcher {
   }
 
   /**
-   * Drain the queue: prepare all queued files, flush via proxy, emit events.
-   * Called by SiloManager when the global IndexingQueue grants this silo its turn.
+   * Drain the queue: index queued files via the shared loop, then handle
+   * deletes and directory events.
+   *
+   * Called by SiloManager when the global IndexingQueue grants this silo
+   * its turn. The optional `onProgress` callback enables the same
+   * filename + stage UI that reconcile shows.
    */
-  async runQueue(): Promise<void> {
+  async runQueue(
+    onProgress?: (progress: IndexLoopProgress) => void,
+    shouldStop?: () => boolean,
+  ): Promise<void> {
     if (this.processing) return;
     this.processing = true;
 
-    // Prepare all queued files, accumulating results for a single batched flush
-    const upserts: Array<{ prepared: PreparedFile; absPath: string; durationMs: number }> = [];
-    const deletes: Array<{ storedKey: string; absPath: string }> = [];
-    const errors: WatcherEvent[] = [];
-
     try {
+      // Partition queue into upserts and deletes, stat files for size
+      const upsertJobs: Array<{ absPath: string; storedKey: string; fileSize?: number }> = [];
+      const deletes: Array<{ storedKey: string; absPath: string }> = [];
+
       while (this.queue.length > 0) {
         const item = this.queue.shift()!;
-
-        try {
-          if (item.type === 'delete') {
-            deletes.push({ storedKey: item.storedKey, absPath: item.absPath });
-          } else {
-            const start = performance.now();
-            const prepared = await prepareFile(item.absPath, item.storedKey, this.embeddingService);
-            upserts.push({ prepared, absPath: item.absPath, durationMs: performance.now() - start });
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`[watcher] Error processing ${item.absPath}:`, message);
-          errors.push({
-            timestamp: new Date(),
-            siloName: this.config.name,
-            filePath: item.absPath,
-            eventType: 'error',
-            errorMessage: message,
-          });
+        if (item.type === 'delete') {
+          deletes.push({ storedKey: item.storedKey, absPath: item.absPath });
+        } else {
+          let fileSize: number | undefined;
+          try { fileSize = fs.statSync(item.absPath).size; } catch { /* vanished */ }
+          upsertJobs.push({ absPath: item.absPath, storedKey: item.storedKey, fileSize });
         }
       }
 
-      // Flush all prepared files + deletes via the store proxy
-      if (upserts.length > 0 || deletes.length > 0) {
+      // Index upserts through the shared prepare → batch → flush loop
+      if (upsertJobs.length > 0) {
+        await indexFileLoop(upsertJobs, {
+          embeddingService: this.embeddingService,
+          shouldStop,
+          flush: async (upserts) => {
+            await this.storeOps.flush(upserts, []);
+          },
+          onProgress,
+          onBatchFlushed: (files) => {
+            for (const f of files) {
+              this.emit({
+                timestamp: new Date(),
+                siloName: this.config.name,
+                filePath: f.absPath,
+                eventType: 'indexed',
+                chunkCount: f.chunkCount,
+                durationMs: f.durationMs,
+              });
+            }
+          },
+          onError: (absPath, message) => {
+            console.error(`[watcher] Error processing ${absPath}:`, message);
+            this.emit({
+              timestamp: new Date(),
+              siloName: this.config.name,
+              filePath: absPath,
+              eventType: 'error',
+              errorMessage: message,
+            });
+          },
+        });
+      }
+
+      // Flush deletes separately
+      if (deletes.length > 0) {
         await this.storeOps.flush(
-          upserts.map((u) => ({
-            storedKey: u.prepared.storedKey,
-            chunks: u.prepared.chunks,
-            embeddings: u.prepared.embeddings,
-          })),
+          [],
           deletes.map((d) => ({ storedKey: d.storedKey, deleteMtime: false })),
         );
+        for (const d of deletes) {
+          this.emit({
+            timestamp: new Date(),
+            siloName: this.config.name,
+            filePath: d.absPath,
+            eventType: 'deleted',
+          });
+        }
       }
 
       // Process queued directory additions
@@ -275,29 +309,6 @@ export class SiloWatcher {
         } catch (err) {
           console.error(`[watcher] Error removing directory ${storedDirKey}:`, err);
         }
-      }
-
-      // Emit file events after the flush succeeds
-      for (const u of upserts) {
-        this.emit({
-          timestamp: new Date(),
-          siloName: this.config.name,
-          filePath: u.absPath,
-          eventType: 'indexed',
-          chunkCount: u.prepared.chunks.length,
-          durationMs: u.durationMs,
-        });
-      }
-      for (const d of deletes) {
-        this.emit({
-          timestamp: new Date(),
-          siloName: this.config.name,
-          filePath: d.absPath,
-          eventType: 'deleted',
-        });
-      }
-      for (const e of errors) {
-        this.emit(e);
       }
     } finally {
       this.processing = false;

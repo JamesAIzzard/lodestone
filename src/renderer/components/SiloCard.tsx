@@ -55,9 +55,12 @@ export default function SiloCard({ silo, onClick, onStopToggle, isStopping, onRe
   const isStopped = watcherState === 'stopped';
   const isWaiting = watcherState === 'waiting';
   const isActive = watcherState === 'indexing';
-  const progressPct = reconcileProgress && reconcileProgress.total > 0
+  const progressPctRaw = reconcileProgress && reconcileProgress.total > 0
     ? Math.round((reconcileProgress.current / reconcileProgress.total) * 100)
     : null;
+  // Cap at 99% while indexing is in progress — the bar disappears entirely
+  // when reconcileProgress is cleared, so 100% is never shown as a stale state.
+  const progressPct = progressPctRaw !== null ? Math.min(progressPctRaw, 99) : null;
 
   return (
     <button
@@ -75,7 +78,9 @@ export default function SiloCard({ silo, onClick, onStopToggle, isStopping, onRe
           <Badge variant={state.badgeVariant} className="gap-1.5 whitespace-nowrap">
             <span className={cn('inline-block h-1.5 w-1.5 rounded-full', state.dotClass)} />
             {isActive && progressPct !== null
-              ? `Indexing ${progressPct}%`
+              ? (reconcileProgress?.fileStage === 'compacting' ? 'Compacting…'
+                : reconcileProgress?.fileStage === 'flushing' ? 'Saving…'
+                : `Indexing ${progressPct}%`)
               : state.label}
           </Badge>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -174,11 +179,15 @@ export default function SiloCard({ silo, onClick, onStopToggle, isStopping, onRe
               <span>
                 {reconcileProgress.current.toLocaleString()} / {reconcileProgress.total.toLocaleString()} files
               </span>
-              {reconcileProgress.batchChunks != null && reconcileProgress.batchChunkLimit != null && (
+              {reconcileProgress.fileStage === 'embedding' && reconcileProgress.embedTotal != null && reconcileProgress.embedTotal > 0 ? (
+                <span className="text-muted-foreground/60">
+                  {reconcileProgress.embedDone?.toLocaleString()} / {reconcileProgress.embedTotal.toLocaleString()} chunks
+                </span>
+              ) : reconcileProgress.batchChunks != null && reconcileProgress.batchChunkLimit != null ? (
                 <span className="text-muted-foreground/60">
                   batch: {reconcileProgress.batchChunks} / {reconcileProgress.batchChunkLimit} chunks
                 </span>
-              )}
+              ) : null}
             </div>
             {/* Stage label + current filename + file size */}
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60 min-w-0">

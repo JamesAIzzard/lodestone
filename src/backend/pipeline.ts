@@ -12,6 +12,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type { FileProcessor, ExtractionResult } from './pipeline-types';
+import { CancellationError } from './pipeline-types';
 import { extractMarkdown } from './extractors/markdown';
 import { extractPlaintext } from './extractors/plaintext';
 import { extractCode } from './extractors/code';
@@ -24,6 +25,7 @@ import { readTextLines } from './readers/text';
 import { readPdfPage } from './readers/pdf';
 import type { EmbeddingService } from './embedding';
 import type { ChunkRecord } from './pipeline-types';
+import type { FlushUpsert } from './store/types';
 
 // ── Processor Registry ───────────────────────────────────────────────────────
 
@@ -99,6 +101,11 @@ export type FileStage = 'reading' | 'extracting' | 'chunking' | 'embedding';
  *
  * The optional `onStage` callback fires at each pipeline transition so callers
  * can report granular progress (e.g. "Extracting report.pdf").
+ *
+ * The optional `shouldStop` callback is checked between embedding batches and
+ * threaded to async extractors (e.g. PDF per-page extraction). When it returns
+ * true, a `CancellationError` is thrown — the caller should catch it to
+ * distinguish cancellation from real failures.
  */
 export async function prepareFile(
   absolutePath: string,
@@ -106,6 +113,8 @@ export async function prepareFile(
   embeddingService: EmbeddingService,
   mtimeMs?: number,
   onStage?: (stage: FileStage) => void,
+  shouldStop?: () => boolean,
+  onEmbedProgress?: (done: number, total: number) => void,
 ): Promise<PreparedFile> {
   const processor = getProcessor(absolutePath);
   const { chunker, asyncChunker } = processor;
@@ -115,7 +124,7 @@ export async function prepareFile(
   if (processor.asyncExtractor) {
     const buffer = await fsp.readFile(absolutePath);
     onStage?.('extracting');
-    extraction = await processor.asyncExtractor(buffer);
+    extraction = await processor.asyncExtractor(buffer, shouldStop);
   } else {
     const content = await fsp.readFile(absolutePath, 'utf-8');
     onStage?.('extracting');
@@ -141,9 +150,11 @@ export async function prepareFile(
   const texts = storedChunks.map((c) => c.text);
   const embeddings: number[][] = [];
   for (let i = 0; i < texts.length; i += MAX_EMBED_BATCH_SIZE) {
+    if (shouldStop?.()) throw new CancellationError('Embedding cancelled');
     const batch = texts.slice(i, i + MAX_EMBED_BATCH_SIZE);
     const batchEmbeddings = await embeddingService.embedBatch(batch);
     embeddings.push(...batchEmbeddings);
+    onEmbedProgress?.(embeddings.length, texts.length);
     // Yield to the event loop between embedding batches so IPC,
     // rendering, and other async work can progress.
     if (i + MAX_EMBED_BATCH_SIZE < texts.length) {
@@ -152,4 +163,189 @@ export async function prepareFile(
   }
 
   return { storedKey, chunks: storedChunks, embeddings, mtimeMs };
+}
+
+// ── Index File Loop ───────────────────────────────────────────────────────────
+
+/** A file to process in the shared index loop. */
+export interface IndexJob {
+  absPath: string;
+  storedKey: string;
+  mtimeMs?: number;
+  fileSize?: number;
+}
+
+/** Progress info emitted during the index loop. */
+export interface IndexLoopProgress {
+  /** 1-based file index (includes progressOffset). */
+  current: number;
+  total: number;
+  filePath: string;
+  fileSize?: number;
+  fileStage?: FileStage | 'flushing';
+  batchChunks?: number;
+  batchChunkLimit?: number;
+  /** Chunks embedded so far for the current file (only during 'embedding' stage). */
+  embedDone?: number;
+  /** Total chunks to embed for the current file. */
+  embedTotal?: number;
+}
+
+/** Info about a file that was successfully prepared and flushed. */
+export interface IndexedFileInfo {
+  absPath: string;
+  storedKey: string;
+  chunkCount: number;
+  durationMs: number;
+  mtimeMs?: number;
+}
+
+/** Aggregate stats from the index loop. */
+export interface IndexLoopResult {
+  filesProcessed: number;
+  totalPrepareMs: number;
+  totalFlushMs: number;
+  flushCount: number;
+  cancelled: boolean;
+}
+
+/** Options for indexFileLoop(). */
+export interface IndexLoopOptions {
+  embeddingService: EmbeddingService;
+  /** Write a batch of prepared files to the store. */
+  flush: (upserts: FlushUpsert[]) => Promise<void>;
+  /** Max chunks per batch before flushing. Default: 100. */
+  batchChunkLimit?: number;
+  /** Called before/during each file's preparation and before flushes. */
+  onProgress?: (info: IndexLoopProgress) => void;
+  /** Called after each successful batch flush with the files that were in it. */
+  onBatchFlushed?: (files: IndexedFileInfo[]) => void;
+  /** Called for each file that errors during preparation. */
+  onError?: (absPath: string, message: string) => void;
+  /** Return true to abort early. Also passed to prepareFile for mid-file cancellation. */
+  shouldStop?: () => boolean;
+  /** Base offset added to progress.current (for reconcile's alreadyDone count). Default: 0. */
+  progressOffset?: number;
+  /** Override for progress.total (reconcile adds filesToRemove). If omitted, uses jobs.length + progressOffset. */
+  progressTotal?: number;
+}
+
+/**
+ * Shared prepare → batch → flush loop used by both reconcile and the watcher.
+ *
+ * For each file: prepareFile() → accumulate in batch → flush when batch is full.
+ * Handles progress reporting, cancellation, error isolation, slow-file logging,
+ * and periodic event-loop yielding.
+ */
+export async function indexFileLoop(
+  jobs: IndexJob[],
+  opts: IndexLoopOptions,
+): Promise<IndexLoopResult> {
+  const {
+    embeddingService,
+    flush,
+    batchChunkLimit = 100,
+    onProgress,
+    onBatchFlushed,
+    onError,
+    shouldStop,
+    progressOffset = 0,
+  } = opts;
+  const total = opts.progressTotal ?? (progressOffset + jobs.length);
+
+  let totalPrepareMs = 0;
+  let totalFlushMs = 0;
+  let flushCount = 0;
+  let filesProcessed = 0;
+  let cancelled = false;
+
+  // Current batch
+  let batch: Array<{ upsert: FlushUpsert; info: IndexedFileInfo }> = [];
+  let batchChunks = 0;
+
+  const doFlush = async () => {
+    if (batch.length === 0) return;
+    onProgress?.({
+      current: progressOffset + filesProcessed,
+      total,
+      filePath: '',
+      fileStage: 'flushing',
+      batchChunks,
+      batchChunkLimit,
+    });
+
+    // Yield so the renderer can poll the "flushing" state before
+    // the potentially long synchronous DB write blocks the worker.
+    await new Promise<void>((r) => setImmediate(r));
+
+    const tFlush = performance.now();
+    await flush(batch.map((b) => b.upsert));
+    totalFlushMs += performance.now() - tFlush;
+    flushCount++;
+
+    onBatchFlushed?.(batch.map((b) => b.info));
+    batch = [];
+    batchChunks = 0;
+  };
+
+  for (let i = 0; i < jobs.length; i++) {
+    if (shouldStop?.()) {
+      await doFlush();
+      cancelled = true;
+      break;
+    }
+
+    const { absPath, storedKey, mtimeMs, fileSize } = jobs[i];
+    filesProcessed++;
+    const current = progressOffset + filesProcessed;
+
+    onProgress?.({ current, total, filePath: absPath, fileSize, fileStage: 'reading', batchChunks, batchChunkLimit });
+
+    try {
+      const tPrep = performance.now();
+      const prepared = await prepareFile(
+        absPath, storedKey, embeddingService, mtimeMs,
+        (stage) => onProgress?.({ current, total, filePath: absPath, fileSize, fileStage: stage, batchChunks, batchChunkLimit }),
+        shouldStop,
+        (done, embedTotal) => onProgress?.({ current, total, filePath: absPath, fileSize, fileStage: 'embedding', batchChunks, batchChunkLimit, embedDone: done, embedTotal }),
+      );
+      const prepMs = performance.now() - tPrep;
+      totalPrepareMs += prepMs;
+
+      if (prepMs > 500) {
+        const fileName = absPath.split(/[\\/]/).pop() ?? absPath;
+        console.log(`[index]   SLOW file: ${fileName} → ${prepMs.toFixed(0)}ms (${prepared.chunks.length} chunks)`);
+      }
+
+      batch.push({
+        upsert: { storedKey, chunks: prepared.chunks, embeddings: prepared.embeddings, mtimeMs: prepared.mtimeMs },
+        info: { absPath, storedKey, chunkCount: prepared.chunks.length, durationMs: prepMs, mtimeMs: prepared.mtimeMs },
+      });
+      batchChunks += prepared.chunks.length;
+
+      // Re-emit progress with updated batch chunk count
+      onProgress?.({ current, total, filePath: absPath, fileSize, batchChunks, batchChunkLimit });
+
+      if (batchChunks >= batchChunkLimit) {
+        await doFlush();
+        await new Promise<void>((r) => setImmediate(r));
+      }
+    } catch (err) {
+      if (err instanceof CancellationError) {
+        await doFlush();
+        cancelled = true;
+        break;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      onError?.(absPath, message);
+    }
+
+    // Yield periodically so IPC stays responsive between files
+    if ((i + 1) % 5 === 0) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+  }
+
+  await doFlush();
+  return { filesProcessed, totalPrepareMs, totalFlushMs, flushCount, cancelled };
 }

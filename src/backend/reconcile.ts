@@ -13,7 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { prepareFile, type PreparedFile, type FileStage } from './pipeline';
+import { indexFileLoop, type FileStage } from './pipeline';
 import { makeStoredKey, resolveStoredKey } from './store/paths';
 import type { FlushUpsert, FlushDelete, FlushResult, DirEntry } from './store/types';
 import type { EmbeddingService } from './embedding';
@@ -38,6 +38,10 @@ export interface ReconcileProgress {
   fileSize?: number;
   /** Elapsed time since reconciliation started, in milliseconds. */
   elapsedMs?: number;
+  /** Chunks embedded so far for the current file (only during 'embedding' stage). */
+  embedDone?: number;
+  /** Total chunks to embed for the current file. */
+  embedTotal?: number;
 }
 
 export type ReconcileProgressHandler = (progress: ReconcileProgress) => void;
@@ -170,170 +174,77 @@ export async function reconcile(
   const alreadyDone = diskStored.size - filesToIndex.length;
   const totalWork = diskStored.size + filesToRemove.length;
 
-  // 6. Index new and modified files — prepare in a loop, flush in batches
+  // 6. Index new and modified files via the shared prepare → batch → flush loop
   console.log(`${TAG} Phase 6: Indexing ${filesToIndex.length} files...`);
   const t6 = performance.now();
-  let progress = alreadyDone;
-  let totalFlushMs = 0;
   let totalWalCheckpointMs = 0;
-  let totalPrepareMs = 0;
-  let flushCount = 0;
 
-  // Track prepared files and their metadata for the current batch
-  let batch: Array<{ prepared: PreparedFile; absPath: string; isUpdate: boolean }> = [];
-  let batchChunkCount = 0;
-
-  const flushBatch = async () => {
-    if (batch.length === 0) return;
-    onProgress?.({
-      phase: 'indexing',
-      current: progress,
-      total: totalWork,
-      fileStage: 'flushing',
-      batchChunks: batchChunkCount,
+  const loopResult = await indexFileLoop(
+    filesToIndex.map((f) => ({ absPath: f.absPath, storedKey: f.storedKey, mtimeMs: f.mtime, fileSize: f.size })),
+    {
+      embeddingService,
       batchChunkLimit: BATCH_CHUNK_LIMIT,
-      elapsedMs: performance.now() - start,
-    });
+      shouldStop,
+      progressOffset: alreadyDone,
+      progressTotal: totalWork,
 
-    const tFlush = performance.now();
-    await storeOps.flush(
-      batch.map((b) => ({
-        storedKey: b.prepared.storedKey,
-        chunks: b.prepared.chunks,
-        embeddings: b.prepared.embeddings,
-        mtimeMs: b.prepared.mtimeMs,
-      })),
-      [],
-    );
-    const flushMs = performance.now() - tFlush;
-    totalFlushMs += flushMs;
-    flushCount++;
+      flush: async (upserts) => {
+        await storeOps.flush(upserts, []);
+        // Passive WAL checkpoint after each flush — keeps the WAL small so the
+        // final TRUNCATE checkpoint is near-instant instead of flushing hundreds of MB.
+        const tWal = performance.now();
+        try { await storeOps.checkpoint('PASSIVE'); } catch { /* non-critical */ }
+        totalWalCheckpointMs += performance.now() - tWal;
+      },
 
-    // Passive WAL checkpoint after each flush — keeps the WAL small so the
-    // final TRUNCATE checkpoint at the end of reconciliation is near-instant
-    // instead of flushing hundreds of MB in one blocking call.
-    const tWal = performance.now();
-    try { await storeOps.checkpoint('PASSIVE'); } catch { /* non-critical */ }
-    const walMs = performance.now() - tWal;
-    totalWalCheckpointMs += walMs;
-
-    console.log(`${TAG}   flush #${flushCount}: ${batch.length} files, ${batchChunkCount} chunks → flush ${flushMs.toFixed(1)}ms, WAL checkpoint ${walMs.toFixed(1)}ms`);
-
-    // Update in-memory mtime map and counters after successful flush
-    for (const b of batch) {
-      if (b.prepared.mtimeMs !== undefined) {
-        mtimes.set(b.prepared.storedKey, b.prepared.mtimeMs);
-      }
-      if (b.isUpdate) {
-        filesUpdated++;
-      } else {
-        filesAdded++;
-      }
-      onEvent?.({
-        filePath: b.absPath,
-        eventType: b.isUpdate ? 'reindexed' : 'indexed',
-      });
-    }
-
-    batch = [];
-    batchChunkCount = 0;
-  };
-
-  for (let i = 0; i < filesToIndex.length; i++) {
-    if (shouldStop?.()) {
-      // Flush any work already prepared, then bail out
-      await flushBatch();
-      console.log(`${TAG} Stopped early after ${i} / ${filesToIndex.length} files`);
-      break;
-    }
-
-    const { absPath, storedKey, mtime, size: fileSize } = filesToIndex[i];
-    const fileName = absPath.split(/[\\/]/).pop() ?? absPath;
-
-    onProgress?.({
-      phase: 'indexing',
-      current: ++progress,
-      total: totalWork,
-      filePath: absPath,
-      fileSize,
-      fileStage: 'reading',
-      batchChunks: batchChunkCount,
-      batchChunkLimit: BATCH_CHUNK_LIMIT,
-      elapsedMs: performance.now() - start,
-    });
-
-    try {
-      const tPrep = performance.now();
-      const prepared = await prepareFile(absPath, storedKey, embeddingService, mtime, (stage) => {
-        onProgress?.({
+      onProgress: onProgress ? (info) => {
+        onProgress({
           phase: 'indexing',
-          current: progress,
-          total: totalWork,
-          filePath: absPath,
-          fileSize,
-          fileStage: stage,
-          batchChunks: batchChunkCount,
-          batchChunkLimit: BATCH_CHUNK_LIMIT,
+          current: info.current,
+          total: info.total,
+          filePath: info.filePath,
+          fileSize: info.fileSize,
+          fileStage: info.fileStage,
+          batchChunks: info.batchChunks,
+          batchChunkLimit: info.batchChunkLimit,
           elapsedMs: performance.now() - start,
+          embedDone: info.embedDone,
+          embedTotal: info.embedTotal,
         });
-      });
-      const prepMs = performance.now() - tPrep;
-      totalPrepareMs += prepMs;
+      } : undefined,
 
-      // Log slow files (>500ms) individually
-      if (prepMs > 500) {
-        console.log(`${TAG}   SLOW file: ${fileName} → ${prepMs.toFixed(0)}ms (${prepared.chunks.length} chunks)`);
-      }
+      onBatchFlushed: (files) => {
+        for (const f of files) {
+          if (f.mtimeMs !== undefined) mtimes.set(f.storedKey, f.mtimeMs);
+          const isUpdate = indexedKeys.has(f.storedKey);
+          if (isUpdate) filesUpdated++; else filesAdded++;
+          onEvent?.({ filePath: f.absPath, eventType: isUpdate ? 'reindexed' : 'indexed' });
+        }
+      },
 
-      const isUpdate = indexedKeys.has(storedKey);
-      batch.push({ prepared, absPath, isUpdate });
-      batchChunkCount += prepared.chunks.length;
+      onError: (absPath, message) => {
+        console.error(`${TAG} Failed to index ${absPath}:`, message);
+        onEvent?.({ filePath: absPath, eventType: 'error', errorMessage: message });
+      },
+    },
+  );
 
-      // Re-emit progress with updated batch chunk count so polling reads a fresh value
-      onProgress?.({
-        phase: 'indexing',
-        current: progress,
-        total: totalWork,
-        filePath: absPath,
-        fileSize,
-        batchChunks: batchChunkCount,
-        batchChunkLimit: BATCH_CHUNK_LIMIT,
-        elapsedMs: performance.now() - start,
-      });
-
-      if (batchChunkCount >= BATCH_CHUNK_LIMIT) {
-        await flushBatch();
-        // Yield to the event loop after each flush so MCP/IPC can serve requests
-        await new Promise<void>((r) => setImmediate(r));
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`${TAG} Failed to index ${absPath}:`, message);
-      onEvent?.({ filePath: absPath, eventType: 'error', errorMessage: message });
-    }
-
-    // Yield periodically so IPC polls stay responsive between files
-    if ((i + 1) % 5 === 0) {
-      await new Promise<void>((r) => setImmediate(r));
-    }
+  if (loopResult.cancelled) {
+    console.log(`${TAG} Stopped early after ${loopResult.filesProcessed} / ${filesToIndex.length} files`);
   }
-
-  // Flush any remaining prepared files
-  console.log(`${TAG} Phase 6: Flushing final batch...`);
-  await flushBatch();
-  console.log(`${TAG} Phase 6 done: ${filesToIndex.length} files in ${ms(t6)} (prepare: ${totalPrepareMs.toFixed(0)}ms, flush: ${totalFlushMs.toFixed(0)}ms across ${flushCount} batches, WAL checkpoints: ${totalWalCheckpointMs.toFixed(0)}ms)`);
-
+  console.log(`${TAG} Phase 6 done: ${filesToIndex.length} files in ${ms(t6)} (prepare: ${loopResult.totalPrepareMs.toFixed(0)}ms, flush: ${loopResult.totalFlushMs.toFixed(0)}ms across ${loopResult.flushCount} batches, WAL checkpoints: ${totalWalCheckpointMs.toFixed(0)}ms)`);
   // 7. Remove stale files — batch all deletes into a single transaction
   console.log(`${TAG} Phase 7: Removing ${filesToRemove.length} stale files...`);
   const t7 = performance.now();
   if (filesToRemove.length > 0 && !shouldStop?.()) {
     const deleteEntries: FlushDelete[] = [];
+    let removeProgress = alreadyDone + loopResult.filesProcessed;
 
     for (const storedKey of filesToRemove) {
       const absPath = resolveStoredKey(storedKey, config.directories);
       onProgress?.({
         phase: 'removing',
-        current: ++progress,
+        current: ++removeProgress,
         total: totalWork,
         filePath: absPath,
       });

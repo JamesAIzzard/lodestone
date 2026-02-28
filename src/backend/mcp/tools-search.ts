@@ -7,6 +7,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import type { McpServerDeps } from './types';
 import { PuidManager } from './puid-manager';
+import { getProcessor } from '../pipeline';
 import {
   SEARCH_DESCRIPTION, READ_DESCRIPTION, EXPLORE_DESCRIPTION,
   formatSearchResults, formatExploreResults,
@@ -259,8 +260,19 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
               content.push({ type: 'text' as const, text: `## ${id}: ${filePath}` });
               content.push({ type: 'image' as const, data: buf.toString('base64'), mimeType: mime });
             } else {
-              // Text file — return as text content block
-              const text = fs.readFileSync(filePath, 'utf-8');
+              // Text/binary file — route through the registered extractor so
+              // binary formats (e.g. PDF) return human-readable body text.
+              const processor = getProcessor(filePath);
+              let text: string;
+              if (processor.asyncExtractor) {
+                const buffer = fs.readFileSync(filePath);
+                text = (await processor.asyncExtractor(buffer)).body;
+              } else if (processor.extractor) {
+                const raw = fs.readFileSync(filePath, 'utf-8');
+                text = processor.extractor(raw).body;
+              } else {
+                text = fs.readFileSync(filePath, 'utf-8');
+              }
 
               // Lazily compute and cache the content hash on first read
               if (record && !record.contentHash) {

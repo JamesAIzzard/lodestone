@@ -46,7 +46,15 @@ export interface SiloManagerStatus {
   databaseSizeBytes: number;
   watcherState: WatcherState;
   errorMessage?: string;
-  reconcileProgress?: { current: number; total: number };
+  reconcileProgress?: {
+    current: number;
+    total: number;
+    batchChunks?: number;
+    batchChunkLimit?: number;
+    filePath?: string;
+    fileStage?: string;
+    elapsedMs?: number;
+  };
   /** True when the configured model differs from the model used to build the index */
   modelMismatch?: boolean;
   /** Absolute path to the silo's SQLite database file */
@@ -66,7 +74,15 @@ export class SiloManager {
   private _watcherState: WatcherState = 'ready';
   private stateChangeListener?: () => void;
   private errorMessage?: string;
-  private reconcileProgress?: { current: number; total: number };
+  private reconcileProgress?: {
+    current: number;
+    total: number;
+    batchChunks?: number;
+    batchChunkLimit?: number;
+    filePath?: string;
+    fileStage?: string;
+    elapsedMs?: number;
+  };
   private mtimes = new Map<string, number>();
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
@@ -340,6 +356,19 @@ export class SiloManager {
             } else {
               console.log(`[silo:${this.config.name}] Reconciliation: index up to date`);
             }
+            // Yield so the renderer can process the "done" state before the
+            // potentially expensive WAL checkpoint blocks the event loop.
+            console.log(`[silo:${this.config.name}] Post-reconcile: yielding before WAL checkpoint...`);
+            await new Promise<void>((r) => setImmediate(r));
+            // Checkpoint and truncate the WAL after reconciliation. Heavy write
+            // workloads (especially sqlite-vec vector inserts) cause significant
+            // WAL growth; TRUNCATE mode flushes all data to the main DB and
+            // resets the WAL file to zero bytes. Because we now run PASSIVE
+            // checkpoints after each batch flush, the WAL should be nearly
+            // empty here, making TRUNCATE fast.
+            const tCheckpoint = performance.now();
+            this.checkpointWal();
+            console.log(`[silo:${this.config.name}] Post-reconcile: WAL checkpoint(TRUNCATE) took ${(performance.now() - tCheckpoint).toFixed(1)}ms`);
           } catch (err) {
             if (this.stopped) { resolve(); return; }
             console.error(`[silo:${this.config.name}] Reconciliation failed:`, err);
@@ -385,6 +414,7 @@ export class SiloManager {
 
     if (this.db) {
       try {
+        this.checkpointWal();
         this.db.close();
       } catch {
         // Already closed or failed — harmless
@@ -666,7 +696,15 @@ export class SiloManager {
     }
     if (progress.phase !== 'scanning') {
       // Only track numeric progress for indexing/removing phases
-      this.reconcileProgress = { current: progress.current, total: progress.total };
+      this.reconcileProgress = {
+        current: progress.current,
+        total: progress.total,
+        batchChunks: progress.batchChunks,
+        batchChunkLimit: progress.batchChunkLimit,
+        filePath: progress.filePath,
+        fileStage: progress.fileStage,
+        elapsedMs: progress.elapsedMs,
+      };
       if (progress.total > 0 && progress.current % 10 === 0) {
         console.log(`[silo:${this.config.name}] Reconcile: ${progress.current}/${progress.total}`);
       }
@@ -763,6 +801,16 @@ export class SiloManager {
         }
       },
     );
+  }
+
+  /** Checkpoint the WAL and truncate it to zero bytes, reclaiming disk space. */
+  private checkpointWal(): void {
+    if (!this.db) return;
+    try {
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch (err) {
+      console.warn(`[silo:${this.config.name}] WAL checkpoint failed:`, err);
+    }
   }
 
   private resolveDbPath(): string {

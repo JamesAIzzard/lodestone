@@ -13,6 +13,14 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const stageLabels: Record<string, string> = {
+  reading: 'Reading',
+  extracting: 'Extracting',
+  chunking: 'Chunking',
+  embedding: 'Embedding',
+  flushing: 'Saving',
+};
+
 const stateConfig: Record<WatcherState, { label: string; dotClass: string; badgeVariant: 'secondary' | 'default' | 'destructive' }> = {
   ready:    { label: 'Ready',    dotClass: 'bg-emerald-500',             badgeVariant: 'secondary' },
   indexing: { label: 'Indexing', dotClass: 'bg-amber-500 animate-pulse', badgeVariant: 'default' },
@@ -161,9 +169,29 @@ export default function SiloCard({ silo, onClick, onStopToggle, isStopping, onRe
                 style={{ width: `${progressPct ?? 0}%` }}
               />
             </div>
-            <span className="text-[10px] text-muted-foreground">
-              {reconcileProgress.current.toLocaleString()} / {reconcileProgress.total.toLocaleString()} files
-            </span>
+            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+              <span>
+                {reconcileProgress.current.toLocaleString()} / {reconcileProgress.total.toLocaleString()} files
+              </span>
+              {reconcileProgress.batchChunks != null && reconcileProgress.batchChunkLimit != null && (
+                <span className="text-muted-foreground/60">
+                  batch: {reconcileProgress.batchChunks} / {reconcileProgress.batchChunkLimit} chunks
+                </span>
+              )}
+            </div>
+            {/* Stage label + current filename */}
+            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
+              {reconcileProgress.fileStage && stageLabels[reconcileProgress.fileStage] && (
+                <span className="shrink-0 text-muted-foreground/80 font-medium">
+                  {stageLabels[reconcileProgress.fileStage]}
+                </span>
+              )}
+              {reconcileProgress.filePath && (
+                <span className="truncate">
+                  {reconcileProgress.filePath.split(/[\\/]/).pop()}
+                </span>
+              )}
+            </div>
           </div>
         )}
 

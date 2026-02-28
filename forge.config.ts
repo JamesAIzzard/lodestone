@@ -27,6 +27,7 @@ const EXTERNAL_MODULES = [
   'web-tree-sitter',
   'tree-sitter-wasms',
   'trash',
+  'pdfjs-dist',
 ];
 
 const config: ForgeConfig = {

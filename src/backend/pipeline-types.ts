@@ -53,6 +53,13 @@ export interface ChunkRecord {
 export type Extractor = (content: string) => ExtractionResult;
 
 /**
+ * An async extractor — same contract as Extractor but takes a Buffer and
+ * returns a Promise. Used for binary formats (e.g. PDF) that require
+ * async parsing libraries.
+ */
+export type AsyncExtractor = (content: Buffer) => Promise<ExtractionResult>;
+
+/**
  * A chunker splits extracted text into semantic pieces under a token limit.
  * Different chunking strategies suit different document structures.
  */
@@ -76,11 +83,13 @@ export type AsyncChunker = (
  * A file processor pairs an extractor with a chunker.
  * The pipeline registry maps file extensions to these pairs.
  *
+ * Provide either `extractor` (sync, string) or `asyncExtractor` (async, Buffer).
  * Provide either `chunker` (sync) or `asyncChunker` (async).
- * When both are present, `asyncChunker` takes priority.
+ * When both are present, async variants take priority.
  */
 export interface FileProcessor {
-  extractor: Extractor;
+  extractor?: Extractor;
+  asyncExtractor?: AsyncExtractor;
   chunker?: Chunker;
   asyncChunker?: AsyncChunker;
 }

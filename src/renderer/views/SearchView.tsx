@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, FileText, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, X } from 'lucide-react';
+import { Search, FileText, FileCode, FileJson, BookOpen, File, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
 import type { SiloStatus, SearchResult, DirectoryResult, DirectoryTreeNode, ExploreParams, SearchMode, LocationHint } from '../../shared/types';
@@ -45,6 +45,23 @@ const SIGNAL_COLORS: Record<string, { bar: string; badge: string; label: string 
 const DEFAULT_SIGNAL_COLOR = { bar: 'bg-gray-400', badge: 'bg-gray-500/15 text-gray-400', label: 'score' };
 
 const DIR_BAR_COLOR = 'bg-purple-400';
+
+// ── File-type icons ───────────────────────────────────────────────────────────
+
+const CODE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.rb', '.swift', '.kt']);
+const DATA_EXTS = new Set(['.json', '.yaml', '.yml', '.toml', '.xml']);
+const MD_EXTS   = new Set(['.md', '.markdown', '.mdx']);
+const ICON_CLS  = 'h-4 w-4 shrink-0 text-muted-foreground';
+
+function getFileIcon(filePath: string) {
+  const ext = '.' + (filePath.split('.').pop() ?? '').toLowerCase();
+  if (MD_EXTS.has(ext))   return <FileText className={ICON_CLS} />;
+  if (CODE_EXTS.has(ext)) return <FileCode className={ICON_CLS} />;
+  if (DATA_EXTS.has(ext)) return <FileJson className={ICON_CLS} />;
+  if (ext === '.pdf')      return <BookOpen className={ICON_CLS} />;
+  if (ext === '.txt')      return <FileText className={ICON_CLS} />;
+  return <File className={ICON_CLS} />;
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -373,7 +390,7 @@ function FileResultsView({
                 : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               }
 
-              <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+              {getFileIcon(result.filePath)}
 
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">

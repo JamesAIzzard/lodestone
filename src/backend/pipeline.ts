@@ -10,14 +10,17 @@
  */
 
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
-import type { FileProcessor } from './pipeline-types';
+import type { FileProcessor, ExtractionResult } from './pipeline-types';
 import { extractMarkdown } from './extractors/markdown';
 import { extractPlaintext } from './extractors/plaintext';
 import { extractCode } from './extractors/code';
 import { chunkByHeading } from './chunkers/heading';
 import { chunkPlaintext } from './chunkers/plaintext';
 import { chunkCodeAsync, CODE_EXTENSIONS } from './chunkers/code';
+import { extractPdf } from './extractors/pdf';
+import { chunkPdf } from './chunkers/pdf';
 import type { EmbeddingService } from './embedding';
 import type { ChunkRecord } from './pipeline-types';
 import { upsertFileChunks, deleteFileChunks, flushPreparedFiles, type SiloDatabase } from './store';
@@ -45,6 +48,9 @@ for (const ext of CODE_EXTENSIONS) {
   processors.set(ext, codeProcessor);
 }
 
+// PDF — async Buffer-based extraction + page-aware chunking
+processors.set('.pdf', { asyncExtractor: extractPdf, chunker: chunkPdf });
+
 /** Default processor for unregistered extensions. */
 const defaultProcessor: FileProcessor = {
   extractor: extractPlaintext,
@@ -54,7 +60,7 @@ const defaultProcessor: FileProcessor = {
 /**
  * Look up the processor for a file based on its extension.
  */
-function getProcessor(filePath: string): FileProcessor {
+export function getProcessor(filePath: string): FileProcessor {
   const ext = path.extname(filePath).toLowerCase();
   return processors.get(ext) ?? defaultProcessor;
 }
@@ -83,6 +89,9 @@ export interface PreparedFile {
   mtimeMs?: number;
 }
 
+/** Pipeline stage reported via the onStage callback during file preparation. */
+export type FileStage = 'reading' | 'extracting' | 'chunking' | 'embedding';
+
 // ── Prepare ──────────────────────────────────────────────────────────────────
 
 /**
@@ -91,22 +100,37 @@ export interface PreparedFile {
  * Returns the prepared chunks and embeddings so the caller can batch multiple
  * files into a single database transaction. An empty `chunks` array means the
  * file had no indexable content (empty file or metadata only).
+ *
+ * The optional `onStage` callback fires at each pipeline transition so callers
+ * can report granular progress (e.g. "Extracting report.pdf").
  */
 export async function prepareFile(
   absolutePath: string,
   storedKey: string,
   embeddingService: EmbeddingService,
   mtimeMs?: number,
+  onStage?: (stage: FileStage) => void,
 ): Promise<PreparedFile> {
-  const content = fs.readFileSync(absolutePath, 'utf-8');
+  const processor = getProcessor(absolutePath);
+  const { chunker, asyncChunker } = processor;
 
-  const { extractor, chunker, asyncChunker } = getProcessor(absolutePath);
-  const extraction = extractor(content);
+  onStage?.('reading');
+  let extraction: ExtractionResult;
+  if (processor.asyncExtractor) {
+    const buffer = await fsp.readFile(absolutePath);
+    onStage?.('extracting');
+    extraction = await processor.asyncExtractor(buffer);
+  } else {
+    const content = await fsp.readFile(absolutePath, 'utf-8');
+    onStage?.('extracting');
+    extraction = processor.extractor!(content);
+  }
 
   if (!asyncChunker && !chunker) {
     return { storedKey, chunks: [], embeddings: [], mtimeMs };
   }
 
+  onStage?.('chunking');
   const chunks = asyncChunker
     ? await asyncChunker(absolutePath, extraction, embeddingService.chunkTokens)
     : chunker!(absolutePath, extraction, embeddingService.chunkTokens);
@@ -117,6 +141,7 @@ export async function prepareFile(
 
   const storedChunks = chunks.map((c) => ({ ...c, filePath: storedKey }));
 
+  onStage?.('embedding');
   const texts = storedChunks.map((c) => c.text);
   const embeddings: number[][] = [];
   for (let i = 0; i < texts.length; i += MAX_EMBED_BATCH_SIZE) {

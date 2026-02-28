@@ -9,6 +9,8 @@ export default defineConfig({
       //   - chokidar: native file-watching (uses fs events)
       //   - web-tree-sitter: ships a companion tree-sitter.wasm file that Emscripten
       //     locates relative to the JS module. If bundled, the WASM path breaks.
+      //   - pdfjs-dist: ships WASM files and requires the legacy build for Node.js;
+      //     bundling would break internal module resolution.
       external: [
         '@huggingface/transformers',
         'onnxruntime-node',
@@ -19,6 +21,7 @@ export default defineConfig({
         'better-sqlite3',
         'sqlite-vec',
         'trash',
+        'pdfjs-dist',
       ],
     },
   },

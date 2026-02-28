@@ -510,13 +510,20 @@ export function flushPreparedFiles(
   }>,
   deletes?: Array<{ filePath: string; deleteMtime: boolean }>,
 ): void {
+  const totalChunks = upserts.reduce((sum, f) => sum + f.chunks.length, 0);
+  const tTx = performance.now();
   db.transaction(() => {
     for (const file of upserts) {
       if (file.chunks.length === 0) {
         // Empty file — remove chunks but keep the file row so it's findable by path
         clearChunksKeepFile(db, file.filePath, file.mtimeMs);
       } else {
+        const tFile = performance.now();
         upsertFileInner(db, file.filePath, file.chunks, file.embeddings, file.mtimeMs);
+        const fileMs = performance.now() - tFile;
+        if (fileMs > 200) {
+          console.log(`[flushPrepared]   SLOW upsert: ${file.filePath} (${file.chunks.length} chunks) → ${fileMs.toFixed(0)}ms`);
+        }
       }
     }
     if (deletes) {
@@ -525,6 +532,10 @@ export function flushPreparedFiles(
       }
     }
   })();
+  const txMs = performance.now() - tTx;
+  if (txMs > 300) {
+    console.log(`[flushPrepared] Transaction: ${upserts.length} files, ${totalChunks} chunks, ${deletes?.length ?? 0} deletes → ${txMs.toFixed(0)}ms`);
+  }
 }
 
 // ── Search (old two-axis functions removed — see search.ts) ─────────
@@ -889,10 +900,12 @@ export function getFilesInDirectory(
 }
 
 /**
- * Sync the directories table with a set of directory paths found on disk.
- * - Inserts any new directories not yet in the table
- * - Removes directories no longer present on disk
- * - Recomputes all counts
+ * Sync the directories table structure with disk — inserts new directories
+ * and removes orphaned ones. Fast transaction (no heavy scans).
+ *
+ * Count recomputation is handled separately by {@link recomputeDirectoryCounts}
+ * so it can yield to the event loop between batches.
+ *
  * Returns the list of removed directory stored-key paths (for activity event emission).
  */
 export function syncDirectoriesWithDisk(
@@ -923,25 +936,70 @@ export function syncDirectoriesWithDisk(
       deleteDir.run(d.id);
     }
 
-    // Recompute all counts in one pass
-    db.prepare(`
-      UPDATE directories SET file_count = (
-        SELECT COUNT(*) FROM files
-        WHERE file_path LIKE directories.dir_path || '%'
-          AND file_path NOT LIKE directories.dir_path || '%/%'
-      )
-    `).run();
-
-    db.prepare(`
-      UPDATE directories SET subdir_count = (
-        SELECT COUNT(*) FROM directories d2
-        WHERE d2.dir_path LIKE directories.dir_path || '%'
-          AND d2.dir_path != directories.dir_path
-          AND d2.depth = directories.depth + 1
-      )
-    `).run();
-
     return toRemove.map((d) => d.dir_path);
   })();
+}
+
+/**
+ * Recompute file_count and subdir_count for all directories, in batches
+ * of {@link DIRS_PER_BATCH} to avoid blocking the event loop.
+ *
+ * Each batch runs its own small transaction (~50 UPDATE statements with
+ * correlated subqueries), keeping each synchronous block under ~200ms.
+ */
+const DIRS_PER_BATCH = 50;
+
+export async function recomputeDirectoryCounts(db: SiloDatabase): Promise<void> {
+  const allDirs = db.prepare(`SELECT id, dir_path, depth FROM directories`).all() as Array<{
+    id: number;
+    dir_path: string;
+    depth: number;
+  }>;
+
+  if (allDirs.length === 0) {
+    console.log(`[recomputeDirCounts] No directories to update`);
+    return;
+  }
+
+  console.log(`[recomputeDirCounts] Updating ${allDirs.length} directories in batches of ${DIRS_PER_BATCH}...`);
+
+  const updateFileCount = db.prepare(`
+    UPDATE directories SET file_count = (
+      SELECT COUNT(*) FROM files
+      WHERE file_path LIKE ? || '%'
+        AND file_path NOT LIKE ? || '%/%'
+    ) WHERE id = ?
+  `);
+
+  const updateSubdirCount = db.prepare(`
+    UPDATE directories SET subdir_count = (
+      SELECT COUNT(*) FROM directories d2
+      WHERE d2.dir_path LIKE ? || '%'
+        AND d2.dir_path != ?
+        AND d2.depth = ? + 1
+    ) WHERE id = ?
+  `);
+
+  for (let i = 0; i < allDirs.length; i += DIRS_PER_BATCH) {
+    const batch = allDirs.slice(i, i + DIRS_PER_BATCH);
+    const tBatch = performance.now();
+
+    db.transaction(() => {
+      for (const dir of batch) {
+        updateFileCount.run(dir.dir_path, dir.dir_path, dir.id);
+        updateSubdirCount.run(dir.dir_path, dir.dir_path, dir.depth, dir.id);
+      }
+    })();
+
+    const batchMs = performance.now() - tBatch;
+    console.log(`[recomputeDirCounts]   batch ${Math.floor(i / DIRS_PER_BATCH) + 1}: dirs ${i + 1}-${Math.min(i + DIRS_PER_BATCH, allDirs.length)} → ${batchMs.toFixed(1)}ms`);
+
+    // Yield between batches so IPC/rendering stay responsive
+    if (i + DIRS_PER_BATCH < allDirs.length) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+  }
+
+  console.log(`[recomputeDirCounts] Done`);
 }
 

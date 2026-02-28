@@ -38,6 +38,11 @@ export interface SiloStatus {
   reconcileProgress?: {
     current: number;
     total: number;
+    batchChunks?: number;
+    batchChunkLimit?: number;
+    filePath?: string;
+    fileStage?: string;
+    elapsedMs?: number;
   };
   /** True when the configured model differs from the model that built the index */
   modelMismatch?: boolean;

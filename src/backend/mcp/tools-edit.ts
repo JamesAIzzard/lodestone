@@ -93,7 +93,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         // ── CREATE ──
         if (operation === 'create') {
           if (directory === undefined || filename === undefined || content === undefined) {
-            return { content: [{ type: 'text' as const, text: 'Error: create requires directory, filename, and content parameters.' }], isError: true };
+            return { content: [{ type: 'text' as const, text: 'Error: create requires directory, filename, and content parameters.' }] };
           }
 
           // Resolve d-puid
@@ -101,10 +101,10 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
           if (PuidManager.isDirPuid(directory)) {
             const resolved = puid.resolvePuidRecord(directory);
             if (!resolved) {
-              return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${directory}". It may be from a previous session.` }], isError: true };
+              return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${directory}". It may be from a previous session.` }] };
             }
             if ('error' in resolved) {
-              return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+              return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }] };
             }
             resolvedDir = resolved.filepath;
           }
@@ -116,7 +116,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
           });
 
           if (!result.success) {
-            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }], isError: true };
+            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }] };
           }
 
           // Assign puid for the new file and cache the hash
@@ -137,7 +137,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         // ── MKDIR ──
         if (operation === 'mkdir') {
           if (directory === undefined || name === undefined) {
-            return { content: [{ type: 'text' as const, text: 'Error: mkdir requires directory and name parameters.' }], isError: true };
+            return { content: [{ type: 'text' as const, text: 'Error: mkdir requires directory and name parameters.' }] };
           }
 
           // Resolve d-puid
@@ -145,10 +145,10 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
           if (PuidManager.isDirPuid(directory)) {
             const resolved = puid.resolvePuidRecord(directory);
             if (!resolved) {
-              return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${directory}". It may be from a previous session.` }], isError: true };
+              return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${directory}". It may be from a previous session.` }] };
             }
             if ('error' in resolved) {
-              return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+              return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }] };
             }
             resolvedDir = resolved.filepath;
           }
@@ -160,7 +160,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
           });
 
           if (!result.success) {
-            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }], isError: true };
+            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }] };
           }
 
           // Assign d-puid for the new directory
@@ -188,15 +188,15 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         // ── RENAME ──
         if (operation === 'rename') {
           if (target === undefined || typeof target !== 'string') {
-            return { content: [{ type: 'text' as const, text: 'Error: rename requires a single target parameter (not an array).' }], isError: true };
+            return { content: [{ type: 'text' as const, text: 'Error: rename requires a single target parameter (not an array).' }] };
           }
           if (!name) {
-            return { content: [{ type: 'text' as const, text: 'Error: rename requires name parameter.' }], isError: true };
+            return { content: [{ type: 'text' as const, text: 'Error: rename requires name parameter.' }] };
           }
 
           const resolved = resolveTarget(target, puid);
           if (typeof resolved === 'string') {
-            return { content: [{ type: 'text' as const, text: `Error: ${resolved}` }], isError: true };
+            return { content: [{ type: 'text' as const, text: `Error: ${resolved}` }] };
           }
           const { filePath, puidKey, puidRecord, isDirectory } = resolved;
 
@@ -205,7 +205,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             const staleMsg = checkStaleness(filePath, puidRecord);
             if (staleMsg) {
               const fileContent = fs.readFileSync(filePath, 'utf-8');
-              return { content: [{ type: 'text' as const, text: `${staleMsg}\n\nCurrent file content:\n\`\`\`\n${fileContent}\n\`\`\`` }], isError: true };
+              return { content: [{ type: 'text' as const, text: `${staleMsg}\n\nCurrent file content:\n\`\`\`\n${fileContent}\n\`\`\`` }] };
             }
           }
 
@@ -216,7 +216,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
           });
 
           if (!result.success) {
-            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }], isError: true };
+            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }] };
           }
 
           // Invalidate old puids and assign new ones on live (non-dry-run) renames
@@ -259,10 +259,10 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         // ── MOVE ──
         if (operation === 'move') {
           if (target === undefined) {
-            return { content: [{ type: 'text' as const, text: 'Error: move requires target parameter.' }], isError: true };
+            return { content: [{ type: 'text' as const, text: 'Error: move requires target parameter.' }] };
           }
           if (destination === undefined || destination_type === undefined) {
-            return { content: [{ type: 'text' as const, text: 'Error: move requires destination and destination_type parameters.' }], isError: true };
+            return { content: [{ type: 'text' as const, text: 'Error: move requires destination and destination_type parameters.' }] };
           }
 
           // Batch mode
@@ -272,10 +272,10 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             if (PuidManager.isDirPuid(destination)) {
               const resolved = puid.resolvePuidRecord(destination);
               if (!resolved) {
-                return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${destination}". It may be from a previous session.` }], isError: true };
+                return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${destination}". It may be from a previous session.` }] };
               }
               if ('error' in resolved) {
-                return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+                return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }] };
               }
               resolvedDest = resolved.filepath;
             }
@@ -368,14 +368,14 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
 
           const resolved = resolveTarget(target, puid);
           if (typeof resolved === 'string') {
-            return { content: [{ type: 'text' as const, text: `Error: ${resolved}` }], isError: true };
+            return { content: [{ type: 'text' as const, text: `Error: ${resolved}` }] };
           }
           const { filePath, puidKey, puidRecord, isDirectory } = resolved;
 
           // Staleness check (files only — directories don't have content hashes)
           const staleMsg = checkStaleness(filePath, puidRecord);
           if (staleMsg) {
-            return { content: [{ type: 'text' as const, text: staleMsg }], isError: true };
+            return { content: [{ type: 'text' as const, text: staleMsg }] };
           }
 
           // Resolve destination (d-puid or path)
@@ -383,10 +383,10 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
           if (PuidManager.isDirPuid(destination)) {
             const destResolved = puid.resolvePuidRecord(destination);
             if (!destResolved) {
-              return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${destination}". It may be from a previous session.` }], isError: true };
+              return { content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${destination}". It may be from a previous session.` }] };
             }
             if ('error' in destResolved) {
-              return { content: [{ type: 'text' as const, text: `Error: ${destResolved.error}` }], isError: true };
+              return { content: [{ type: 'text' as const, text: `Error: ${destResolved.error}` }] };
             }
             resolvedDest = destResolved.filepath;
           }
@@ -402,9 +402,9 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
               return { content: [{ type: 'text' as const, text: `Skipped: file already exists at destination: ${result.destinationPath}` }] };
             }
             if (result.conflict) {
-              return { content: [{ type: 'text' as const, text: `Conflict: ${result.error}` }], isError: true };
+              return { content: [{ type: 'text' as const, text: `Conflict: ${result.error}` }] };
             }
-            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }], isError: true };
+            return { content: [{ type: 'text' as const, text: `Error: ${result.error}` }] };
           }
 
           // Invalidate puids on live (non-dry-run) moves
@@ -446,7 +446,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         // ── DELETE ──
         if (operation === 'delete') {
           if (target === undefined) {
-            return { content: [{ type: 'text' as const, text: 'Error: delete requires target parameter.' }], isError: true };
+            return { content: [{ type: 'text' as const, text: 'Error: delete requires target parameter.' }] };
           }
 
           // Batch mode
@@ -538,20 +538,20 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
               return { content: [{ type: 'text' as const, text: `Memory m${memId} deleted.` }] };
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
-              return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+              return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
             }
           }
 
           const resolved = resolveTarget(target, puid);
           if (typeof resolved === 'string') {
-            return { content: [{ type: 'text' as const, text: `Error: ${resolved}` }], isError: true };
+            return { content: [{ type: 'text' as const, text: `Error: ${resolved}` }] };
           }
           const { filePath: deleteFilePath, puidKey: deletePuidKey, puidRecord: deletePuidRecord, isDirectory: deleteIsDirectory } = resolved;
 
           // Staleness check (files only — directories don't have content hashes)
           const deleteStaleMsg = checkStaleness(deleteFilePath, deletePuidRecord);
           if (deleteStaleMsg) {
-            return { content: [{ type: 'text' as const, text: deleteStaleMsg }], isError: true };
+            return { content: [{ type: 'text' as const, text: deleteStaleMsg }] };
           }
 
           const deleteResult = await deps.edit({
@@ -561,7 +561,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
           });
 
           if (!deleteResult.success) {
-            return { content: [{ type: 'text' as const, text: `Error: ${deleteResult.error}` }], isError: true };
+            return { content: [{ type: 'text' as const, text: `Error: ${deleteResult.error}` }] };
           }
 
           // Invalidate puids on live (non-dry-run) deletes
@@ -594,10 +594,10 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
 
         // ── TEXT EDITING OPERATIONS (str_replace, insert_at_line, overwrite, append) ──
         if (target === undefined) {
-          return { content: [{ type: 'text' as const, text: `Error: ${operation} requires target parameter.` }], isError: true };
+          return { content: [{ type: 'text' as const, text: `Error: ${operation} requires target parameter.` }] };
         }
         if (Array.isArray(target)) {
-          return { content: [{ type: 'text' as const, text: 'Error: Batch mode is only supported for move and delete operations.' }], isError: true };
+          return { content: [{ type: 'text' as const, text: 'Error: Batch mode is only supported for move and delete operations.' }] };
         }
 
         // ── Memory routing: m-prefixed targets route to memory operations ──
@@ -608,7 +608,6 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
           if (!supported.has(operation)) {
             return {
               content: [{ type: 'text' as const, text: `Error: Operation "${operation}" is not supported for memory references. Supported: str_replace, overwrite, append, delete.` }],
-              isError: true,
             };
           }
 
@@ -616,33 +615,33 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             // For str_replace, overwrite, append — fetch current body, modify, revise
             const existing = await deps.memoryGetById({ id: memId });
             if (!existing) {
-              return { content: [{ type: 'text' as const, text: `Error: Memory m${memId} not found. It may have been deleted.` }], isError: true };
+              return { content: [{ type: 'text' as const, text: `Error: Memory m${memId} not found. It may have been deleted.` }] };
             }
 
             let newBody: string;
             if (operation === 'overwrite') {
               if (content === undefined) {
-                return { content: [{ type: 'text' as const, text: 'Error: overwrite requires content parameter.' }], isError: true };
+                return { content: [{ type: 'text' as const, text: 'Error: overwrite requires content parameter.' }] };
               }
               newBody = content;
             } else if (operation === 'append') {
               if (content === undefined) {
-                return { content: [{ type: 'text' as const, text: 'Error: append requires content parameter.' }], isError: true };
+                return { content: [{ type: 'text' as const, text: 'Error: append requires content parameter.' }] };
               }
               newBody = existing.body + content;
             } else {
               // str_replace
               if (old_str === undefined || new_str === undefined) {
-                return { content: [{ type: 'text' as const, text: 'Error: str_replace requires old_str and new_str parameters.' }], isError: true };
+                return { content: [{ type: 'text' as const, text: 'Error: str_replace requires old_str and new_str parameters.' }] };
               }
               const idx = existing.body.indexOf(old_str);
               if (idx === -1) {
-                return { content: [{ type: 'text' as const, text: `Error: old_str not found in memory m${memId} body.` }], isError: true };
+                return { content: [{ type: 'text' as const, text: `Error: old_str not found in memory m${memId} body.` }] };
               }
               // Check uniqueness
               const secondIdx = existing.body.indexOf(old_str, idx + 1);
               if (secondIdx !== -1) {
-                return { content: [{ type: 'text' as const, text: `Error: old_str matches multiple locations in memory m${memId}. Provide more context to make it unique.` }], isError: true };
+                return { content: [{ type: 'text' as const, text: `Error: old_str matches multiple locations in memory m${memId}. Provide more context to make it unique.` }] };
               }
               newBody = existing.body.slice(0, idx) + new_str + existing.body.slice(idx + old_str.length);
             }
@@ -657,7 +656,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             return { content: [{ type: 'text' as const, text: `Memory m${memId} revised via ${operation}.${warning}` }] };
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
-            return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+            return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
           }
         }
 
@@ -669,11 +668,10 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
           if (!resolved) {
             return {
               content: [{ type: 'text' as const, text: `Error: Unknown puid "${target}". It may be from a previous session. Search or explore again to get a fresh reference.` }],
-              isError: true,
             };
           }
           if ('error' in resolved) {
-            return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }], isError: true };
+            return { content: [{ type: 'text' as const, text: `Error: ${resolved.error}` }] };
           }
           puidRecord = resolved;
           filePath = resolved.filepath;
@@ -693,7 +691,6 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             puidRecord.contentHash = currentHash;
             return {
               content: [{ type: 'text' as const, text: body }],
-              isError: true,
             };
           }
         }
@@ -707,25 +704,25 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         switch (operation) {
           case 'str_replace':
             if (old_str === undefined || new_str === undefined) {
-              return { content: [{ type: 'text' as const, text: 'Error: str_replace requires old_str and new_str parameters.' }], isError: true };
+              return { content: [{ type: 'text' as const, text: 'Error: str_replace requires old_str and new_str parameters.' }] };
             }
             editOp = { op: 'str_replace', filePath, oldStr: old_str, newStr: new_str, dryRun: dry_run, contextLines: context_lines, fullDocument: full_document };
             break;
           case 'insert_at_line':
             if (line === undefined || content === undefined) {
-              return { content: [{ type: 'text' as const, text: 'Error: insert_at_line requires line and content parameters.' }], isError: true };
+              return { content: [{ type: 'text' as const, text: 'Error: insert_at_line requires line and content parameters.' }] };
             }
             editOp = { op: 'insert_at_line', filePath, line, content, dryRun: dry_run, contextLines: context_lines, fullDocument: full_document };
             break;
           case 'overwrite':
             if (content === undefined) {
-              return { content: [{ type: 'text' as const, text: 'Error: overwrite requires content parameter.' }], isError: true };
+              return { content: [{ type: 'text' as const, text: 'Error: overwrite requires content parameter.' }] };
             }
             editOp = { op: 'overwrite', filePath, content, dryRun: dry_run, contextLines: context_lines, fullDocument: full_document };
             break;
           case 'append':
             if (content === undefined) {
-              return { content: [{ type: 'text' as const, text: 'Error: append requires content parameter.' }], isError: true };
+              return { content: [{ type: 'text' as const, text: 'Error: append requires content parameter.' }] };
             }
             editOp = { op: 'append', filePath, content, dryRun: dry_run, contextLines: context_lines, fullDocument: full_document };
             break;
@@ -746,7 +743,6 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         if (!result.success) {
           return {
             content: [{ type: 'text' as const, text: `Error: ${result.error}` }],
-            isError: true,
           };
         }
 
@@ -771,7 +767,6 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         const message = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
-          isError: true,
         };
       }
     },

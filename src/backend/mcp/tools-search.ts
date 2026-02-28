@@ -38,7 +38,6 @@ export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid:
           if (resolved === startPath) {
             return {
               content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${startPath}". It may be from a previous session.` }],
-              isError: true,
             };
           }
           resolvedStartPath = resolved;
@@ -102,7 +101,6 @@ export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid:
         const message = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
-          isError: true,
         };
       }
     },
@@ -211,10 +209,14 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
             continue;
           }
 
-          // Check for invalidated puids (moved or deleted files)
+          // Check for unknown or invalidated puids (moved or deleted files)
           if (/^r\d+$/.test(id)) {
             const resolved = puid.resolvePuidRecord(id);
-            if (resolved && 'error' in resolved) {
+            if (resolved === undefined) {
+              content.push({ type: 'text' as const, text: `## ${id}\nError: Unknown reference "${id}". It may be from a previous session. Use lodestone_search or lodestone_explore to obtain a fresh reference.` });
+              continue;
+            }
+            if ('error' in resolved) {
               content.push({ type: 'text' as const, text: `## ${id}\nError: ${resolved.error}` });
               continue;
             }
@@ -308,7 +310,6 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
         const message = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
-          isError: true,
         };
       }
     },
@@ -356,7 +357,6 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
         const message = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
-          isError: true,
         };
       }
     },
@@ -385,7 +385,6 @@ export function registerExploreTool(server: McpServer, deps: McpServerDeps, puid
           if (resolved === startPath) {
             return {
               content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${startPath}". It may be from a previous session.` }],
-              isError: true,
             };
           }
           resolvedStartPath = resolved;
@@ -417,7 +416,6 @@ export function registerExploreTool(server: McpServer, deps: McpServerDeps, puid
         const message = err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: 'text' as const, text: `Error: ${message}` }],
-          isError: true,
         };
       }
     },

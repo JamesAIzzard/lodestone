@@ -76,7 +76,6 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
           if (!parsedActionDate) {
             return {
               content: [{ type: 'text' as const, text: `Error: Could not parse action_date "${action_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }],
-              isError: true,
             };
           }
         }
@@ -88,13 +87,11 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
           if (!parsedRecurrence) {
             return {
               content: [{ type: 'text' as const, text: `Error: Could not parse recurrence "${recurrence}". Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.` }],
-              isError: true,
             };
           }
           if (!parsedActionDate) {
             return {
               content: [{ type: 'text' as const, text: `Error: recurrence requires action_date to be set. Provide an action_date for the first occurrence.` }],
-              isError: true,
             };
           }
         }
@@ -106,7 +103,6 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
           if (!parsedCompletedOn) {
             return {
               content: [{ type: 'text' as const, text: `Error: Could not parse completed_on "${completed_on}". Use ISO 8601 (YYYY-MM-DD) or relative expressions (today, yesterday).` }],
-              isError: true,
             };
           }
         }
@@ -167,7 +163,7 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
       }
     },
   );
@@ -235,7 +231,6 @@ export function registerRecallTool(server: McpServer, deps: McpServerDeps, puid:
           if (!parsed) {
             return {
               content: [{ type: 'text' as const, text: `Error: Could not parse date filter "${raw}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }],
-              isError: true,
             };
           }
           dateFilters[key] = parsed;
@@ -310,7 +305,7 @@ export function registerRecallTool(server: McpServer, deps: McpServerDeps, puid:
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
       }
     },
   );
@@ -374,7 +369,6 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
           if (!parsedActionDate) {
             return {
               content: [{ type: 'text' as const, text: `Error: Could not parse action_date "${action_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }],
-              isError: true,
             };
           }
         }
@@ -388,7 +382,6 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
           if (!parsedRecurrence) {
             return {
               content: [{ type: 'text' as const, text: `Error: Could not parse recurrence "${recurrence}". Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.` }],
-              isError: true,
             };
           }
         }
@@ -402,7 +395,6 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
           if (!parsedCompletedOn) {
             return {
               content: [{ type: 'text' as const, text: `Error: Could not parse completed_on "${completed_on}". Use ISO 8601 (YYYY-MM-DD) or relative expressions (today, yesterday).` }],
-              isError: true,
             };
           }
         }
@@ -427,7 +419,7 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
         return { content: [{ type: 'text' as const, text: msg + warning }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
       }
     },
   );
@@ -467,7 +459,7 @@ export function registerForgetTool(server: McpServer, deps: McpServerDeps): void
         return { content: [{ type: 'text' as const, text: `Memory m${id} soft-deleted.${reasonSuffix}` }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
       }
     },
   );
@@ -503,7 +495,7 @@ export function registerSkipTool(server: McpServer, deps: McpServerDeps): void {
         return { content: [{ type: 'text' as const, text: `Memory m${id} skipped. Next occurrence: ${result.nextActionDate}.${reasonSuffix}` }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
       }
     },
   );
@@ -558,7 +550,7 @@ export function registerOrientTool(server: McpServer, deps: McpServerDeps): void
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
       }
     },
   );
@@ -601,7 +593,6 @@ export function registerAgendaTool(server: McpServer, deps: McpServerDeps): void
         if (!range) {
           return {
             content: [{ type: 'text' as const, text: `Error: Could not parse "when" value "${when}". Use keywords (today, tomorrow, this week, next week, this month, next month, overdue) or a date expression.` }],
-            isError: true,
           };
         }
 
@@ -649,7 +640,7 @@ export function registerAgendaTool(server: McpServer, deps: McpServerDeps): void
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
       }
     },
   );

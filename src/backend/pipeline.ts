@@ -2,7 +2,7 @@
  * Indexing pipeline — wires extraction, chunking, and embedding together.
  *
  * Uses a registry of FileProcessors keyed by file extension to dispatch
- * each file to the appropriate extractor + chunker pair.
+ * each file to the appropriate extractor + chunker + reader triple.
  *
  * V2: The pipeline only prepares files (read → extract → chunk → embed).
  * Database writes happen via the store proxy, never directly in the pipeline.
@@ -20,39 +20,43 @@ import { chunkPlaintext } from './chunkers/plaintext';
 import { chunkCodeAsync, CODE_EXTENSIONS } from './chunkers/code';
 import { extractPdf } from './extractors/pdf';
 import { chunkPdf } from './chunkers/pdf';
+import { readTextLines } from './readers/text';
+import { readPdfPage } from './readers/pdf';
 import type { EmbeddingService } from './embedding';
 import type { ChunkRecord } from './pipeline-types';
 
 // ── Processor Registry ───────────────────────────────────────────────────────
 
 /**
- * Maps file extensions to their extractor + chunker pair.
+ * Maps file extensions to their extractor + chunker + reader triple.
  * Extensions not in this map fall back to the default processor.
  */
 const processors = new Map<string, FileProcessor>([
-  // Markdown — heading-based chunking
-  ['.md',       { extractor: extractMarkdown,  chunker: chunkByHeading }],
-  ['.markdown', { extractor: extractMarkdown,  chunker: chunkByHeading }],
-  ['.mdx',      { extractor: extractMarkdown,  chunker: chunkByHeading }],
+  // Markdown — heading-based chunking, line-based reading
+  ['.md',       { extractor: extractMarkdown,  chunker: chunkByHeading, reader: readTextLines }],
+  ['.markdown', { extractor: extractMarkdown,  chunker: chunkByHeading, reader: readTextLines }],
+  ['.mdx',      { extractor: extractMarkdown,  chunker: chunkByHeading, reader: readTextLines }],
 ]);
 
-// Code files — Tree-sitter AST-based chunking (async)
+// Code files — Tree-sitter AST-based chunking (async), line-based reading
 const codeProcessor: FileProcessor = {
   extractor: extractCode,
   asyncChunker: chunkCodeAsync,
+  reader: readTextLines,
 };
 
 for (const ext of CODE_EXTENSIONS) {
   processors.set(ext, codeProcessor);
 }
 
-// PDF — async Buffer-based extraction + page-aware chunking
-processors.set('.pdf', { asyncExtractor: extractPdf, chunker: chunkPdf });
+// PDF — async Buffer-based extraction + page-aware chunking + page-based reading
+processors.set('.pdf', { asyncExtractor: extractPdf, chunker: chunkPdf, asyncReader: readPdfPage });
 
 /** Default processor for unregistered extensions. */
 const defaultProcessor: FileProcessor = {
   extractor: extractPlaintext,
   chunker: chunkPlaintext,
+  reader: readTextLines,
 };
 
 /**

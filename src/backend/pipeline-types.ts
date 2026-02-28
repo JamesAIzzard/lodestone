@@ -1,9 +1,10 @@
 /**
  * Shared types for the pluggable extraction + chunking pipeline.
  *
- * Two separate interfaces compose per file type:
+ * Three separate interfaces compose per file type:
  *   Extractor — raw file content → structured text + metadata
  *   Chunker   — structured text → semantic pieces under a token limit
+ *   Reader    — LocationHint → content for that region of the file
  */
 
 import type { LocationHint } from '../shared/types';
@@ -79,12 +80,30 @@ export type AsyncChunker = (
   maxChunkTokens: number,
 ) => Promise<ChunkRecord[]>;
 
+// ── Reading ──────────────────────────────────────────────────────────────────
+
 /**
- * A file processor pairs an extractor with a chunker.
- * The pipeline registry maps file extensions to these pairs.
+ * A reader retrieves content from a specific region of a file.
+ * Given a file path and a LocationHint, it returns the text for that region.
+ * When hint is null, the reader returns the full file body.
+ */
+export type Reader = (filePath: string, hint: LocationHint) => string;
+
+/**
+ * An async reader — same contract as Reader but returns a Promise.
+ * Used for binary formats (e.g. PDF) that require async parsing.
+ */
+export type AsyncReader = (filePath: string, hint: LocationHint) => Promise<string>;
+
+// ── File processor ──────────────────────────────────────────────────────────
+
+/**
+ * A file processor pairs an extractor, chunker, and reader.
+ * The pipeline registry maps file extensions to these triples.
  *
  * Provide either `extractor` (sync, string) or `asyncExtractor` (async, Buffer).
  * Provide either `chunker` (sync) or `asyncChunker` (async).
+ * Provide either `reader` (sync) or `asyncReader` (async).
  * When both are present, async variants take priority.
  */
 export interface FileProcessor {
@@ -92,4 +111,6 @@ export interface FileProcessor {
   asyncExtractor?: AsyncExtractor;
   chunker?: Chunker;
   asyncChunker?: AsyncChunker;
+  reader?: Reader;
+  asyncReader?: AsyncReader;
 }

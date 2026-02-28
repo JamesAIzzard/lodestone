@@ -134,7 +134,6 @@ export interface ExploreParams {
 export type LocationHint =
   | { type: 'lines'; start: number; end: number }
   | { type: 'page';  page: number }
-  | { type: 'slide'; slide: number }
   | null;
 
 /** Lightweight hint for where/why a file matched (no chunk text). */
@@ -147,7 +146,7 @@ export interface SearchHint {
 
 /** A single matching chunk location within a file, with relative relevance. */
 export interface ChunkHint {
-  /** Where this chunk lives in the source file (page, line range, slide). */
+  /** Where this chunk lives in the source file (page or line range). */
   locationHint: LocationHint;
   /** Section path of this chunk (e.g. ["## Chapter 3", "### Methods"]). */
   sectionPath?: string[];

@@ -150,7 +150,6 @@ function formatLocationHint(hint: LocationHint): string {
   switch (hint.type) {
     case 'lines': return `Lines ${hint.start}\u2013${hint.end}`;
     case 'page':  return `Page ${hint.page}`;
-    case 'slide': return `Slide ${hint.slide}`;
   }
 }
 
@@ -324,7 +323,12 @@ export const READ_DESCRIPTION = [
   '',
   'Accepts an array of references:',
   '  \u2022 Plain string "r1" \u2014 reads the full file for result r1',
-  '  \u2022 Object { id: "r1", startLine: 10, endLine: 20 } \u2014 reads lines 10\u201320',
+  '  \u2022 Object { id: "r1", location: { type: "lines", start: 10, end: 20 } } \u2014 reads lines 10\u201320',
+  '  \u2022 Object { id: "r1", location: { type: "page", page: 3 } } \u2014 reads page 3 of a PDF',
+  '',
+  'The location parameter accepts the same shape as LocationHint from search results.',
+  'For text files (markdown, code, plaintext), use { type: "lines", start, end }.',
+  'For PDFs, use { type: "page", page }.',
   '',
   'Reference IDs (r1, r2, ...) persist across all tool calls in the session.',
   'You can also pass absolute file paths instead of reference IDs.',
@@ -337,7 +341,8 @@ export const READ_DESCRIPTION = [
   '',
   'Examples:',
   '  \u2022 ["r1", "r3"] \u2014 read two files from the last search',
-  '  \u2022 [{ id: "r2", startLine: 10, endLine: 50 }] \u2014 read a specific line range',
+  '  \u2022 [{ id: "r2", location: { type: "lines", start: 10, end: 50 } }] \u2014 read a specific line range',
+  '  \u2022 [{ id: "r4", location: { type: "page", page: 5 } }] \u2014 read page 5 of a PDF',
   '  \u2022 ["m5", "r3"] \u2014 read memory m5 and file r3',
   '  \u2022 ["C:/Users/me/docs/notes.md"] \u2014 read a file directly by path (no search needed)',
 ].join('\n');

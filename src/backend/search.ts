@@ -64,7 +64,6 @@ function locationKey(hint: LocationHint): string {
   switch (hint.type) {
     case 'lines': return `lines:${hint.start}-${hint.end}`;
     case 'page':  return `page:${hint.page}`;
-    case 'slide': return `slide:${hint.slide}`;
   }
 }
 

@@ -28,7 +28,6 @@ function renderLocationHint(hint: LocationHint): string {
   switch (hint.type) {
     case 'lines': return `Lines ${hint.start}\u2013${hint.end}`;
     case 'page':  return `Page ${hint.page}`;
-    case 'slide': return `Slide ${hint.slide}`;
   }
 }
 

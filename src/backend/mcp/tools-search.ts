@@ -6,6 +6,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import fs from 'node:fs';
 import type { McpServerDeps } from './types';
+import type { LocationHint } from '../../shared/types';
 import { PuidManager } from './puid-manager';
 import { getProcessor } from '../pipeline';
 import {
@@ -116,8 +117,10 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
         z.string(),
         z.object({
           id: z.string(),
-          startLine: z.number().int().min(1).optional(),
-          endLine: z.number().int().min(1).optional(),
+          location: z.union([
+            z.object({ type: z.literal('lines'), start: z.number().int().min(1), end: z.number().int().min(1) }),
+            z.object({ type: z.literal('page'),  page: z.number().int().min(1) }),
+          ]).optional(),
         }),
       ])).min(1).describe('Array of reference IDs (e.g. "r1") or objects with id and optional line range'),
     },
@@ -128,8 +131,7 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
 
         for (const entry of refs) {
           const id = typeof entry === 'string' ? entry : entry.id;
-          const startLine = typeof entry === 'object' ? entry.startLine : undefined;
-          const endLine = typeof entry === 'object' ? entry.endLine : undefined;
+          const location = (typeof entry === 'object' ? entry.location : undefined) as LocationHint | undefined;
 
           // Resolve memory puids — fetch full body from memory database
           if (PuidManager.isMemoryPuid(id)) {
@@ -229,9 +231,9 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
           try {
             // File size check — prevent reading excessively large files
             const stat = fs.statSync(filePath);
-            const hasLineRange = !!(startLine || endLine);
+            const hasLocation = !!location;
 
-            if (!mime && stat.size > MAX_READ_BYTES && !hasLineRange) {
+            if (!mime && stat.size > MAX_READ_BYTES && !hasLocation) {
               // Large text file without line range — show preview
               const sizeStr = stat.size > 1024 * 1024
                 ? `${(stat.size / (1024 * 1024)).toFixed(1)} MB`
@@ -249,7 +251,7 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
                 text: [
                   `## ${id}: ${filePath}`,
                   `Warning: File is ${sizeStr} (exceeds ${MAX_READ_BYTES / 1024} KB read limit). Showing first ${PREVIEW_LINES} lines.`,
-                  `Use line ranges to read specific sections: { id: "${id}", startLine: 101, endLine: 200 }`,
+                  `Use location to read specific sections: { id: "${id}", location: { type: "lines", start: 101, end: 200 } }`,
                   '',
                   '```',
                   previewLines.join('\n'),
@@ -262,18 +264,32 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
               content.push({ type: 'text' as const, text: `## ${id}: ${filePath}` });
               content.push({ type: 'image' as const, data: buf.toString('base64'), mimeType: mime });
             } else {
-              // Text/binary file — route through the registered extractor so
-              // binary formats (e.g. PDF) return human-readable body text.
+              // Text/binary file — route through the registered reader (or
+              // fall back to extractor) so binary formats return readable text.
               const processor = getProcessor(filePath);
+
+              const hint: LocationHint = location ?? null;
+
               let text: string;
-              if (processor.asyncExtractor) {
-                const buffer = fs.readFileSync(filePath);
-                text = (await processor.asyncExtractor(buffer)).body;
-              } else if (processor.extractor) {
-                const raw = fs.readFileSync(filePath, 'utf-8');
-                text = processor.extractor(raw).body;
+              if (processor.asyncReader) {
+                text = await processor.asyncReader(filePath, hint);
+              } else if (processor.reader) {
+                text = processor.reader(filePath, hint);
               } else {
-                text = fs.readFileSync(filePath, 'utf-8');
+                // Fallback for processors without a reader — extract body and optionally slice lines
+                if (processor.asyncExtractor) {
+                  const buffer = fs.readFileSync(filePath);
+                  text = (await processor.asyncExtractor(buffer)).body;
+                } else if (processor.extractor) {
+                  const raw = fs.readFileSync(filePath, 'utf-8');
+                  text = processor.extractor(raw).body;
+                } else {
+                  text = fs.readFileSync(filePath, 'utf-8');
+                }
+                if (hint && hint.type === 'lines') {
+                  const allLines = text.split('\n');
+                  text = allLines.slice(hint.start - 1, hint.end).join('\n');
+                }
               }
 
               // Lazily compute and cache the content hash on first read
@@ -281,21 +297,23 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
                 record.contentHash = PuidManager.computeFileHash(filePath);
               }
 
-              if (hasLineRange) {
-                const allLines = text.split('\n');
-                const start = (startLine ?? 1) - 1; // convert to 0-indexed
-                const end = endLine ?? allLines.length;
-                const slice = allLines.slice(start, end);
-                content.push({
-                  type: 'text' as const,
-                  text: `## ${id}: ${filePath} (lines ${start + 1}\u2013${end})\n\`\`\`\n${slice.join('\n')}\n\`\`\``,
-                });
-              } else {
-                content.push({
-                  type: 'text' as const,
-                  text: `## ${id}: ${filePath}\n\`\`\`\n${text}\n\`\`\``,
-                });
+              // Format output header with filetype-aware location label
+              let header = `## ${id}: ${filePath}`;
+              if (hint) {
+                switch (hint.type) {
+                  case 'lines': {
+                    const lineCount = text.split('\n').length;
+                    const displayEnd = hint.start + lineCount - 1;
+                    header += ` (lines ${hint.start}\u2013${displayEnd})`;
+                    break;
+                  }
+                  case 'page':  header += ` (page ${hint.page})`; break;
+                }
               }
+              content.push({
+                type: 'text' as const,
+                text: `${header}\n\`\`\`\n${text}\n\`\`\``,
+              });
             }
           } catch (readErr) {
             const msg = readErr instanceof Error ? readErr.message : String(readErr);

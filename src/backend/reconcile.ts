@@ -4,19 +4,18 @@
  * Walks the silo's directories, compares against the database,
  * and queues files for indexing or removal as needed.
  *
- * Database writes are batched: files are prepared (read, extracted, chunked,
- * embedded) one at a time, then flushed to SQLite in bulk every BATCH_SIZE
- * files. This dramatically reduces transaction overhead and main-thread blocking.
+ * V2: The reconciler no longer touches the database directly. All store
+ * operations are performed via async callbacks that route through the
+ * store proxy to the worker thread. Database writes are batched: files
+ * are prepared (read, extracted, chunked, embedded) one at a time, then
+ * flushed via the proxy in bulk every BATCH_SIZE files.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { prepareFile, type PreparedFile, type FileStage } from './pipeline';
-import {
-  makeStoredKey, resolveStoredKey, flushPreparedFiles,
-  syncDirectoriesWithDisk, recomputeDirectoryCounts,
-  type SiloDatabase,
-} from './store';
+import { makeStoredKey, resolveStoredKey } from './store/paths';
+import type { FlushUpsert, FlushDelete, FlushResult, DirEntry } from './store/types';
 import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
@@ -35,6 +34,8 @@ export interface ReconcileProgress {
   batchChunkLimit?: number;
   /** Pipeline stage for the current file (reading → extracting → chunking → embedding → flushing). */
   fileStage?: FileStage | 'flushing';
+  /** Size of the current file in bytes. */
+  fileSize?: number;
   /** Elapsed time since reconciliation started, in milliseconds. */
   elapsedMs?: number;
 }
@@ -55,6 +56,14 @@ export interface ReconcileResult {
   filesRemoved: number;
   filesUpdated: number;
   durationMs: number;
+}
+
+/** Async store operations provided by SiloManager (routed through the store proxy). */
+export interface ReconcileStoreOps {
+  flush(upserts: FlushUpsert[], deletes: FlushDelete[]): Promise<FlushResult>;
+  syncDirectoriesWithDisk(diskDirPaths: DirEntry[]): Promise<string[]>;
+  recomputeDirectoryCounts(): Promise<void>;
+  checkpoint(mode?: string): Promise<void>;
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -94,7 +103,7 @@ function ms(start: number): string {
 export async function reconcile(
   config: ResolvedSiloConfig,
   embeddingService: EmbeddingService,
-  db: SiloDatabase,
+  storeOps: ReconcileStoreOps,
   mtimes: Map<string, number>,
   onProgress?: ReconcileProgressHandler,
   onEvent?: ReconcileEventHandler,
@@ -110,7 +119,7 @@ export async function reconcile(
   console.log(`${TAG} Phase 1: Scanning disk...`);
   const t1 = performance.now();
   onProgress?.({ phase: 'scanning', current: 0, total: 0 });
-  const diskAbsPaths = new Map<string, number>(); // absPath → mtimeMs
+  const diskAbsPaths = new Map<string, { mtime: number; size: number }>(); // absPath → stat
   const diskDirAbsPaths = new Set<string>(); // all directory absolute paths on disk
 
   for (const dir of config.directories) {
@@ -118,13 +127,13 @@ export async function reconcile(
   }
   console.log(`${TAG} Phase 1 done: ${diskAbsPaths.size} files, ${diskDirAbsPaths.size} dirs on disk (${ms(t1)})`);
 
-  // 2. Build storedKey → { absPath, mtime } map from disk scan
+  // 2. Build storedKey → { absPath, mtime, size } map from disk scan
   const t2 = performance.now();
-  const diskStored = new Map<string, { absPath: string; mtime: number }>();
-  for (const [absPath, mtime] of diskAbsPaths) {
+  const diskStored = new Map<string, { absPath: string; mtime: number; size: number }>();
+  for (const [absPath, { mtime, size }] of diskAbsPaths) {
     try {
       const key = makeStoredKey(absPath, config.directories);
-      diskStored.set(key, { absPath, mtime });
+      diskStored.set(key, { absPath, mtime, size });
     } catch {
       // path outside all directories — shouldn't happen with correct globs
     }
@@ -134,14 +143,14 @@ export async function reconcile(
   const indexedKeys = new Set(mtimes.keys());
 
   // 4. Find files to add or update
-  const filesToIndex: Array<{ absPath: string; storedKey: string; mtime: number }> = [];
-  for (const [storedKey, { absPath, mtime }] of diskStored) {
+  const filesToIndex: Array<{ absPath: string; storedKey: string; mtime: number; size: number }> = [];
+  for (const [storedKey, { absPath, mtime, size }] of diskStored) {
     if (!indexedKeys.has(storedKey)) {
-      filesToIndex.push({ absPath, storedKey, mtime });
+      filesToIndex.push({ absPath, storedKey, mtime, size });
     } else {
       const storedMtime = mtimes.get(storedKey)!;
       if (mtime !== storedMtime) {
-        filesToIndex.push({ absPath, storedKey, mtime });
+        filesToIndex.push({ absPath, storedKey, mtime, size });
       }
     }
   }
@@ -174,7 +183,7 @@ export async function reconcile(
   let batch: Array<{ prepared: PreparedFile; absPath: string; isUpdate: boolean }> = [];
   let batchChunkCount = 0;
 
-  const flushBatch = () => {
+  const flushBatch = async () => {
     if (batch.length === 0) return;
     onProgress?.({
       phase: 'indexing',
@@ -187,14 +196,14 @@ export async function reconcile(
     });
 
     const tFlush = performance.now();
-    flushPreparedFiles(
-      db,
+    await storeOps.flush(
       batch.map((b) => ({
-        filePath: b.prepared.storedKey,
+        storedKey: b.prepared.storedKey,
         chunks: b.prepared.chunks,
         embeddings: b.prepared.embeddings,
         mtimeMs: b.prepared.mtimeMs,
       })),
+      [],
     );
     const flushMs = performance.now() - tFlush;
     totalFlushMs += flushMs;
@@ -204,11 +213,11 @@ export async function reconcile(
     // final TRUNCATE checkpoint at the end of reconciliation is near-instant
     // instead of flushing hundreds of MB in one blocking call.
     const tWal = performance.now();
-    try { db.pragma('wal_checkpoint(PASSIVE)'); } catch { /* non-critical */ }
+    try { await storeOps.checkpoint('PASSIVE'); } catch { /* non-critical */ }
     const walMs = performance.now() - tWal;
     totalWalCheckpointMs += walMs;
 
-    console.log(`${TAG}   flush #${flushCount}: ${batch.length} files, ${batchChunkCount} chunks → flushPreparedFiles ${flushMs.toFixed(1)}ms, WAL checkpoint ${walMs.toFixed(1)}ms`);
+    console.log(`${TAG}   flush #${flushCount}: ${batch.length} files, ${batchChunkCount} chunks → flush ${flushMs.toFixed(1)}ms, WAL checkpoint ${walMs.toFixed(1)}ms`);
 
     // Update in-memory mtime map and counters after successful flush
     for (const b of batch) {
@@ -233,12 +242,12 @@ export async function reconcile(
   for (let i = 0; i < filesToIndex.length; i++) {
     if (shouldStop?.()) {
       // Flush any work already prepared, then bail out
-      flushBatch();
+      await flushBatch();
       console.log(`${TAG} Stopped early after ${i} / ${filesToIndex.length} files`);
       break;
     }
 
-    const { absPath, storedKey, mtime } = filesToIndex[i];
+    const { absPath, storedKey, mtime, size: fileSize } = filesToIndex[i];
     const fileName = absPath.split(/[\\/]/).pop() ?? absPath;
 
     onProgress?.({
@@ -246,6 +255,7 @@ export async function reconcile(
       current: ++progress,
       total: totalWork,
       filePath: absPath,
+      fileSize,
       fileStage: 'reading',
       batchChunks: batchChunkCount,
       batchChunkLimit: BATCH_CHUNK_LIMIT,
@@ -260,6 +270,7 @@ export async function reconcile(
           current: progress,
           total: totalWork,
           filePath: absPath,
+          fileSize,
           fileStage: stage,
           batchChunks: batchChunkCount,
           batchChunkLimit: BATCH_CHUNK_LIMIT,
@@ -284,13 +295,14 @@ export async function reconcile(
         current: progress,
         total: totalWork,
         filePath: absPath,
+        fileSize,
         batchChunks: batchChunkCount,
         batchChunkLimit: BATCH_CHUNK_LIMIT,
         elapsedMs: performance.now() - start,
       });
 
       if (batchChunkCount >= BATCH_CHUNK_LIMIT) {
-        flushBatch();
+        await flushBatch();
         // Yield to the event loop after each flush so MCP/IPC can serve requests
         await new Promise<void>((r) => setImmediate(r));
       }
@@ -308,15 +320,14 @@ export async function reconcile(
 
   // Flush any remaining prepared files
   console.log(`${TAG} Phase 6: Flushing final batch...`);
-  const tFinalFlush = performance.now();
-  flushBatch();
+  await flushBatch();
   console.log(`${TAG} Phase 6 done: ${filesToIndex.length} files in ${ms(t6)} (prepare: ${totalPrepareMs.toFixed(0)}ms, flush: ${totalFlushMs.toFixed(0)}ms across ${flushCount} batches, WAL checkpoints: ${totalWalCheckpointMs.toFixed(0)}ms)`);
 
   // 7. Remove stale files — batch all deletes into a single transaction
   console.log(`${TAG} Phase 7: Removing ${filesToRemove.length} stale files...`);
   const t7 = performance.now();
   if (filesToRemove.length > 0 && !shouldStop?.()) {
-    const deleteEntries: Array<{ filePath: string; deleteMtime: boolean }> = [];
+    const deleteEntries: FlushDelete[] = [];
 
     for (const storedKey of filesToRemove) {
       const absPath = resolveStoredKey(storedKey, config.directories);
@@ -326,10 +337,10 @@ export async function reconcile(
         total: totalWork,
         filePath: absPath,
       });
-      deleteEntries.push({ filePath: storedKey, deleteMtime: true });
+      deleteEntries.push({ storedKey, deleteMtime: true });
     }
 
-    flushPreparedFiles(db, [], deleteEntries);
+    await storeOps.flush([], deleteEntries);
 
     // Update in-memory state after successful flush
     for (const storedKey of filesToRemove) {
@@ -352,7 +363,7 @@ export async function reconcile(
   if (!shouldStop?.()) {
     // Convert absolute directory paths to stored-key format for the directories table
     const t8a = performance.now();
-    const diskDirEntries: Array<{ dirPath: string; dirName: string; depth: number }> = [];
+    const diskDirEntries: DirEntry[] = [];
 
     for (const absDirPath of diskDirAbsPaths) {
       for (let dirIdx = 0; dirIdx < config.directories.length; dirIdx++) {
@@ -374,7 +385,7 @@ export async function reconcile(
     console.log(`${TAG} Phase 8a: built ${diskDirEntries.length} dir entries (${ms(t8a)})`);
 
     const t8b = performance.now();
-    const removedDirKeys = syncDirectoriesWithDisk(db, diskDirEntries);
+    const removedDirKeys = await storeOps.syncDirectoriesWithDisk(diskDirEntries);
     console.log(`${TAG} Phase 8b: syncDirectoriesWithDisk → removed ${removedDirKeys.length} dirs (${ms(t8b)})`);
 
     if (removedDirKeys.length > 0) {
@@ -385,11 +396,8 @@ export async function reconcile(
       }
     }
 
-    // Recompute directory counts in batches, yielding between each batch
-    // so the UI stays responsive (the old single-transaction approach blocked
-    // the event loop for several seconds with thousands of directories).
     const t8c = performance.now();
-    await recomputeDirectoryCounts(db);
+    await storeOps.recomputeDirectoryCounts();
     console.log(`${TAG} Phase 8c: recomputeDirectoryCounts (${ms(t8c)})`);
   }
 
@@ -414,7 +422,7 @@ function walkDirectory(
   extensions: string[],
   ignoreFolders: string[],
   ignoreFiles: string[],
-  result: Map<string, number>,
+  result: Map<string, { mtime: number; size: number }>,
   /** Collects all directory absolute paths encountered during the walk. */
   directories?: Set<string>,
 ): void {
@@ -437,7 +445,7 @@ function walkDirectory(
       if (extensions.includes(ext)) {
         try {
           const stat = fs.statSync(fullPath);
-          result.set(path.resolve(fullPath), stat.mtimeMs);
+          result.set(path.resolve(fullPath), { mtime: stat.mtimeMs, size: stat.size });
         } catch {
           // Skip files we can't stat
         }

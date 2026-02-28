@@ -12,7 +12,7 @@
  */
 
 import type { Signal, SignalContext, SignalResult } from './signal';
-import { extractRelPath } from '../store';
+import { extractRelPath } from '../store/paths';
 import { levenshteinSimilarity, tokenCoverage } from './text-signals';
 import { decayingSum } from './decaying-sum';
 
@@ -32,15 +32,15 @@ export const filepathSignal: Signal = {
 
     // ── Scan all files ─────────────────────────────────────────────────
     const allFiles = ctx.db.prepare(
-      `SELECT file_path FROM files`,
-    ).all() as Array<{ file_path: string }>;
+      `SELECT stored_key FROM files`,
+    ).all() as Array<{ stored_key: string }>;
 
-    for (const { file_path } of allFiles) {
+    for (const { stored_key } of allFiles) {
       // Apply filters
-      if (ctx.startPath && !file_path.startsWith(ctx.startPath)) continue;
-      if (ctx.filePatternRe && !ctx.filePatternRe.test(extractRelPath(file_path))) continue;
+      if (ctx.startPath && !stored_key.startsWith(ctx.startPath)) continue;
+      if (ctx.filePatternRe && !ctx.filePatternRe.test(extractRelPath(stored_key))) continue;
 
-      const relPath = extractRelPath(file_path);
+      const relPath = extractRelPath(stored_key);
       const segments = relPath.split('/').filter(Boolean);
       if (segments.length === 0) continue;
 
@@ -71,7 +71,7 @@ export const filepathSignal: Signal = {
 
       const fileScore = decayingSum(segmentScores);
       if (fileScore > 0) {
-        scores.set(file_path, fileScore);
+        scores.set(stored_key, fileScore);
       }
     }
 

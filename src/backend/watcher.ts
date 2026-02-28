@@ -5,19 +5,18 @@
  * and dispatches to the indexing pipeline. Files are processed sequentially
  * to avoid overwhelming the embedding service.
  *
+ * V2: The watcher no longer touches the database directly. It prepares files
+ * and then calls the onFlush callback, which routes through the store proxy.
  * Database writes are batched: all queued files are prepared first, then
- * flushed to SQLite in a single transaction when the queue drains.
+ * flushed via the proxy in a single transaction when the queue drains.
  */
 
 import { watch, type FSWatcher } from 'chokidar';
 import path from 'node:path';
 import type { EmbeddingService } from './embedding';
 import { prepareFile, type PreparedFile } from './pipeline';
-import {
-  makeStoredKey, makeStoredDirKey, resolveStoredKey,
-  flushPreparedFiles, insertDirEntry, deleteDirEntry,
-  type SiloDatabase,
-} from './store';
+import { makeStoredKey, makeStoredDirKey, resolveStoredKey } from './store/paths';
+import type { FlushUpsert, FlushDelete, FlushResult } from './store/types';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
 import { matchesAnyPattern } from './pattern-match';
@@ -36,6 +35,13 @@ export interface WatcherEvent {
 
 export type WatcherEventHandler = (event: WatcherEvent) => void;
 
+/** Async store operations provided by SiloManager (routed through the store proxy). */
+export interface WatcherStoreOps {
+  flush(upserts: FlushUpsert[], deletes: FlushDelete[]): Promise<FlushResult>;
+  insertDirEntry(dirPath: string): Promise<boolean>;
+  deleteDirEntry(dirPath: string): Promise<number | null>;
+}
+
 // ── SiloWatcher ──────────────────────────────────────────────────────────────
 
 export class SiloWatcher {
@@ -53,7 +59,7 @@ export class SiloWatcher {
   constructor(
     private readonly config: ResolvedSiloConfig,
     private readonly embeddingService: EmbeddingService,
-    private readonly db: SiloDatabase,
+    private readonly storeOps: WatcherStoreOps,
   ) {}
 
   /** Register a listener for watcher events (activity feed). */
@@ -194,7 +200,7 @@ export class SiloWatcher {
   }
 
   /**
-   * Drain the queue: prepare all queued files, flush to DB, emit events.
+   * Drain the queue: prepare all queued files, flush via proxy, emit events.
    * Called by SiloManager when the global IndexingQueue grants this silo its turn.
    */
   async runQueue(): Promise<void> {
@@ -231,28 +237,25 @@ export class SiloWatcher {
         }
       }
 
-      // Flush all prepared files + deletes in one transaction
+      // Flush all prepared files + deletes via the store proxy
       if (upserts.length > 0 || deletes.length > 0) {
-        flushPreparedFiles(
-          this.db,
+        await this.storeOps.flush(
           upserts.map((u) => ({
-            filePath: u.prepared.storedKey,
+            storedKey: u.prepared.storedKey,
             chunks: u.prepared.chunks,
             embeddings: u.prepared.embeddings,
           })),
-          deletes.map((d) => ({ filePath: d.storedKey, deleteMtime: false })),
+          deletes.map((d) => ({ storedKey: d.storedKey, deleteMtime: false })),
         );
       }
 
-      // Process queued directory additions: insert entries and emit dir-added
-      // immediately on successful insert (before embedding, so the event fires
-      // even if the embedding pipeline fails).
+      // Process queued directory additions
       const pendingDirAdds = this.dirAddQueue.splice(0);
       for (const absDirPath of pendingDirAdds) {
         const storedDirKey = makeStoredDirKey(absDirPath, this.config.directories);
         if (storedDirKey) {
           try {
-            const inserted = insertDirEntry(this.db, storedDirKey);
+            const inserted = await this.storeOps.insertDirEntry(storedDirKey);
             if (inserted) {
               this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absDirPath, eventType: 'dir-added' });
             }
@@ -260,13 +263,11 @@ export class SiloWatcher {
         }
       }
 
-      // Process queued directory removals: delete entries and emit events.
+      // Process queued directory removals
       const pendingDirRemoves = this.dirRemoveQueue.splice(0);
       for (const storedDirKey of pendingDirRemoves) {
         try {
-          const deletedId = deleteDirEntry(this.db, storedDirKey);
-          // Only emit if the entry actually existed — avoids spurious dir-removed
-          // events for directories that were renamed before the debounce fired.
+          const deletedId = await this.storeOps.deleteDirEntry(storedDirKey);
           if (deletedId !== null) {
             const absPath = resolveStoredKey(storedDirKey, this.config.directories);
             this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absPath, eventType: 'dir-removed' });

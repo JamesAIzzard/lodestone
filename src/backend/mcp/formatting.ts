@@ -131,6 +131,19 @@ export function getParentDirPath(dirPath: string): string | null {
   return parent;
 }
 
+/**
+ * Check if a sectionPath is just the filename — if so, it adds no information
+ * and should be suppressed. PDF and plaintext chunkers set sectionPath to [filename].
+ */
+function isRedundantSection(sectionPath: string[] | undefined, filePath: string): boolean {
+  if (!sectionPath || sectionPath.length === 0) return true;
+  if (sectionPath.length === 1) {
+    const filename = path.basename(filePath);
+    return sectionPath[0] === filename;
+  }
+  return false;
+}
+
 /** Format a LocationHint union into a human-readable string. */
 function formatLocationHint(hint: LocationHint): string {
   if (!hint) return '';
@@ -175,12 +188,25 @@ export function formatSearchResults(results: SearchResult[], puid: PuidManager):
     // Hint line — show location and section path if available
     if (result.hint) {
       const locationStr = formatLocationHint(result.hint.locationHint ?? null);
-      const section = result.hint.sectionPath && result.hint.sectionPath.length > 0
-        ? `"${result.hint.sectionPath.join(' > ')}"`
-        : '';
+      const section = isRedundantSection(result.hint.sectionPath, result.filePath)
+        ? ''
+        : `"${result.hint.sectionPath!.join(' > ')}"`;
       const parts = [locationStr, section].filter(Boolean);
       if (parts.length > 0) {
         lines.push(`Hint: ${parts.join(' \u2014 ')}`);
+      }
+    }
+
+    // Multi-chunk locations — show all significant matching regions
+    if (result.chunks && result.chunks.length > 0) {
+      lines.push('Matching regions:');
+      for (const chunk of result.chunks) {
+        const loc = formatLocationHint(chunk.locationHint);
+        const section = isRedundantSection(chunk.sectionPath, result.filePath)
+          ? ''
+          : `"${chunk.sectionPath!.join(' > ')}"`;
+        const parts = [loc, section].filter(Boolean).join(' \u2014 ');
+        lines.push(`  ${chunk.relevance}% ${parts}`);
       }
     }
 

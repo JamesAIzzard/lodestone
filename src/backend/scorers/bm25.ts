@@ -8,14 +8,14 @@
  * This guarantees a perfect full-text match scores 1.0 and partial matches
  * score proportionally, making scores directly comparable to cosine similarity.
  *
- * Tables used (from store.ts schema):
- *   - terms(term, doc_freq)
- *   - postings(term, chunk_id, term_freq)
+ * Tables used (V2 schema):
+ *   - terms(id, term, doc_freq)
+ *   - postings(term_id, chunk_id, term_freq)
  *   - chunks(id, token_count)
  *   - meta: corpus_chunk_count, corpus_avg_token_count
  */
 
-import type { SiloDatabase } from '../store';
+import type { SiloDatabase } from '../store/types';
 
 // ── BM25 Parameters ──────────────────────────────────────────────────────────
 
@@ -92,11 +92,15 @@ export function scoreBm25(
 
   // ── Fetch postings for all query terms at once ────────────────────────────
   // Build a map: chunkId → { term → tf }
+  // V2: postings uses term_id FK — join through terms table to match by term text
   const chunkTermFreqs = new Map<number, Map<string, number>>();
 
   const placeholders = termInfos.map(() => '?').join(',');
   const postingsRows = db.prepare(
-    `SELECT term, chunk_id, term_freq FROM postings WHERE term IN (${placeholders})`,
+    `SELECT t.term, p.chunk_id, p.term_freq
+     FROM postings p
+     JOIN terms t ON t.id = p.term_id
+     WHERE t.term IN (${placeholders})`,
   ).all(...termInfos.map((ti) => ti.term)) as Array<{
     term: string;
     chunk_id: number;

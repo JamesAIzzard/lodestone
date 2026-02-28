@@ -19,6 +19,7 @@ const stageLabels: Record<string, string> = {
   chunking: 'Chunking',
   embedding: 'Embedding',
   flushing: 'Saving',
+  compacting: 'Compacting',
 };
 
 const stateConfig: Record<WatcherState, { label: string; dotClass: string; badgeVariant: 'secondary' | 'default' | 'destructive' }> = {
@@ -179,16 +180,21 @@ export default function SiloCard({ silo, onClick, onStopToggle, isStopping, onRe
                 </span>
               )}
             </div>
-            {/* Stage label + current filename */}
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60">
+            {/* Stage label + current filename + file size */}
+            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60 min-w-0">
               {reconcileProgress.fileStage && stageLabels[reconcileProgress.fileStage] && (
                 <span className="shrink-0 text-muted-foreground/80 font-medium">
                   {stageLabels[reconcileProgress.fileStage]}
                 </span>
               )}
               {reconcileProgress.filePath && (
-                <span className="truncate">
+                <span className="truncate min-w-0">
                   {reconcileProgress.filePath.split(/[\\/]/).pop()}
+                </span>
+              )}
+              {reconcileProgress.fileSize != null && (
+                <span className="shrink-0 text-muted-foreground/40">
+                  {formatBytes(reconcileProgress.fileSize)}
                 </span>
               )}
             </div>

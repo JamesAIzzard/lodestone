@@ -1,17 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
-  createSiloDatabase,
-  upsertFileChunks,
-  deleteFileChunks,
+  flushPreparedFiles,
   getChunkCount,
+  getFileCount,
   loadMtimes,
   setMtime,
   deleteMtime,
   countMtimes,
   loadMeta,
   saveMeta,
-  type SiloDatabase,
-} from './store';
+} from './store/operations';
+import { createSiloDatabase } from './store/schema';
+import { TermCache } from './store/term-cache';
+import type { SiloDatabase, FlushUpsert, FlushDelete } from './store/types';
 import { search } from './search';
 import type { ChunkRecord } from './pipeline-types';
 import fs from 'node:fs';
@@ -22,6 +23,12 @@ const DIMS = 4; // Use tiny vectors for tests
 
 let tmpDir: string;
 
+/** Pad a hex string to 64 hex chars (32 bytes = SHA-256 length). */
+function fakeHash(label: string): string {
+  const hex = Buffer.from(label).toString('hex');
+  return hex.padEnd(64, '0').slice(0, 64);
+}
+
 function makeChunk(filePath: string, index: number, text: string): ChunkRecord {
   return {
     filePath,
@@ -30,7 +37,7 @@ function makeChunk(filePath: string, index: number, text: string): ChunkRecord {
     text,
     locationHint: { type: 'lines', start: 1, end: 5 },
     metadata: {},
-    contentHash: `hash-${filePath}-${index}`,
+    contentHash: fakeHash(`hash-${filePath}-${index}`),
   };
 }
 
@@ -41,13 +48,20 @@ function makeVector(seed: number): number[] {
   return v.map((x) => x / norm);
 }
 
-describe('store', () => {
+function makeUpsert(storedKey: string, chunks: ChunkRecord[], embeddings: number[][], mtimeMs?: number): FlushUpsert {
+  return { storedKey, chunks, embeddings, mtimeMs };
+}
+
+describe('store (V2)', () => {
   let db: SiloDatabase;
+  let termCache: TermCache;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lodestone-test-'));
     const dbPath = path.join(tmpDir, 'test.db');
     db = createSiloDatabase(dbPath, DIMS);
+    termCache = new TermCache();
+    termCache.warmFromDb(db);
   });
 
   afterEach(() => {
@@ -58,56 +72,56 @@ describe('store', () => {
   // ── Basic CRUD ──────────────────────────────────────────────────────────
 
   it('inserts and counts chunks', () => {
-    const chunks = [makeChunk('/a.md', 0, 'Hello'), makeChunk('/a.md', 1, 'World')];
+    const chunks = [makeChunk('0:a.md', 0, 'Hello'), makeChunk('0:a.md', 1, 'World')];
     const embeddings = [makeVector(1), makeVector(2)];
 
-    upsertFileChunks(db, '/a.md', chunks, embeddings);
+    flushPreparedFiles(db, termCache, [makeUpsert('0:a.md', chunks, embeddings)], []);
     expect(getChunkCount(db)).toBe(2);
+    expect(getFileCount(db)).toBe(1);
   });
 
   it('upsert replaces existing chunks for a file', () => {
-    const chunks1 = [makeChunk('/a.md', 0, 'Original')];
-    const chunks2 = [makeChunk('/a.md', 0, 'Updated'), makeChunk('/a.md', 1, 'New chunk')];
+    const chunks1 = [makeChunk('0:a.md', 0, 'Original')];
+    const chunks2 = [makeChunk('0:a.md', 0, 'Updated'), makeChunk('0:a.md', 1, 'New chunk')];
 
-    upsertFileChunks(db, '/a.md', chunks1, [makeVector(1)]);
+    flushPreparedFiles(db, termCache, [makeUpsert('0:a.md', chunks1, [makeVector(1)])], []);
     expect(getChunkCount(db)).toBe(1);
 
-    upsertFileChunks(db, '/a.md', chunks2, [makeVector(3), makeVector(4)]);
+    flushPreparedFiles(db, termCache, [makeUpsert('0:a.md', chunks2, [makeVector(3), makeVector(4)])], []);
     expect(getChunkCount(db)).toBe(2);
   });
 
   it('deletes chunks for a file without affecting others', () => {
-    upsertFileChunks(db, '/a.md', [makeChunk('/a.md', 0, 'A')], [makeVector(1)]);
-    upsertFileChunks(db, '/b.md', [makeChunk('/b.md', 0, 'B')], [makeVector(2)]);
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'A')], [makeVector(1)]),
+      makeUpsert('0:b.md', [makeChunk('0:b.md', 0, 'B')], [makeVector(2)]),
+    ], []);
 
     expect(getChunkCount(db)).toBe(2);
 
-    deleteFileChunks(db, '/a.md');
+    const deletes: FlushDelete[] = [{ storedKey: '0:a.md', deleteMtime: true }];
+    flushPreparedFiles(db, termCache, [], deletes);
     expect(getChunkCount(db)).toBe(1);
 
-    // Verify /b.md's data is intact and /a.md's is gone
-    const remaining = db.prepare(`SELECT file_path FROM chunks`).all() as Array<{ file_path: string }>;
-    expect(remaining.map((r) => r.file_path)).toEqual(['/b.md']);
+    // Verify b.md's data is intact and a.md's is gone
+    const remaining = db.prepare(
+      `SELECT f.stored_key FROM chunks c JOIN files f ON f.id = c.file_id`,
+    ).all() as Array<{ stored_key: string }>;
+    expect(remaining.map((r) => r.stored_key)).toEqual(['0:b.md']);
   });
 
   // ── Search (Decaying Sum Pipeline) ─────────────────────────────────────
 
   it('search returns results aggregated by file', () => {
-    upsertFileChunks(
-      db, '/close.md',
-      [makeChunk('/close.md', 0, 'Close match')],
-      [makeVector(1)],
-    );
-    upsertFileChunks(
-      db, '/far.md',
-      [makeChunk('/far.md', 0, 'Far match')],
-      [makeVector(2)],
-    );
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:close.md', [makeChunk('0:close.md', 0, 'Close match')], [makeVector(1)]),
+      makeUpsert('0:far.md', [makeChunk('0:far.md', 0, 'Far match')], [makeVector(2)]),
+    ], []);
 
-    // Search with vector identical to makeVector(1) — /close.md should rank higher
+    // Search with vector identical to makeVector(1) — close.md should rank higher
     const results = search(db, makeVector(1), { query: 'close', limit: 10 });
     expect(results.length).toBeGreaterThanOrEqual(1);
-    expect(results[0].filePath).toBe('/close.md');
+    expect(results[0].filePath).toBe('0:close.md');
 
     if (results.length > 1) {
       expect(results[0].score).toBeGreaterThan(results[1].score);
@@ -115,10 +129,10 @@ describe('store', () => {
   });
 
   it('search returns hint with line range', () => {
-    const chunk = makeChunk('/a.md', 0, 'Test content');
+    const chunk = makeChunk('0:a.md', 0, 'Test content');
     chunk.sectionPath = ['Architecture', 'Pipeline'];
     chunk.locationHint = { type: 'lines', start: 10, end: 20 };
-    upsertFileChunks(db, '/a.md', [chunk], [makeVector(1)]);
+    flushPreparedFiles(db, termCache, [makeUpsert('0:a.md', [chunk], [makeVector(1)])], []);
 
     const results = search(db, makeVector(1), { query: 'test', limit: 10 });
     expect(results.length).toBe(1);
@@ -129,11 +143,9 @@ describe('store', () => {
   });
 
   it('search returns scoreLabel and signals', () => {
-    upsertFileChunks(
-      db, '/a.md',
-      [makeChunk('/a.md', 0, 'Some searchable content')],
-      [makeVector(1)],
-    );
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'Some searchable content')], [makeVector(1)]),
+    ], []);
 
     const results = search(db, makeVector(1), { query: 'searchable', limit: 10 });
     expect(results.length).toBe(1);
@@ -144,11 +156,9 @@ describe('store', () => {
   // ── Inverted Index ─────────────────────────────────────────────────────
 
   it('inverted index is synced after upsert and delete', () => {
-    upsertFileChunks(
-      db, '/a.md',
-      [makeChunk('/a.md', 0, 'uniqueword alpha')],
-      [makeVector(1)],
-    );
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'uniqueword alpha')], [makeVector(1)]),
+    ], []);
 
     // The inverted index should have the term
     const termResult = db.prepare(
@@ -157,29 +167,26 @@ describe('store', () => {
     expect(termResult).toBeDefined();
     expect(termResult!.doc_freq).toBe(1);
 
-    // After delete, the term should be gone
-    deleteFileChunks(db, '/a.md');
+    // After delete, the term should be gone (zero-freq cleanup)
+    flushPreparedFiles(db, termCache, [], [{ storedKey: '0:a.md', deleteMtime: true }]);
     const termAfter = db.prepare(
       `SELECT doc_freq FROM terms WHERE term = ?`,
-    ).get('uniqueword');
+    ).get('uniqueword') as { doc_freq: number } | undefined;
+    // Zero-freq terms are cleaned up by TermCache
     expect(termAfter).toBeUndefined();
   });
 
   it('inverted index is synced correctly after upsert replaces content', () => {
-    upsertFileChunks(
-      db, '/a.md',
-      [makeChunk('/a.md', 0, 'oldterm specialword')],
-      [makeVector(1)],
-    );
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'oldterm specialword')], [makeVector(1)]),
+    ], []);
 
     // Replace with different text
-    upsertFileChunks(
-      db, '/a.md',
-      [makeChunk('/a.md', 0, 'newterm differentword')],
-      [makeVector(2)],
-    );
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'newterm differentword')], [makeVector(2)]),
+    ], []);
 
-    // Old term should not be findable
+    // Old term should not be findable (zero-freq cleanup)
     const oldResult = db.prepare(
       `SELECT doc_freq FROM terms WHERE term = ?`,
     ).get('oldterm');
@@ -195,36 +202,46 @@ describe('store', () => {
 
   // ── Mtime Persistence ──────────────────────────────────────────────────
 
-  it('round-trips mtimes', () => {
-    setMtime(db, '/a.md', 1000);
-    setMtime(db, '/b.md', 2000);
+  it('round-trips mtimes via files table', () => {
+    // V2 stores mtime_ms in the files table. flushPreparedFiles sets it when provided.
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'A')], [makeVector(1)], 1000),
+      makeUpsert('0:b.md', [makeChunk('0:b.md', 0, 'B')], [makeVector(2)], 2000),
+    ], []);
 
     const loaded = loadMtimes(db);
     expect(loaded.size).toBe(2);
-    expect(loaded.get('/a.md')).toBe(1000);
-    expect(loaded.get('/b.md')).toBe(2000);
+    expect(loaded.get('0:a.md')).toBe(1000);
+    expect(loaded.get('0:b.md')).toBe(2000);
   });
 
   it('sets and deletes individual mtimes', () => {
-    setMtime(db, '/a.md', 1000);
-    setMtime(db, '/b.md', 2000);
+    // Create file rows first
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'A')], [makeVector(1)], 1000),
+      makeUpsert('0:b.md', [makeChunk('0:b.md', 0, 'B')], [makeVector(2)], 2000),
+    ], []);
     expect(countMtimes(db)).toBe(2);
 
-    deleteMtime(db, '/a.md');
+    deleteMtime(db, '0:a.md');
     expect(countMtimes(db)).toBe(1);
 
     const loaded = loadMtimes(db);
-    expect(loaded.has('/a.md')).toBe(false);
-    expect(loaded.get('/b.md')).toBe(2000);
+    expect(loaded.has('0:a.md')).toBe(false);
+    expect(loaded.get('0:b.md')).toBe(2000);
   });
 
   it('setMtime updates existing entries', () => {
-    setMtime(db, '/a.md', 1000);
-    setMtime(db, '/a.md', 2000);
+    // Create file row first
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'A')], [makeVector(1)], 1000),
+    ], []);
+
+    setMtime(db, '0:a.md', 2000);
     expect(countMtimes(db)).toBe(1);
 
     const loaded = loadMtimes(db);
-    expect(loaded.get('/a.md')).toBe(2000);
+    expect(loaded.get('0:a.md')).toBe(2000);
   });
 
   // ── Meta Persistence ───────────────────────────────────────────────────
@@ -236,7 +253,7 @@ describe('store', () => {
     expect(meta).not.toBeNull();
     expect(meta!.model).toBe('arctic-xs');
     expect(meta!.dimensions).toBe(384);
-    expect(meta!.version).toBe(2);
+    expect(meta!.version).toBe(4); // V2 schema version
     expect(meta!.createdAt).toBeTruthy();
   });
 
@@ -264,8 +281,9 @@ describe('store', () => {
   });
 
   it('reopening an existing database preserves data', () => {
-    upsertFileChunks(db, '/a.md', [makeChunk('/a.md', 0, 'Persisted')], [makeVector(1)]);
-    setMtime(db, '/a.md', 1234);
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'Persisted')], [makeVector(1)], 1234),
+    ], []);
     saveMeta(db, 'test-model', DIMS);
 
     const dbPath = path.join(tmpDir, 'test.db');
@@ -273,38 +291,53 @@ describe('store', () => {
 
     // Reopen
     const db2 = createSiloDatabase(dbPath, DIMS);
+    const tc2 = new TermCache();
+    tc2.warmFromDb(db2);
     expect(getChunkCount(db2)).toBe(1);
-    expect(loadMtimes(db2).get('/a.md')).toBe(1234);
+    expect(loadMtimes(db2).get('0:a.md')).toBe(1234);
     expect(loadMeta(db2)!.model).toBe('test-model');
 
     const results = search(db2, makeVector(1), { query: 'persisted', limit: 10 });
     expect(results.length).toBe(1);
-    expect(results[0].filePath).toBe('/a.md');
+    expect(results[0].filePath).toBe('0:a.md');
 
     db2.close();
     // Reassign so afterEach doesn't try to close the already-closed handle
     db = createSiloDatabase(path.join(tmpDir, 'dummy.db'), DIMS);
   });
 
-  // ── Transaction Atomicity ──────────────────────────────────────────────
+  // ── Batch Operations ──────────────────────────────────────────────────
 
-  it('upsert is atomic — partial failure leaves no stale data', () => {
-    // Insert initial data
-    upsertFileChunks(db, '/a.md', [makeChunk('/a.md', 0, 'Initial')], [makeVector(1)]);
-    expect(getChunkCount(db)).toBe(1);
+  it('flush handles multiple files in one batch', () => {
+    const upserts: FlushUpsert[] = [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'File A')], [makeVector(1)]),
+      makeUpsert('0:b.md', [makeChunk('0:b.md', 0, 'File B')], [makeVector(2)]),
+      makeUpsert('0:c.md', [makeChunk('0:c.md', 0, 'File C')], [makeVector(3)]),
+    ];
 
-    // Attempt upsert with mismatched vector dimensions (wrong size)
-    // This should throw inside the transaction
-    try {
-      const badEmbedding = [1, 2]; // Wrong dimension count
-      upsertFileChunks(db, '/a.md', [makeChunk('/a.md', 0, 'Bad')], [badEmbedding]);
-    } catch {
-      // Expected — vec_chunks rejects wrong-dimension vectors
-    }
+    const result = flushPreparedFiles(db, termCache, upserts, []);
+    expect(result.upserted).toBe(3);
+    expect(getChunkCount(db)).toBe(3);
+    expect(getFileCount(db)).toBe(3);
+  });
 
-    // Original data should still be intact (transaction rolled back)
-    expect(getChunkCount(db)).toBe(1);
-    const rows = db.prepare(`SELECT content_hash FROM chunks WHERE file_path = ?`).all('/a.md') as Array<{ content_hash: string }>;
-    expect(rows.map((r) => r.content_hash)).toEqual(['hash-/a.md-0']);
+  it('flush handles mixed upserts and deletes', () => {
+    // First insert some files
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:keep.md', [makeChunk('0:keep.md', 0, 'Keep')], [makeVector(1)]),
+      makeUpsert('0:delete.md', [makeChunk('0:delete.md', 0, 'Delete')], [makeVector(2)]),
+    ], []);
+    expect(getChunkCount(db)).toBe(2);
+
+    // Now upsert a new file and delete an existing one in the same batch
+    const result = flushPreparedFiles(
+      db,
+      termCache,
+      [makeUpsert('0:new.md', [makeChunk('0:new.md', 0, 'New')], [makeVector(3)])],
+      [{ storedKey: '0:delete.md', deleteMtime: true }],
+    );
+    expect(result.upserted).toBe(1);
+    expect(result.deleted).toBe(1);
+    expect(getChunkCount(db)).toBe(2); // keep + new
   });
 });

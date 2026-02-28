@@ -64,7 +64,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
   // ── Database peek (for "Connect existing" wizard) ─────────────────────
 
   ipcMain.handle('db:readConfig', async (_event, dbPath: string) => {
-    const { readConfigFromDbFile } = await import('../backend/store');
+    const { readConfigFromDbFile } = await import('../backend/store/peek');
     return readConfigFromDbFile(dbPath);
   });
 
@@ -146,6 +146,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       scoreLabel: r.scoreLabel,
       signals: r.signals,
       hint: r.hint,
+      chunks: r.chunks,
     }));
   });
 
@@ -392,7 +393,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       }
       ctx.siloManagers.delete(name);
 
-      const resolvedDbPath = manager.getStatus().resolvedDbPath;
+      const resolvedDbPath = (await manager.getStatus()).resolvedDbPath;
       let dbDeleteError: string | undefined;
       try {
         if (fs.existsSync(resolvedDbPath)) {
@@ -510,26 +511,26 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
       if (updates.description !== undefined) {
         siloToml.description = updates.description.trim() || undefined;
-        manager?.updateDescription(updates.description.trim());
+        await manager?.updateDescription(updates.description.trim());
       }
 
       if (updates.color !== undefined) {
         const validated = validateSiloColor(updates.color);
         siloToml.color = validated;
-        manager?.updateColor(validated);
+        await manager?.updateColor(validated);
       }
 
       if (updates.icon !== undefined) {
         const validated = validateSiloIcon(updates.icon);
         siloToml.icon = validated;
-        manager?.updateIcon(validated);
+        await manager?.updateIcon(validated);
       }
 
       if (updates.model !== undefined) {
         const resolvedDefault = resolveModelAlias(ctx.config.embeddings.model);
         const resolvedNew = resolveModelAlias(updates.model);
         siloToml.model = resolvedNew !== resolvedDefault ? resolvedNew : undefined;
-        manager?.updateModel(resolvedNew);
+        await manager?.updateModel(resolvedNew);
       }
 
       // Ignore pattern updates — empty array means "revert to defaults"
@@ -592,7 +593,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       }
 
       // Update the manager's internal config name to match the new slug
-      manager.updateName(newSlug);
+      await manager.updateName(newSlug);
 
       saveConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${oldName}" renamed to "${trimmed}" (slug: "${newSlug}")`);

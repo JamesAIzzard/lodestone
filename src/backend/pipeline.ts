@@ -1,15 +1,14 @@
 /**
- * Indexing pipeline — wires extraction, chunking, embedding, and storage together.
+ * Indexing pipeline — wires extraction, chunking, and embedding together.
  *
  * Uses a registry of FileProcessors keyed by file extension to dispatch
  * each file to the appropriate extractor + chunker pair.
  *
- * The two main operations:
- *   indexFile  — read file → extract → chunk → embed → store
- *   removeFile — delete all chunks for a file from the store
+ * V2: The pipeline only prepares files (read → extract → chunk → embed).
+ * Database writes happen via the store proxy, never directly in the pipeline.
+ * Consumers call prepareFile() and then proxy.flush() for batched writes.
  */
 
-import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type { FileProcessor, ExtractionResult } from './pipeline-types';
@@ -23,7 +22,6 @@ import { extractPdf } from './extractors/pdf';
 import { chunkPdf } from './chunkers/pdf';
 import type { EmbeddingService } from './embedding';
 import type { ChunkRecord } from './pipeline-types';
-import { upsertFileChunks, deleteFileChunks, flushPreparedFiles, type SiloDatabase } from './store';
 
 // ── Processor Registry ───────────────────────────────────────────────────────
 
@@ -75,12 +73,6 @@ const MAX_EMBED_BATCH_SIZE = 32;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export interface IndexFileResult {
-  filePath: string;
-  chunkCount: number;
-  durationMs: number;
-}
-
 /** Result of preparing a file for storage (everything except the DB write). */
 export interface PreparedFile {
   storedKey: string;
@@ -98,8 +90,8 @@ export type FileStage = 'reading' | 'extracting' | 'chunking' | 'embedding';
  * Read, extract, chunk, and embed a single file — without writing to the database.
  *
  * Returns the prepared chunks and embeddings so the caller can batch multiple
- * files into a single database transaction. An empty `chunks` array means the
- * file had no indexable content (empty file or metadata only).
+ * files into a single database transaction via proxy.flush(). An empty `chunks`
+ * array means the file had no indexable content (empty file or metadata only).
  *
  * The optional `onStage` callback fires at each pipeline transition so callers
  * can report granular progress (e.g. "Extracting report.pdf").
@@ -157,49 +149,3 @@ export async function prepareFile(
 
   return { storedKey, chunks: storedChunks, embeddings, mtimeMs };
 }
-
-// ── Index ────────────────────────────────────────────────────────────────────
-
-/**
- * Index a single file: read, extract, chunk, embed, and store.
- *
- * Convenience wrapper around prepareFile() + single-file DB write. Prefer
- * prepareFile() + flushPreparedFiles() when processing multiple files so
- * writes can be batched into fewer transactions.
- */
-export async function indexFile(
-  absolutePath: string,
-  storedKey: string,
-  embeddingService: EmbeddingService,
-  db: SiloDatabase,
-  mtimeMs?: number,
-): Promise<IndexFileResult> {
-  const start = performance.now();
-
-  const prepared = await prepareFile(absolutePath, storedKey, embeddingService, mtimeMs);
-
-  if (prepared.chunks.length === 0) {
-    deleteFileChunks(db, storedKey, mtimeMs !== undefined);
-    return { filePath: storedKey, chunkCount: 0, durationMs: performance.now() - start };
-  }
-
-  upsertFileChunks(db, storedKey, prepared.chunks, prepared.embeddings, mtimeMs);
-
-  return {
-    filePath: storedKey,
-    chunkCount: prepared.chunks.length,
-    durationMs: performance.now() - start,
-  };
-}
-
-// ── Remove ───────────────────────────────────────────────────────────────────
-
-/**
- * Remove all chunks for a file from the store.
- */
-export function removeFile(filePath: string, db: SiloDatabase, deleteMtimeEntry?: boolean): void {
-  deleteFileChunks(db, filePath, deleteMtimeEntry);
-}
-
-// Re-export for convenience
-export { flushPreparedFiles } from './store';

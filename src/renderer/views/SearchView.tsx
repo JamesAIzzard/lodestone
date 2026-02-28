@@ -32,6 +32,12 @@ function renderLocationHint(hint: LocationHint): string {
   }
 }
 
+/** True if sectionPath is just the filename (adds no information). */
+function isRedundantSection(sectionPath: string[] | undefined, filePath: string): boolean {
+  if (!sectionPath || sectionPath.length === 0) return true;
+  return sectionPath.length === 1 && sectionPath[0] === fileName(filePath);
+}
+
 // ── Signal colours ──────────────────────────────────────────────────────────
 
 const SIGNAL_COLORS: Record<string, { bar: string; badge: string; label: string }> = {
@@ -467,15 +473,37 @@ function FileResultsView({
                     })}
                 </div>
 
-                {/* Hint — location + section path */}
-                {result.hint && result.hint.locationHint && (
+                {/* Hint — location + section path (shown when no multi-chunk data) */}
+                {result.hint && result.hint.locationHint && (!result.chunks || result.chunks.length === 0) && (
                   <div className="mt-2 text-xs text-muted-foreground/60">
                     {renderLocationHint(result.hint.locationHint)}
-                    {result.hint.sectionPath && result.hint.sectionPath.length > 0 && (
+                    {!isRedundantSection(result.hint.sectionPath, result.filePath) && (
                       <span className="ml-1.5 text-muted-foreground/40">
-                        — {result.hint.sectionPath.join(' > ')}
+                        — {result.hint.sectionPath!.join(' > ')}
                       </span>
                     )}
+                  </div>
+                )}
+
+                {/* Multi-chunk matching regions */}
+                {result.chunks && result.chunks.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-0.5">
+                    <span className="text-[10px] text-muted-foreground/40 uppercase tracking-wider">
+                      Matching regions
+                    </span>
+                    {result.chunks.map((chunk, i) => (
+                      <div key={i} className="flex items-center gap-2 text-xs text-muted-foreground/60">
+                        <span className="shrink-0 w-8 text-right text-muted-foreground/40">
+                          {chunk.relevance}%
+                        </span>
+                        <span className="shrink-0">{renderLocationHint(chunk.locationHint)}</span>
+                        {!isRedundantSection(chunk.sectionPath, result.filePath) && (
+                          <span className="text-muted-foreground/40 truncate">
+                            — {chunk.sectionPath!.join(' > ')}
+                          </span>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

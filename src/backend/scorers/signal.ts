@@ -6,7 +6,7 @@
  * the composition layer only sees file-level scores.
  */
 
-import type { SiloDatabase } from '../store';
+import type { SiloDatabase } from '../store/types';
 import type { LocationHint } from '../../shared/types';
 
 // ── Hint ────────────────────────────────────────────────────────────────────
@@ -17,6 +17,8 @@ export interface SignalHint {
   locationHint?: LocationHint;
   /** Section path of best-matching chunk (e.g. ["## Heading", "### Sub"]). */
   sectionPath?: string[];
+  /** Chunk-level score from this signal (used for multi-chunk ranking). */
+  score?: number;
 }
 
 // ── Context ─────────────────────────────────────────────────────────────────
@@ -49,6 +51,8 @@ export interface SignalResult {
   scores: Map<string, number>;
   /** Stored key → hint for this signal (best chunk location etc.). */
   hints: Map<string, SignalHint>;
+  /** Stored key → all significant chunk hints for this signal (for multi-chunk display). */
+  allHints?: Map<string, SignalHint[]>;
 }
 
 /** A scoring signal that produces file-level scores and hints. */

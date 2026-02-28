@@ -1,9 +1,14 @@
 /**
  * Silo Manager — top-level orchestrator for a single silo.
  *
- * Ties together the embedding service, SQLite database, file watcher,
+ * Ties together the embedding service, store proxy, file watcher,
  * and configuration for one silo. The Electron main process interacts
  * with this class for all silo operations.
+ *
+ * V2: The silo manager no longer holds a direct database handle.
+ * All SQLite operations are routed asynchronously through the store
+ * proxy to the store worker thread. This eliminates UI freezes from
+ * database I/O on the main thread.
  */
 
 import fs from 'node:fs';
@@ -11,29 +16,16 @@ import path from 'node:path';
 import type { ResolvedSiloConfig } from './config';
 import { validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import type { EmbeddingService } from './embedding';
-import {
-  createSiloDatabase,
-  getChunkCount,
-  loadMtimes,
-  setMtime,
-  deleteMtime,
-  loadMeta,
-  saveMeta,
-  saveConfigBlob,
-  makeStoredKey,
-  makeStoredDirKey,
-  resolveStoredKey,
-  getFilesInDirectory,
-  peekFileCount,
-  type SiloDatabase,
-  type StoredSiloConfig,
-} from './store';
-import { search as searchV2, type FileResult } from './search';
-import { indexFile } from './pipeline';
-import { SiloWatcher, type WatcherEvent } from './watcher';
-import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler } from './reconcile';
+import * as storeProxy from './store-proxy';
+import { makeStoredKey, makeStoredDirKey, resolveStoredKey } from './store/paths';
+import { peekFileCount } from './store/peek';
+import type { StoredSiloConfig, FlushUpsert, FlushDelete } from './store/types';
+import { prepareFile } from './pipeline';
+import { SiloWatcher, type WatcherEvent, type WatcherStoreOps } from './watcher';
+import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler, type ReconcileStoreOps } from './reconcile';
 import type { WatcherState, DirectoryTreeNode, SearchParams } from '../shared/types';
-import { directorySearchSilo, expandTree, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
+import type { FileResult } from './search';
+import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -67,7 +59,8 @@ const MAX_ACTIVITY_EVENTS = 200;
 
 export class SiloManager {
   private embeddingService: EmbeddingService | null = null;
-  private db: SiloDatabase | null = null;
+  /** True when this silo has an open database in the store worker. */
+  private dbOpen = false;
   private watcher: SiloWatcher | null = null;
   private lastUpdated: Date | null = null;
   private activityLog: WatcherEvent[] = [];
@@ -80,6 +73,7 @@ export class SiloManager {
     batchChunks?: number;
     batchChunkLimit?: number;
     filePath?: string;
+    fileSize?: number;
     fileStage?: string;
     elapsedMs?: number;
   };
@@ -87,6 +81,8 @@ export class SiloManager {
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
   private cachedSizeBytes = 0;
+  /** True during post-reconcile maintenance (checkpoint/VACUUM) when the worker is blocked. */
+  private maintenanceInProgress = false;
   /** True when meta model differs from configured model */
   private modelMismatch = false;
 
@@ -125,6 +121,11 @@ export class SiloManager {
     private readonly indexingQueue: IndexingQueue,
   ) {}
 
+  /** The silo ID used for all store proxy calls. */
+  private get siloId(): string {
+    return this.config.name;
+  }
+
   /** Register a listener for watcher events. Only one listener is supported. */
   onEvent(listener: (event: WatcherEvent) => void): void {
     this.eventListener = listener;
@@ -145,12 +146,12 @@ export class SiloManager {
    *
    * The user must rebuild the index for the new model to take effect.
    */
-  updateModel(model: string): void {
+  async updateModel(model: string): Promise<void> {
     this.config = { ...this.config, model };
 
     // Re-check mismatch against stored meta
-    if (this.db) {
-      const meta = loadMeta(this.db);
+    if (this.dbOpen) {
+      const meta = await storeProxy.loadMeta(this.siloId);
       if (meta) {
         this.modelMismatch = meta.model !== model;
       } else {
@@ -158,19 +159,19 @@ export class SiloManager {
         this.modelMismatch = true;
       }
     }
-    this.persistConfigBlob();
+    await this.persistConfigBlob();
   }
 
   /** Update the silo description and persist to DB config blob. */
-  updateDescription(description: string): void {
+  async updateDescription(description: string): Promise<void> {
     this.config = { ...this.config, description };
-    this.persistConfigBlob();
+    await this.persistConfigBlob();
   }
 
   /** Update the silo display name and persist to DB config blob. */
-  updateName(name: string): void {
+  async updateName(name: string): Promise<void> {
     this.config = { ...this.config, name };
-    this.persistConfigBlob();
+    await this.persistConfigBlob();
   }
 
   /**
@@ -215,7 +216,7 @@ export class SiloManager {
       this.watcher = null;
     }
 
-    if (this.embeddingService && this.db && !this.stopped) {
+    if (this.embeddingService && this.dbOpen && !this.stopped) {
       await new Promise<void>((resolve) => {
         this.indexingQueue.enqueue(
           this.config.name,
@@ -227,7 +228,7 @@ export class SiloManager {
               const result = await reconcile(
                 this.config,
                 this.embeddingService!,
-                this.db!,
+                this.makeReconcileStoreOps(),
                 this.mtimes,
                 this.onReconcileProgress,
                 this.onReconcileEvent,
@@ -252,32 +253,29 @@ export class SiloManager {
       });
 
       if (!this.stopped) {
-        this.persistConfigBlob();
+        await this.persistConfigBlob();
         this.watcherState = 'ready';
-        this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db);
-        this.watcher.setQueueFilledHandler(() => this.scheduleWatcherIndexing());
-        this.watcher.on((event) => this.handleWatcherEvent(event));
-        this.watcher.start();
+        this.startWatcher();
         console.log(`[silo:${this.config.name}] Watcher restarted after ${reason} change`);
       }
     }
   }
 
   /** Update the silo colour and persist to DB config blob. */
-  updateColor(color: string): void {
+  async updateColor(color: string): Promise<void> {
     this.config = { ...this.config, color: validateSiloColor(color) };
-    this.persistConfigBlob();
+    await this.persistConfigBlob();
   }
 
   /** Update the silo icon and persist to DB config blob. */
-  updateIcon(icon: string): void {
+  async updateIcon(icon: string): Promise<void> {
     this.config = { ...this.config, icon: validateSiloIcon(icon) };
-    this.persistConfigBlob();
+    await this.persistConfigBlob();
   }
 
   /** Build and persist the current config as a JSON blob in the database. */
-  private persistConfigBlob(): void {
-    if (!this.db) return;
+  private async persistConfigBlob(): Promise<void> {
+    if (!this.dbOpen) return;
     const blob: StoredSiloConfig = {
       name: this.config.name,
       description: this.config.description || undefined,
@@ -289,7 +287,7 @@ export class SiloManager {
       color: this.config.color,
       icon: this.config.icon,
     };
-    saveConfigBlob(this.db, blob);
+    await storeProxy.saveConfigBlob(this.siloId, blob);
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -306,13 +304,14 @@ export class SiloManager {
     this.embeddingService = this.sharedEmbeddingService;
     await this.embeddingService.ensureReady();
 
-    // 2. Open or create the SQLite database
+    // 2. Open or create the SQLite database via the store worker
     const dbPath = this.resolveDbPath();
-    this.db = createSiloDatabase(dbPath, this.embeddingService.dimensions);
+    await storeProxy.open(this.siloId, dbPath, this.embeddingService.dimensions);
+    this.dbOpen = true;
     console.log(`[silo:${this.config.name}] Opened database at ${dbPath}`);
 
     // 3. Check meta for model mismatch
-    const meta = loadMeta(this.db);
+    const meta = await storeProxy.loadMeta(this.siloId);
     if (meta) {
       if (meta.model !== this.config.model) {
         this.modelMismatch = true;
@@ -322,12 +321,12 @@ export class SiloManager {
       }
     } else {
       // First run or fresh DB — write meta now
-      saveMeta(this.db, this.config.model, this.embeddingService.dimensions);
+      await storeProxy.saveMeta(this.siloId, this.config.model, this.embeddingService.dimensions);
       this.modelMismatch = false;
     }
 
     // 4. Load file modification times for offline change detection
-    this.mtimes = loadMtimes(this.db);
+    this.mtimes = await storeProxy.loadMtimes(this.siloId);
 
     // 5. Run startup reconciliation via the global IndexingQueue so that
     //    only one silo embeds/indexes at a time.
@@ -343,7 +342,7 @@ export class SiloManager {
             const result = await reconcile(
               this.config,
               this.embeddingService!,
-              this.db!,
+              this.makeReconcileStoreOps(),
               this.mtimes,
               this.onReconcileProgress,
               this.onReconcileEvent,
@@ -356,25 +355,42 @@ export class SiloManager {
             } else {
               console.log(`[silo:${this.config.name}] Reconciliation: index up to date`);
             }
+            // Cache chunk count before maintenance so getStatus() can respond
+            // without hitting the worker (which will be blocked by VACUUM).
+            this.cachedChunkCount = await storeProxy.getChunkCount(this.siloId);
+            this.maintenanceInProgress = true;
+
+            // Show compacting stage in the UI during maintenance
+            this.reconcileProgress = {
+              current: this.mtimes.size,
+              total: this.mtimes.size,
+              fileStage: 'compacting',
+            };
+
             // Yield so the renderer can process the "done" state before the
             // potentially expensive WAL checkpoint blocks the event loop.
-            console.log(`[silo:${this.config.name}] Post-reconcile: yielding before WAL checkpoint...`);
             await new Promise<void>((r) => setImmediate(r));
-            // Checkpoint and truncate the WAL after reconciliation. Heavy write
-            // workloads (especially sqlite-vec vector inserts) cause significant
-            // WAL growth; TRUNCATE mode flushes all data to the main DB and
-            // resets the WAL file to zero bytes. Because we now run PASSIVE
-            // checkpoints after each batch flush, the WAL should be nearly
-            // empty here, making TRUNCATE fast.
+            // Checkpoint and truncate the WAL after reconciliation.
             const tCheckpoint = performance.now();
-            this.checkpointWal();
+            await storeProxy.checkpoint(this.siloId, 'TRUNCATE');
             console.log(`[silo:${this.config.name}] Post-reconcile: WAL checkpoint(TRUNCATE) took ${(performance.now() - tCheckpoint).toFixed(1)}ms`);
+
+            // VACUUM reclaims page bloat from sqlite-vec's BLOB growth pattern
+            // during batch inserts. Only run when files were actually indexed.
+            if (result.filesAdded > 0 || result.filesUpdated > 0) {
+              const tVacuum = performance.now();
+              await storeProxy.vacuum(this.siloId);
+              console.log(`[silo:${this.config.name}] Post-reconcile: VACUUM took ${(performance.now() - tVacuum).toFixed(1)}ms`);
+            }
+
+            this.maintenanceInProgress = false;
           } catch (err) {
             if (this.stopped) { resolve(); return; }
             console.error(`[silo:${this.config.name}] Reconciliation failed:`, err);
             this.watcherState = 'error';
             this.errorMessage = err instanceof Error ? err.message : String(err);
           }
+          this.maintenanceInProgress = false;
           this.reconcileProgress = undefined;
           resolve();
         },
@@ -382,17 +398,14 @@ export class SiloManager {
     });
 
     // 6. Persist config blob for portable reconnection
-    this.persistConfigBlob();
+    await this.persistConfigBlob();
 
     // 7. Bail if stop() was called during reconciliation
     if (this.stopped) return;
     this.watcherState = 'ready';
 
     // 8. Create and start the file watcher
-    this.watcher = new SiloWatcher(this.config, this.embeddingService, this.db);
-    this.watcher.setQueueFilledHandler(() => this.scheduleWatcherIndexing());
-    this.watcher.on((event) => this.handleWatcherEvent(event));
-    this.watcher.start();
+    this.startWatcher();
 
     console.log(`[silo:${this.config.name}] Started (watching ${this.config.directories.join(', ')})`);
   }
@@ -412,14 +425,14 @@ export class SiloManager {
       this.watcher = null;
     }
 
-    if (this.db) {
+    if (this.dbOpen) {
       try {
-        this.checkpointWal();
-        this.db.close();
+        await storeProxy.checkpoint(this.siloId, 'TRUNCATE');
+        await storeProxy.close(this.siloId);
       } catch {
         // Already closed or failed — harmless
       }
-      this.db = null;
+      this.dbOpen = false;
     }
 
     // Don't dispose the embedding service — it's shared across silos.
@@ -440,7 +453,7 @@ export class SiloManager {
 
     // Cache stats before releasing resources
     this.cachedFileCount = this.mtimes.size;
-    this.cachedChunkCount = this.db ? getChunkCount(this.db) : 0;
+    this.cachedChunkCount = this.dbOpen ? await storeProxy.getChunkCount(this.siloId) : 0;
     this.cachedSizeBytes = this.readFileSizeFromDisk();
     await this.stop();
     this.watcherState = 'stopped';
@@ -516,9 +529,14 @@ export class SiloManager {
     return this.watcherState === 'stopped';
   }
 
+  /** Current watcher state (synchronous — safe for tray menu, UI labels, etc.). */
+  get currentState(): WatcherState {
+    return this.watcherState;
+  }
+
   /** Decaying-sum search with a pre-computed query vector. */
-  search(queryVector: number[], params: SearchParams): FileResult[] {
-    if (!this.db) return [];
+  async search(queryVector: number[], params: SearchParams): Promise<FileResult[]> {
+    if (!this.dbOpen) return [];
     // Convert absolute startPath → stored key prefix for DB filtering
     let storedStartPath = params.startPath;
     if (params.startPath) {
@@ -532,7 +550,7 @@ export class SiloManager {
         }
       }
     }
-    const results = searchV2(this.db, queryVector, { ...params, startPath: storedStartPath });
+    const results = await storeProxy.search(this.siloId, queryVector, { ...params, startPath: storedStartPath });
     // Resolve stored keys back to absolute file paths
     return results.map((r) => ({
       ...r,
@@ -545,18 +563,27 @@ export class SiloManager {
    * Fire-and-forget — caller should catch errors.
    */
   async reindexFile(absolutePath: string): Promise<void> {
-    if (!this.embeddingService || !this.db || this.stopped) return;
+    if (!this.embeddingService || !this.dbOpen || this.stopped) return;
     const storedKey = makeStoredKey(absolutePath, this.config.directories);
     const stat = fs.statSync(absolutePath);
-    await indexFile(absolutePath, storedKey, this.embeddingService, this.db, stat.mtimeMs);
+    const prepared = await prepareFile(absolutePath, storedKey, this.embeddingService, stat.mtimeMs);
+    const upsert: FlushUpsert = {
+      storedKey: prepared.storedKey,
+      chunks: prepared.chunks,
+      embeddings: prepared.embeddings,
+      mtimeMs: prepared.mtimeMs,
+    };
+    await storeProxy.flush(this.siloId, [upsert], []);
+    // Update in-memory mtime
+    this.mtimes.set(storedKey, stat.mtimeMs);
   }
 
   /**
    * Explore directory structure using segment Levenshtein and token coverage.
    * No embeddings needed — scoring operates on the query string directly.
    */
-  exploreDirectories(params: DirectorySearchParams): SiloDirectorySearchResult[] {
-    if (!this.db) return [];
+  async exploreDirectories(params: DirectorySearchParams): Promise<SiloDirectorySearchResult[]> {
+    if (!this.dbOpen) return [];
     const isEmptyQuery = !params.query || params.query.trim().length === 0;
     // Empty query with no startPath → return the silo's configured root directories directly
     if (isEmptyQuery && !params.startPath) {
@@ -577,30 +604,30 @@ export class SiloManager {
         // Otherwise pass through as-is (may already be a stored key)
       }
     }
-    const raw = directorySearchSilo(this.db, resolvedParams);
+    const raw = await storeProxy.directorySearch(this.siloId, resolvedParams);
     return this.resolveDirectoryPaths(raw);
   }
 
   /** Synthesise explore results for the silo's configured root directories. */
-  private exploreRootDirectories(maxDepth: number, fullContents?: boolean): SiloDirectorySearchResult[] {
-    const db = this.db!;
+  private async exploreRootDirectories(maxDepth: number, fullContents?: boolean): Promise<SiloDirectorySearchResult[]> {
+    const results: SiloDirectorySearchResult[] = [];
 
-    // Prepare once — these run once per configured root directory
-    const countFiles = db.prepare(
-      `SELECT COUNT(*) as count FROM files WHERE file_path LIKE ?`,
-    );
-    const countSubdirs = db.prepare(
-      `SELECT COUNT(*) as count FROM directories WHERE dir_path LIKE ? AND depth = 1`,
-    );
-
-    return this.config.directories.map((absPath, i) => {
+    for (let i = 0; i < this.config.directories.length; i++) {
+      const absPath = this.config.directories[i];
       const prefix = `${i}:`;
-      const { count: fileCount }   = countFiles.get(prefix + '%') as { count: number };
-      const { count: subdirCount } = countSubdirs.get(prefix + '%') as { count: number };
-      const rawChildren = expandTree(db, prefix, 0, maxDepth, fullContents);
-      const rawFiles = fullContents ? getFilesInDirectory(db, prefix) : undefined;
 
-      return {
+      // Get counts and tree from the worker via the proxy
+      const [rawChildren, rawFiles] = await Promise.all([
+        storeProxy.expandTree(this.siloId, prefix, 0, maxDepth, fullContents),
+        fullContents ? storeProxy.getFilesInDirectory(this.siloId, prefix) : Promise.resolve(undefined),
+      ]);
+
+      // Count files and subdirs from the expanded tree data
+      // For the root, we use the tree results to derive counts
+      const fileCount = rawFiles?.length ?? 0;
+      const subdirCount = rawChildren.length;
+
+      results.push({
         dirPath: absPath,
         dirName: path.basename(absPath),
         score: 1.0,
@@ -610,12 +637,14 @@ export class SiloManager {
         subdirCount,
         depth: 0,
         children: resolveTreeNodes(rawChildren, this.config.directories),
-        files: rawFiles?.map((f) => ({
+        files: rawFiles?.map((f: { filePath: string; fileName: string }) => ({
           filePath: resolveStoredKey(f.filePath, this.config.directories),
           fileName: f.fileName,
         })),
-      };
-    });
+      });
+    }
+
+    return results;
   }
 
   /** Resolve stored-key dir paths in explore results back to absolute filesystem paths. */
@@ -633,20 +662,25 @@ export class SiloManager {
   }
 
   /** Get the current status of this silo. */
-  getStatus(): SiloManagerStatus {
-    if (this.watcherState === 'stopped' || this.watcherState === 'waiting') {
+  async getStatus(): Promise<SiloManagerStatus> {
+    // When the worker is blocked (stopped, waiting, or maintenance), return
+    // cached stats immediately to prevent the UI from hanging.
+    if (this.watcherState === 'stopped' || this.watcherState === 'waiting' || this.maintenanceInProgress) {
       return {
         name: this.config.name,
-        indexedFileCount: this.cachedFileCount,
+        indexedFileCount: this.maintenanceInProgress ? this.mtimes.size : this.cachedFileCount,
         chunkCount: this.cachedChunkCount,
         lastUpdated: this.lastUpdated,
-        databaseSizeBytes: this.cachedSizeBytes,
+        databaseSizeBytes: this.maintenanceInProgress ? this.readFileSizeFromDisk() : this.cachedSizeBytes,
         watcherState: this.watcherState,
+        errorMessage: this.errorMessage,
+        reconcileProgress: this.reconcileProgress,
+        modelMismatch: this.modelMismatch || undefined,
         resolvedDbPath: this.resolveDbPath(),
       };
     }
 
-    const chunks = this.db ? getChunkCount(this.db) : 0;
+    const chunks = this.dbOpen ? await storeProxy.getChunkCount(this.siloId) : 0;
     const dbSize = this.readFileSizeFromDisk();
 
     return {
@@ -685,6 +719,40 @@ export class SiloManager {
 
   // ── Internal ───────────────────────────────────────────────────────────────
 
+  /**
+   * Create a WatcherStoreOps implementation that routes through the store proxy.
+   */
+  private makeWatcherStoreOps(): WatcherStoreOps {
+    const id = this.siloId;
+    return {
+      flush: (upserts, deletes) => storeProxy.flush(id, upserts, deletes),
+      insertDirEntry: (dirPath) => storeProxy.insertDirEntry(id, dirPath),
+      deleteDirEntry: (dirPath) => storeProxy.deleteDirEntry(id, dirPath),
+    };
+  }
+
+  /**
+   * Create a ReconcileStoreOps implementation that routes through the store proxy.
+   */
+  private makeReconcileStoreOps(): ReconcileStoreOps {
+    const id = this.siloId;
+    return {
+      flush: (upserts, deletes) => storeProxy.flush(id, upserts, deletes),
+      syncDirectoriesWithDisk: (diskDirPaths) => storeProxy.syncDirectoriesWithDisk(id, diskDirPaths),
+      recomputeDirectoryCounts: () => storeProxy.recomputeDirectoryCounts(id),
+      checkpoint: (mode) => storeProxy.checkpoint(id, mode),
+    };
+  }
+
+  /** Create the watcher and start it. Shared by doStart() and reconcileAndRestartWatcher(). */
+  private startWatcher(): void {
+    if (!this.embeddingService) return;
+    this.watcher = new SiloWatcher(this.config, this.embeddingService, this.makeWatcherStoreOps());
+    this.watcher.setQueueFilledHandler(() => this.scheduleWatcherIndexing());
+    this.watcher.on((event) => this.handleWatcherEvent(event));
+    this.watcher.start();
+  }
+
   private onReconcileProgress: ReconcileProgressHandler = (progress) => {
     if (progress.phase === 'done') {
       this.reconcileProgress = undefined;
@@ -702,6 +770,7 @@ export class SiloManager {
         batchChunks: progress.batchChunks,
         batchChunkLimit: progress.batchChunkLimit,
         filePath: progress.filePath,
+        fileSize: progress.fileSize,
         fileStage: progress.fileStage,
         elapsedMs: progress.elapsedMs,
       };
@@ -743,22 +812,22 @@ export class SiloManager {
     // Notify external listener (main process → renderer forwarding)
     this.eventListener?.(event);
 
-    // Update file modification times directly in SQLite
+    // Update file modification times via the store proxy (fire-and-forget)
     // event.filePath is an absolute path from the watcher — convert to stored key
-    if (event.eventType === 'indexed' && this.db) {
+    if (event.eventType === 'indexed') {
       try {
         const storedKey = makeStoredKey(event.filePath, this.config.directories);
         const stat = fs.statSync(event.filePath);
         this.mtimes.set(storedKey, stat.mtimeMs);
-        setMtime(this.db, storedKey, stat.mtimeMs);
+        storeProxy.setMtime(this.siloId, storedKey, stat.mtimeMs).catch(() => {});
       } catch {
         // File vanished between indexing and stat — rare but harmless
       }
-    } else if (event.eventType === 'deleted' && this.db) {
+    } else if (event.eventType === 'deleted') {
       try {
         const storedKey = makeStoredKey(event.filePath, this.config.directories);
         this.mtimes.delete(storedKey);
-        deleteMtime(this.db, storedKey);
+        storeProxy.deleteMtime(this.siloId, storedKey).catch(() => {});
       } catch {
         // Path outside configured directories — harmless
       }
@@ -801,16 +870,6 @@ export class SiloManager {
         }
       },
     );
-  }
-
-  /** Checkpoint the WAL and truncate it to zero bytes, reclaiming disk space. */
-  private checkpointWal(): void {
-    if (!this.db) return;
-    try {
-      this.db.pragma('wal_checkpoint(TRUNCATE)');
-    } catch (err) {
-      console.warn(`[silo:${this.config.name}] WAL checkpoint failed:`, err);
-    }
   }
 
   private resolveDbPath(): string {

@@ -41,6 +41,7 @@ export interface SiloStatus {
     batchChunks?: number;
     batchChunkLimit?: number;
     filePath?: string;
+    fileSize?: number;
     fileStage?: string;
     elapsedMs?: number;
   };
@@ -144,6 +145,16 @@ export interface SearchHint {
   sectionPath?: string[];
 }
 
+/** A single matching chunk location within a file, with relative relevance. */
+export interface ChunkHint {
+  /** Where this chunk lives in the source file (page, line range, slide). */
+  locationHint: LocationHint;
+  /** Section path of this chunk (e.g. ["## Chapter 3", "### Methods"]). */
+  sectionPath?: string[];
+  /** Absolute relevance (0–100), scaled by the file's overall score. Best chunk = file score. */
+  relevance: number;
+}
+
 /** Search result from the decaying-sum pipeline. */
 export interface SearchResult {
   /** Absolute file path. */
@@ -158,6 +169,8 @@ export interface SearchResult {
   signals: Record<string, number>;
   /** Best-chunk hint from the winning content signal. */
   hint?: SearchHint;
+  /** All significant matching chunks across signals (when ≥ 2 unique locations). */
+  chunks?: ChunkHint[];
 }
 
 // ── Search Params ─────────────────────────────────────────────────────────────

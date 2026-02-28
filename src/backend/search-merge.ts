@@ -7,7 +7,7 @@
 
 import type { EmbeddingService } from './embedding';
 import type { SiloManager } from './silo-manager';
-import type { SearchHint } from '../shared/types';
+import type { SearchHint, ChunkHint } from '../shared/types';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 import type { SearchParams } from '../shared/types';
 
@@ -37,6 +37,7 @@ export interface SiloSearchResult {
   scoreLabel: string;
   signals: Record<string, number>;
   hint?: SearchHint;
+  chunks?: ChunkHint[];
 }
 
 /**
@@ -66,7 +67,7 @@ export async function dispatchSearch(
 
     for (const [name, manager] of group) {
       try {
-        const siloResults = manager.search(queryVector, params);
+        const siloResults = await manager.search(queryVector, params);
         for (const r of siloResults) {
           raw.push({
             filePath: r.filePath,
@@ -75,6 +76,7 @@ export async function dispatchSearch(
             scoreLabel: r.scoreLabel,
             signals: r.signals,
             hint: r.hint,
+            chunks: r.chunks,
           });
         }
       } catch (err) {
@@ -120,7 +122,7 @@ export async function dispatchExplore(
 
   for (const [name, manager] of managers) {
     try {
-      const siloResults = manager.exploreDirectories(params);
+      const siloResults = await manager.exploreDirectories(params);
       for (const r of siloResults) {
         raw.push({ ...r, siloName: name });
       }

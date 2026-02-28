@@ -128,6 +128,11 @@ const config: ForgeConfig = {
           config: 'vite.worker.config.ts',
           target: 'main',
         },
+        {
+          entry: 'src/backend/store-worker.ts',
+          config: 'vite.store-worker.config.ts',
+          target: 'main',
+        },
       ],
       renderer: [
         {

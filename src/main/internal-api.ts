@@ -242,7 +242,7 @@ export class InternalApi {
     // Regex mode doesn't need an embedding service, so skip that warning
     for (const [name, manager] of ready) {
       const service = manager.getEmbeddingService();
-      const status = manager.getStatus();
+      const status = await manager.getStatus();
       if (mode !== 'regex' && !service) {
         warnings.push(`Silo "${name}" is still initializing and not yet searchable.`);
       } else if (status.watcherState === 'indexing') {
@@ -281,6 +281,7 @@ export class InternalApi {
       scoreLabel: r.scoreLabel,
       signals: r.signals,
       hint: r.hint,
+      chunks: r.chunks,
     }));
 
     return { results, warnings };
@@ -321,7 +322,7 @@ export class InternalApi {
 
     // Check readiness
     for (const [name, manager] of ready) {
-      const status = manager.getStatus();
+      const status = await manager.getStatus();
       if (status.watcherState === 'indexing') {
         const prog = status.reconcileProgress;
         if (prog) {
@@ -611,11 +612,11 @@ export class InternalApi {
   /**
    * Handle a status request. Mirrors the IPC `silos:list` handler.
    */
-  private handleStatus(): { silos: SiloStatus[] } {
+  private async handleStatus(): Promise<{ silos: SiloStatus[] }> {
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo' });
     const statuses: SiloStatus[] = [];
     for (const manager of this.ctx.siloManagers.values()) {
-      const status = manager.getStatus();
+      const status = await manager.getStatus();
       const cfg = manager.getConfig();
       const siloToml = this.ctx.config?.silos[cfg.name];
       statuses.push({

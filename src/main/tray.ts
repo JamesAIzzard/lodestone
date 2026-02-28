@@ -17,7 +17,7 @@ export function buildTrayMenu(ctx: AppContext): Menu {
             : '● Ready';
 
   const siloItems = Array.from(ctx.siloManagers.entries()).map(([name, manager]) => ({
-    label: `${name}  ${statusLabel(manager.getStatus().watcherState)}`,
+    label: `${name}  ${statusLabel(manager.currentState)}`,
     enabled: false,
   }));
 

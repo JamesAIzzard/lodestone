@@ -19,8 +19,8 @@
  * here is only reached for empty queries scoped to a startPath.
  */
 
-import type { SiloDatabase } from './store';
-import { getFilesInDirectory } from './store';
+import type { SiloDatabase } from './store/types';
+import { getFilesInDirectory } from './store/operations';
 import type { DirectoryTreeNode, FusedScore } from '../shared/types';
 import { runTextRecipe, DIRECTORY_NAME_RECIPE } from './scorers/recipes';
 

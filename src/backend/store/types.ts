@@ -25,6 +25,8 @@ export interface FlushUpsert {
   embeddings: number[][];
   /** File modification time in milliseconds */
   mtimeMs?: number;
+  /** File-level metadata (frontmatter, PDF title/author, etc.) — stored once per file, not per chunk */
+  fileMetadata?: Record<string, unknown>;
 }
 
 /** A file to delete during a batch flush. */
@@ -114,4 +116,4 @@ export interface StoreResponse {
 }
 
 /** Schema version — bump this when the schema changes in a breaking way. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;

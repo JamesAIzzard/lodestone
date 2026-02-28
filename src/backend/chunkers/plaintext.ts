@@ -20,7 +20,7 @@ export function chunkPlaintext(
   extraction: ExtractionResult,
   maxChunkTokens: number,
 ): ChunkRecord[] {
-  const { body, metadata } = extraction;
+  const { body } = extraction;
 
   if (body.length === 0) {
     return [];
@@ -37,7 +37,7 @@ export function chunkPlaintext(
       sectionPath: [filename],
       text: body,
       locationHint: { type: 'lines', start: 1, end: lineCount },
-      metadata,
+
       contentHash: hashText(body),
     }];
   }
@@ -68,7 +68,7 @@ export function chunkPlaintext(
       sectionPath: [filename],
       text,
       locationHint: { type: 'lines', start: lineOffset, end: lineOffset + lineCount - 1 },
-      metadata,
+
       contentHash: hashText(text),
     });
     // Advance by lines used + blank line separator

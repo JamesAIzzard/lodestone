@@ -37,7 +37,7 @@ export function chunkPdf(
       sectionPath: [filename],
       text: extraction.body,
       locationHint: { type: 'page', page: 1 },
-      metadata: extraction.metadata,
+
       contentHash: hashText(extraction.body),
     }];
   }
@@ -86,7 +86,7 @@ export function chunkPdf(
         sectionPath: [filename],
         text: group.text,
         locationHint: { type: 'page', page: group.page },
-        metadata: extraction.metadata,
+  
         contentHash: hashText(group.text),
       });
     } else {
@@ -99,7 +99,7 @@ export function chunkPdf(
           sectionPath: [filename],
           text: part,
           locationHint: { type: 'page', page: group.page },
-          metadata: extraction.metadata,
+    
           contentHash: hashText(part),
         });
       }

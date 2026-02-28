@@ -109,13 +109,15 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
   db.exec(`
     -- Files (merged with mtimes — mtime_ms is nullable for new/empty files)
     CREATE TABLE IF NOT EXISTS files (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      stored_key TEXT UNIQUE NOT NULL,
-      file_name  TEXT NOT NULL,
-      mtime_ms   REAL
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      stored_key    TEXT UNIQUE NOT NULL,
+      file_name     TEXT NOT NULL,
+      mtime_ms      REAL,
+      file_metadata TEXT NOT NULL DEFAULT '{}'
     );
 
     -- Chunks (file_id FK, compressed text as BLOB, binary content hash)
+    -- File-level metadata (frontmatter, PDF title/author) lives on files.file_metadata.
     CREATE TABLE IF NOT EXISTS chunks (
       id            INTEGER PRIMARY KEY,
       file_id       INTEGER NOT NULL REFERENCES files(id),
@@ -123,7 +125,6 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
       section_path  TEXT NOT NULL,
       text          BLOB NOT NULL,
       location_hint TEXT,
-      metadata      TEXT NOT NULL DEFAULT '{}',
       content_hash  BLOB NOT NULL,
       token_count   INTEGER NOT NULL DEFAULT 0
     );

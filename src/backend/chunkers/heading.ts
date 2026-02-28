@@ -32,7 +32,7 @@ export function chunkByHeading(
   extraction: ExtractionResult,
   maxChunkTokens: number,
 ): ChunkRecord[] {
-  const { body, metadata } = extraction;
+  const { body } = extraction;
 
   if (body.length === 0) {
     return [];
@@ -55,7 +55,7 @@ export function chunkByHeading(
         sectionPath: section.sectionPath,
         text,
         locationHint: { type: 'lines', start: section.startLine, end: section.endLine },
-        metadata,
+
         contentHash: hashText(text),
       });
     } else {
@@ -68,7 +68,7 @@ export function chunkByHeading(
           sectionPath: section.sectionPath,
           text: sub,
           locationHint: { type: 'lines', start: section.startLine, end: section.endLine },
-          metadata,
+  
           contentHash: hashText(sub),
         });
       }

@@ -116,7 +116,6 @@ Content here.`;
     // Frontmatter is in the body, so remark parses it as pre-heading content.
     // At least one chunk must contain the heading content.
     expect(chunks.length).toBeGreaterThanOrEqual(1);
-    expect(chunks[0].metadata).toEqual({ title: 'My Note' });
     expect(chunks.some(c => c.text.includes('Content here'))).toBe(true);
   });
 

@@ -40,20 +40,14 @@ export function flushPreparedFiles(
   let upserted = 0;
   let cleared = 0;
   let deleted = 0;
-
-  // ── Instrumentation accumulators ────────────────────────────────────
-  let tPhase1 = 0, tPhase2 = 0, tPhase3 = 0, tPhase5 = 0, tPhase6 = 0;
-  let tVecInsert = 0, tChunkSql = 0, tCompress = 0;
-  let tTermFreqMap = 0, tTermResolve = 0, tDirEntries = 0;
-  let totalChunks = 0, totalPostings = 0, totalDirtyTerms = 0;
+  let totalChunks = 0;
   let addedTokenSum = 0, removedTokenSum = 0, removedChunkCount = 0;
-  let subTxCount = 0;
 
   // ── Prepared statements (reused across all sub-transactions) ──────────
 
   const upsertFile = db.prepare(`
-    INSERT INTO files (stored_key, file_name, mtime_ms) VALUES (?, ?, ?)
-    ON CONFLICT(stored_key) DO UPDATE SET mtime_ms = excluded.mtime_ms
+    INSERT INTO files (stored_key, file_name, mtime_ms, file_metadata) VALUES (?, ?, ?, ?)
+    ON CONFLICT(stored_key) DO UPDATE SET mtime_ms = excluded.mtime_ms, file_metadata = excluded.file_metadata
     RETURNING id
   `);
   const selectFileId = db.prepare(
@@ -75,8 +69,8 @@ export function flushPreparedFiles(
     'INSERT INTO vec_chunks(embedding) VALUES (vec_int8(?))',
   );
   const insertChunk = db.prepare(`
-    INSERT INTO chunks (id, file_id, chunk_index, section_path, text, location_hint, metadata, content_hash, token_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO chunks (id, file_id, chunk_index, section_path, text, location_hint, content_hash, token_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertPosting = db.prepare(
     'INSERT INTO postings (term_id, chunk_id, term_freq) VALUES (?, ?, ?)',
@@ -92,14 +86,14 @@ export function flushPreparedFiles(
   // ── Transaction 1: Resolve files + delete old chunks ───────────────────
 
   db.transaction(() => {
-    const p1 = performance.now();
-
-    // 1a. Upserts — resolve file_id and collect old chunk IDs
+    // Phase 1: Resolve file IDs and collect old chunk IDs
     for (const up of upserts) {
+      const fileMetaJson = up.fileMetadata ? JSON.stringify(up.fileMetadata) : '{}';
       const fileRow = upsertFile.get(
         up.storedKey,
         fileBasename(up.storedKey),
         up.mtimeMs ?? null,
+        fileMetaJson,
       ) as { id: number };
       upsertFileIds.push(fileRow.id);
 
@@ -107,7 +101,6 @@ export function flushPreparedFiles(
       for (const { id } of oldChunks) allOldChunkIds.push(id);
     }
 
-    // 1b. Deletes — collect old chunk IDs
     for (const del of deletes) {
       const fileRow = selectFileId.get(del.storedKey) as { id: number } | undefined;
       if (!fileRow) continue;
@@ -117,11 +110,7 @@ export function flushPreparedFiles(
       for (const { id } of oldChunks) allOldChunkIds.push(id);
     }
 
-    tPhase1 = performance.now() - p1;
-
     // Phase 2: Batch-delete old postings and chunks
-    const p2 = performance.now();
-
     if (allOldChunkIds.length > 0) {
       db.exec('CREATE TEMP TABLE IF NOT EXISTS _del_chunks (id INTEGER PRIMARY KEY)');
       db.exec('DELETE FROM _del_chunks');
@@ -153,8 +142,6 @@ export function flushPreparedFiles(
         deleteChunksByFile.run(fileId);
       }
     }
-
-    tPhase2 = performance.now() - p2;
   })();
 
   // ── Phase 3: Insert chunks in sub-transactions ─────────────────────────
@@ -165,7 +152,6 @@ export function flushPreparedFiles(
   // transaction small and allows PASSIVE WAL checkpoints between batches.
 
   const SUB_TX_LIMIT = 500;
-  const p3 = performance.now();
   let chunksInSubTx = 0;
   let subTxOpen = false;
 
@@ -173,7 +159,6 @@ export function flushPreparedFiles(
   const commitSubTx = () => {
     db.exec('COMMIT');
     subTxOpen = false;
-    subTxCount++;
     // Passive WAL checkpoint between sub-transactions keeps the WAL small
     try { db.pragma('wal_checkpoint(PASSIVE)'); } catch { /* non-critical */ }
   };
@@ -186,9 +171,7 @@ export function flushPreparedFiles(
 
     if (up.chunks.length === 0) {
       cleared++;
-      const dS = performance.now();
       ensureAncestorDirectories(db, up.storedKey);
-      tDirEntries += performance.now() - dS;
       continue;
     }
 
@@ -196,24 +179,18 @@ export function flushPreparedFiles(
       const chunk = up.chunks[j];
 
       // Compress, serialize, quantize inline (one chunk at a time — no OOM risk)
-      let s = performance.now();
       const compressedText = compressText(chunk.text);
       const sectionPathJson = JSON.stringify(chunk.sectionPath);
       const locationHintJson = JSON.stringify(chunk.locationHint);
-      const metadataJson = JSON.stringify(chunk.metadata);
       const hashBlob = hashToBlob(chunk.contentHash);
       const quantizedVec = quantizeInt8(up.embeddings[j]);
       const tokens = tokenise(chunk.text);
-      tCompress += performance.now() - s;
 
       // Insert quantized int8 vector → get rowid (becomes chunk.id)
-      s = performance.now();
       const vecResult = insertVec.run(quantizedVec);
       const chunkId = Number(vecResult.lastInsertRowid);
-      tVecInsert += performance.now() - s;
 
-      // Insert chunk row
-      s = performance.now();
+      // Insert chunk row (file-level metadata lives on files.file_metadata)
       insertChunk.run(
         chunkId,
         fileId,
@@ -221,29 +198,23 @@ export function flushPreparedFiles(
         sectionPathJson,
         compressedText,
         locationHintJson,
-        metadataJson,
         hashBlob,
         tokens.length,
       );
-      tChunkSql += performance.now() - s;
       addedTokenSum += tokens.length;
 
       // Build term frequency map for this chunk
-      s = performance.now();
       const termFreqs = new Map<string, number>();
       for (const token of tokens) {
         termFreqs.set(token, (termFreqs.get(token) ?? 0) + 1);
       }
-      tTermFreqMap += performance.now() - s;
 
       // Resolve term IDs via TermCache (O(1) hit, INSERT on miss)
-      s = performance.now();
       for (const [term, freq] of termFreqs) {
         const termId = termCache.getOrInsert(db, term);
         allPostings.push({ termId, chunkId, freq });
         dirtyTermIds.add(termId);
       }
-      tTermResolve += performance.now() - s;
 
       totalChunks++;
       chunksInSubTx++;
@@ -255,41 +226,28 @@ export function flushPreparedFiles(
       }
     }
 
-    const dS = performance.now();
     ensureAncestorDirectories(db, up.storedKey);
-    tDirEntries += performance.now() - dS;
     upserted++;
   }
 
   if (subTxOpen) commitSubTx();
 
-  tPhase3 = performance.now() - p3;
-
   // ── Final transaction: postings, cleanup, doc_freq, corpus stats ───────
 
   db.transaction(() => {
     // Sort postings by term_id for sequential B-tree page access
-    let sPost = performance.now();
     allPostings.sort((a, b) => a.termId - b.termId);
-    const tPostingSort = performance.now() - sPost;
-
-    sPost = performance.now();
     for (const p of allPostings) {
       insertPosting.run(p.termId, p.chunkId, p.freq);
     }
-    const tPostingInsert = performance.now() - sPost;
 
-    totalPostings = allPostings.length;
-
-    // Phase 4: Finalize deletes (remove file rows)
+    // Finalize deletes (remove file rows)
     for (const { fileId } of deleteFileIdMap) {
       deleteFileRow.run(fileId);
       deleted++;
     }
 
-    // Phase 5: Recompute doc_freq for affected terms
-    const p5 = performance.now();
-
+    // Recompute doc_freq for affected terms
     if (dirtyTermIds.size > 0) {
       const recomputeFreq = db.prepare(
         'UPDATE terms SET doc_freq = (SELECT COUNT(*) FROM postings WHERE term_id = ?) WHERE id = ?',
@@ -301,43 +259,13 @@ export function flushPreparedFiles(
       termCache.removeZeroFreq(db);
     }
 
-    totalDirtyTerms = dirtyTermIds.size;
-    tPhase5 = performance.now() - p5;
-
-    // Phase 6: Update corpus-level BM25 stats
-    const p6 = performance.now();
-
+    // Update corpus-level BM25 stats (incremental — avoids full table scan)
     updateCorpusStats(db, {
       addedChunks: totalChunks,
       addedTokenSum,
       removedChunks: removedChunkCount,
       removedTokenSum,
     });
-
-    tPhase6 = performance.now() - p6;
-
-    // ── Instrumentation log ──────────────────────────────────────────────
-
-    const total = performance.now() - t;
-    console.log(
-      `\n[FLUSH TIMING] ${totalChunks} chunks, ${totalPostings} postings, ${totalDirtyTerms} dirty terms` +
-      ` (${subTxCount} sub-transactions)\n` +
-      `  Phase 1 (resolve files):     ${tPhase1.toFixed(1)} ms\n` +
-      `  Phase 2 (delete old):        ${tPhase2.toFixed(1)} ms  (${allOldChunkIds.length} old chunks)\n` +
-      `  Phase 3 (insert chunks):     ${tPhase3.toFixed(1)} ms\n` +
-      `    ├─ compress+tok+quant:        ${tCompress.toFixed(1)} ms\n` +
-      `    ├─ vecInsert (SQL only):      ${tVecInsert.toFixed(1)} ms\n` +
-      `    ├─ chunkSQL (INSERT only):    ${tChunkSql.toFixed(1)} ms  (${totalChunks > 0 ? (tChunkSql / totalChunks).toFixed(1) : '0.0'} ms/chunk)\n` +
-      `    ├─ termFreqMap:               ${tTermFreqMap.toFixed(1)} ms\n` +
-      `    ├─ termResolve (TermCache):   ${tTermResolve.toFixed(1)} ms\n` +
-      `    └─ dirEntries:                ${tDirEntries.toFixed(1)} ms\n` +
-      `  Final tx (postings+cleanup):\n` +
-      `    ├─ postingSort:               ${tPostingSort.toFixed(1)} ms\n` +
-      `    ├─ postingInsert:             ${tPostingInsert.toFixed(1)} ms\n` +
-      `    ├─ doc_freq recomp:           ${tPhase5.toFixed(1)} ms  (${totalDirtyTerms} terms)\n` +
-      `    └─ corpus stats:              ${tPhase6.toFixed(1)} ms\n` +
-      `  TOTAL:                        ${total.toFixed(1)} ms`,
-    );
   })();
 
   return { upserted, cleared, deleted, durationMs: performance.now() - t };

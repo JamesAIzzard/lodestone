@@ -85,6 +85,8 @@ export interface PreparedFile {
   chunks: ChunkRecord[];
   embeddings: number[][];
   mtimeMs?: number;
+  /** Lightweight file-level metadata (frontmatter, PDF title/author — heavy arrays stripped). */
+  fileMetadata?: Record<string, unknown>;
 }
 
 /** Pipeline stage reported via the onStage callback during file preparation. */
@@ -131,8 +133,15 @@ export async function prepareFile(
     extraction = processor.extractor!(content);
   }
 
+  // Build lightweight file-level metadata — strip heavy arrays that the PDF
+  // extractor produces (paragraphs + pageTexts duplicate the full body text).
+  // These are only needed in-memory by the chunker, not stored per-file.
+  const fileMetadata: Record<string, unknown> = { ...extraction.metadata };
+  delete fileMetadata.paragraphs;
+  delete fileMetadata.pageTexts;
+
   if (!asyncChunker && !chunker) {
-    return { storedKey, chunks: [], embeddings: [], mtimeMs };
+    return { storedKey, chunks: [], embeddings: [], mtimeMs, fileMetadata };
   }
 
   onStage?.('chunking');
@@ -141,7 +150,7 @@ export async function prepareFile(
     : chunker!(absolutePath, extraction, embeddingService.chunkTokens);
 
   if (chunks.length === 0) {
-    return { storedKey, chunks: [], embeddings: [], mtimeMs };
+    return { storedKey, chunks: [], embeddings: [], mtimeMs, fileMetadata };
   }
 
   const storedChunks = chunks.map((c) => ({ ...c, filePath: storedKey }));
@@ -162,7 +171,7 @@ export async function prepareFile(
     }
   }
 
-  return { storedKey, chunks: storedChunks, embeddings, mtimeMs };
+  return { storedKey, chunks: storedChunks, embeddings, mtimeMs, fileMetadata };
 }
 
 // ── Index File Loop ───────────────────────────────────────────────────────────
@@ -318,7 +327,7 @@ export async function indexFileLoop(
       }
 
       batch.push({
-        upsert: { storedKey, chunks: prepared.chunks, embeddings: prepared.embeddings, mtimeMs: prepared.mtimeMs },
+        upsert: { storedKey, chunks: prepared.chunks, embeddings: prepared.embeddings, mtimeMs: prepared.mtimeMs, fileMetadata: prepared.fileMetadata },
         info: { absPath, storedKey, chunkCount: prepared.chunks.length, durationMs: prepMs, mtimeMs: prepared.mtimeMs },
       });
       batchChunks += prepared.chunks.length;

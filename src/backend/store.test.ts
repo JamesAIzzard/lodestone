@@ -36,7 +36,6 @@ function makeChunk(filePath: string, index: number, text: string): ChunkRecord {
     sectionPath: ['Section'],
     text,
     locationHint: { type: 'lines', start: 1, end: 5 },
-    metadata: {},
     contentHash: fakeHash(`hash-${filePath}-${index}`),
   };
 }
@@ -253,7 +252,7 @@ describe('store (V2)', () => {
     expect(meta).not.toBeNull();
     expect(meta!.model).toBe('arctic-xs');
     expect(meta!.dimensions).toBe(384);
-    expect(meta!.version).toBe(4); // V2 schema version
+    expect(meta!.version).toBe(5); // V2 schema version (bumped: removed chunks.metadata column)
     expect(meta!.createdAt).toBeTruthy();
   });
 

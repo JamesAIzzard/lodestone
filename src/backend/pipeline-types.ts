@@ -39,8 +39,6 @@ export interface ChunkRecord {
   text: string;
   /** Location of this chunk within the source file. */
   locationHint: LocationHint;
-  /** Extracted metadata from the file (shared across all chunks of the same file) */
-  metadata: Record<string, unknown>;
   /** SHA-256 hash of the chunk text (for change detection) */
   contentHash: string;
 }

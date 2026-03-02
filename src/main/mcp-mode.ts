@@ -19,9 +19,7 @@ import { startMcpServer } from '../backend/mcp';
 import type { SearchResult, DirectoryResult, SiloStatus, MemoryRecord, MemorySearchResult, RelatedMemoryResult } from '../shared/types';
 import type { EditResult } from '../backend/edit';
 import type { AppContext } from './context';
-
-/** Must match the pipe name in internal-api.ts (GUI side). */
-const GUI_PIPE_NAME = '\\\\.\\pipe\\lodestone-gui';
+import { GUI_PIPE_NAME } from './internal-api';
 
 /** Timeout for individual RPC calls to the GUI process (ms). */
 const RPC_TIMEOUT_MS = 30_000;

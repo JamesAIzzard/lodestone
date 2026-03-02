@@ -12,6 +12,7 @@
  */
 
 import path from 'node:path';
+import { app } from 'electron';
 import { createServer, type Server, type Socket } from 'node:net';
 import type { AppContext } from './context';
 import { dispatchExplore, mergeDirectoryResults, dispatchSearch, mergeSearchResults } from '../backend/search-merge';
@@ -22,8 +23,10 @@ import type { SiloManager } from '../backend/silo-manager';
 import { MEMORY_MODEL } from '../backend/memory-store';
 import { parseDateRange } from '../backend/date-parser';
 
-/** Windows named pipe path. */
-export const GUI_PIPE_NAME = '\\\\.\\pipe\\lodestone-gui';
+/** Windows named pipe path. Dev builds use a distinct name to coexist with an installed build. */
+export const GUI_PIPE_NAME = app.isPackaged
+  ? '\\\\.\\pipe\\lodestone-gui'
+  : '\\\\.\\pipe\\lodestone-gui-dev';
 
 // ── Line Buffer ─────────────────────────────────────────────────────────────
 

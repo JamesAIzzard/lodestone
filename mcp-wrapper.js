@@ -40,6 +40,9 @@ const path = require('path');
 
 // ── Resolve Electron binary ──────────────────────────────────────────────────
 // Try the installed Squirrel app first, fall back to the dev tree.
+// Pass --dev to force the dev binary even when an installed version exists.
+
+const forceDev = process.argv.includes('--dev');
 
 function findInstalledElectron() {
   const installDir = path.join(process.env.LOCALAPPDATA || '', 'Lodestone');
@@ -57,7 +60,7 @@ function findInstalledElectron() {
   return fs.existsSync(exePath) ? exePath : null;
 }
 
-const installedPath = findInstalledElectron();
+const installedPath = forceDev ? null : findInstalledElectron();
 const devElectronPath = path.join(__dirname, 'node_modules', 'electron', 'dist', 'electron.exe');
 const devEntryPath = path.join(__dirname, '.vite', 'build', 'main.js');
 

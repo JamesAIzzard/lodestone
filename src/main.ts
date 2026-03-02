@@ -26,9 +26,10 @@ if (started) {
 
 const isMcpMode = process.argv.includes('--mcp');
 
-// Ensure app name is always "Lodestone" so app.getPath('userData') resolves to
-// %APPDATA%/Lodestone regardless of how the process was launched.
-app.setName('Lodestone');
+// In dev builds (app.isPackaged === false) use a distinct app name so the
+// userData directory, single-instance lock, and named pipe don't collide
+// with a simultaneously-running installed build.
+app.setName(app.isPackaged ? 'Lodestone' : 'Lodestone-Dev');
 
 // In MCP mode stdout is reserved for JSON-RPC. Redirect console.log to stderr.
 if (isMcpMode) {

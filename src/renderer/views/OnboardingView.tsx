@@ -67,9 +67,12 @@ export default function OnboardingView() {
     }
   }, []);
 
-  // Auto-check on mount
+  // Auto-check on mount and load default extensions
   useEffect(() => {
     checkOllama();
+    window.electronAPI?.getDefaults().then((defaults) => {
+      setExtensions(defaults.extensions);
+    });
   }, [checkOllama]);
 
   // Set model to default once loaded

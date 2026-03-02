@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -37,6 +37,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [directories, setDirectories] = useState<string[]>([]);
+  const defaultExtensionsRef = useRef<string[]>(['.md', '.py']);
   const [extensions, setExtensions] = useState<string[]>(['.md', '.py']);
   const [dbPath, setDbPath] = useState('');
   const [model, setModel] = useState('snowflake-arctic-embed-xs');
@@ -59,7 +60,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   const isFirst = stepIndex === 0;
   const isLast = stepIndex === steps.length - 1;
 
-  // Fetch available models and auto-assign colour on mount
+  // Fetch available models, defaults and auto-assign colour on mount
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((status) => {
       if (status.availableModels.length > 0) {
@@ -67,6 +68,10 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
       }
       setModel(status.defaultModel);
       setModelPathSafeIds(status.modelPathSafeIds ?? {});
+    });
+    window.electronAPI?.getDefaults().then((defaults) => {
+      defaultExtensionsRef.current = defaults.extensions;
+      setExtensions(defaults.extensions);
     });
     // Auto-assign a colour based on the number of existing silos
     window.electronAPI?.getSilos().then((silos) => {
@@ -89,7 +94,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
     setName('');
     setDescription('');
     setDirectories([]);
-    setExtensions(['.md', '.py']);
+    setExtensions(defaultExtensionsRef.current);
     setDbPath('');
     setModel('snowflake-arctic-embed-xs');
     setError(null);

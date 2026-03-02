@@ -7,7 +7,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import type { McpServerDeps } from './types';
 import { PuidManager, type PuidRecord } from './puid-manager';
-import { EDIT_DESCRIPTION, memoryNudge, memoryBodyWarning } from './formatting';
+import { EDIT_DESCRIPTION, memoryBodyWarning } from './formatting';
 
 // ── Target resolution helper ─────────────────────────────────────────────────
 
@@ -761,7 +761,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         if (parts.length === 0) parts.push('Edit applied successfully.');
 
         return {
-          content: [{ type: 'text' as const, text: parts.join('\n') + memoryNudge(deps) }],
+          content: [{ type: 'text' as const, text: parts.join('\n') }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

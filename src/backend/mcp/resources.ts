@@ -59,6 +59,10 @@ const NOTES_GUIDE = `# Lodestone Notes Guide
 
 Use \`lodestone_search\` for topic or keyword-based queries across silos. The search is semantic by default, so conceptual phrases work as well as keywords. Use \`lodestone_explore\` to browse directory structure when the query is navigational rather than content-based. Use \`lodestone_read\` to retrieve full file content once a result reference is in hand.
 
+## Getting the Current Date and Time
+
+Call \`lodestone_get_datetime\` whenever you need an accurate timestamp — for example, when generating note frontmatter or memory entries mid-conversation. It returns the current date and time in a human-readable format including the local timezone (e.g. "Monday 2 March 2026, 14:32 (Europe/London)").
+
 ## Editing Files
 
 Use \`lodestone_edit\` with the appropriate operation (\`str_replace\`, \`insert_at_line\`, \`overwrite\`, \`append\`, \`create\`, \`mkdir\`, \`rename\`, \`move\`, or \`delete\`) to create or modify files. Always read a file before editing it. Staleness detection will reject edits if the file has been modified externally since it was last read — when this happens, call \`lodestone_read\` again to update the mental model of the file before retrying. Staleness detection only applies when editing via a puid reference; edits via a raw filepath bypass it.

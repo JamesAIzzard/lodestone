@@ -8,7 +8,7 @@ import path from 'node:path';
 import { parseFlexibleDate, parseRecurrence, parseDateRange } from '../date-parser';
 import type { McpServerDeps } from './types';
 import { PuidManager } from './puid-manager';
-import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, CROSS_SEARCH_THRESHOLD, buildDateContext } from './formatting';
+import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, CROSS_SEARCH_THRESHOLD, buildDateContext, buildDatetime } from './formatting';
 
 export function registerRememberTool(server: McpServer, deps: McpServerDeps): void {
   server.tool(
@@ -664,4 +664,15 @@ function formatAgendaItem(r: { id: number; topic: string; body: string; actionDa
     '',
   ];
   return lines.join('\n');
+}
+
+export function registerGetDatetimeTool(server: McpServer): void {
+  server.tool(
+    'lodestone_get_datetime',
+    'Return the current date and time. Call this when you need to generate an accurate timestamp mid-conversation (e.g. for note frontmatter or memory entries).',
+    {},
+    async () => {
+      return { content: [{ type: 'text' as const, text: buildDatetime() }] };
+    },
+  );
 }

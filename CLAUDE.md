@@ -23,13 +23,16 @@ For detailed guidance: call `lodestone_guide` with topic `"memory"` (storage, cr
 
 ## File Editing: Use Lodestone Edit
 
-**Prefer `lodestone_edit`** over the built-in Edit and Write tools for modifying files within indexed silos. Benefits:
+**Prefer `lodestone_edit`** over the built-in Edit and Write tools for modifying notes within indexed silos. Benefits:
 - Immediate reindexing — changes are searchable right away (no waiting for chokidar)
 - Staleness detection — rejects edits if the file changed since last read
 - Silo boundary checking — prevents edits outside indexed directories
 - Puid tracking — reference files by short IDs (r1, r2) from search results
 
 Operations: `str_replace`, `insert_at_line`, `overwrite`, `append`, `create`, `mkdir`, `rename`, `move`, `delete`
+
+**Prefer standard tooling** for code edits, until we have resolved some final issues with lodestone edit for detailed coding work.
+
 
 **When the built-in Edit/Write is still appropriate:**
 - Files outside indexed silos (e.g., config files, CLAUDE.md itself)

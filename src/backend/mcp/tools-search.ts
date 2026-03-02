@@ -12,7 +12,7 @@ import { getProcessor } from '../pipeline';
 import {
   SEARCH_DESCRIPTION, READ_DESCRIPTION, EXPLORE_DESCRIPTION,
   formatSearchResults, formatExploreResults,
-  formatBytes, memoryNudge, truncateMemoryBody, priorityLabel, statusLabel,
+  formatBytes, truncateMemoryBody, priorityLabel, statusLabel,
   MAX_READ_BYTES, PREVIEW_LINES, CROSS_SEARCH_THRESHOLD,
 } from './formatting';
 
@@ -96,7 +96,7 @@ export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid:
         }
 
         return {
-          content: [{ type: 'text' as const, text: text + memoryNudge(deps) }],
+          content: [{ type: 'text' as const, text }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -320,9 +320,6 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
             content.push({ type: 'text' as const, text: `## ${id}: ${filePath}\nError: ${msg}` });
           }
         }
-
-        const nudge = memoryNudge(deps);
-        if (nudge) content.push({ type: 'text' as const, text: nudge });
         return { content };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -369,7 +366,7 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
         }
 
         return {
-          content: [{ type: 'text' as const, text: lines.join('\n') + memoryNudge(deps) }],
+          content: [{ type: 'text' as const, text: lines.join('\n') }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -428,7 +425,7 @@ export function registerExploreTool(server: McpServer, deps: McpServerDeps, puid
         }
 
         return {
-          content: [{ type: 'text' as const, text: text + memoryNudge(deps) }],
+          content: [{ type: 'text' as const, text }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

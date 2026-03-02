@@ -22,10 +22,23 @@ function formatDateShort(d: Date): string {
   return `${FULL_DAY_NAMES[d.getDay()].slice(0, 3)} ${d.getDate()} ${SHORT_MONTH_NAMES[d.getMonth()]}`;
 }
 
+function formatTime(d: Date): string {
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+/** Return a human-readable datetime string with timezone, e.g. "Monday 2 March 2026, 14:32 (Europe/London)". */
+export function buildDatetime(): string {
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return `${formatDateFull(now)}, ${formatTime(now)} (${tz})`;
+}
+
 /**
  * Build a compact date reference line to prepend to orient/agenda output.
- * Anchors the LLM on today's date and key relative offsets, preventing
- * errors when reasoning about "yesterday", "tomorrow", and overdue items.
+ * Anchors the LLM on today's date, current time, and key relative offsets,
+ * preventing errors when reasoning about "yesterday", "tomorrow", and overdue items.
  */
 export function buildDateContext(): string {
   const now = new Date();
@@ -37,7 +50,8 @@ export function buildDateContext(): string {
   const tomorrow = new Date(today);
   tomorrow.setDate(today.getDate() + 1);
 
-  return `📅 Today: ${formatDateFull(today)} | Yesterday: ${formatDateShort(yesterday)} | Tomorrow: ${formatDateShort(tomorrow)}`;
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return `📅 Today: ${formatDateFull(today)}, ${formatTime(now)} (${tz}) | Yesterday: ${formatDateShort(yesterday)} | Tomorrow: ${formatDateShort(tomorrow)}`;
 }
 
 // ── Memory truncation ────────────────────────────────────────────────────────

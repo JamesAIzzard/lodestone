@@ -21,8 +21,36 @@ import type { McpServerDeps, McpServerHandle } from './types';
 import { PuidManager } from './puid-manager';
 import { registerSearchTool, registerReadTool, registerStatusTool, registerExploreTool } from './tools-search';
 import { registerEditTool } from './tools-edit';
-import { registerRememberTool, registerRecallTool, registerReviseTool, registerForgetTool, registerSkipTool, registerOrientTool, registerAgendaTool } from './tools-memory';
+import { registerRememberTool, registerRecallTool, registerReviseTool, registerForgetTool, registerSkipTool, registerOrientTool, registerAgendaTool, registerGetDatetimeTool } from './tools-memory';
 import { registerResources, registerGuideTool } from './resources';
+import { buildDatetime } from './formatting';
+
+/**
+ * Patch server.tool so every registered handler automatically appends the
+ * current datetime as a footer to its last text content item. This gives the
+ * LLM temporal context on every tool call without each tool having to do it.
+ */
+function patchWithDatetimeFooter(server: McpServer): void {
+  const original = server.tool.bind(server);
+  (server as unknown as Record<string, unknown>).tool = (...args: unknown[]) => {
+    const lastIdx = args.length - 1;
+    const handler = args[lastIdx];
+    if (typeof handler === 'function') {
+      args[lastIdx] = async (...handlerArgs: unknown[]) => {
+        const result = await (handler as (...a: unknown[]) => Promise<{ content: Array<{ type: string; text?: string }> }>)(...handlerArgs);
+        const content = [...(result?.content ?? [])];
+        const last = content[content.length - 1];
+        if (last?.type === 'text') {
+          const text = last.text ?? '';
+          const footer = `\n\n---\n💡 Save new learnings and decisions with lodestone_remember\n🕐 ${buildDatetime()}`;
+          content[content.length - 1] = { type: 'text' as const, text: text + footer };
+        }
+        return { content };
+      };
+    }
+    return (original as (...a: unknown[]) => unknown)(...args);
+  };
+}
 
 /**
  * Create and start an MCP server that exposes Lodestone search as a tool.
@@ -47,6 +75,9 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
 
   const puid = new PuidManager();
 
+  // Append current datetime to every tool response automatically
+  patchWithDatetimeFooter(server);
+
   // Register all tools
   registerSearchTool(server, deps, puid);
   registerReadTool(server, deps, puid);
@@ -60,6 +91,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
   registerSkipTool(server, deps);
   registerOrientTool(server, deps);
   registerAgendaTool(server, deps);
+
+  registerGetDatetimeTool(server);
 
   // Register guide tool (on-demand usage guides) and resources
   registerGuideTool(server);

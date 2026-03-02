@@ -36,7 +36,9 @@
       "mcp__plugin_playwright_playwright__browser_evaluate",
       "mcp__lodestone__lodestone_remember",
       "Bash(winpty gh:*)",
-      "mcp__Windows-MCP__Shell"
+      "mcp__Windows-MCP__Shell",
+      "Bash(npm run make)",
+      "mcp__lodestone-dev__lodestone_orient"
     ]
   }
 }

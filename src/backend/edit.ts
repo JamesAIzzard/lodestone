@@ -231,7 +231,10 @@ function executeStrReplace(
     };
   }
 
-  const newContent = oldContent.replace(op.oldStr, op.newStr);
+  // Use indexOf + slice rather than String.replace to avoid JS replacement
+  // pattern special characters (e.g. $ → $ in replace's replacement string).
+  const matchIdx = oldContent.indexOf(op.oldStr);
+  const newContent = oldContent.slice(0, matchIdx) + op.newStr + oldContent.slice(matchIdx + op.oldStr.length);
 
   if (op.dryRun) {
     return { success: true, diff: generateUnifiedDiff(op.filePath, oldContent, newContent) };

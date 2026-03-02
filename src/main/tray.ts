@@ -78,7 +78,12 @@ export function buildTrayMenu(ctx: AppContext): Menu {
 }
 
 export function createTray(ctx: AppContext): Tray {
-  const iconPath = path.join(app.getAppPath(), 'assets', 'icon.png');
+  // In packaged builds, app.getAppPath() resolves inside the ASAR archive,
+  // which native APIs (including nativeImage) cannot read. The icon is
+  // declared as an extraResource so it lands in process.resourcesPath instead.
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.png')
+    : path.join(app.getAppPath(), 'assets', 'icon.png');
   const icon = nativeImage.createFromPath(iconPath);
   const tray = new Tray(icon);
   tray.setToolTip('Lodestone');

@@ -15,7 +15,7 @@ import { z } from 'zod';
 
 // ── Guide content ──────────────────────────────────────────────────────
 
-const STARTUP_GUIDE = `# Lodestone Startup Guide
+export const STARTUP_GUIDE = `# Lodestone Startup Guide
 
 At the start of every conversation, call \`lodestone_orient\` with \`max_results: 10\`. This surfaces the most recently updated memories and any upcoming action-date items (tasks, reminders, recurring habits).
 

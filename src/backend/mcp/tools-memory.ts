@@ -9,6 +9,7 @@ import { parseFlexibleDate, parseRecurrence, parseDateRange } from '../date-pars
 import type { McpServerDeps } from './types';
 import { PuidManager } from './puid-manager';
 import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, CROSS_SEARCH_THRESHOLD, buildDateContext, buildDatetime } from './formatting';
+import { STARTUP_GUIDE } from './resources';
 
 export function registerRememberTool(server: McpServer, deps: McpServerDeps): void {
   server.tool(
@@ -529,7 +530,7 @@ export function registerOrientTool(server: McpServer, deps: McpServerDeps): void
         deps.notifyActivity?.({ channel: 'memory' });
         const results = await deps.memoryOrient({ maxResults: max_results });
         if (results.length === 0) {
-          return { content: [{ type: 'text' as const, text: 'No memories stored yet.' }] };
+          return { content: [{ type: 'text' as const, text: `No memories stored yet.\n\n---\n\n${STARTUP_GUIDE}` }] };
         }
         const lines: string[] = [];
         lines.push(buildDateContext());
@@ -547,6 +548,9 @@ export function registerOrientTool(server: McpServer, deps: McpServerDeps): void
           lines.push(`_${meta.join(' | ')}_`);
           lines.push('');
         }
+        lines.push('---');
+        lines.push('');
+        lines.push(STARTUP_GUIDE);
         return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

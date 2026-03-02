@@ -45,7 +45,8 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
       '                  "every monday", "every weekday", "every 3 days", "every 2 weeks".',
       '                  Requires action_date to be set. The action_date auto-advances on orient.',
       '  priority     \u2014 Optional urgency level: 1=low, 2=medium, 3=high, 4=critical.',
-      '  status       \u2014 Optional lifecycle status: "open", "completed", "cancelled".',
+      '  status       \u2014 Optional lifecycle status: "open", "completed", "cancelled", or null.',
+      '                  Omitting defaults to "open". Pass null for no lifecycle status (not a task).',
       '                  Setting completed_on implies completed. Setting status="completed"',
       '                  auto-fills completed_on with today if not provided.',
       '                  Setting status="open" clears completed_on.',
@@ -63,7 +64,7 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
       action_date: z.string().optional().describe('Date when this memory is actionable. Flexible expressions accepted ("tomorrow", "next Monday", "2026-03-15"). Stored as ISO 8601.'),
       recurrence: z.string().optional().describe('Recurrence rule: "daily", "weekly", "biweekly", "monthly", "yearly", "every monday", "every weekday", "every N days", "every N weeks". Requires action_date.'),
       priority: z.number().int().min(1).max(4).optional().describe('Urgency: 1=low, 2=medium, 3=high, 4=critical'),
-      status: z.enum(['open', 'completed', 'cancelled']).optional().describe('Lifecycle status. "completed" auto-fills completed_on=today. "open" clears completed_on.'),
+      status: z.union([z.enum(['open', 'completed', 'cancelled']), z.null()]).optional().describe('Lifecycle status. Omit to default to "open". Pass null for no lifecycle status. "completed" auto-fills completed_on=today. "open" clears completed_on.'),
       completed_on: z.string().optional().describe('Date completed. Flexible expressions accepted. Implies status="completed".'),
     },
     async ({ topic, body, confidence, context_hint, force, action_date, recurrence, priority, status, completed_on }) => {
@@ -117,7 +118,7 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
           actionDate: parsedActionDate,
           recurrence: parsedRecurrence,
           priority: priority ?? null,
-          status: status ?? null,
+          status: status === undefined ? 'open' : status,
           completedOn: parsedCompletedOn,
         });
 

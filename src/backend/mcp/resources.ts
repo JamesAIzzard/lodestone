@@ -21,6 +21,8 @@ At the start of every conversation, call \`lodestone_orient\` with \`max_results
 
 Memory and knowledge location is the absolute foundation of our workflow. Lodestone is built on a powerful hybrid search algorithm, meaning semantic and keyword-based search are combined for optimal results. Before producing any response, always use \`lodestone_recall\` with a natural language query to retrieve relevant memories, and \`lodestone_search\` to find notes in our knowledge base. Searching for notes will surface related memories alongside, and searching for memories will surface related notes. This memory-first work practice is the absolute foundation of our success. Check lodestone before falling back to web search for any query that may be covered in the user's knowledge base.
 
+When storing something that is not actionable (like a fact or preference), pass \`status: null\`. Memories default to open status.
+
 ## Detailed Guides
 
 Three further guides are available on demand via \`lodestone_guide\`. Fetch the relevant one before undertaking that type of work — do not load all of them at startup.

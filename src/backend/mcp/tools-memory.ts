@@ -7,6 +7,7 @@ import { z } from 'zod';
 import path from 'node:path';
 import { parseFlexibleDate, parseRecurrence, parseDateRange } from '../date-parser';
 import type { McpServerDeps } from './types';
+import type { PriorityLevel, MemoryStatusValue } from '../../shared/types';
 import { PuidManager } from './puid-manager';
 import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, CROSS_SEARCH_THRESHOLD, buildDateContext, buildDatetime } from './formatting';
 import { STARTUP_GUIDE } from './resources';
@@ -109,7 +110,7 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
           }
         }
 
-        const result = await deps.memoryRemember({
+        const result = await deps.memory.remember({
           topic,
           body,
           confidence,
@@ -117,8 +118,8 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
           force,
           actionDate: parsedActionDate,
           recurrence: parsedRecurrence,
-          priority: priority ?? null,
-          status: status === undefined ? 'open' : status,
+          priority: (priority ?? null) as PriorityLevel | null,
+          status: (status === undefined ? 'open' : status) as MemoryStatusValue | null,
           completedOn: parsedCompletedOn,
         });
 
@@ -157,8 +158,8 @@ export function registerRememberTool(server: McpServer, deps: McpServerDeps): vo
           if (parsedRecurrence) actionStr += ` (${parsedRecurrence})`;
           extras.push(actionStr + '.');
         }
-        if (priority) extras.push(`Priority: ${priorityLabel(priority)}.`);
-        if (status) extras.push(`Status: ${statusLabel(status)}.`);
+        if (priority) extras.push(`Priority: ${priorityLabel(priority as PriorityLevel)}.`);
+        if (status) extras.push(`Status: ${statusLabel(status as MemoryStatusValue)}.`);
         if (parsedCompletedOn) extras.push(`Completed: ${parsedCompletedOn}.`);
         return {
           content: [{ type: 'text' as const, text: `Created memory m${result.id}.${extras.length ? ' ' + extras.join(' ') : ''}${warning}` }],
@@ -238,12 +239,13 @@ export function registerRecallTool(server: McpServer, deps: McpServerDeps, puid:
           dateFilters[key] = parsed;
         }
 
-        const results = await deps.memoryRecall({
+        const results = await deps.memory.recall({
           query,
           maxResults: max_results,
           mode,
-          ...dateFilters,
-          ...(status !== undefined ? { status } : {}),
+          dateFilters: Object.keys(dateFilters).length > 0 || status !== undefined
+            ? { ...dateFilters, ...(status !== undefined ? { status } : {}) }
+            : undefined,
         });
         const lines: string[] = [];
         if (results.length === 0) {
@@ -282,7 +284,7 @@ export function registerRecallTool(server: McpServer, deps: McpServerDeps, puid:
 
         // Silo notes sidebar — inverse mirror of the memory sidebar in lodestone_search
         try {
-          const { results: siloResults } = await deps.search({ query, maxResults: 5 });
+          const { results: siloResults } = await deps.silo.search({ query, maxResults: 5 });
           const siloHits = siloResults.filter(r => r.score >= CROSS_SEARCH_THRESHOLD);
           if (siloHits.length > 0) {
             lines.push('');
@@ -401,16 +403,16 @@ export function registerReviseTool(server: McpServer, deps: McpServerDeps): void
           }
         }
 
-        const reviseResult = await deps.memoryRevise({
+        const reviseResult = await deps.memory.revise({
           id,
           body,
           confidence,
           contextHint: context_hint,
           actionDate: parsedActionDate,
           recurrence: parsedRecurrence,
-          priority,
+          priority: priority as PriorityLevel | undefined,
           topic,
-          status,
+          status: status as MemoryStatusValue | null | undefined,
           completedOn: parsedCompletedOn,
         });
         const warning = body ? memoryBodyWarning(body) : '';
@@ -456,7 +458,7 @@ export function registerForgetTool(server: McpServer, deps: McpServerDeps): void
       try {
         deps.notifyActivity?.({ channel: 'memory' });
         const id = PuidManager.resolveMemoryIdParam(rawId);
-        await deps.memoryForget({ id, reason });
+        await deps.memory.forget(id, reason);
         const reasonSuffix = reason ? ` Reason: ${reason}` : '';
         return { content: [{ type: 'text' as const, text: `Memory m${id} soft-deleted.${reasonSuffix}` }] };
       } catch (err) {
@@ -492,7 +494,7 @@ export function registerSkipTool(server: McpServer, deps: McpServerDeps): void {
       try {
         deps.notifyActivity?.({ channel: 'memory' });
         const id = PuidManager.resolveMemoryIdParam(rawId);
-        const result = await deps.memorySkip({ id, reason });
+        const result = await deps.memory.skip(id, reason);
         const reasonSuffix = reason ? ` Reason: ${reason}.` : '';
         return { content: [{ type: 'text' as const, text: `Memory m${id} skipped. Next occurrence: ${result.nextActionDate}.${reasonSuffix}` }] };
       } catch (err) {
@@ -529,7 +531,7 @@ export function registerOrientTool(server: McpServer, deps: McpServerDeps): void
     async ({ max_results }) => {
       try {
         deps.notifyActivity?.({ channel: 'memory' });
-        const results = await deps.memoryOrient({ maxResults: max_results });
+        const results = await deps.memory.orient(max_results);
         if (results.length === 0) {
           return { content: [{ type: 'text' as const, text: `No memories stored yet.\n\n---\n\n${STARTUP_GUIDE}` }] };
         }
@@ -601,8 +603,8 @@ export function registerAgendaTool(server: McpServer, deps: McpServerDeps): void
           };
         }
 
-        const result = await deps.memoryAgenda({
-          when,
+        const result = await deps.memory.agenda({
+          when: range,
           includeCompleted: include_completed,
           maxResults: max_results,
         });
@@ -652,7 +654,7 @@ export function registerAgendaTool(server: McpServer, deps: McpServerDeps): void
 }
 
 /** Format a single agenda item as a compact markdown block. */
-function formatAgendaItem(r: { id: number; topic: string; body: string; actionDate: string | null; recurrence: string | null; priority: number | null; status: string | null; completedOn: string | null; confidence: number }): string {
+function formatAgendaItem(r: { id: number; topic: string; body: string; actionDate: string | null; recurrence: string | null; priority: PriorityLevel | null; status: MemoryStatusValue | null; completedOn: string | null; confidence: number }): string {
   const meta: string[] = [];
   if (r.actionDate) {
     let actionStr = `Action: ${r.actionDate}`;

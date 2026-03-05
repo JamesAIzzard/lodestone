@@ -3,7 +3,7 @@
  */
 
 import path from 'node:path';
-import type { SearchResult, DirectoryResult, LocationHint } from '../../shared/types';
+import type { SearchResult, DirectoryResult, LocationHint, MemoryStatusValue, PriorityLevel } from '../../shared/types';
 import { tokenise } from '../tokeniser';
 import type { McpServerDeps } from './types';
 import type { PuidManager } from './puid-manager';
@@ -76,23 +76,21 @@ export function memoryBodyWarning(body: string): string {
 }
 
 /** Map priority number to human-readable label. */
-export function priorityLabel(p: number): string {
+export function priorityLabel(p: PriorityLevel): string {
   switch (p) {
     case 1: return 'low';
     case 2: return 'medium';
     case 3: return 'high';
     case 4: return 'critical';
-    default: return String(p);
   }
 }
 
 /** Map status string to a display label. */
-export function statusLabel(s: string): string {
+export function statusLabel(s: MemoryStatusValue): string {
   switch (s) {
     case 'open': return 'open';
     case 'completed': return 'completed \u2713';
     case 'cancelled': return 'cancelled';
-    default: return s;
   }
 }
 
@@ -120,7 +118,7 @@ const MEMORY_NUDGE = '\n\n---\n\ud83d\udca1 If you\'ve learned something new or 
 
 /** Return the memory nudge if memory is connected, otherwise empty string. */
 export function memoryNudge(deps: McpServerDeps): string {
-  return deps.isMemoryConnected?.() ? MEMORY_NUDGE : '';
+  return deps.memory.isConnected() ? MEMORY_NUDGE : '';
 }
 
 // ── Formatting ───────────────────────────────────────────────────────────────

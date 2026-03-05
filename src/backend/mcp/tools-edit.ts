@@ -87,7 +87,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
       try {
         deps.notifyActivity?.({ channel: 'silo' });
         // ── Collect silo directories (needed by all operations) ──
-        const statusResult = await deps.status();
+        const statusResult = await deps.silo.status();
         const siloDirectories = statusResult.silos.flatMap(s => s.config.directories);
 
         // ── CREATE ──
@@ -109,7 +109,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             resolvedDir = resolved.filepath;
           }
 
-          const result = await deps.edit({
+          const result = await deps.silo.edit({
             operation: { op: 'create', directory: resolvedDir, filename, content, fullDocument: full_document },
             contextLines: 0,
             siloDirectories,
@@ -153,7 +153,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             resolvedDir = resolved.filepath;
           }
 
-          const result = await deps.edit({
+          const result = await deps.silo.edit({
             operation: { op: 'mkdir', directory: resolvedDir, name, dryRun: dry_run },
             contextLines: 0,
             siloDirectories,
@@ -209,7 +209,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             }
           }
 
-          const result = await deps.edit({
+          const result = await deps.silo.edit({
             operation: { op: 'rename', target: filePath, name, dryRun: dry_run },
             contextLines: 0,
             siloDirectories,
@@ -297,7 +297,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
                 continue;
               }
 
-              const result = await deps.edit({
+              const result = await deps.silo.edit({
                 operation: { op: 'move', target: filePath, destination: resolvedDest, destinationType: destination_type, onConflict: on_conflict, dryRun: dry_run },
                 contextLines: 0,
                 siloDirectories,
@@ -391,7 +391,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             resolvedDest = destResolved.filepath;
           }
 
-          const result = await deps.edit({
+          const result = await deps.silo.edit({
             operation: { op: 'move', target: filePath, destination: resolvedDest, destinationType: destination_type, onConflict: on_conflict, dryRun: dry_run },
             contextLines: 0,
             siloDirectories,
@@ -461,7 +461,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
                   if (dry_run) {
                     batchResults.push({ source: element, success: true });
                   } else {
-                    await deps.memoryForget({ id: memId });
+                    await deps.memory.forget(memId);
                     batchResults.push({ source: element, success: true });
                   }
                 } catch (err) {
@@ -484,7 +484,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
                 continue;
               }
 
-              const result = await deps.edit({
+              const result = await deps.silo.edit({
                 operation: { op: 'delete', target: filePath, dryRun: dry_run },
                 contextLines: 0,
                 siloDirectories,
@@ -534,7 +534,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
               if (dry_run) {
                 return { content: [{ type: 'text' as const, text: `Dry run \u2014 would delete memory m${memId}.` }] };
               }
-              await deps.memoryForget({ id: memId });
+              await deps.memory.forget(memId);
               return { content: [{ type: 'text' as const, text: `Memory m${memId} deleted.` }] };
             } catch (err) {
               const message = err instanceof Error ? err.message : String(err);
@@ -554,7 +554,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             return { content: [{ type: 'text' as const, text: deleteStaleMsg }] };
           }
 
-          const deleteResult = await deps.edit({
+          const deleteResult = await deps.silo.edit({
             operation: { op: 'delete', target: deleteFilePath, dryRun: dry_run },
             contextLines: 0,
             siloDirectories,
@@ -613,7 +613,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
 
           try {
             // For str_replace, overwrite, append — fetch current body, modify, revise
-            const existing = await deps.memoryGetById({ id: memId });
+            const existing = await deps.memory.getById(memId);
             if (!existing) {
               return { content: [{ type: 'text' as const, text: `Error: Memory m${memId} not found. It may have been deleted.` }] };
             }
@@ -651,7 +651,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
               return { content: [{ type: 'text' as const, text: `Dry run \u2014 memory m${memId} would be revised.\n\nNew body:\n${newBody}${warning}` }] };
             }
 
-            await deps.memoryRevise({ id: memId, body: newBody });
+            await deps.memory.revise({ id: memId, body: newBody });
             const warning = memoryBodyWarning(newBody);
             return { content: [{ type: 'text' as const, text: `Memory m${memId} revised via ${operation}.${warning}` }] };
           } catch (err) {
@@ -696,7 +696,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         }
 
         // 3. Resolve context_lines default
-        const defaults = await deps.getDefaults();
+        const defaults = await deps.silo.getDefaults();
         const effectiveContextLines = context_lines ?? defaults.contextLines;
 
         // 4. Build operation and dispatch
@@ -728,7 +728,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             break;
         }
 
-        const result = await deps.edit({
+        const result = await deps.silo.edit({
           operation: editOp,
           contextLines: effectiveContextLines,
           siloDirectories,

@@ -2,8 +2,10 @@
  * MemoryManager — lifecycle and operations for Claude's memory database.
  *
  * Manages a single SQLite memory database: connecting, setting up,
- * and exposing the five memory operations (remember, recall, revise,
- * forget, orient).
+ * and exposing the memory operations through the IMemoryService interface.
+ *
+ * Embedding is an internal concern — callers provide an EmbeddingProvider
+ * at setup time rather than passing an EmbeddingService per-call.
  *
  * Unlike SiloManager there is no file watching or indexing queue.
  * All writes happen inline — memory entries are small and infrequent.
@@ -12,6 +14,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { EmbeddingService } from './embedding';
+import type { MemoryRecord, MemoryStatus, MemoryStatusValue, PriorityLevel, RelatedMemoryResult, MemorySearchResult } from '../shared/types';
+import { formatDateISO, syncStatusAndCompletedOn } from '../shared/memory-utils';
 import { MEMORY_MODEL } from './memory-store';
 import {
   createMemoryDatabase,
@@ -30,42 +34,74 @@ import {
   getMemoryCount,
   getMemoryDatabaseSizeBytes,
   type MemoryDatabase,
-  type MemoryRecord,
-  type SimilarMemoryResult,
-  type RelatedMemoryResult,
 } from './memory-store';
-import { searchMemory, type MemorySearchResult, type MemorySearchMode, type MemoryDateFilters } from './memory-search';
-import { advanceRecurrence, parseDateRange, type DateRangeResult } from './date-parser';
+import { searchMemory, type MemorySearchMode, type MemoryDateFilters } from './memory-search';
+import { advanceRecurrence, type DateRangeResult } from './date-parser';
+import type {
+  IMemoryService,
+  RememberParams,
+  RememberResult,
+  RecallParams,
+  ReviseParams,
+  ReviseResult,
+  SkipResult,
+  AgendaParams,
+  AgendaResult,
+} from './memory-service';
 
-// ── Status ────────────────────────────────────────────────────────────────────
+// Re-export for backwards compatibility
+export type { MemoryStatus, AgendaResult };
+export type { IMemoryService, RememberParams, RememberResult, RecallParams, ReviseParams, ReviseResult, SkipResult, AgendaParams };
 
-export interface MemoryStatus {
-  connected: boolean;
-  dbPath: string | null;
-  memoryCount: number;
-  databaseSizeBytes: number;
-}
+// ── Embedding Provider ───────────────────────────────────────────────────────
 
-// ── Agenda ────────────────────────────────────────────────────────────────────
+/**
+ * Factory that returns a ready-to-use embedding service.
+ * The provider is responsible for lazy creation and calling ensureReady().
+ */
+export type EmbeddingProvider = () => Promise<EmbeddingService>;
 
-export interface AgendaResult {
-  /** Items whose action_date is before today and are not completed or cancelled. */
-  overdue: MemoryRecord[];
-  /** Items whose action_date falls within the requested time window. */
-  upcoming: MemoryRecord[];
-}
-
-// ── Manager ───────────────────────────────────────────────────────────────────
+// ── Manager ──────────────────────────────────────────────────────────────────
 
 /** Default poll interval for detecting external DB changes (30 seconds). */
 const POLL_INTERVAL_MS = 30_000;
 
-export class MemoryManager {
+export class MemoryManager implements IMemoryService {
   private db: MemoryDatabase | null = null;
   private dbPath: string | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private lastPollMtimeMs = 0;
   private onChange: (() => void) | null = null;
+  private embeddingProvider: EmbeddingProvider | null = null;
+
+  // ── Embedding ──────────────────────────────────────────────────────────────
+
+  /**
+   * Set the embedding provider. Must be called before any operation that
+   * requires embedding (remember, recall, revise, skip).
+   */
+  setEmbeddingProvider(provider: EmbeddingProvider): void {
+    this.embeddingProvider = provider;
+  }
+
+  /** Embed text as a document (for storage). */
+  private async embedDocument(text: string): Promise<number[]> {
+    const service = await this.requireEmbeddingService();
+    const prefix = service.modelName === MEMORY_MODEL ? 'search_document: ' : '';
+    return service.embed(prefix + text);
+  }
+
+  /** Embed text as a query (for search). */
+  private async embedQuery(text: string): Promise<number[]> {
+    const service = await this.requireEmbeddingService();
+    const prefix = service.modelName === MEMORY_MODEL ? 'search_query: ' : '';
+    return service.embed(prefix + text);
+  }
+
+  private async requireEmbeddingService(): Promise<EmbeddingService> {
+    if (!this.embeddingProvider) throw new Error('Embedding provider not set — call setEmbeddingProvider() first');
+    return this.embeddingProvider();
+  }
 
   // ── Connection ─────────────────────────────────────────────────────────────
 
@@ -128,7 +164,7 @@ export class MemoryManager {
     return this.dbPath;
   }
 
-  // ── External Change Detection ─────────────────────────────────────────────
+  // ── External Change Detection ──────────────────────────────────────────────
 
   /**
    * Start polling for external changes to the memory database file.
@@ -193,12 +229,7 @@ export class MemoryManager {
     this.lastPollMtimeMs = this.getDbMtimeMs();
   }
 
-  // ── Memory Operations ──────────────────────────────────────────────────────
-
-  /** Result of a remember operation. */
-  // - created: new memory inserted
-  // - duplicate: similar memory found, returned for LLM to decide
-  //   (existing record + similarity score, nothing was written)
+  // ── IMemoryService Operations ─────────────────────────────────────────────
 
   /**
    * Write a new memory, or detect a near-duplicate and surface it.
@@ -210,33 +241,29 @@ export class MemoryManager {
    *
    * When `force` is true, skips the dedup check entirely and always inserts.
    */
-  async remember(
-    topic: string,
-    body: string,
-    confidence: number,
-    contextHint: string | null,
-    embeddingService: EmbeddingService,
-    force = false,
-    actionDate: string | null = null,
-    recurrence: string | null = null,
-    priority: number | null = null,
-    memStatus: string | null = null,
-    completedOn: string | null = null,
-  ): Promise<
-    | { status: 'created'; id: number }
-    | { status: 'duplicate'; existing: MemoryRecord; similarity: number }
-  > {
+  async remember(params: RememberParams): Promise<RememberResult> {
     this.assertConnected();
+
+    const {
+      topic,
+      body,
+      confidence = 1.0,
+      contextHint = null,
+      force = false,
+      actionDate = null,
+      recurrence = null,
+      priority = null,
+      completedOn: rawCompletedOn = null,
+    } = params;
+    let { status: memStatus = null } = params;
+    let completedOn = rawCompletedOn;
 
     // Sync status ↔ completedOn before writing
     const synced = syncStatusAndCompletedOn(memStatus, completedOn);
     memStatus = synced.status;
     completedOn = synced.completedOn;
 
-    const prefix = embeddingService.modelName === MEMORY_MODEL
-      ? 'search_document: '
-      : '';
-    const embedding = await embeddingService.embed(prefix + body);
+    const embedding = await this.embedDocument(body);
 
     // Dedup check (skipped when force is true)
     if (!force) {
@@ -256,25 +283,18 @@ export class MemoryManager {
    * Search memories using the decaying-sum signal pipeline.
    * Supports mode selection: hybrid (default), semantic, bm25.
    */
-  async recall(
-    query: string,
-    maxResults: number,
-    embeddingService: EmbeddingService,
-    mode: MemorySearchMode = 'hybrid',
-    dateFilters?: MemoryDateFilters,
-  ): Promise<MemorySearchResult[]> {
+  async recall(params: RecallParams): Promise<MemorySearchResult[]> {
     this.assertConnected();
+
+    const { query, maxResults = 5, mode = 'hybrid', dateFilters } = params;
 
     // BM25 mode doesn't need an embedding vector
     let queryVector: number[] = [];
     if (mode !== 'bm25') {
-      const prefix = embeddingService.modelName === MEMORY_MODEL
-        ? 'search_query: '
-        : '';
-      queryVector = await embeddingService.embed(prefix + query);
+      queryVector = await this.embedQuery(query);
     }
 
-    return searchMemory(this.db!, queryVector, query, maxResults, mode, dateFilters);
+    return searchMemory(this.db!, queryVector, query, maxResults, mode as MemorySearchMode, dateFilters);
   }
 
   /**
@@ -290,41 +310,35 @@ export class MemoryManager {
    * All three writes happen in a single DB transaction. Returns the completion
    * record id and next action date when this path is taken.
    */
-  async revise(
-    id: number,
-    updates: {
+  async revise(params: ReviseParams): Promise<ReviseResult> {
+    this.assertConnected();
+
+    const { id, ...fields } = params;
+    const updates: {
       body?: string;
       confidence?: number;
       contextHint?: string | null;
       actionDate?: string | null;
       recurrence?: string | null;
-      priority?: number | null;
+      priority?: PriorityLevel | null;
       topic?: string;
-      status?: string | null;
+      status?: MemoryStatusValue | null;
       completedOn?: string | null;
-    },
-    embeddingService: EmbeddingService,
-  ): Promise<{ completionRecordId?: number; nextActionDate?: string }> {
-    this.assertConnected();
+    } = { ...fields };
 
     // Sync status ↔ completedOn before writing
     if (updates.status !== undefined || updates.completedOn !== undefined) {
-      const synced = syncStatusAndCompletedOn(
-        updates.status,
-        updates.completedOn,
-      );
+      const synced = syncStatusAndCompletedOn(updates.status, updates.completedOn);
       updates.status = synced.status;
       updates.completedOn = synced.completedOn;
     }
 
-    const prefix = embeddingService.modelName === MEMORY_MODEL ? 'search_document: ' : '';
-
     let embedding: number[] | undefined;
     if (updates.body !== undefined) {
-      embedding = await embeddingService.embed(prefix + updates.body);
+      embedding = await this.embedDocument(updates.body);
     }
 
-    // ── Recurring completion: auto-advance + create completion record ─────────
+    // ── Recurring completion: auto-advance + create completion record ────────
     if (updates.status === 'completed') {
       const existing = getMemory(this.db!, id);
       if (existing?.recurrence && existing.actionDate) {
@@ -335,7 +349,7 @@ export class MemoryManager {
         tomorrow.setDate(tomorrow.getDate() + 1);
         const nextActionDate = advanceRecurrence(existing.actionDate, existing.recurrence, tomorrow);
         const completionBody = `Completed occurrence of m${id} (${existing.topic}) on ${today}.`;
-        const completionEmbedding = await embeddingService.embed(prefix + completionBody);
+        const completionEmbedding = await this.embedDocument(completionBody);
 
         // Override: recurring task resets to open with advanced date rather than staying completed
         updates.status = 'open';
@@ -363,10 +377,20 @@ export class MemoryManager {
       }
     }
 
-    // ── Standard revise ───────────────────────────────────────────────────────
+    // ── Standard revise ──────────────────────────────────────────────────────
     updateMemory(this.db!, id, updates, embedding);
     console.log(`[memory] Revised memory ${id}`);
     return {};
+  }
+
+  /**
+   * Soft-delete a memory by id. The row is retained but marked deleted_at,
+   * making it invisible to all queries while still readable via lodestone_read.
+   */
+  async forget(id: number, reason?: string): Promise<void> {
+    this.assertConnected();
+    deleteMemory(this.db!, id, reason);
+    console.log(`[memory] Soft-deleted memory ${id}${reason ? ` (${reason})` : ''}`);
   }
 
   /**
@@ -377,11 +401,7 @@ export class MemoryManager {
    * If reason is provided, appends a skip note to the memory body so there
    * is a lightweight audit trail without a separate record.
    */
-  async skip(
-    id: number,
-    reason: string | undefined,
-    embeddingService: EmbeddingService,
-  ): Promise<{ nextActionDate: string }> {
+  async skip(id: number, reason?: string): Promise<SkipResult> {
     this.assertConnected();
 
     const existing = getMemory(this.db!, id);
@@ -402,8 +422,7 @@ export class MemoryManager {
     if (reason) {
       const skipNote = `\n\nSkipped occurrence on ${today}: ${reason}.`;
       updates.body = existing.body + skipNote;
-      const prefix = embeddingService.modelName === MEMORY_MODEL ? 'search_document: ' : '';
-      embedding = await embeddingService.embed(prefix + updates.body);
+      embedding = await this.embedDocument(updates.body);
     }
 
     updateMemory(this.db!, id, updates, embedding);
@@ -412,25 +431,14 @@ export class MemoryManager {
   }
 
   /**
-   * Soft-delete a memory by id. The row is retained but marked deleted_at,
-   * making it invisible to all queries while still readable via lodestone_read.
-   */
-  forget(id: number, reason?: string): void {
-    this.assertConnected();
-    deleteMemory(this.db!, id, reason);
-    console.log(`[memory] Soft-deleted memory ${id}${reason ? ` (${reason})` : ''}`);
-  }
-
-  /**
    * Return the N most recently updated memories, plus any with upcoming action dates.
    *
-   * 1. Auto-advance recurring memories whose action_date is in the past.
-   * 2. Fetch active (non-completed, non-cancelled) memories with action_date in [today, today+7].
-   * 3. Fetch the most recently updated active memories.
-   * 4. Merge the two sets (action-date memories first, sorted by priority), deduplicated by id.
-   * 5. Return up to maxResults entries.
+   * 1. Fetch active (non-completed, non-cancelled) memories with action_date in [today, today+7].
+   * 2. Fetch the most recently updated active memories.
+   * 3. Merge the two sets (action-date memories first, sorted by priority), deduplicated by id.
+   * 4. Return up to maxResults entries.
    */
-  orient(maxResults: number): MemoryRecord[] {
+  async orient(maxResults = 10): Promise<MemoryRecord[]> {
     this.assertConnected();
 
     const today = new Date();
@@ -478,13 +486,10 @@ export class MemoryManager {
    * Overdue = action_date before today, not completed, not cancelled.
    * Upcoming = action_date within the resolved date range.
    */
-  agenda(
-    when: DateRangeResult,
-    includeCompleted: boolean,
-    maxResults: number,
-  ): AgendaResult {
+  async agenda(params: AgendaParams): Promise<AgendaResult> {
     this.assertConnected();
 
+    const { when, includeCompleted = false, maxResults = 20 } = params;
     const today = new Date();
     const todayStr = formatDateISO(today);
 
@@ -512,7 +517,7 @@ export class MemoryManager {
    * Fetch a single memory by its primary key.
    * Used by lodestone_read to resolve m-prefixed puids.
    */
-  getById(id: number): MemoryRecord | null {
+  async getById(id: number): Promise<MemoryRecord | null> {
     this.assertConnected();
     return getMemory(this.db!, id);
   }
@@ -521,7 +526,7 @@ export class MemoryManager {
    * Find the top-N most similar active memories to the given memory id.
    * Used by lodestone_read to append related-memory hints on single m-id reads.
    */
-  findRelated(id: number, topN = 5): RelatedMemoryResult[] {
+  async findRelated(id: number, topN = 5): Promise<RelatedMemoryResult[]> {
     this.assertConnected();
     return findRelatedMemories(this.db!, id, topN);
   }
@@ -540,46 +545,4 @@ export class MemoryManager {
   private assertConnected(): void {
     if (!this.db) throw new Error('No memory database connected');
   }
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-/** Format a Date as ISO 8601 date string (YYYY-MM-DD). */
-function formatDateISO(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-/**
- * Sync status and completedOn so they stay consistent:
- *   - completedOn set         → status forced to 'completed'
- *   - status='completed'      → completedOn auto-filled to today if not provided
- *   - status='open'           → completedOn cleared to null
- *   - completedOn=null        → status cleared to null (if not explicitly set)
- */
-function syncStatusAndCompletedOn(
-  status: string | null | undefined,
-  completedOn: string | null | undefined,
-): { status: string | null | undefined; completedOn: string | null | undefined } {
-  const today = formatDateISO(new Date());
-  let s = status;
-  let co = completedOn;
-
-  if (co !== undefined && co !== null) {
-    // completedOn being set → must be completed
-    s = 'completed';
-  } else if (s === 'completed') {
-    // status=completed but no completedOn provided → auto-fill today
-    if (co === undefined) co = today;
-  } else if (s === 'open') {
-    // Reopening → clear completedOn
-    co = null;
-  } else if (co === null && s === undefined) {
-    // Clearing completedOn without setting status → clear status too
-    s = null;
-  }
-
-  return { status: s, completedOn: co };
 }

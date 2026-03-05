@@ -11,9 +11,21 @@ import {
 } from '../backend/config';
 import { SiloManager } from '../backend/silo-manager';
 import { MemoryManager } from '../backend/memory-manager';
+import { MEMORY_MODEL } from '../backend/memory-store';
 import type { AppContext } from './context';
 import { attachActivityForwarding } from './activity';
 import { buildTrayMenu } from './tray';
+
+/** Create a MemoryManager wired to the app's embedding service. */
+export function createMemoryManager(ctx: AppContext): MemoryManager {
+  const mm = new MemoryManager();
+  mm.setEmbeddingProvider(async () => {
+    const service = ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
+    await service.ensureReady();
+    return service;
+  });
+  return mm;
+}
 
 // ── Notifications ────────────────────────────────────────────────────────────
 
@@ -52,7 +64,7 @@ export async function initializeBackend(ctx: AppContext): Promise<void> {
   // Auto-connect memory database if configured
   const memoryDbPath = ctx.config!.memory?.db_path;
   if (memoryDbPath) {
-    ctx.memoryManager = new MemoryManager();
+    ctx.memoryManager = createMemoryManager(ctx);
     try {
       ctx.memoryManager.connect(memoryDbPath);
       ctx.memoryManager.startPolling(() => {

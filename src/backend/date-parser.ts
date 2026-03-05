@@ -1,6 +1,9 @@
 /**
  * Flexible date parser for memory action dates and recurrence rules.
  *
+ * Portable: no Node.js/Electron/native dependencies — safe to reuse in the
+ * Cloudflare Worker (Phase 1 of the Task & Memory migration).
+ *
  * Accepts various date expressions and normalises them to ISO 8601 (YYYY-MM-DD).
  * Used for the `action_date` field on memories and date-range filters in recall.
  *

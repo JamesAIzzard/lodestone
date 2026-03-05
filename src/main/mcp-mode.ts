@@ -16,8 +16,9 @@
 import { app } from 'electron';
 import { createConnection, type Socket } from 'node:net';
 import { startMcpServer } from '../backend/mcp';
-import type { SearchResult, DirectoryResult, SiloStatus, MemoryRecord, MemorySearchResult, RelatedMemoryResult } from '../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus, MemoryRecord, MemorySearchResult, MemoryStatus, RelatedMemoryResult } from '../shared/types';
 import type { EditResult } from '../backend/edit';
+import type { IMemoryService, RememberResult, ReviseResult, SkipResult, AgendaResult } from '../backend/memory-service';
 import type { AppContext } from './context';
 import { GUI_PIPE_NAME } from './internal-api';
 
@@ -169,24 +170,27 @@ export async function startMcpMode(_ctx: AppContext): Promise<void> {
   const mcpHandle = await startMcpServer({
     input: wrapperSocket,
     output: wrapperSocket,
-    search: (params) => gui.call<{ results: SearchResult[]; warnings: string[] }>('search', params),
-    explore: (params) => gui.call<{ results: DirectoryResult[]; warnings: string[] }>('explore', params),
-    status: () => gui.call<{ silos: SiloStatus[] }>('status'),
-    edit: (params) => gui.call<EditResult>('edit', params),
-    getDefaults: () => gui.call<{ contextLines: number }>('getDefaults'),
-    memoryRemember: (params) => gui.call<
-      | { status: 'created'; id: number }
-      | { status: 'duplicate'; existing: MemoryRecord; similarity: number }
-    >('memory.remember', params as Record<string, unknown>),
-    memoryRecall: (params) => gui.call<MemorySearchResult[]>('memory.recall', params as Record<string, unknown>),
-    memoryRevise: (params) => gui.call<{ completionRecordId?: number; nextActionDate?: string }>('memory.revise', params as Record<string, unknown>),
-    memoryForget: (params) => gui.call<void>('memory.forget', params as Record<string, unknown>),
-    memorySkip: (params) => gui.call<{ nextActionDate: string }>('memory.skip', params as Record<string, unknown>),
-    memoryOrient: (params) => gui.call<MemoryRecord[]>('memory.orient', params as Record<string, unknown>),
-    memoryAgenda: (params) => gui.call<{ overdue: MemoryRecord[]; upcoming: MemoryRecord[] }>('memory.agenda', params as Record<string, unknown>),
-    memoryGetById: (params) => gui.call<MemoryRecord | null>('memory.getById', params as Record<string, unknown>),
-    memoryFindRelated: (params) => gui.call<RelatedMemoryResult[]>('memory.findRelated', params as Record<string, unknown>),
-    isMemoryConnected: () => true, // Proxy mode: assume connected; errors are handled gracefully
+    silo: {
+      search: (params) => gui.call<{ results: SearchResult[]; warnings: string[] }>('search', params),
+      explore: (params) => gui.call<{ results: DirectoryResult[]; warnings: string[] }>('explore', params),
+      status: () => gui.call<{ silos: SiloStatus[] }>('status'),
+      edit: (params) => gui.call<EditResult>('edit', params),
+      getDefaults: () => gui.call<{ contextLines: number }>('getDefaults'),
+    },
+    memory: {
+      // Proxy mode: assume connected; errors are handled gracefully by the GUI process
+      isConnected: () => true,
+      getStatus: () => ({ connected: true, dbPath: null, memoryCount: 0, databaseSizeBytes: 0 }) as MemoryStatus,
+      remember: (params) => gui.call<RememberResult>('memory.remember', params as unknown as Record<string, unknown>),
+      recall: (params) => gui.call<MemorySearchResult[]>('memory.recall', params as unknown as Record<string, unknown>),
+      revise: (params) => gui.call<ReviseResult>('memory.revise', params as unknown as Record<string, unknown>),
+      forget: (id, reason) => gui.call<void>('memory.forget', { id, reason }),
+      skip: (id, reason) => gui.call<SkipResult>('memory.skip', { id, reason }),
+      orient: (maxResults) => gui.call<MemoryRecord[]>('memory.orient', { maxResults }),
+      agenda: (params) => gui.call<AgendaResult>('memory.agenda', params as unknown as Record<string, unknown>),
+      getById: (id) => gui.call<MemoryRecord | null>('memory.getById', { id }),
+      findRelated: (id, topN) => gui.call<RelatedMemoryResult[]>('memory.findRelated', { id, topN }),
+    } satisfies IMemoryService,
     notifyActivity: (params) => { gui.call('notify.activity', params as Record<string, unknown>).catch(() => {}); },
   });
 

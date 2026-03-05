@@ -17,11 +17,9 @@ import { createServer, type Server, type Socket } from 'node:net';
 import type { AppContext } from './context';
 import { dispatchExplore, mergeDirectoryResults, dispatchSearch, mergeSearchResults } from '../backend/search-merge';
 import { resolveModelAlias } from '../backend/model-registry';
-import type { SearchResult, DirectoryResult, SiloStatus, SearchParams, MemoryRecord, MemorySearchResult } from '../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus, SearchParams, MemoryRecord, MemorySearchResult, MemoryStatusValue, PriorityLevel, RelatedMemoryResult } from '../shared/types';
 import type { EditOperation, EditResult } from '../backend/edit';
 import type { SiloManager } from '../backend/silo-manager';
-import { MEMORY_MODEL } from '../backend/memory-store';
-import { parseDateRange } from '../backend/date-parser';
 
 /** Windows named pipe path. Dev builds use a distinct name to coexist with an installed build. */
 export const GUI_PIPE_NAME = app.isPackaged
@@ -431,23 +429,21 @@ export class InternalApi {
     const mm = this.ctx.memoryManager;
     if (!mm?.isConnected()) throw new Error('No memory database connected');
 
-    const topic = (params.topic as string | undefined) ?? 'GENERAL';
     const body = params.body as string;
-    const confidence = (params.confidence as number | undefined) ?? 1.0;
-    const contextHint = (params.contextHint as string | undefined) ?? null;
-    const force = (params.force as boolean | undefined) ?? false;
-    const actionDate = (params.actionDate as string | null | undefined) ?? null;
-    const recurrence = (params.recurrence as string | null | undefined) ?? null;
-    const priority = (params.priority as number | null | undefined) ?? null;
-    const memStatus = (params.status as string | null | undefined) ?? null;
-    const completedOn = (params.completedOn as string | null | undefined) ?? null;
-
     if (!body?.trim()) throw new Error('Missing required parameter: body');
 
-    const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
-    await service.ensureReady();
-
-    const result = await mm.remember(topic, body.trim(), confidence, contextHint, service, force, actionDate, recurrence, priority, memStatus, completedOn);
+    const result = await mm.remember({
+      topic: (params.topic as string | undefined) ?? 'GENERAL',
+      body: body.trim(),
+      confidence: (params.confidence as number | undefined) ?? 1.0,
+      contextHint: (params.contextHint as string | undefined) ?? null,
+      force: (params.force as boolean | undefined) ?? false,
+      actionDate: (params.actionDate as string | null | undefined) ?? null,
+      recurrence: (params.recurrence as string | null | undefined) ?? null,
+      priority: (params.priority as PriorityLevel | null | undefined) ?? null,
+      status: (params.status as MemoryStatusValue | null | undefined) ?? null,
+      completedOn: (params.completedOn as string | null | undefined) ?? null,
+    });
 
     // Only notify the renderer when a memory was actually written
     if (result.status === 'created') {
@@ -464,31 +460,14 @@ export class InternalApi {
     if (!mm?.isConnected()) throw new Error('No memory database connected');
 
     const query = params.query as string;
-    const maxResults = (params.maxResults as number | undefined) ?? 5;
-    const mode = (params.mode as 'hybrid' | 'semantic' | 'bm25' | undefined) ?? 'hybrid';
-
     if (!query?.trim()) throw new Error('Missing required parameter: query');
 
-    // Date-range filters (already normalised to ISO 8601 by the MCP tool handler)
-    const dateFilters: Record<string, string | null> = {};
-    if (typeof params.updatedAfter === 'string') dateFilters.updatedAfter = params.updatedAfter;
-    if (typeof params.updatedBefore === 'string') dateFilters.updatedBefore = params.updatedBefore;
-    if (typeof params.actionAfter === 'string') dateFilters.actionAfter = params.actionAfter;
-    if (typeof params.actionBefore === 'string') dateFilters.actionBefore = params.actionBefore;
-    if (typeof params.completedAfter === 'string') dateFilters.completedAfter = params.completedAfter;
-    if (typeof params.completedBefore === 'string') dateFilters.completedBefore = params.completedBefore;
-    if ('status' in params) dateFilters.status = params.status as string | null;
-
-    const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
-    await service.ensureReady();
-
-    return mm.recall(
-      query.trim(),
-      maxResults,
-      service,
-      mode,
-      Object.keys(dateFilters).length > 0 ? dateFilters : undefined,
-    );
+    return mm.recall({
+      query: query.trim(),
+      maxResults: (params.maxResults as number | undefined) ?? 5,
+      mode: (params.mode as 'hybrid' | 'semantic' | 'bm25' | undefined) ?? 'hybrid',
+      dateFilters: params.dateFilters as import('../backend/memory-search').MemoryDateFilters | undefined,
+    });
   }
 
   private async handleMemoryRevise(params: Record<string, unknown>): Promise<{ completionRecordId?: number; nextActionDate?: string }> {
@@ -499,33 +478,20 @@ export class InternalApi {
     const id = params.id as number;
     if (typeof id !== 'number') throw new Error('Missing required parameter: id');
 
-    const updates: {
-      body?: string;
-      confidence?: number;
-      contextHint?: string | null;
-      actionDate?: string | null;
-      recurrence?: string | null;
-      priority?: number | null;
-      topic?: string;
-      status?: string | null;
-      completedOn?: string | null;
-    } = {};
-    if (typeof params.body === 'string') updates.body = params.body;
-    if (typeof params.confidence === 'number') updates.confidence = params.confidence;
-    if ('contextHint' in params) updates.contextHint = params.contextHint as string | null;
-    if ('actionDate' in params) updates.actionDate = params.actionDate as string | null;
-    if ('recurrence' in params) updates.recurrence = params.recurrence as string | null;
-    if ('priority' in params) updates.priority = params.priority as number | null;
-    if (typeof params.topic === 'string') updates.topic = params.topic;
-    if ('status' in params) updates.status = params.status as string | null;
-    if ('completedOn' in params) updates.completedOn = params.completedOn as string | null;
+    const reviseParams: Record<string, unknown> = { id };
+    if (typeof params.body === 'string') reviseParams.body = params.body;
+    if (typeof params.confidence === 'number') reviseParams.confidence = params.confidence;
+    if ('contextHint' in params) reviseParams.contextHint = params.contextHint;
+    if ('actionDate' in params) reviseParams.actionDate = params.actionDate;
+    if ('recurrence' in params) reviseParams.recurrence = params.recurrence;
+    if ('priority' in params) reviseParams.priority = params.priority;
+    if (typeof params.topic === 'string') reviseParams.topic = params.topic;
+    if ('status' in params) reviseParams.status = params.status;
+    if ('completedOn' in params) reviseParams.completedOn = params.completedOn;
 
-    if (Object.keys(updates).length === 0) throw new Error('No fields to update');
+    if (Object.keys(reviseParams).length <= 1) throw new Error('No fields to update');
 
-    const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
-    await service.ensureReady();
-
-    const result = await mm.revise(id, updates, service);
+    const result = await mm.revise(reviseParams as unknown as import('../backend/memory-service').ReviseParams);
     mm.touchPollBaseline();
     this.notifyMemoriesChanged();
     return result;
@@ -538,18 +504,14 @@ export class InternalApi {
 
     const id = params.id as number;
     if (typeof id !== 'number') throw new Error('Missing required parameter: id');
-    const reason = typeof params.reason === 'string' ? params.reason : undefined;
 
-    const service = this.ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
-    await service.ensureReady();
-
-    const result = await mm.skip(id, reason, service);
+    const result = await mm.skip(id, typeof params.reason === 'string' ? params.reason : undefined);
     mm.touchPollBaseline();
     this.notifyMemoriesChanged();
     return result;
   }
 
-  private handleMemoryForget(params: Record<string, unknown>): void {
+  private async handleMemoryForget(params: Record<string, unknown>): Promise<void> {
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
     const mm = this.ctx.memoryManager;
     if (!mm?.isConnected()) throw new Error('No memory database connected');
@@ -557,37 +519,32 @@ export class InternalApi {
     const id = params.id as number;
     if (typeof id !== 'number') throw new Error('Missing required parameter: id');
 
-    const reason = typeof params.reason === 'string' ? params.reason : undefined;
-    mm.forget(id, reason);
+    await mm.forget(id, typeof params.reason === 'string' ? params.reason : undefined);
     mm.touchPollBaseline();
     this.notifyMemoriesChanged();
   }
 
-  private handleMemoryOrient(params: Record<string, unknown>): MemoryRecord[] {
+  private async handleMemoryOrient(params: Record<string, unknown>): Promise<MemoryRecord[]> {
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
     const mm = this.ctx.memoryManager;
     if (!mm?.isConnected()) throw new Error('No memory database connected');
 
-    const maxResults = (params.maxResults as number | undefined) ?? 10;
-    return mm.orient(maxResults);
+    return mm.orient((params.maxResults as number | undefined) ?? 10);
   }
 
-  private handleMemoryAgenda(params: Record<string, unknown>): { overdue: MemoryRecord[]; upcoming: MemoryRecord[] } {
+  private async handleMemoryAgenda(params: Record<string, unknown>): Promise<{ overdue: MemoryRecord[]; upcoming: MemoryRecord[] }> {
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
     const mm = this.ctx.memoryManager;
     if (!mm?.isConnected()) throw new Error('No memory database connected');
 
-    const when = (params.when as string | undefined) ?? 'this week';
-    const includeCompleted = (params.includeCompleted as boolean | undefined) ?? false;
-    const maxResults = (params.maxResults as number | undefined) ?? 20;
-
-    const whenRange = parseDateRange(when);
-    if (!whenRange) throw new Error(`Could not parse date range: "${when}"`);
-
-    return mm.agenda(whenRange, includeCompleted, maxResults);
+    return mm.agenda({
+      when: params.when as import('../backend/date-parser').DateRangeResult,
+      includeCompleted: (params.includeCompleted as boolean | undefined) ?? false,
+      maxResults: (params.maxResults as number | undefined) ?? 20,
+    });
   }
 
-  private handleMemoryGetById(params: Record<string, unknown>): MemoryRecord | null {
+  private async handleMemoryGetById(params: Record<string, unknown>): Promise<MemoryRecord | null> {
     const mm = this.ctx.memoryManager;
     if (!mm?.isConnected()) throw new Error('No memory database connected');
 
@@ -597,15 +554,14 @@ export class InternalApi {
     return mm.getById(id);
   }
 
-  private handleMemoryFindRelated(params: Record<string, unknown>): import('../backend/memory-store').RelatedMemoryResult[] {
+  private async handleMemoryFindRelated(params: Record<string, unknown>): Promise<RelatedMemoryResult[]> {
     const mm = this.ctx.memoryManager;
     if (!mm?.isConnected()) throw new Error('No memory database connected');
 
     const id = params.id as number;
     if (typeof id !== 'number') throw new Error('Missing required parameter: id');
 
-    const topN = typeof params.topN === 'number' ? params.topN : 5;
-    return mm.findRelated(id, topN);
+    return mm.findRelated(id, typeof params.topN === 'number' ? params.topN : 5);
   }
 
   private notifyMemoriesChanged(): void {

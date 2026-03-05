@@ -221,6 +221,12 @@ export interface DefaultSettings {
 
 // ── Memory ────────────────────────────────────────────────────────────────────
 
+/** Lifecycle status values for memory/task entries. */
+export type MemoryStatusValue = 'open' | 'completed' | 'cancelled';
+
+/** Priority levels: 1=low, 2=medium, 3=high, 4=critical. */
+export type PriorityLevel = 1 | 2 | 3 | 4;
+
 export interface MemoryRecord {
   id: number;
   topic: string;
@@ -229,8 +235,8 @@ export interface MemoryRecord {
   contextHint: string | null;
   actionDate: string | null;
   recurrence: string | null;
-  priority: number | null;
-  status: string | null;        // 'open' | 'completed' | 'cancelled' | null
+  priority: PriorityLevel | null;
+  status: MemoryStatusValue | null;
   completedOn: string | null;   // ISO 8601 date — implies completed when set
   createdAt: string;
   updatedAt: string;

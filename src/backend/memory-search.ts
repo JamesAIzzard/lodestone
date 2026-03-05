@@ -15,7 +15,7 @@ import type { MemoryDatabase } from './memory-store';
 import { float32Buffer, getMemoryCount, rowToRecord, filterMemoryIdsByDate } from './memory-store';
 import { summariseDecay } from './scorers/decaying-sum';
 import { tokenise } from './tokeniser';
-import type { MemorySearchResult } from '../shared/types';
+import type { MemorySearchResult, MemoryStatusValue } from '../shared/types';
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -31,7 +31,7 @@ export interface MemoryDateFilters {
   completedAfter?: string;
   completedBefore?: string;
   /** Filter by status. Use 'completed' to match completed_on IS NOT NULL too. Null = unclassified. */
-  status?: string | null;
+  status?: MemoryStatusValue | null;
 }
 
 /** Everything a memory signal needs to produce its scores. */

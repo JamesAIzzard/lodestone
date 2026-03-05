@@ -44,7 +44,7 @@ export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid:
           resolvedStartPath = resolved;
         }
 
-        const { results, warnings } = await deps.search({
+        const { results, warnings } = await deps.silo.search({
           query,
           silo,
           maxResults: maxResults ?? 10,
@@ -64,9 +64,9 @@ export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid:
 
         // Memory sidebar: append top 5 memory matches for supported modes
         const sidebarModes = new Set(['hybrid', 'bm25', 'semantic', undefined]);
-        if (deps.isMemoryConnected?.() && sidebarModes.has(mode)) {
+        if (deps.memory.isConnected() && sidebarModes.has(mode)) {
           try {
-            const memories = (await deps.memoryRecall({ query, maxResults: 5 }))
+            const memories = (await deps.memory.recall({ query, maxResults: 5 }))
               .filter(m => m.score >= CROSS_SEARCH_THRESHOLD);
             if (memories.length > 0) {
               const memLines = [
@@ -137,7 +137,7 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
           if (PuidManager.isMemoryPuid(id)) {
             const memId = PuidManager.parseMemoryId(id);
             try {
-              const memory = await deps.memoryGetById({ id: memId });
+              const memory = await deps.memory.getById(memId);
               if (!memory) {
                 content.push({
                   type: 'text' as const,
@@ -176,9 +176,9 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
                 ];
 
                 // Append related-memory hints on single m-id reads only (batch reads stay clean).
-                if (refs.length === 1 && deps.memoryFindRelated) {
+                if (refs.length === 1) {
                   try {
-                    const related = await deps.memoryFindRelated({ id: memId, topN: 5 });
+                    const related = await deps.memory.findRelated(memId, 5);
                     if (related.length > 0) {
                       lines.push('');
                       lines.push('Related memories (top 5 by similarity):');
@@ -337,7 +337,7 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
     'Get the current status of all Lodestone silos \u2014 file counts, index sizes, and watcher states.',
     async () => {
       try {
-        const { silos } = await deps.status();
+        const { silos } = await deps.silo.status();
         const lines: string[] = ['# Lodestone Status', ''];
 
         for (const silo of silos) {
@@ -408,7 +408,7 @@ export function registerExploreTool(server: McpServer, deps: McpServerDeps, puid
         // Default fullContents to true when startPath is provided
         const effectiveFullContents = fullContents ?? (resolvedStartPath !== undefined);
 
-        const { results, warnings } = await deps.explore({
+        const { results, warnings } = await deps.silo.explore({
           query,
           silo,
           startPath: resolvedStartPath,

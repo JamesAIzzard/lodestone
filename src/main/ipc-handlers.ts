@@ -20,9 +20,8 @@ import type { SiloManager } from '../backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
 import { dispatchExplore, mergeDirectoryResults, dispatchSearch, mergeSearchResults } from '../backend/search-merge';
 import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams, MemoryStatus } from '../shared/types';
-import { MemoryManager } from '../backend/memory-manager';
 import type { AppContext } from './context';
-import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
+import { stopSilo, wakeSilo, registerManager, notifySilosChanged, createMemoryManager } from './lifecycle';
 
 export function registerIpcHandlers(ctx: AppContext): void {
   // ── Dialog & Shell ──────────────────────────────────────────────────────
@@ -672,7 +671,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     async (_event, dbPath: string): Promise<{ success: boolean; error?: string }> => {
       try {
         if (!ctx.memoryManager) {
-          ctx.memoryManager = new MemoryManager();
+          ctx.memoryManager = createMemoryManager(ctx);
         }
         ctx.memoryManager.setup(dbPath);
         ctx.memoryManager.startPolling(() => {
@@ -696,7 +695,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     async (_event, dbPath: string): Promise<{ success: boolean; error?: string }> => {
       try {
         if (!ctx.memoryManager) {
-          ctx.memoryManager = new MemoryManager();
+          ctx.memoryManager = createMemoryManager(ctx);
         }
         ctx.memoryManager.connect(dbPath);
         ctx.memoryManager.startPolling(() => {

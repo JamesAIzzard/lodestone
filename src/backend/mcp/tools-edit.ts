@@ -7,7 +7,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import type { McpServerDeps } from './types';
 import { PuidManager, type PuidRecord } from './puid-manager';
-import { EDIT_DESCRIPTION, memoryBodyWarning } from './formatting';
+import { EDIT_DESCRIPTION } from './formatting';
 
 // ── Target resolution helper ─────────────────────────────────────────────────
 
@@ -454,19 +454,9 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             const batchResults: { source: string; success: boolean; error?: string }[] = [];
 
             for (const element of target) {
-              // Memory delete in batch mode
+              // Memory references are handled by the cloud Worker, not locally
               if (PuidManager.isMemoryPuid(element)) {
-                const memId = PuidManager.parseMemoryId(element);
-                try {
-                  if (dry_run) {
-                    batchResults.push({ source: element, success: true });
-                  } else {
-                    await deps.memory.forget(memId);
-                    batchResults.push({ source: element, success: true });
-                  }
-                } catch (err) {
-                  batchResults.push({ source: element, success: false, error: err instanceof Error ? err.message : String(err) });
-                }
+                batchResults.push({ source: element, success: false, error: 'Memory references (m-prefixed IDs) are handled by the Lodestone remote memory server.' });
                 continue;
               }
 
@@ -527,19 +517,9 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
 
           // ── Single-target delete ──
 
-          // Memory delete (single target)
+          // Memory references are handled by the cloud Worker, not locally
           if (PuidManager.isMemoryPuid(target)) {
-            const memId = PuidManager.parseMemoryId(target);
-            try {
-              if (dry_run) {
-                return { content: [{ type: 'text' as const, text: `Dry run \u2014 would delete memory m${memId}.` }] };
-              }
-              await deps.memory.forget(memId);
-              return { content: [{ type: 'text' as const, text: `Memory m${memId} deleted.` }] };
-            } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
-            }
+            return { content: [{ type: 'text' as const, text: 'Error: Memory references (m-prefixed IDs) are handled by the Lodestone remote memory server.' }] };
           }
 
           const resolved = resolveTarget(target, puid);
@@ -600,64 +580,9 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
           return { content: [{ type: 'text' as const, text: 'Error: Batch mode is only supported for move and delete operations.' }] };
         }
 
-        // ── Memory routing: m-prefixed targets route to memory operations ──
-        // (delete with m-ids is handled in the DELETE section above)
+        // Memory references are handled by the cloud Worker, not locally
         if (PuidManager.isMemoryPuid(target)) {
-          const memId = PuidManager.parseMemoryId(target);
-          const supported = new Set(['str_replace', 'overwrite', 'append']);
-          if (!supported.has(operation)) {
-            return {
-              content: [{ type: 'text' as const, text: `Error: Operation "${operation}" is not supported for memory references. Supported: str_replace, overwrite, append, delete.` }],
-            };
-          }
-
-          try {
-            // For str_replace, overwrite, append — fetch current body, modify, revise
-            const existing = await deps.memory.getById(memId);
-            if (!existing) {
-              return { content: [{ type: 'text' as const, text: `Error: Memory m${memId} not found. It may have been deleted.` }] };
-            }
-
-            let newBody: string;
-            if (operation === 'overwrite') {
-              if (content === undefined) {
-                return { content: [{ type: 'text' as const, text: 'Error: overwrite requires content parameter.' }] };
-              }
-              newBody = content;
-            } else if (operation === 'append') {
-              if (content === undefined) {
-                return { content: [{ type: 'text' as const, text: 'Error: append requires content parameter.' }] };
-              }
-              newBody = existing.body + content;
-            } else {
-              // str_replace
-              if (old_str === undefined || new_str === undefined) {
-                return { content: [{ type: 'text' as const, text: 'Error: str_replace requires old_str and new_str parameters.' }] };
-              }
-              const idx = existing.body.indexOf(old_str);
-              if (idx === -1) {
-                return { content: [{ type: 'text' as const, text: `Error: old_str not found in memory m${memId} body.` }] };
-              }
-              // Check uniqueness
-              const secondIdx = existing.body.indexOf(old_str, idx + 1);
-              if (secondIdx !== -1) {
-                return { content: [{ type: 'text' as const, text: `Error: old_str matches multiple locations in memory m${memId}. Provide more context to make it unique.` }] };
-              }
-              newBody = existing.body.slice(0, idx) + new_str + existing.body.slice(idx + old_str.length);
-            }
-
-            if (dry_run) {
-              const warning = memoryBodyWarning(newBody);
-              return { content: [{ type: 'text' as const, text: `Dry run \u2014 memory m${memId} would be revised.\n\nNew body:\n${newBody}${warning}` }] };
-            }
-
-            await deps.memory.revise({ id: memId, body: newBody });
-            const warning = memoryBodyWarning(newBody);
-            return { content: [{ type: 'text' as const, text: `Memory m${memId} revised via ${operation}.${warning}` }] };
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
-          }
+          return { content: [{ type: 'text' as const, text: 'Error: Memory references (m-prefixed IDs) are handled by the Lodestone remote memory server.' }] };
         }
 
         // 1. Resolve file reference

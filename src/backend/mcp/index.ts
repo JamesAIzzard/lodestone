@@ -21,7 +21,6 @@ import type { McpServerDeps, McpServerHandle } from './types';
 import { PuidManager } from './puid-manager';
 import { registerSearchTool, registerReadTool, registerStatusTool, registerExploreTool } from './tools-search';
 import { registerEditTool } from './tools-edit';
-import { registerRememberTool, registerRecallTool, registerReviseTool, registerForgetTool, registerSkipTool, registerOrientTool, registerAgendaTool, registerGetDatetimeTool } from './tools-memory';
 import { registerResources, registerGuideTool } from './resources';
 import { buildDatetime } from './formatting';
 
@@ -84,15 +83,6 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
   registerStatusTool(server, deps);
   registerExploreTool(server, deps, puid);
   registerEditTool(server, deps, puid);
-  registerRememberTool(server, deps);
-  registerRecallTool(server, deps, puid);
-  registerReviseTool(server, deps);
-  registerForgetTool(server, deps);
-  registerSkipTool(server, deps);
-  registerOrientTool(server, deps);
-  registerAgendaTool(server, deps);
-
-  registerGetDatetimeTool(server);
 
   // Register guide tool (on-demand usage guides) and resources
   registerGuideTool(server);

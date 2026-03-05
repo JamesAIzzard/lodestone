@@ -17,7 +17,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import type { AppContext } from './context';
 import { dispatchExplore, mergeDirectoryResults, dispatchSearch, mergeSearchResults } from '../backend/search-merge';
 import { resolveModelAlias } from '../backend/model-registry';
-import type { SearchResult, DirectoryResult, SiloStatus, SearchParams, MemoryRecord, MemorySearchResult, MemoryStatusValue, PriorityLevel, RelatedMemoryResult } from '../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus, SearchParams } from '../shared/types';
 import type { EditOperation, EditResult } from '../backend/edit';
 import type { SiloManager } from '../backend/silo-manager';
 
@@ -151,33 +151,6 @@ export class InternalApi {
           break;
         case 'notify.activity':
           result = this.handleNotifyActivity(req.params ?? {});
-          break;
-        case 'memory.remember':
-          result = await this.handleMemoryRemember(req.params ?? {});
-          break;
-        case 'memory.recall':
-          result = await this.handleMemoryRecall(req.params ?? {});
-          break;
-        case 'memory.revise':
-          result = await this.handleMemoryRevise(req.params ?? {});
-          break;
-        case 'memory.forget':
-          result = this.handleMemoryForget(req.params ?? {});
-          break;
-        case 'memory.orient':
-          result = this.handleMemoryOrient(req.params ?? {});
-          break;
-        case 'memory.getById':
-          result = this.handleMemoryGetById(req.params ?? {});
-          break;
-        case 'memory.agenda':
-          result = this.handleMemoryAgenda(req.params ?? {});
-          break;
-        case 'memory.findRelated':
-          result = this.handleMemoryFindRelated(req.params ?? {});
-          break;
-        case 'memory.skip':
-          result = await this.handleMemorySkip(req.params ?? {});
           break;
         default:
           this.sendResponse(socket, req.id, undefined, `Unknown method: ${req.method}`);
@@ -411,7 +384,7 @@ export class InternalApi {
    * Return config defaults relevant to the MCP server.
    */
   private handleNotifyActivity(params: Record<string, unknown>): Record<string, never> {
-    const channel = params.channel as 'silo' | 'memory';
+    const channel = params.channel as 'silo';
     const siloName = params.siloName as string | undefined;
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel, siloName });
     return {};
@@ -420,152 +393,6 @@ export class InternalApi {
   private handleGetDefaults(): { contextLines: number } {
     const contextLines = this.ctx.config?.defaults.context_lines ?? 10;
     return { contextLines };
-  }
-
-  // ── Memory Method Handlers ───────────────────────────────────────────────
-
-  private async handleMemoryRemember(params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
-    const mm = this.ctx.memoryManager;
-    if (!mm?.isConnected()) throw new Error('No memory database connected');
-
-    const body = params.body as string;
-    if (!body?.trim()) throw new Error('Missing required parameter: body');
-
-    const result = await mm.remember({
-      topic: (params.topic as string | undefined) ?? 'GENERAL',
-      body: body.trim(),
-      confidence: (params.confidence as number | undefined) ?? 1.0,
-      contextHint: (params.contextHint as string | undefined) ?? null,
-      force: (params.force as boolean | undefined) ?? false,
-      actionDate: (params.actionDate as string | null | undefined) ?? null,
-      recurrence: (params.recurrence as string | null | undefined) ?? null,
-      priority: (params.priority as PriorityLevel | null | undefined) ?? null,
-      status: (params.status as MemoryStatusValue | null | undefined) ?? null,
-      completedOn: (params.completedOn as string | null | undefined) ?? null,
-    });
-
-    // Only notify the renderer when a memory was actually written
-    if (result.status === 'created') {
-      mm.touchPollBaseline();
-      this.notifyMemoriesChanged();
-    }
-
-    return result;
-  }
-
-  private async handleMemoryRecall(params: Record<string, unknown>): Promise<MemorySearchResult[]> {
-    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
-    const mm = this.ctx.memoryManager;
-    if (!mm?.isConnected()) throw new Error('No memory database connected');
-
-    const query = params.query as string;
-    if (!query?.trim()) throw new Error('Missing required parameter: query');
-
-    return mm.recall({
-      query: query.trim(),
-      maxResults: (params.maxResults as number | undefined) ?? 5,
-      mode: (params.mode as 'hybrid' | 'semantic' | 'bm25' | undefined) ?? 'hybrid',
-      dateFilters: params.dateFilters as import('../backend/memory-search').MemoryDateFilters | undefined,
-    });
-  }
-
-  private async handleMemoryRevise(params: Record<string, unknown>): Promise<{ completionRecordId?: number; nextActionDate?: string }> {
-    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
-    const mm = this.ctx.memoryManager;
-    if (!mm?.isConnected()) throw new Error('No memory database connected');
-
-    const id = params.id as number;
-    if (typeof id !== 'number') throw new Error('Missing required parameter: id');
-
-    const reviseParams: Record<string, unknown> = { id };
-    if (typeof params.body === 'string') reviseParams.body = params.body;
-    if (typeof params.confidence === 'number') reviseParams.confidence = params.confidence;
-    if ('contextHint' in params) reviseParams.contextHint = params.contextHint;
-    if ('actionDate' in params) reviseParams.actionDate = params.actionDate;
-    if ('recurrence' in params) reviseParams.recurrence = params.recurrence;
-    if ('priority' in params) reviseParams.priority = params.priority;
-    if (typeof params.topic === 'string') reviseParams.topic = params.topic;
-    if ('status' in params) reviseParams.status = params.status;
-    if ('completedOn' in params) reviseParams.completedOn = params.completedOn;
-
-    if (Object.keys(reviseParams).length <= 1) throw new Error('No fields to update');
-
-    const result = await mm.revise(reviseParams as unknown as import('../backend/memory-service').ReviseParams);
-    mm.touchPollBaseline();
-    this.notifyMemoriesChanged();
-    return result;
-  }
-
-  private async handleMemorySkip(params: Record<string, unknown>): Promise<{ nextActionDate: string }> {
-    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
-    const mm = this.ctx.memoryManager;
-    if (!mm?.isConnected()) throw new Error('No memory database connected');
-
-    const id = params.id as number;
-    if (typeof id !== 'number') throw new Error('Missing required parameter: id');
-
-    const result = await mm.skip(id, typeof params.reason === 'string' ? params.reason : undefined);
-    mm.touchPollBaseline();
-    this.notifyMemoriesChanged();
-    return result;
-  }
-
-  private async handleMemoryForget(params: Record<string, unknown>): Promise<void> {
-    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
-    const mm = this.ctx.memoryManager;
-    if (!mm?.isConnected()) throw new Error('No memory database connected');
-
-    const id = params.id as number;
-    if (typeof id !== 'number') throw new Error('Missing required parameter: id');
-
-    await mm.forget(id, typeof params.reason === 'string' ? params.reason : undefined);
-    mm.touchPollBaseline();
-    this.notifyMemoriesChanged();
-  }
-
-  private async handleMemoryOrient(params: Record<string, unknown>): Promise<MemoryRecord[]> {
-    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
-    const mm = this.ctx.memoryManager;
-    if (!mm?.isConnected()) throw new Error('No memory database connected');
-
-    return mm.orient((params.maxResults as number | undefined) ?? 10);
-  }
-
-  private async handleMemoryAgenda(params: Record<string, unknown>): Promise<{ overdue: MemoryRecord[]; upcoming: MemoryRecord[] }> {
-    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'memory' });
-    const mm = this.ctx.memoryManager;
-    if (!mm?.isConnected()) throw new Error('No memory database connected');
-
-    return mm.agenda({
-      when: params.when as import('../backend/date-parser').DateRangeResult,
-      includeCompleted: (params.includeCompleted as boolean | undefined) ?? false,
-      maxResults: (params.maxResults as number | undefined) ?? 20,
-    });
-  }
-
-  private async handleMemoryGetById(params: Record<string, unknown>): Promise<MemoryRecord | null> {
-    const mm = this.ctx.memoryManager;
-    if (!mm?.isConnected()) throw new Error('No memory database connected');
-
-    const id = params.id as number;
-    if (typeof id !== 'number') throw new Error('Missing required parameter: id');
-
-    return mm.getById(id);
-  }
-
-  private async handleMemoryFindRelated(params: Record<string, unknown>): Promise<RelatedMemoryResult[]> {
-    const mm = this.ctx.memoryManager;
-    if (!mm?.isConnected()) throw new Error('No memory database connected');
-
-    const id = params.id as number;
-    if (typeof id !== 'number') throw new Error('Missing required parameter: id');
-
-    return mm.findRelated(id, typeof params.topN === 'number' ? params.topN : 5);
-  }
-
-  private notifyMemoriesChanged(): void {
-    this.ctx.mainWindow?.webContents.send('memories:changed');
   }
 
   /**

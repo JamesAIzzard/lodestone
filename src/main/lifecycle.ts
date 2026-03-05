@@ -10,22 +10,9 @@ import {
   resolveSiloConfig,
 } from '../backend/config';
 import { SiloManager } from '../backend/silo-manager';
-import { MemoryManager } from '../backend/memory-manager';
-import { MEMORY_MODEL } from '../backend/memory-store';
 import type { AppContext } from './context';
 import { attachActivityForwarding } from './activity';
 import { buildTrayMenu } from './tray';
-
-/** Create a MemoryManager wired to the app's embedding service. */
-export function createMemoryManager(ctx: AppContext): MemoryManager {
-  const mm = new MemoryManager();
-  mm.setEmbeddingProvider(async () => {
-    const service = ctx.getOrCreateEmbeddingService(MEMORY_MODEL);
-    await service.ensureReady();
-    return service;
-  });
-  return mm;
-}
 
 // ── Notifications ────────────────────────────────────────────────────────────
 
@@ -60,22 +47,6 @@ export function loadOrInitConfig(ctx: AppContext): void {
 
 export async function initializeBackend(ctx: AppContext): Promise<void> {
   loadOrInitConfig(ctx);
-
-  // Auto-connect memory database if configured
-  const memoryDbPath = ctx.config!.memory?.db_path;
-  if (memoryDbPath) {
-    ctx.memoryManager = createMemoryManager(ctx);
-    try {
-      ctx.memoryManager.connect(memoryDbPath);
-      ctx.memoryManager.startPolling(() => {
-        ctx.mainWindow?.webContents.send('memories:changed');
-      });
-      console.log(`[main] Connected memory database: ${memoryDbPath}`);
-    } catch (err) {
-      console.error('[main] Failed to connect memory database:', err);
-      ctx.memoryManager = null;
-    }
-  }
 
   for (const [name, siloToml] of Object.entries(ctx.config!.silos)) {
     registerManager(ctx, name, siloToml);

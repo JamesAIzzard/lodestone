@@ -4,8 +4,7 @@ import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import SiloCard from '@/components/SiloCard';
 import AddSiloModal from '@/components/AddSiloModal';
-import MemoryCard from '@/components/MemoryCard';
-import type { SiloStatus, MemoryStatus } from '../../shared/types';
+import type { SiloStatus } from '../../shared/types';
 
 export default function SilosView() {
   const navigate = useNavigate();
@@ -13,13 +12,9 @@ export default function SilosView() {
   const [addOpen, setAddOpen] = useState(false);
   const [stoppingName, setStoppingName] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [memoryStatus, setMemoryStatus] = useState<MemoryStatus>({
-    connected: false, dbPath: null, memoryCount: 0, databaseSizeBytes: 0,
-  });
 
   // Shimmer keys — incrementing forces the animation to restart on each MCP call
   const [siloShimmerKeys, setSiloShimmerKeys] = useState<Record<string, number>>({});
-  const [memoryShimmerKey, setMemoryShimmerKey] = useState(0);
   const silosRef = useRef<SiloStatus[]>([]);
 
   function fetchSilos() {
@@ -29,24 +24,16 @@ export default function SilosView() {
     });
   }
 
-  function fetchMemoryStatus() {
-    window.electronAPI?.getMemoryStatus().then(setMemoryStatus);
-  }
-
   const shimmerSilo = useCallback((name: string) => {
     setSiloShimmerKeys((prev) => ({ ...prev, [name]: (prev[name] ?? 0) + 1 }));
   }, []);
 
   useEffect(() => {
     fetchSilos();
-    fetchMemoryStatus();
     // Re-fetch when state changes externally (e.g. tray stop/wake)
     const unsubSilos = window.electronAPI?.onSilosChanged(fetchSilos);
-    const unsubMemory = window.electronAPI?.onMemoriesChanged(fetchMemoryStatus);
     const unsubActivity = window.electronAPI?.onMcpActivity(({ channel, siloName }) => {
-      if (channel === 'memory') {
-        setMemoryShimmerKey((k) => k + 1);
-      } else {
+      if (channel === 'silo') {
         if (siloName) {
           shimmerSilo(siloName);
         } else {
@@ -57,7 +44,7 @@ export default function SilosView() {
         }
       }
     });
-    return () => { unsubSilos?.(); unsubMemory?.(); unsubActivity?.(); };
+    return () => { unsubSilos?.(); unsubActivity?.(); };
   }, [shimmerSilo]);
 
   // Poll while any silo is indexing or waiting
@@ -105,11 +92,6 @@ export default function SilosView() {
 
   return (
     <div className="p-6">
-      <MemoryCard
-        status={memoryStatus}
-        onDone={fetchMemoryStatus}
-        shimmerKey={memoryShimmerKey}
-      />
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-lg font-semibold text-foreground">Silos</h1>
         <Button size="sm" onClick={() => setAddOpen(true)}>

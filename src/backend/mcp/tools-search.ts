@@ -12,8 +12,8 @@ import { getProcessor } from '../pipeline';
 import {
   SEARCH_DESCRIPTION, READ_DESCRIPTION, EXPLORE_DESCRIPTION,
   formatSearchResults, formatExploreResults,
-  formatBytes, truncateMemoryBody, priorityLabel, statusLabel,
-  MAX_READ_BYTES, PREVIEW_LINES, CROSS_SEARCH_THRESHOLD,
+  formatBytes,
+  MAX_READ_BYTES, PREVIEW_LINES,
 } from './formatting';
 
 export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid: PuidManager): void {
@@ -62,39 +62,6 @@ export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid:
           text = `${warningBlock}\n\n${text}`;
         }
 
-        // Memory sidebar: append top 5 memory matches for supported modes
-        const sidebarModes = new Set(['hybrid', 'bm25', 'semantic', undefined]);
-        if (deps.memory.isConnected() && sidebarModes.has(mode)) {
-          try {
-            const memories = (await deps.memory.recall({ query, maxResults: 5 }))
-              .filter(m => m.score >= CROSS_SEARCH_THRESHOLD);
-            if (memories.length > 0) {
-              const memLines = [
-                '',
-                '---',
-                'Related memories (use lodestone_recall for deeper search):',
-                '',
-              ];
-              for (const m of memories) {
-                const suffixes: string[] = [];
-                if (m.actionDate) {
-                  let s = `Action: ${m.actionDate}`;
-                  if (m.recurrence) s += ` (${m.recurrence})`;
-                  suffixes.push(s);
-                }
-                if (m.priority) suffixes.push(`Priority: ${priorityLabel(m.priority)}`);
-                const suffix = suffixes.length > 0 ? ` | ${suffixes.join(' | ')}` : '';
-                memLines.push(`- [m${m.id}] ${m.topic}${suffix}`);
-                memLines.push(`  ${truncateMemoryBody(m.body)}`);
-                memLines.push('');
-              }
-              text += memLines.join('\n');
-            }
-          } catch {
-            // Memory query failure should not break search results
-          }
-        }
-
         return {
           content: [{ type: 'text' as const, text }],
         };
@@ -133,71 +100,12 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
           const id = typeof entry === 'string' ? entry : entry.id;
           const location = (typeof entry === 'object' ? entry.location : undefined) as LocationHint | undefined;
 
-          // Resolve memory puids — fetch full body from memory database
+          // Memory puids are no longer handled locally — memory is on the cloud Worker
           if (PuidManager.isMemoryPuid(id)) {
-            const memId = PuidManager.parseMemoryId(id);
-            try {
-              const memory = await deps.memory.getById(memId);
-              if (!memory) {
-                content.push({
-                  type: 'text' as const,
-                  text: `## ${id}\nError: Memory ${memId} not found.`,
-                });
-              } else if (memory.deletedAt) {
-                // Soft-deleted memory — show body with deletion notice so reference
-                // chains through deleted memories remain navigable.
-                const deletedNote = memory.deletionReason
-                  ? `Deleted: ${memory.deletedAt} — ${memory.deletionReason}`
-                  : `Deleted: ${memory.deletedAt}`;
-                content.push({
-                  type: 'text' as const,
-                  text: [
-                    `## ${id}: ${memory.topic} [DELETED]`,
-                    `> ⚠️ ${deletedNote}`,
-                    '',
-                    memory.body,
-                  ].join('\n'),
-                });
-              } else {
-                const memMeta = [`Confidence: ${memory.confidence}`, `Updated: ${memory.updatedAt}`];
-                if (memory.actionDate) {
-                  let actionStr = `Action: ${memory.actionDate}`;
-                  if (memory.recurrence) actionStr += ` (${memory.recurrence})`;
-                  memMeta.push(actionStr);
-                }
-                if (memory.priority) memMeta.push(`Priority: ${priorityLabel(memory.priority)}`);
-                if (memory.status) memMeta.push(`Status: ${statusLabel(memory.status)}`);
-                if (memory.completedOn) memMeta.push(`Completed: ${memory.completedOn}`);
-                const lines = [
-                  `## ${id}: ${memory.topic}`,
-                  memory.body,
-                  '',
-                  `_${memMeta.join(' | ')}_`,
-                ];
-
-                // Append related-memory hints on single m-id reads only (batch reads stay clean).
-                if (refs.length === 1) {
-                  try {
-                    const related = await deps.memory.findRelated(memId, 5);
-                    if (related.length > 0) {
-                      lines.push('');
-                      lines.push('Related memories (top 5 by similarity):');
-                      for (const r of related) {
-                        const pct = Math.round(r.similarity * 100);
-                        lines.push(`  [m${r.id}] ${r.topic} (${pct}%)`);
-                      }
-                    }
-                  } catch {
-                    // Related hints are best-effort — never break the read
-                  }
-                }
-
-                content.push({ type: 'text' as const, text: lines.join('\n') });
-              }
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              content.push({ type: 'text' as const, text: `## ${id}\nError: ${msg}` });
-            }
+            content.push({
+              type: 'text' as const,
+              text: `## ${id}\nError: Memory references (m-prefixed IDs) are handled by the Lodestone remote memory server, not this local file server.`,
+            });
             continue;
           }
 

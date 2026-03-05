@@ -16,9 +16,8 @@
 import { app } from 'electron';
 import { createConnection, type Socket } from 'node:net';
 import { startMcpServer } from '../backend/mcp';
-import type { SearchResult, DirectoryResult, SiloStatus, MemoryRecord, MemorySearchResult, MemoryStatus, RelatedMemoryResult } from '../shared/types';
+import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types';
 import type { EditResult } from '../backend/edit';
-import type { IMemoryService, RememberResult, ReviseResult, SkipResult, AgendaResult } from '../backend/memory-service';
 import type { AppContext } from './context';
 import { GUI_PIPE_NAME } from './internal-api';
 
@@ -177,20 +176,6 @@ export async function startMcpMode(_ctx: AppContext): Promise<void> {
       edit: (params) => gui.call<EditResult>('edit', params),
       getDefaults: () => gui.call<{ contextLines: number }>('getDefaults'),
     },
-    memory: {
-      // Proxy mode: assume connected; errors are handled gracefully by the GUI process
-      isConnected: () => true,
-      getStatus: () => ({ connected: true, dbPath: null, memoryCount: 0, databaseSizeBytes: 0 }) as MemoryStatus,
-      remember: (params) => gui.call<RememberResult>('memory.remember', params as unknown as Record<string, unknown>),
-      recall: (params) => gui.call<MemorySearchResult[]>('memory.recall', params as unknown as Record<string, unknown>),
-      revise: (params) => gui.call<ReviseResult>('memory.revise', params as unknown as Record<string, unknown>),
-      forget: (id, reason) => gui.call<void>('memory.forget', { id, reason }),
-      skip: (id, reason) => gui.call<SkipResult>('memory.skip', { id, reason }),
-      orient: (maxResults) => gui.call<MemoryRecord[]>('memory.orient', { maxResults }),
-      agenda: (params) => gui.call<AgendaResult>('memory.agenda', params as unknown as Record<string, unknown>),
-      getById: (id) => gui.call<MemoryRecord | null>('memory.getById', { id }),
-      findRelated: (id, topN) => gui.call<RelatedMemoryResult[]>('memory.findRelated', { id, topN }),
-    } satisfies IMemoryService,
     notifyActivity: (params) => { gui.call('notify.activity', params as Record<string, unknown>).catch(() => {}); },
   });
 

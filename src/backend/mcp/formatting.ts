@@ -5,7 +5,7 @@
 import path from 'node:path';
 import type { SearchResult, DirectoryResult, LocationHint, MemoryStatusValue, PriorityLevel } from '../../shared/types';
 import { tokenise } from '../tokeniser';
-import type { McpServerDeps } from './types';
+
 import type { PuidManager } from './puid-manager';
 
 // ── Date context ─────────────────────────────────────────────────────────────
@@ -110,16 +110,6 @@ export const MAX_READ_BYTES = 512 * 1024; // 512 KB
 
 /** Number of preview lines to show when a file exceeds the read limit. */
 export const PREVIEW_LINES = 100;
-
-// ── Memory nudge ─────────────────────────────────────────────────────────────
-
-/** Gentle reminder appended to successful tool responses to encourage memory use. */
-const MEMORY_NUDGE = '\n\n---\n\ud83d\udca1 If you\'ve learned something new or made a decision, consider saving it with lodestone_remember.';
-
-/** Return the memory nudge if memory is connected, otherwise empty string. */
-export function memoryNudge(deps: McpServerDeps): string {
-  return deps.memory.isConnected() ? MEMORY_NUDGE : '';
-}
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams, MemoryStatus } from './types';
+import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams } from './types';
 
 /** Config snapshot stored inside a portable silo database. */
 export interface StoredSiloConfigResponse {
@@ -58,11 +58,8 @@ export interface ElectronAPI {
   // ── Silo state push (e.g. tray sleep/wake) ────────────────────────────────
   onSilosChanged: (callback: () => void) => () => void;
 
-  // ── Memory state push (e.g. remember/revise/forget from MCP) ──────────────
-  onMemoriesChanged: (callback: () => void) => () => void;
-
-  // ── MCP activity push (triggers shimmer on silo/memory cards) ─────────────
-  onMcpActivity: (callback: (event: { channel: 'silo' | 'memory'; siloName?: string }) => void) => () => void;
+  // ── MCP activity push (triggers shimmer on silo cards) ─────────────────────
+  onMcpActivity: (callback: (event: { channel: 'silo'; siloName?: string }) => void) => () => void;
 
   // ── Defaults ──────────────────────────────────────────────────────────────
   getDefaults: () => Promise<DefaultSettings>;
@@ -77,12 +74,6 @@ export interface ElectronAPI {
   testOllamaConnection: (url: string) => Promise<{ connected: boolean; models: string[] }>;
   getConfigPath: () => Promise<string>;
   getDataDir: () => Promise<string>;
-
-  // ── Memory ────────────────────────────────────────────────────────────────
-  getMemoryStatus: () => Promise<MemoryStatus>;
-  setupMemory: (dbPath: string) => Promise<{ success: boolean; error?: string }>;
-  connectMemory: (dbPath: string) => Promise<{ success: boolean; error?: string }>;
-  disconnectMemory: () => Promise<{ success: boolean; error?: string }>;
 
   // ── Claude Desktop Integration ────────────────────────────────────────────
   getClaudeDesktopStatus: () => Promise<{

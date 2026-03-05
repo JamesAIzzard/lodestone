@@ -5,7 +5,6 @@
 import type { Readable, Writable } from 'node:stream';
 import type { SearchResult, DirectoryResult, SiloStatus } from '../../shared/types';
 import type { EditOperation, EditResult } from '../edit';
-import type { IMemoryService } from '../memory-service';
 
 export interface McpServerDeps {
   /** Custom input stream (e.g. a named-pipe socket). Falls back to process.stdin. */
@@ -44,10 +43,8 @@ export interface McpServerDeps {
     /** Config defaults (e.g. contextLines). */
     getDefaults: () => Promise<{ contextLines: number }>;
   };
-  /** Memory service — all memory operations (remember, recall, revise, etc.). */
-  memory: IMemoryService;
   /** Fire-and-forget notification to the GUI to trigger the shimmer on a card. */
-  notifyActivity?: (params: { channel: 'silo' | 'memory'; siloName?: string }) => void;
+  notifyActivity?: (params: { channel: 'silo'; siloName?: string }) => void;
 }
 
 /** Handle returned by startMcpServer for runtime control. */

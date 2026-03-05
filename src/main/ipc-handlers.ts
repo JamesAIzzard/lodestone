@@ -19,9 +19,9 @@ import { checkOllamaConnection } from '../backend/embedding';
 import type { SiloManager } from '../backend/silo-manager';
 import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
 import { dispatchExplore, mergeDirectoryResults, dispatchSearch, mergeSearchResults } from '../backend/search-merge';
-import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams, MemoryStatus } from '../shared/types';
+import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams } from '../shared/types';
 import type { AppContext } from './context';
-import { stopSilo, wakeSilo, registerManager, notifySilosChanged, createMemoryManager } from './lifecycle';
+import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
 
 export function registerIpcHandlers(ctx: AppContext): void {
   // ── Dialog & Shell ──────────────────────────────────────────────────────
@@ -655,80 +655,4 @@ export function registerIpcHandlers(ctx: AppContext): void {
     },
   );
 
-  // ── Memory ──────────────────────────────────────────────────────────────
-
-  ipcMain.handle('memory:status', (): MemoryStatus => {
-    return ctx.memoryManager?.getStatus() ?? {
-      connected: false,
-      dbPath: null,
-      memoryCount: 0,
-      databaseSizeBytes: 0,
-    };
-  });
-
-  ipcMain.handle(
-    'memory:setup',
-    async (_event, dbPath: string): Promise<{ success: boolean; error?: string }> => {
-      try {
-        if (!ctx.memoryManager) {
-          ctx.memoryManager = createMemoryManager(ctx);
-        }
-        ctx.memoryManager.setup(dbPath);
-        ctx.memoryManager.startPolling(() => {
-          ctx.mainWindow?.webContents.send('memories:changed');
-        });
-
-        if (ctx.config) {
-          ctx.config.memory = { db_path: dbPath };
-          saveConfig(ctx.configPath(), ctx.config);
-        }
-
-        return { success: true };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-  );
-
-  ipcMain.handle(
-    'memory:connect',
-    async (_event, dbPath: string): Promise<{ success: boolean; error?: string }> => {
-      try {
-        if (!ctx.memoryManager) {
-          ctx.memoryManager = createMemoryManager(ctx);
-        }
-        ctx.memoryManager.connect(dbPath);
-        ctx.memoryManager.startPolling(() => {
-          ctx.mainWindow?.webContents.send('memories:changed');
-        });
-
-        if (ctx.config) {
-          ctx.config.memory = { db_path: dbPath };
-          saveConfig(ctx.configPath(), ctx.config);
-        }
-
-        return { success: true };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-  );
-
-  ipcMain.handle(
-    'memory:disconnect',
-    async (): Promise<{ success: boolean; error?: string }> => {
-      try {
-        ctx.memoryManager?.disconnect();
-
-        if (ctx.config) {
-          ctx.config.memory = {};
-          saveConfig(ctx.configPath(), ctx.config);
-        }
-
-        return { success: true };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-  );
 }

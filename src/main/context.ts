@@ -16,7 +16,6 @@ import { resolveModelAlias } from '../backend/model-registry';
 import type { SiloManager } from '../backend/silo-manager';
 import { IndexingQueue } from '../backend/indexing-queue';
 import type { InternalApi } from './internal-api';
-import type { MemoryManager } from '../backend/memory-manager';
 
 export interface AppContext {
   config: LodestoneConfig | null;
@@ -30,7 +29,6 @@ export interface AppContext {
   startTime: number;
   indexingQueue: IndexingQueue;
   internalApi: InternalApi | null;
-  memoryManager: MemoryManager | null;
 
   getOrCreateEmbeddingService(model: string): EmbeddingService;
   getUserDataDir(): string;
@@ -51,7 +49,6 @@ export function createAppContext(): AppContext {
     startTime: Date.now(),
     indexingQueue: new IndexingQueue(),
     internalApi: null,
-    memoryManager: null,
 
     getOrCreateEmbeddingService(model: string): EmbeddingService {
       const modelId = resolveModelAlias(model);

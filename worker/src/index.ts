@@ -10,6 +10,7 @@ import { createMcpHandler } from 'agents/mcp';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { D1MemoryService } from './d1-memory-service';
 import { embedDocument } from './embedding';
+import { addToInvertedIndex, removeFromInvertedIndex, updateMemoryCorpusStats } from './d1/inverted-index';
 import {
   registerRememberTool,
   registerRecallTool,
@@ -95,31 +96,64 @@ export default {
     const authError = authenticate(request, env);
     if (authError) return authError;
 
-    // Re-embed all existing memories (admin endpoint for migration)
+    // Rebuild all indexes: inverted index (BM25) + Vectorize embeddings
+    // ?scope=bm25|vectors|all (default: all)
+    // ?from=N&to=N — optional ID range filter for chunked vector rebuilds
     if (url.pathname === '/reindex' && request.method === 'POST') {
-      const { results: rows } = await env.DB.prepare(
-        `SELECT id, topic, body FROM memories WHERE deleted_at IS NULL`,
-      ).all();
+      const scope = url.searchParams.get('scope') ?? 'all';
+      const fromId = url.searchParams.get('from');
+      const toId = url.searchParams.get('to');
 
-      let count = 0;
-      // Process in batches of 10 to stay within Workers AI rate limits
-      for (let i = 0; i < rows.length; i += 10) {
-        const batch = rows.slice(i, i + 10);
-        const vectors: VectorizeVector[] = [];
+      let query = `SELECT id, topic, body FROM memories WHERE deleted_at IS NULL`;
+      const binds: unknown[] = [];
+      if (fromId) { query += ` AND id >= ?`; binds.push(Number(fromId)); }
+      if (toId) { query += ` AND id <= ?`; binds.push(Number(toId)); }
+      query += ` ORDER BY id`;
 
-        for (const row of batch) {
+      const stmt = env.DB.prepare(query);
+      const { results: rows } = binds.length > 0 ? await stmt.bind(...binds).all() : await stmt.all();
+
+      let bm25Count = 0;
+      let vectorCount = 0;
+
+      // Rebuild inverted index for BM25
+      if (scope === 'all' || scope === 'bm25') {
+        // Clear existing index
+        await env.DB.batch([
+          env.DB.prepare('DELETE FROM memory_postings'),
+          env.DB.prepare('DELETE FROM memory_terms'),
+          env.DB.prepare('DELETE FROM memory_metadata'),
+        ]);
+
+        for (const row of rows) {
           const r = row as Record<string, unknown>;
-          const embedding = await embedDocument(env.AI, r.topic as string, r.body as string);
-          vectors.push({ id: String(r.id), values: embedding });
-          count++;
+          await addToInvertedIndex(env.DB, r.id as number, r.body as string);
+          bm25Count++;
         }
+        await updateMemoryCorpusStats(env.DB);
+      }
 
-        if (vectors.length > 0) {
-          await env.VECTORIZE.upsert(vectors);
+      // Rebuild Vectorize embeddings
+      if (scope === 'all' || scope === 'vectors') {
+        // Process in batches of 10 to stay within Workers AI rate limits
+        for (let i = 0; i < rows.length; i += 10) {
+          const batch = rows.slice(i, i + 10);
+          const vectors: VectorizeVector[] = [];
+
+          for (const row of batch) {
+            const r = row as Record<string, unknown>;
+            const embedding = await embedDocument(env.AI, r.topic as string, r.body as string);
+            vectors.push({ id: String(r.id), values: embedding });
+            vectorCount++;
+          }
+
+          if (vectors.length > 0) {
+            await env.VECTORIZE.upsert(vectors);
+          }
         }
       }
 
-      return new Response(JSON.stringify({ status: 'ok', reindexed: count }), {
+      return new Response(JSON.stringify({ status: 'ok', bm25: bm25Count, vectors: vectorCount }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }

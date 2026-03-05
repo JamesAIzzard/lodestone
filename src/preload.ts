@@ -57,14 +57,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('silos:changed', handler);
   },
 
-  // Memory state changes (e.g. remember/revise/forget from MCP)
-  onMemoriesChanged: (callback: () => void) => {
-    const handler = () => callback();
-    ipcRenderer.on('memories:changed', handler);
-    return () => ipcRenderer.removeListener('memories:changed', handler);
-  },
-
-  // MCP channel activity (triggers shimmer on silo/memory cards)
+  // MCP channel activity (triggers shimmer on silo cards)
   onMcpActivity: (callback: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) => callback(data);
     ipcRenderer.on('mcp:activity', handler);
@@ -88,16 +81,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('config:path'),
   getDataDir: (): Promise<string> =>
     ipcRenderer.invoke('data:dir'),
-
-  // Memory
-  getMemoryStatus: (): Promise<unknown> =>
-    ipcRenderer.invoke('memory:status'),
-  setupMemory: (dbPath: string): Promise<unknown> =>
-    ipcRenderer.invoke('memory:setup', dbPath),
-  connectMemory: (dbPath: string): Promise<unknown> =>
-    ipcRenderer.invoke('memory:connect', dbPath),
-  disconnectMemory: (): Promise<unknown> =>
-    ipcRenderer.invoke('memory:disconnect'),
 
   // Claude Desktop Integration
   getClaudeDesktopStatus: (): Promise<unknown> =>

@@ -338,14 +338,13 @@ export const READ_DESCRIPTION = [
   'Note: d-prefixed IDs (d1, d2, ...) are directory references from lodestone_explore.',
   'They cannot be read \u2014 use lodestone_explore with startPath to browse directories.',
   '',
-  'Note: m-prefixed IDs (m1, m2, ...) are memory references from lodestone_recall or lodestone_orient.',
-  'Use lodestone_read with an m-puid to retrieve the full memory body when the preview is truncated.',
+  'Note: m-prefixed IDs (m1, m2, ...) are memory references handled by the Lodestone remote',
+  'memory server, not this local file server. Use the remote lodestone_read for memories.',
   '',
   'Examples:',
   '  \u2022 ["r1", "r3"] \u2014 read two files from the last search',
   '  \u2022 [{ id: "r2", location: { type: "lines", start: 10, end: 50 } }] \u2014 read a specific line range',
   '  \u2022 [{ id: "r4", location: { type: "page", page: 5 } }] \u2014 read page 5 of a PDF',
-  '  \u2022 ["m5", "r3"] \u2014 read memory m5 and file r3',
   '  \u2022 ["C:/Users/me/docs/notes.md"] \u2014 read a file directly by path (no search needed)',
 ].join('\n');
 
@@ -407,8 +406,8 @@ export const EDIT_DESCRIPTION = [
   'The stored hash is refreshed on conflict, so you can adjust and retry immediately',
   'without a separate lodestone_read call.',
   '',
-  'Memory references (m-prefixed IDs) are supported for str_replace, overwrite, append, and delete',
-  'operations. These route to memory-specific update/delete logic (lodestone_revise / lodestone_forget).',
+  'Memory references (m-prefixed IDs) are handled by the Lodestone remote memory server.',
+  'Use the remote lodestone_revise / lodestone_forget tools to update or delete memories.',
   '',
   'Files must be within a configured silo directory. Text edits require valid UTF-8.',
 ].join('\n');

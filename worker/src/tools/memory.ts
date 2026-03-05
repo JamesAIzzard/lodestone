@@ -742,7 +742,16 @@ export function registerReadTool(server: McpServer, memory: D1MemoryService): vo
             if (mem.contextHint) meta.push(`Context: ${mem.contextHint}`);
             lines.push(`_${meta.join(' | ')}_`);
 
-            // Related memories stubbed in Phase 1 (no Vectorize)
+            // Related memories via Vectorize KNN
+            const related = await memory.findRelated(memId, 5);
+            if (related.length > 0) {
+              lines.push('');
+              lines.push('### Related memories');
+              for (const rel of related) {
+                const sim = Math.round(rel.similarity * 100);
+                lines.push(`- [m${rel.id}] ${rel.topic} (${sim}% similar)`);
+              }
+            }
 
             outputParts.push(lines.join('\n'));
           } else {

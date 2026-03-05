@@ -1,14 +1,13 @@
 /**
  * Memory search — async D1 decaying-sum signal pipeline for memory recall.
  *
- * Phase 1 port: BM25 only. Semantic signal is stubbed (returns empty Map).
- * In hybrid mode, the pipeline gracefully degrades to BM25-only scoring
- * since decaying-sum with a single non-empty signal just returns that score.
- *
  * Modes:
- *   hybrid   = [semantic(stub), bm25]  — effectively BM25-only in Phase 1
- *   semantic = [semantic(stub)]         — returns empty results in Phase 1
- *   bm25     = [bm25]                  — pure keyword matching
+ *   hybrid   = [semantic, bm25]  — Vectorize KNN + BM25 fused via decaying-sum
+ *   semantic = [semantic]         — Vectorize KNN only
+ *   bm25     = [bm25]            — pure keyword matching
+ *
+ * When Vectorize/queryVector are unavailable, semantic signal gracefully
+ * returns empty and hybrid degrades to BM25-only.
  */
 
 import { getMemoryCount, filterMemoryIdsByDate } from './d1/read';
@@ -42,6 +41,10 @@ interface MemorySignalContext {
   maxResults: number;
   /** If non-null, only these memory IDs are candidates. */
   allowedIds: Set<number> | null;
+  /** Pre-computed query embedding vector (Phase 3). */
+  queryVector?: number[];
+  /** Vectorize index binding (Phase 3). */
+  vectorize?: Vectorize;
 }
 
 /** A scoring signal that produces per-memory scores (async for D1). */
@@ -52,15 +55,33 @@ interface MemorySignal {
 
 // ── Signals ─────────────────────────────────────────────────────────────────
 
+/** Candidate fanout: fetch k * FANOUT candidates to ensure coverage after filtering. */
+const CANDIDATE_FANOUT = 5;
+const MIN_CANDIDATES = 20;
+
 /**
- * Semantic signal — STUBBED in Phase 1 (no Vectorize).
- * Returns empty Map so the pipeline handles it gracefully.
- * Phase 3 will implement real KNN search via Vectorize.
+ * Semantic signal — Vectorize KNN search with cosine similarity.
+ * Returns empty Map gracefully when Vectorize/queryVector are unavailable.
  */
 const memorySemanticSignal: MemorySignal = {
   name: 'semantic',
-  async scoreAll(_ctx: MemorySignalContext): Promise<Map<number, number>> {
-    return new Map();
+  async scoreAll(ctx: MemorySignalContext): Promise<Map<number, number>> {
+    const scores = new Map<number, number>();
+    if (!ctx.vectorize || !ctx.queryVector) return scores;
+
+    const k = Math.max(ctx.maxResults * CANDIDATE_FANOUT, MIN_CANDIDATES);
+    const results = await ctx.vectorize.query(ctx.queryVector, { topK: k });
+
+    for (const match of results.matches) {
+      const memId = parseInt(match.id, 10);
+      if (isNaN(memId)) continue;
+      // Respect date-range pre-filter
+      if (ctx.allowedIds !== null && !ctx.allowedIds.has(memId)) continue;
+      // Vectorize cosine metric returns similarity [0,1] directly
+      if (match.score > 0) scores.set(memId, match.score);
+    }
+
+    return scores;
   },
 };
 
@@ -198,6 +219,8 @@ const MODE_SIGNALS: Record<MemorySearchMode, MemorySignal[]> = {
  * @param maxResults  Maximum results to return.
  * @param mode        Search mode (default: 'hybrid').
  * @param dateFilters Optional date-range filters applied before scoring.
+ * @param vectorize   Optional Vectorize binding for semantic search.
+ * @param queryVector Optional pre-computed query embedding vector.
  * @returns Ranked memory results with signal breakdown.
  */
 export async function searchMemory(
@@ -206,6 +229,8 @@ export async function searchMemory(
   maxResults: number,
   mode: MemorySearchMode = 'hybrid',
   dateFilters?: MemoryDateFilters,
+  vectorize?: Vectorize,
+  queryVector?: number[],
 ): Promise<MemorySearchResult[]> {
   const count = await getMemoryCount(db);
   if (count === 0) return [];
@@ -223,6 +248,8 @@ export async function searchMemory(
     queryTokens: tokenise(query),
     maxResults,
     allowedIds,
+    queryVector,
+    vectorize,
   };
 
   // ── Run all signals ────────────────────────────────────────────────

@@ -1,14 +1,15 @@
 /**
- * Lodestone MCP Worker — Cloudflare Worker with D1-backed memory.
+ * Lodestone MCP Worker — Cloudflare Worker with D1, Vectorize, and Workers AI.
  *
- * Phase 1 of the Task & Memory migration: all 8 memory tools powered by
- * Cloudflare D1 (BM25 keyword search). Semantic/embedding features arrive
- * in Phase 3 (Vectorize).
+ * Memory storage in D1, embedding vectors in Vectorize (EmbeddingGemma 300M
+ * via Workers AI). Provides BM25 keyword search, semantic search, hybrid
+ * search, dedup detection, and related-memory discovery.
  */
 
 import { createMcpHandler } from 'agents/mcp';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { D1MemoryService } from './d1-memory-service';
+import { embedDocument } from './embedding';
 import {
   registerRememberTool,
   registerRecallTool,
@@ -28,6 +29,10 @@ interface Env {
   AUTH_TOKEN?: string;
   /** D1 database binding for memory storage. */
   DB: D1Database;
+  /** Workers AI binding for EmbeddingGemma 300M. */
+  AI: Ai;
+  /** Vectorize index binding for memory embedding vectors. */
+  VECTORIZE: Vectorize;
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────────
@@ -57,7 +62,7 @@ function createServer(env: Env): McpServer {
     version: '0.1.0',
   });
 
-  const memory = new D1MemoryService(env.DB);
+  const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
 
   // Register all memory tools
   registerRememberTool(server, memory);
@@ -89,6 +94,35 @@ export default {
     // All other routes require auth
     const authError = authenticate(request, env);
     if (authError) return authError;
+
+    // Re-embed all existing memories (admin endpoint for migration)
+    if (url.pathname === '/reindex' && request.method === 'POST') {
+      const { results: rows } = await env.DB.prepare(
+        `SELECT id, topic, body FROM memories WHERE deleted_at IS NULL`,
+      ).all();
+
+      let count = 0;
+      // Process in batches of 10 to stay within Workers AI rate limits
+      for (let i = 0; i < rows.length; i += 10) {
+        const batch = rows.slice(i, i + 10);
+        const vectors: VectorizeVector[] = [];
+
+        for (const row of batch) {
+          const r = row as Record<string, unknown>;
+          const embedding = await embedDocument(env.AI, r.topic as string, r.body as string);
+          vectors.push({ id: String(r.id), values: embedding });
+          count++;
+        }
+
+        if (vectors.length > 0) {
+          await env.VECTORIZE.upsert(vectors);
+        }
+      }
+
+      return new Response(JSON.stringify({ status: 'ok', reindexed: count }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // MCP endpoint
     if (url.pathname === '/mcp') {

@@ -1,13 +1,9 @@
 /**
- * D1MemoryService — IMemoryService implementation on Cloudflare D1.
+ * D1MemoryService — IMemoryService implementation on Cloudflare D1 + Vectorize.
  *
- * Phase 1 port of MemoryManager. Key differences:
- *   - Constructor takes D1Database instead of file path + EmbeddingService
- *   - No embedding/vec operations (Phase 3 — Vectorize)
- *   - Dedup check stubbed: remember() always inserts
- *   - findRelated() stubbed: returns empty array
- *   - All operations are async (D1 API)
- *   - No connection lifecycle or polling (serverless — stateless per-request)
+ * Memory storage in D1, embedding vectors in Vectorize, inference via Workers AI.
+ * All operations are async (D1/Vectorize APIs). Gracefully degrades to BM25-only
+ * when AI or Vectorize bindings are unavailable.
  */
 
 import type {
@@ -23,6 +19,8 @@ import { advanceRecurrence, type DateRangeResult } from './date-parser';
 import { searchMemory, type MemorySearchMode, type MemoryDateFilters } from './memory-search';
 import { getMemory, getMemoryCount, getRecentActiveMemories, getActiveUpcomingMemories, getOverdueMemories, getMemoriesByActionDateRange } from './d1/read';
 import { insertMemory, updateMemory, deleteMemory } from './d1/write';
+import { embedDocument, embedQuery } from './embedding';
+import { rowToRecord } from './d1/helpers';
 
 // ── Param & Result Types ────────────────────────────────────────────────────
 
@@ -83,10 +81,17 @@ export interface AgendaResult {
   upcoming: MemoryRecord[];
 }
 
+/** Cosine similarity threshold for dedup (from desktop similarity.ts). */
+const DEDUP_THRESHOLD = 0.80;
+
 // ── Service ─────────────────────────────────────────────────────────────────
 
 export class D1MemoryService {
-  constructor(private db: D1Database) {}
+  constructor(
+    private db: D1Database,
+    private ai?: Ai,
+    private vectorize?: Vectorize,
+  ) {}
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -107,8 +112,9 @@ export class D1MemoryService {
   // ── Operations ────────────────────────────────────────────────────────────
 
   /**
-   * Write a new memory. Dedup is STUBBED in Phase 1 (no embeddings).
-   * Always inserts regardless of `force` flag.
+   * Write a new memory with optional dedup check via Vectorize.
+   * When `force` is false and AI/Vectorize are available, checks for
+   * similar existing memories before inserting.
    */
   async remember(params: RememberParams): Promise<RememberResult> {
     const {
@@ -116,6 +122,7 @@ export class D1MemoryService {
       body,
       confidence = 1.0,
       contextHint = null,
+      force = false,
       actionDate = null,
       recurrence = null,
       priority = null,
@@ -129,9 +136,31 @@ export class D1MemoryService {
     memStatus = synced.status as MemoryStatusValue | null;
     completedOn = synced.completedOn as string | null;
 
+    // Embed the document (used for both dedup and storage)
+    let embedding: number[] | undefined;
+    if (this.ai) {
+      embedding = await embedDocument(this.ai, topic, body);
+    }
+
+    // Dedup check: find similar memory via Vectorize KNN
+    if (!force && embedding && this.vectorize) {
+      const results = await this.vectorize.query(embedding, { topK: 1 });
+      if (results.matches.length > 0) {
+        const best = results.matches[0];
+        if (best.score >= DEDUP_THRESHOLD) {
+          const existingId = parseInt(best.id, 10);
+          const existing = await getMemory(this.db, existingId);
+          if (existing) {
+            return { status: 'duplicate', existing, similarity: best.score };
+          }
+        }
+      }
+    }
+
     const id = await insertMemory(
       this.db, topic, body, confidence, contextHint,
       actionDate, recurrence, priority, memStatus, completedOn,
+      this.vectorize, embedding,
     );
 
     return { status: 'created', id };
@@ -139,11 +168,22 @@ export class D1MemoryService {
 
   /**
    * Search memories using the D1 decaying-sum signal pipeline.
-   * In Phase 1: hybrid/semantic modes degrade to BM25-only.
+   * When AI/Vectorize are available, embeds the query for semantic search.
+   * Falls back to BM25-only when unavailable.
    */
   async recall(params: RecallParams): Promise<MemorySearchResult[]> {
     const { query, maxResults = 5, mode = 'hybrid', dateFilters } = params;
-    return searchMemory(this.db, query, maxResults, mode as MemorySearchMode, dateFilters);
+
+    // Embed query for semantic search (only if we have AI + Vectorize)
+    let queryVector: number[] | undefined;
+    if (this.ai && this.vectorize && mode !== 'bm25') {
+      queryVector = await embedQuery(this.ai, query);
+    }
+
+    return searchMemory(
+      this.db, query, maxResults, mode as MemorySearchMode, dateFilters,
+      this.vectorize, queryVector,
+    );
   }
 
   /**
@@ -190,10 +230,21 @@ export class D1MemoryService {
         updates.completedOn = null;
         updates.actionDate = nextActionDate;
 
-        // Revise the recurring task
-        await updateMemory(this.db, id, updates);
+        // Re-embed if body changed
+        let embedding: number[] | undefined;
+        if (updates.body && this.ai) {
+          embedding = await embedDocument(this.ai, updates.topic ?? existing.topic, updates.body);
+        }
 
-        // Insert completion record
+        // Revise the recurring task
+        await updateMemory(this.db, id, updates, this.vectorize, embedding);
+
+        // Embed and insert completion record
+        let completionEmbedding: number[] | undefined;
+        if (this.ai) {
+          completionEmbedding = await embedDocument(this.ai, `COMPLETED: ${existing.topic}`, completionBody);
+        }
+
         const completionRecordId = await insertMemory(
           this.db,
           `COMPLETED: ${existing.topic}`,
@@ -203,6 +254,7 @@ export class D1MemoryService {
           null, null, null,
           'completed',
           today,
+          this.vectorize, completionEmbedding,
         );
 
         return { completionRecordId, nextActionDate };
@@ -210,15 +262,24 @@ export class D1MemoryService {
     }
 
     // ── Standard revise ──────────────────────────────────────────────────
-    await updateMemory(this.db, id, updates);
+    // Re-embed if body changed
+    let embedding: number[] | undefined;
+    if (updates.body && this.ai) {
+      const existing = await getMemory(this.db, id);
+      if (existing) {
+        embedding = await embedDocument(this.ai, updates.topic ?? existing.topic, updates.body);
+      }
+    }
+
+    await updateMemory(this.db, id, updates, this.vectorize, embedding);
     return {};
   }
 
   /**
-   * Soft-delete a memory by id.
+   * Soft-delete a memory by id. Removes from both D1 inverted index and Vectorize.
    */
   async forget(id: number, reason?: string): Promise<void> {
-    await deleteMemory(this.db, id, reason);
+    await deleteMemory(this.db, id, reason, this.vectorize);
   }
 
   /**
@@ -326,10 +387,45 @@ export class D1MemoryService {
   }
 
   /**
-   * Find related memories — STUBBED in Phase 1 (no Vectorize).
-   * Returns empty array. Phase 3 will implement real similarity search.
+   * Find related memories via Vectorize KNN using the memory's own embedding.
+   * Returns empty array when Vectorize is unavailable.
    */
-  async findRelated(_id: number, _topN = 5): Promise<RelatedMemoryResult[]> {
-    return [];
+  async findRelated(id: number, topN = 5): Promise<RelatedMemoryResult[]> {
+    if (!this.vectorize) return [];
+
+    // Fetch the memory's own vector from Vectorize
+    const vectors = await this.vectorize.getByIds([String(id)]);
+    if (vectors.length === 0) return [];
+
+    const vector = vectors[0].values;
+    if (!vector) return [];
+
+    // Query for topN+1 to exclude self
+    const results = await this.vectorize.query(
+      vector instanceof Float32Array || vector instanceof Float64Array
+        ? Array.from(vector)
+        : vector,
+      { topK: topN + 1 },
+    );
+
+    // Filter out self and collect matches
+    const matches = results.matches.filter(m => m.id !== String(id)).slice(0, topN);
+    if (matches.length === 0) return [];
+
+    // Fetch full records from D1
+    const ids = matches.map(m => parseInt(m.id, 10));
+    const placeholders = ids.map(() => '?').join(', ');
+    const { results: rows } = await this.db.prepare(
+      `SELECT * FROM memories WHERE id IN (${placeholders}) AND deleted_at IS NULL`,
+    ).bind(...ids).all();
+
+    const rowMap = new Map(rows.map(r => [(r as Record<string, unknown>).id as number, r]));
+
+    return matches
+      .filter(m => rowMap.has(parseInt(m.id, 10)))
+      .map(m => ({
+        ...rowToRecord(rowMap.get(parseInt(m.id, 10))! as Record<string, unknown>),
+        similarity: m.score,
+      }));
   }
 }

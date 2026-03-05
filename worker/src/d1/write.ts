@@ -2,7 +2,7 @@
  * D1 memory store write operations — async equivalents of memory-store/write.ts.
  *
  * Key differences from the desktop version:
- *   - No embedding/vec operations (Phase 1 — no Vectorize)
+ *   - Vectorize for embedding storage (not sqlite-vec)
  *   - Uses db.batch() for implicit transactions instead of .transaction()
  *   - All operations are async
  */
@@ -11,11 +11,9 @@ import type { MemoryRecord } from '../shared/types';
 import { addToInvertedIndex, removeFromInvertedIndex, updateMemoryCorpusStats } from './inverted-index';
 
 /**
- * Insert a new memory record and sync the inverted index.
+ * Insert a new memory record, sync the inverted index, and optionally
+ * upsert the embedding vector into Vectorize.
  * Returns the new row's id.
- *
- * Uses db.batch() to run the insert + inverted index updates atomically.
- * No embedding/vec operations — those arrive in Phase 3 (Vectorize).
  */
 export async function insertMemory(
   db: D1Database,
@@ -28,6 +26,8 @@ export async function insertMemory(
   priority: MemoryRecord['priority'] = null,
   status: MemoryRecord['status'] = null,
   completedOn: string | null = null,
+  vectorize?: Vectorize,
+  embedding?: number[],
 ): Promise<number> {
   // Insert the memory row first to get its ID
   const result = await db.prepare(
@@ -41,14 +41,22 @@ export async function insertMemory(
   await addToInvertedIndex(db, id, body);
   await updateMemoryCorpusStats(db);
 
+  // Upsert embedding into Vectorize
+  if (vectorize && embedding) {
+    try {
+      await vectorize.upsert([{ id: String(id), values: embedding }]);
+    } catch (e) {
+      // Log but don't fail — Vectorize upsert is best-effort
+      console.error(`Vectorize upsert failed for m${id}:`, (e as Error).message);
+    }
+  }
+
   return id;
 }
 
 /**
  * Update an existing memory by id. Only supplied fields are changed.
- * If body changes, re-syncs the inverted index.
- *
- * No embedding/vec re-sync — that arrives in Phase 3.
+ * If body changes, re-syncs the inverted index and optionally re-embeds.
  */
 export async function updateMemory(
   db: D1Database,
@@ -64,6 +72,8 @@ export async function updateMemory(
     status?: MemoryRecord['status'];
     completedOn?: string | null;
   },
+  vectorize?: Vectorize,
+  embedding?: number[],
 ): Promise<void> {
   const sets: string[] = [`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`];
   const vals: unknown[] = [];
@@ -114,14 +124,18 @@ export async function updateMemory(
     await addToInvertedIndex(db, id, updates.body);
     await updateMemoryCorpusStats(db);
   }
+
+  // Re-sync embedding if provided
+  if (vectorize && embedding) {
+    await vectorize.upsert([{ id: String(id), values: embedding }]);
+  }
 }
 
 /**
  * Soft-delete a memory by id. Sets deleted_at to the current timestamp and
- * stores an optional reason. Removes the memory from the inverted index so
- * BM25 corpus stats stay accurate.
+ * stores an optional reason. Removes from both inverted index and Vectorize.
  */
-export async function deleteMemory(db: D1Database, id: number, reason?: string): Promise<void> {
+export async function deleteMemory(db: D1Database, id: number, reason?: string, vectorize?: Vectorize): Promise<void> {
   const now = new Date().toISOString();
 
   // Batch the soft-delete and inverted index cleanup
@@ -131,4 +145,9 @@ export async function deleteMemory(db: D1Database, id: number, reason?: string):
 
   await removeFromInvertedIndex(db, id);
   await updateMemoryCorpusStats(db);
+
+  // Remove embedding from Vectorize
+  if (vectorize) {
+    await vectorize.deleteByIds([String(id)]);
+  }
 }

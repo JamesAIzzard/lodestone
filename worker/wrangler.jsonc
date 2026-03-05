@@ -7,6 +7,15 @@
   "observability": {
     "enabled": true
   },
+  "ai": {
+    "binding": "AI"
+  },
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "lodestone-memory-vectors"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",

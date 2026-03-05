@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lodestone-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-03-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "lodestone-memory",
+      "database_id": "e4120d3b-9374-40f9-af8b-f8c6ba488a7c",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

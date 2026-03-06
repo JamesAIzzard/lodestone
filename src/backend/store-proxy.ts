@@ -253,6 +253,25 @@ export function expandTree(
   return call<DirectoryTreeNode[]>('expandTree', siloId, rootPath, rootDepth, maxDepth, fullContents);
 }
 
+// ── Activity log ─────────────────────────────────────────────────────────────
+
+import type { ActivityRow } from './store/operations';
+
+export function logActivity(
+  siloId: string,
+  timestamp: string,
+  eventType: string,
+  filePath: string,
+  errorMessage: string | null,
+  maxRows: number,
+): Promise<void> {
+  return call<void>('logActivity', siloId, timestamp, eventType, filePath, errorMessage, maxRows);
+}
+
+export function loadActivity(siloId: string, limit: number): Promise<ActivityRow[]> {
+  return call<ActivityRow[]>('loadActivity', siloId, limit);
+}
+
 // ── Maintenance ──────────────────────────────────────────────────────────────
 
 export function checkpoint(siloId: string, mode?: string): Promise<void> {

@@ -266,6 +266,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
         ignoreFiles: def.defaults.ignore_files,
         debounce: def.defaults.debounce,
         contextLines: def.defaults.context_lines,
+        activityLogLimit: def.defaults.activity_log_limit,
       };
     }
     return {
@@ -274,6 +275,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       ignoreFiles: ctx.config.defaults.ignore_files,
       debounce: ctx.config.defaults.debounce,
       contextLines: ctx.config.defaults.context_lines,
+      activityLogLimit: ctx.config.defaults.activity_log_limit,
     };
   });
 
@@ -287,6 +289,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       if (updates.ignoreFiles !== undefined) ctx.config.defaults.ignore_files = updates.ignoreFiles;
       if (updates.debounce !== undefined) ctx.config.defaults.debounce = updates.debounce;
       if (updates.contextLines !== undefined) ctx.config.defaults.context_lines = updates.contextLines;
+      if (updates.activityLogLimit !== undefined) ctx.config.defaults.activity_log_limit = updates.activityLogLimit;
 
       saveConfig(ctx.configPath(), ctx.config);
       return { success: true };

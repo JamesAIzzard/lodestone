@@ -14,7 +14,9 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,json,html}\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "reset-data": "node scripts/reset-data.mjs"
+    "reset-data": "node scripts/reset-data.mjs",
+    "deploy:worker": "cd worker && npx wrangler deploy",
+    "deploy:worker:dev": "cd worker && npx wrangler deploy --env dev"
   },
   "keywords": [],
   "author": {

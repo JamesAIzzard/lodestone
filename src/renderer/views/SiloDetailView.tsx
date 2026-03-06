@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  ChevronLeft, FileText, Blocks, FolderOpen, FolderPlus, FolderMinus,
-  Loader2, RotateCcw, Trash2, AlertCircle, AlertTriangle, Pause, Play,
+  ChevronLeft, FileText, Blocks, FolderOpen,
+  Loader2, RotateCcw, Trash2, AlertTriangle, Pause, Play,
   HardDrive, Unplug, Pencil, Check, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -12,8 +12,9 @@ import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
 import ExtensionPicker from '@/components/ExtensionPicker';
 import SiloAppearancePicker from '@/components/SiloAppearancePicker';
 import SiloIcon from '@/components/SiloIconComponent';
+import ActivityFeed from '@/components/ActivityFeed';
 import { SILO_COLOR_MAP, type SiloColor, type SiloIconName } from '../../shared/silo-appearance';
-import type { SiloStatus, ActivityEvent, ServerStatus } from '../../shared/types';
+import type { SiloStatus, ServerStatus } from '../../shared/types';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -34,30 +35,8 @@ function formatTime(isoString: string | null): string {
   return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function fileName(p: string): string {
-  return p.split(/[/\\]/).pop() ?? p;
-}
-
 function modelIdFromDisplay(display: string): string {
   return display.split(' — ')[0].trim();
-}
-
-const eventTypeStyles: Record<string, string> = {
-  indexed:      'text-emerald-400',
-  reindexed:    'text-blue-400',
-  deleted:      'text-muted-foreground',
-  error:        'text-red-400',
-  'dir-added':  'text-teal-400',
-  'dir-removed':'text-muted-foreground/70',
-};
-
-function eventLabel(type: string): string {
-  switch (type) {
-    case 'reindexed':   return 'Re-indexed';
-    case 'dir-added':   return 'Dir Added';
-    case 'dir-removed': return 'Dir Removed';
-    default: return type.charAt(0).toUpperCase() + type.slice(1);
-  }
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -90,7 +69,6 @@ export default function SiloDetailView() {
   const [isRenaming, setIsRenaming]       = useState(false);
 
   // Editable form state
-  const [siloEvents, setSiloEvents]         = useState<ActivityEvent[]>([]);
   const [editDescription, setEditDescription] = useState('');
   const [serverStatus, setServerStatus]     = useState<ServerStatus | null>(null);
   const [selectedModel, setSelectedModel]   = useState('');
@@ -176,9 +154,6 @@ export default function SiloDetailView() {
       setDefaultExtensions(d.extensions);
     });
 
-    window.electronAPI?.getActivity(100).then((events) => {
-      setSiloEvents(events.filter((e) => e.siloName === silo.config.name).slice(0, 8));
-    });
   }, [silo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Handlers ────────────────────────────────────────────────────────────────
@@ -610,28 +585,7 @@ export default function SiloDetailView() {
         <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Recent Activity
         </h2>
-        {siloEvents.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No recent activity.</p>
-        ) : (
-          <div className="flex flex-col gap-1">
-            {siloEvents.map((event) => (
-              <div key={event.id} className="flex items-center gap-2 text-xs">
-                <span className="w-12 shrink-0 text-muted-foreground/60">
-                  {formatTime(event.timestamp)}
-                </span>
-                <span className={cn('w-20 shrink-0', eventTypeStyles[event.eventType])}>
-                  {eventLabel(event.eventType)}
-                </span>
-                <span className="truncate text-muted-foreground" title={event.filePath}>
-                  {fileName(event.filePath)}
-                </span>
-                {event.eventType === 'error'        && <AlertCircle className="h-3 w-3 shrink-0 text-red-400" />}
-                {event.eventType === 'dir-added'    && <FolderPlus  className="h-3 w-3 shrink-0 text-teal-400" />}
-                {event.eventType === 'dir-removed'  && <FolderMinus className="h-3 w-3 shrink-0 text-muted-foreground/70" />}
-              </div>
-            ))}
-          </div>
-        )}
+        <ActivityFeed siloName={siloName} limit={100} />
       </section>
 
       {/* ── Danger zone ─────────────────────────────────────────────────────── */}

@@ -13,7 +13,12 @@
  */
 
 import os from 'node:os';
-import { pipeline, env, type FeatureExtractionPipeline } from '@huggingface/transformers';
+import {
+  pipeline,
+  env,
+  type FeatureExtractionPipeline,
+  type FeatureExtractionPipelineOptions,
+} from '@huggingface/transformers';
 import type { EmbeddingService } from './embedding';
 import {
   getModelDefinition,
@@ -83,7 +88,7 @@ export class BuiltInEmbeddingService implements EmbeddingService {
       normalize: true,
       truncation: true,
       max_length: this.maxTokens,
-    });
+    } as FeatureExtractionPipelineOptions);
     // Extract data before disposal — result is a Tensor backed by WASM heap
     // memory that V8's GC does not manage. Explicit disposal is required to
     // prevent the WASM heap from growing unboundedly across many embed() calls.
@@ -109,7 +114,7 @@ export class BuiltInEmbeddingService implements EmbeddingService {
       normalize: true,
       truncation: true,
       max_length: this.maxTokens,
-    });
+    } as FeatureExtractionPipelineOptions);
     // Extract all vectors before disposal — see embed() comment above.
     try {
       const data = result.data as Float32Array;

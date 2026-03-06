@@ -17,6 +17,7 @@ export default function SettingsView() {
   const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
   const [fileIgnore, setFileIgnore] = useState<string[]>([]);
   const [debounce, setDebounce] = useState(10);
+  const [activityLogLimit, setActivityLogLimit] = useState(2000);
   const [dataDir, setDataDir] = useState('');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -35,6 +36,7 @@ export default function SettingsView() {
       setFolderIgnore(d.ignore);
       setFileIgnore(d.ignoreFiles);
       setDebounce(d.debounce);
+      setActivityLogLimit(d.activityLogLimit);
     });
     window.electronAPI?.getDataDir().then((dir) => setDataDir(dir));
     window.electronAPI?.getClaudeDesktopStatus().then(setClaudeStatus);
@@ -72,6 +74,12 @@ export default function SettingsView() {
     const clamped = Math.max(1, value);
     setDebounce(clamped);
     window.electronAPI?.updateDefaults({ debounce: clamped });
+  }
+
+  function handleActivityLogLimitChange(value: number) {
+    const clamped = Math.max(100, Math.min(50000, value));
+    setActivityLogLimit(clamped);
+    window.electronAPI?.updateDefaults({ activityLogLimit: clamped });
   }
 
   async function handleResetAll() {
@@ -216,18 +224,41 @@ export default function SettingsView() {
         {/* ── File Watching ─────────────────────────────────────── */}
         <Section
           title="File Watching"
-          description="How long to wait after a file change before re-indexing it."
+          description="Controls for the file watcher and activity log."
         >
-          <div className="flex items-center gap-3">
-            <input
-              type="number"
-              min={1}
-              step={1}
-              value={debounce}
-              onChange={(e) => handleDebounceChange(Number(e.target.value))}
-              className="h-9 w-24 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-            <span className="text-sm text-muted-foreground">seconds</span>
+          <div className="flex flex-col gap-4">
+            <div>
+              <label className="mb-1.5 block text-xs text-muted-foreground">Debounce delay</label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={debounce}
+                  onChange={(e) => handleDebounceChange(Number(e.target.value))}
+                  className="h-9 w-24 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <span className="text-sm text-muted-foreground">seconds</span>
+              </div>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs text-muted-foreground">Activity log limit</label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min={100}
+                  max={50000}
+                  step={100}
+                  value={activityLogLimit}
+                  onChange={(e) => handleActivityLogLimitChange(Number(e.target.value))}
+                  className="h-9 w-28 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <span className="text-sm text-muted-foreground">events per silo</span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground/60">
+                Older events are pruned automatically. Takes effect on next indexing event.
+              </p>
+            </div>
           </div>
         </Section>
 

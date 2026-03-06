@@ -52,7 +52,7 @@ export async function extractPdf(content: Buffer, shouldStop?: () => boolean): P
   // Resolve the standard font data directory once. The NodeStandardFontDataFactory
   // reads fonts via fs.readFile(baseUrl + filename), so we need an absolute path.
   if (!standardFontDataUrl) {
-    const require = createRequire(import.meta.url);
+    const require = createRequire(__filename);
     const pkgDir = path.dirname(require.resolve('pdfjs-dist/package.json'));
     standardFontDataUrl = path.join(pkgDir, 'standard_fonts') + '/';
   }

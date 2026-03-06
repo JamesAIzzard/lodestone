@@ -36,6 +36,8 @@ export interface DefaultsConfig {
   ignore_files: string[];
   /** Number of surrounding lines in post-edit confirmation snippets */
   context_lines: number;
+  /** Maximum number of activity log entries to keep per silo */
+  activity_log_limit: number;
 }
 
 export interface SiloTomlConfig {
@@ -95,6 +97,7 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     ignore: ['.*', '_*', 'node_modules', 'dist', 'build'],
     ignore_files: ['.*', 'Thumbs.db'],
     context_lines: 10,
+    activity_log_limit: 2000,
   },
   search: {},
   memory: {},
@@ -156,6 +159,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
       ignore: Array.isArray(defaults.ignore) ? defaults.ignore as string[] : DEFAULT_CONFIG.defaults.ignore,
       ignore_files: Array.isArray(defaults.ignore_files) ? defaults.ignore_files as string[] : DEFAULT_CONFIG.defaults.ignore_files,
       context_lines: typeof defaults.context_lines === 'number' ? defaults.context_lines : DEFAULT_CONFIG.defaults.context_lines,
+      activity_log_limit: typeof defaults.activity_log_limit === 'number' ? defaults.activity_log_limit : DEFAULT_CONFIG.defaults.activity_log_limit,
     },
     search: {},
     memory: {
@@ -212,6 +216,7 @@ export interface ResolvedSiloConfig {
   ignoreFiles: string[];
   model: string;
   debounce: number;
+  activityLogLimit: number;
   stopped: boolean;
   /** Human-readable description for MCP tool routing */
   description: string;
@@ -241,6 +246,7 @@ export function resolveSiloConfig(
     ignoreFiles: silo.ignore_files ?? config.defaults.ignore_files,
     model: resolveModelAlias(rawModel),
     debounce: config.defaults.debounce,
+    activityLogLimit: config.defaults.activity_log_limit,
     stopped: silo.stopped === true,
     description: silo.description ?? '',
     color: validateSiloColor(silo.color),

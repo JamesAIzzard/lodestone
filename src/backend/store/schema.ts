@@ -161,6 +161,16 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    -- Activity log (rolling, capped per settings)
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp     TEXT NOT NULL,
+      event_type    TEXT NOT NULL,
+      file_path     TEXT NOT NULL,
+      error_message TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_activity_timestamp ON activity_log(timestamp DESC);
   `);
 
   // Stamp schema version early so future opens can detect stale schemas

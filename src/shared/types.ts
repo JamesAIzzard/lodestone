@@ -217,6 +217,8 @@ export interface DefaultSettings {
   debounce: number;
   /** Number of surrounding lines in post-edit confirmation snippets */
   contextLines: number;
+  /** Maximum number of activity log entries to keep per silo */
+  activityLogLimit: number;
 }
 
 // ── Memory ────────────────────────────────────────────────────────────────────

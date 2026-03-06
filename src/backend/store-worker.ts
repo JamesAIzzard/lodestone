@@ -21,6 +21,7 @@ import {
   getChunkCount, getFileCount,
   insertDirEntry, deleteDirEntry, getFilesInDirectory,
   syncDirectoriesWithDisk, recomputeDirectoryCounts,
+  insertActivityEvent, loadActivityLog,
 } from './store/operations';
 import { search, type FileResult } from './search';
 import { directorySearchSilo, expandTree, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
@@ -157,6 +158,20 @@ function dispatch(msg: StoreRequest): unknown {
         args[2] as number,  // maxDepth
         args[3] as boolean | undefined,  // fullContents
       );
+
+    // ── Activity log ─────────────────────────────────────────────────
+    case 'logActivity':
+      insertActivityEvent(
+        db,
+        args[0] as string,        // timestamp
+        args[1] as string,        // eventType
+        args[2] as string,        // filePath
+        args[3] as string | null, // errorMessage
+        args[4] as number,        // maxRows
+      );
+      return undefined;
+    case 'loadActivity':
+      return loadActivityLog(db, args[0] as number);
 
     // ── Maintenance ───────────────────────────────────────────────────
     case 'checkpoint': {

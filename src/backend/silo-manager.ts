@@ -334,6 +334,20 @@ export class SiloManager {
     // 4. Load file modification times for offline change detection
     this.mtimes = await storeProxy.loadMtimes(this.siloId);
 
+    // 4b. Seed the in-memory activity log from persisted history
+    try {
+      const rows = await storeProxy.loadActivity(this.siloId, MAX_ACTIVITY_EVENTS);
+      this.activityLog = rows.map((r) => ({
+        timestamp: new Date(r.timestamp),
+        siloName: this.config.name,
+        filePath: r.file_path,
+        eventType: r.event_type as WatcherEvent['eventType'],
+        errorMessage: r.error_message ?? undefined,
+      }));
+    } catch {
+      // First run — activity_log table may not exist yet in very old DBs
+    }
+
     // 5. Run startup reconciliation via the global IndexingQueue so that
     //    only one silo embeds/indexes at a time.
     if (this.stopped) return;
@@ -832,6 +846,18 @@ export class SiloManager {
     }
     this.lastUpdated = watcherEvent.timestamp;
     this.eventListener?.(watcherEvent);
+
+    // Persist to SQLite (fire-and-forget — never block the pipeline)
+    if (this.dbOpen) {
+      storeProxy.logActivity(
+        this.siloId,
+        watcherEvent.timestamp.toISOString(),
+        watcherEvent.eventType,
+        watcherEvent.filePath,
+        watcherEvent.errorMessage ?? null,
+        this.config.activityLogLimit,
+      ).catch(() => {});
+    }
   };
 
   private handleWatcherEvent(event: WatcherEvent): void {
@@ -844,6 +870,18 @@ export class SiloManager {
 
     // Notify external listener (main process → renderer forwarding)
     this.eventListener?.(event);
+
+    // Persist to SQLite (fire-and-forget — never block the watcher)
+    if (this.dbOpen) {
+      storeProxy.logActivity(
+        this.siloId,
+        event.timestamp.toISOString(),
+        event.eventType,
+        event.filePath,
+        event.errorMessage ?? null,
+        this.config.activityLogLimit,
+      ).catch(() => {});
+    }
 
     // Update file modification times via the store proxy (fire-and-forget)
     // event.filePath is an absolute path from the watcher — convert to stored key

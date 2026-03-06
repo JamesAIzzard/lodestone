@@ -625,3 +625,46 @@ function updateDirectoryCounts(db: SiloDatabase, dirPaths: DirEntry[]): void {
     updateSubdirCount.run(d.dirPath, d.dirPath, d.depth + 1, d.dirPath);
   }
 }
+
+// ── Activity Log ─────────────────────────────────────────────────────────────
+
+/** Row shape returned by loadActivityLog. */
+export interface ActivityRow {
+  timestamp: string;
+  event_type: string;
+  file_path: string;
+  error_message: string | null;
+}
+
+/**
+ * Insert an activity event and prune the table to the configured limit.
+ * The prune runs in the same transaction as the insert so it's atomic.
+ */
+export function insertActivityEvent(
+  db: SiloDatabase,
+  timestamp: string,
+  eventType: string,
+  filePath: string,
+  errorMessage: string | null,
+  maxRows: number,
+): void {
+  db.transaction(() => {
+    db.prepare(
+      'INSERT INTO activity_log (timestamp, event_type, file_path, error_message) VALUES (?, ?, ?, ?)',
+    ).run(timestamp, eventType, filePath, errorMessage);
+
+    // Prune oldest rows beyond the cap
+    db.prepare(
+      'DELETE FROM activity_log WHERE id NOT IN (SELECT id FROM activity_log ORDER BY id DESC LIMIT ?)',
+    ).run(maxRows);
+  })();
+}
+
+/**
+ * Load the most recent activity events, newest first.
+ */
+export function loadActivityLog(db: SiloDatabase, limit: number): ActivityRow[] {
+  return db.prepare(
+    'SELECT timestamp, event_type, file_path, error_message FROM activity_log ORDER BY id DESC LIMIT ?',
+  ).all(limit) as ActivityRow[];
+}

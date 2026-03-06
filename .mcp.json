@@ -2,7 +2,7 @@
   "mcpServers": {
     "lodestone-remote": {
       "type": "http",
-      "url": "https://lodestone-mcp.jamesaizzard.workers.dev/mcp"
+      "url": "https://lodestone-mcp-dev.jamesaizzard.workers.dev/mcp"
     }
   }
 }

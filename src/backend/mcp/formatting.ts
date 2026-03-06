@@ -101,7 +101,7 @@ export function statusLabel(s: MemoryStatusValue): string {
  * Applied to memory hits shown during silo search, and to silo note hits
  * shown during memory recall. Keeps sidebars signal-positive only.
  */
-export const CROSS_SEARCH_THRESHOLD = 0.45;
+
 
 // ── Read safety ──────────────────────────────────────────────────────────────
 
@@ -338,8 +338,8 @@ export const READ_DESCRIPTION = [
   'Note: d-prefixed IDs (d1, d2, ...) are directory references from lodestone_explore.',
   'They cannot be read \u2014 use lodestone_explore with startPath to browse directories.',
   '',
-  'Note: m-prefixed IDs (m1, m2, ...) are memory references handled by the Lodestone remote',
-  'memory server, not this local file server. Use the remote lodestone_read for memories.',
+  'Note: m-prefixed IDs (m1, m2, ...) are memory references handled by the lodestone-memory',
+  'server, not this lodestone-files server. Use lodestone_read on lodestone-memory for memories.',
   '',
   'Examples:',
   '  \u2022 ["r1", "r3"] \u2014 read two files from the last search',
@@ -406,8 +406,8 @@ export const EDIT_DESCRIPTION = [
   'The stored hash is refreshed on conflict, so you can adjust and retry immediately',
   'without a separate lodestone_read call.',
   '',
-  'Memory references (m-prefixed IDs) are handled by the Lodestone remote memory server.',
-  'Use the remote lodestone_revise / lodestone_forget tools to update or delete memories.',
+  'Memory references (m-prefixed IDs) are handled by the lodestone-memory server.',
+  'Use lodestone_revise / lodestone_forget on lodestone-memory to update or delete memories.',
   '',
   'Files must be within a configured silo directory. Text edits require valid UTF-8.',
 ].join('\n');

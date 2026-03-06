@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "lodestone-dev": {
+    "lodestone-files-dev": {
       "command": "node",
       "args": ["C:\\Users\\James\\Documents\\lodestone\\mcp-wrapper.js", "--dev"]
     }

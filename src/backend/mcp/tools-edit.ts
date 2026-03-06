@@ -456,7 +456,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
             for (const element of target) {
               // Memory references are handled by the cloud Worker, not locally
               if (PuidManager.isMemoryPuid(element)) {
-                batchResults.push({ source: element, success: false, error: 'Memory references (m-prefixed IDs) are handled by the Lodestone remote memory server.' });
+                batchResults.push({ source: element, success: false, error: 'Memory references (m-prefixed IDs) are handled by the lodestone-memory server.' });
                 continue;
               }
 
@@ -519,7 +519,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
 
           // Memory references are handled by the cloud Worker, not locally
           if (PuidManager.isMemoryPuid(target)) {
-            return { content: [{ type: 'text' as const, text: 'Error: Memory references (m-prefixed IDs) are handled by the Lodestone remote memory server.' }] };
+            return { content: [{ type: 'text' as const, text: 'Error: Memory references (m-prefixed IDs) are handled by the lodestone-memory server.' }] };
           }
 
           const resolved = resolveTarget(target, puid);
@@ -582,7 +582,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
 
         // Memory references are handled by the cloud Worker, not locally
         if (PuidManager.isMemoryPuid(target)) {
-          return { content: [{ type: 'text' as const, text: 'Error: Memory references (m-prefixed IDs) are handled by the Lodestone remote memory server.' }] };
+          return { content: [{ type: 'text' as const, text: 'Error: Memory references (m-prefixed IDs) are handled by the lodestone-memory server.' }] };
         }
 
         // 1. Resolve file reference

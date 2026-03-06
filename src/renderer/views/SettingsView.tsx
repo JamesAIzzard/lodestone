@@ -338,7 +338,7 @@ export default function SettingsView() {
                 {claudeStatus?.isConfigured ? 'Reconfigure' : 'Configure Claude Desktop'}
               </Button>
               <p className="mt-2 text-xs text-muted-foreground/60">
-                Writes the <code className="text-[10px]">lodestone</code> entry to{' '}
+                Writes the <code className="text-[10px]">lodestone-files</code> entry to{' '}
                 <code className="text-[10px]">{claudeStatus?.configPath ?? 'claude_desktop_config.json'}</code>.
                 Existing MCP servers are preserved. Restart Claude Desktop after configuring.
               </p>

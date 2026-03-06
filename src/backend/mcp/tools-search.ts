@@ -105,7 +105,7 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
           if (PuidManager.isMemoryPuid(id)) {
             content.push({
               type: 'text' as const,
-              text: `## ${id}\nError: Memory references (m-prefixed IDs) are handled by the Lodestone remote memory server, not this local file server.`,
+              text: `## ${id}\nError: Memory references (m-prefixed IDs) are handled by the lodestone-memory server. Use lodestone_read on lodestone-memory for memories.`,
             });
             continue;
           }

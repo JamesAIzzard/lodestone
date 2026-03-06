@@ -17,10 +17,10 @@ import {
   registerReviseTool,
   registerForgetTool,
   registerSkipTool,
-  registerOrientTool,
   registerAgendaTool,
   registerGetDatetimeTool,
   registerReadTool,
+  registerGuideTool,
 } from './tools/memory';
 
 // ── Env bindings (populated by wrangler.jsonc) ──────────────────────────────
@@ -59,7 +59,7 @@ function authenticate(request: Request, env: Env): Response | null {
 
 function createServer(env: Env): McpServer {
   const server = new McpServer({
-    name: 'Lodestone',
+    name: 'lodestone-memory',
     version: '0.1.0',
   });
 
@@ -71,10 +71,10 @@ function createServer(env: Env): McpServer {
   registerReviseTool(server, memory);
   registerForgetTool(server, memory);
   registerSkipTool(server, memory);
-  registerOrientTool(server, memory);
   registerAgendaTool(server, memory);
   registerGetDatetimeTool(server);
   registerReadTool(server, memory);
+  registerGuideTool(server);
 
   return server;
 }
@@ -87,7 +87,7 @@ export default {
 
     // Health check (unauthenticated)
     if (url.pathname === '/health') {
-      return new Response(JSON.stringify({ status: 'ok', name: 'Lodestone MCP', version: '0.1.0' }), {
+      return new Response(JSON.stringify({ status: 'ok', name: 'lodestone-memory', version: '0.1.0' }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }

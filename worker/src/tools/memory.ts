@@ -16,23 +16,87 @@ import type { D1MemoryService } from '../d1-memory-service';
 import type { PriorityLevel, MemoryStatusValue } from '../shared/types';
 import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, resolveMemoryId, buildDateContext, buildDatetime } from './formatting';
 
-// ── Startup Guide (inlined — no resource system in Worker) ──────────────────
+// ── Guide content (lodestone-memory server) ─────────────────────────────────
 
-const STARTUP_GUIDE = `# Lodestone Startup Guide
+const STARTUP_GUIDE = `# lodestone-memory — Startup Guide
 
-At the start of every conversation, call \`lodestone_orient\` with \`max_results: 10\`. This surfaces the most recently updated memories and any upcoming action-date items (tasks, reminders, recurring habits).
+This is the memory server. Use it to store, search, and manage persistent memories, tasks, and reminders.
 
-Memory and knowledge location is the absolute foundation of our workflow. Lodestone is built on a powerful hybrid search algorithm, meaning semantic and keyword-based search are combined for optimal results. Before producing any response, always use \`lodestone_recall\` with a natural language query to retrieve relevant memories, and \`lodestone_search\` to find notes in our knowledge base. Searching for notes will surface related memories alongside, and searching for memories will surface related notes. This memory-first work practice is the absolute foundation of our success. Check lodestone before falling back to web search for any query that may be covered in the user's knowledge base.
+Before producing any response, use \`lodestone_recall\` with a natural language query to check whether relevant memories already exist. This memory-first practice avoids redundant questions and builds on prior context. When storing something that is not actionable (like a fact or preference), pass \`status: null\`. Memories default to open status.
 
-When storing something that is not actionable (like a fact or preference), pass \`status: null\`. Memories default to open status.
+## Key Tools
+
+- **\`lodestone_recall\`** — hybrid search over memories (semantic + keyword). Use before asking the user a question.
+- **\`lodestone_read\`** — read a memory's full body by m-id when the preview is truncated.
+- **\`lodestone_remember\`** — store a new memory (dedup-checked) or force-create with \`force: true\`.
+- **\`lodestone_revise\`** — update an existing memory by id. Use \`status: "completed"\` to complete tasks.
+- **\`lodestone_forget\`** — soft-delete a memory that is wrong or superseded.
+- **\`lodestone_agenda\`** — view overdue + upcoming tasks for a time window.
+- **\`lodestone_skip\`** — advance a recurring task without recording a completion.
+- **\`lodestone_get_datetime\`** — get current date and time for timestamps.
+
+Cross-reference memories by embedding "see m42" or "related: m7, m15" in the body. Memory IDs are stable primary keys.
 
 ## Detailed Guides
 
-Three further guides are available on demand via \`lodestone_guide\`. Fetch the relevant one before undertaking that type of work — do not load all of them at startup.
+Two further guides are available via \`lodestone_guide\`. Fetch the relevant one before undertaking that type of work.
 
-- **memory** — how to store, revise, and cross-reference memories; reminders. Fetch when storing or managing memories.
-- **tasks** — creating tasks, completing, recurring tasks, overdue handling. Fetch when working with the agenda or action-date memories.
-- **notes** — searching and browsing silos, editing files, note-writing conventions. Fetch before creating or editing any note in the knowledge base.`;
+- **memory** — how to store, revise, and cross-reference memories; reminders.
+- **tasks** — creating tasks, completing, recurring tasks, overdue handling.`;
+
+const MEMORY_GUIDE = `# Lodestone Memory Guide
+
+## Storing and Revising Memories
+
+Before storing a new memory, use \`lodestone_recall\` to check whether a related memory already exists; update it with \`lodestone_revise\` rather than creating a duplicate. Periodically as you work on tasks or have chats, call \`lodestone_remember\` to record useful facts, decisions, or context. Keep memory bodies factual and self-contained; they will be read in a future session without the current conversation as context. Use \`lodestone_forget\` to remove anything confirmed wrong or outdated. Because lodestone search is semantic by default, conceptual phrases and natural language work as well as keywords.
+
+## Cross-Referencing
+
+Cross-referencing by m-id is a first-class pattern: embed "see m42" or "related: m7, m15" directly in the body to build a navigable knowledge graph. \`lodestone_read\` on a single m-id returns the full body plus the top-5 related memories by cosine similarity, so cross-references surface automatically during exploration. Memory IDs are stable primary keys and safe to reference.
+
+## Reminders
+
+Reminders are memories with an \`action_date\` and optional \`recurrence\`. They appear in \`lodestone_agenda\` output. Check the agenda at the start of a session for any critical or high-priority items due today.`;
+
+const TASKS_GUIDE = `# Lodestone Tasks & Agenda Guide
+
+## Creating Tasks
+
+Tasks are memories with an \`action_date\`. Create with \`lodestone_remember\`:
+- \`action_date\` — when the task is due or actionable (flexible: "tomorrow", "next Monday", "2026-03-15")
+- \`priority\` — 1=low, 2=medium, 3=high, 4=critical
+- \`status\` — "open" (default on creation)
+- \`recurrence\` — for repeating tasks: "daily", "weekly", "every monday", "every 3 days", etc.
+
+Use a short descriptive \`topic\` (e.g. "TASK - Send invoice"). Check \`lodestone_recall\` first to avoid duplicating an existing task.
+
+## Viewing the Agenda
+
+Call \`lodestone_agenda\` at the start of a work session or when the user asks what needs doing. It surfaces overdue items first, then upcoming items sorted by priority then date. The \`when\` parameter accepts: "today", "tomorrow", "this week" (default), "next week", "this month", "overdue".
+
+## Completing Tasks
+
+**Non-recurring**: \`lodestone_revise\` with \`status: "completed"\`. Auto-fills \`completed_on\` with today.
+
+**Recurring**: same call — \`lodestone_revise\` with \`status: "completed"\`. This automatically:
+1. Creates an immutable completion record referencing the task by m-id.
+2. Resets the task to status="open" with \`action_date\` advanced to the next occurrence.
+
+No further action needed after a single revise call.
+
+## Skipping a Recurring Task
+
+Use \`lodestone_skip\` when an occurrence should be skipped without recording a completion (e.g. holiday, postponed). The \`action_date\` advances to the next occurrence. Pass a \`reason\` to append an audit note to the memory body.
+
+## Handling Overdue Items
+
+When reviewing overdue tasks with the user, ask what to do with each one:
+- Done: \`lodestone_revise(status: "completed")\`
+- No longer relevant this cycle: \`lodestone_skip\`
+- Cancelled permanently: \`lodestone_revise(status: "cancelled")\`
+- Needs rescheduling: \`lodestone_revise(action_date: "new date")\``;
+
+const GUIDES = { startup: STARTUP_GUIDE, memory: MEMORY_GUIDE, tasks: TASKS_GUIDE } as const;
 
 // ── Tool Registrations ──────────────────────────────────────────────────────
 
@@ -318,7 +382,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       'if the occurrence should be skipped without recording a completion.',
       '',
       'Parameters:',
-      '  id           \u2014 Memory id (from lodestone_recall or lodestone_orient)',
+      '  id           \u2014 Memory id (from lodestone_recall)',
       '  body         \u2014 New body text (optional)',
       '  confidence   \u2014 New confidence value 0\u20131 (optional)',
       '  context_hint \u2014 New context hint (optional, pass null to clear)',
@@ -417,13 +481,13 @@ export function registerForgetTool(server: McpServer, memory: D1MemoryService): 
       'or has been superseded by a revised memory.',
       '',
       'The memory is not permanently removed. It is marked deleted and becomes',
-      'invisible to recall, orient, agenda, and dedup checks. It can still be',
+      'invisible to recall, agenda, and dedup checks. It can still be',
       'read via lodestone_read (using its m-id), which will show the body alongside',
       'a deletion notice. This preserves reference integrity: any memory that',
       'cross-references this one by m-id will still resolve correctly.',
       '',
       'Parameters:',
-      '  id     \u2014 Memory id (from lodestone_recall or lodestone_orient)',
+      '  id     \u2014 Memory id (from lodestone_recall)',
       '  reason \u2014 Optional brief explanation of why the memory was deleted',
       '             (e.g. "superseded by m45", "information was incorrect", "task cancelled").',
       '             Stored on the record and shown in the deletion notice.',
@@ -481,60 +545,26 @@ export function registerSkipTool(server: McpServer, memory: D1MemoryService): vo
   );
 }
 
-export function registerOrientTool(server: McpServer, memory: D1MemoryService): void {
+export function registerGuideTool(server: McpServer): void {
   server.tool(
-    'lodestone_orient',
+    'lodestone_guide',
     [
-      'Return the N most recently updated memories, regardless of query.',
+      'Retrieve a detailed usage guide for the lodestone-memory toolset.',
       '',
-      'This is the orientation tool \u2014 call it at the start of a conversation,',
-      'before there is enough context to form a meaningful recall query,',
-      'to ground yourself in recent and active working context.',
+      'Call this at the start of a conversation to understand available tools,',
+      'or on demand when you need instructions for a specific capability.',
       '',
-      'Also surfaces memories with action dates in the next 7 days, so upcoming',
-      'deadlines and planned actions are visible at conversation start.',
-      'Recurring tasks advance their action_date when completed via lodestone_revise',
-      '(status: "completed"), not automatically on orient.',
-      '',
-      'Results show truncated previews. Use lodestone_read with the m-prefixed ID (e.g. "m3") to read the full body.',
-      '',
-      'Parameters:',
-      '  max_results \u2014 Maximum memories to return. Default: 10',
+      'Topics:',
+      '  startup — Overview of all memory tools and how to use them.',
+      '  memory  — Memory management: storing, revising, cross-referencing, reminders.',
+      '  tasks   — Task and agenda management: creating, completing, recurring, overdue handling.',
     ].join('\n'),
     {
-      max_results: z.number().min(1).max(50).optional().describe('Maximum memories to return. Default: 10'),
+      topic: z.enum(['startup', 'memory', 'tasks']).describe('Guide topic to retrieve.'),
     },
-    async ({ max_results }) => {
-      try {
-        const results = await memory.orient(max_results);
-        if (results.length === 0) {
-          return { content: [{ type: 'text' as const, text: `No memories stored yet.\n\n---\n\n${STARTUP_GUIDE}` }] };
-        }
-        const lines: string[] = [];
-        lines.push(buildDateContext());
-        lines.push('');
-        for (const r of results) {
-          lines.push(`## [m${r.id}] ${r.topic} (confidence: ${r.confidence})`);
-          lines.push(truncateMemoryBody(r.body));
-          const meta = [`Updated: ${r.updatedAt}`];
-          if (r.actionDate) {
-            let actionStr = `Action: ${r.actionDate}`;
-            if (r.recurrence) actionStr += ` (${r.recurrence})`;
-            meta.push(actionStr);
-          }
-          if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
-          lines.push(`_${meta.join(' | ')}_`);
-          lines.push('');
-        }
-        lines.push('---');
-        lines.push('');
-        lines.push(STARTUP_GUIDE);
-        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
-      }
-    },
+    async ({ topic }) => ({
+      content: [{ type: 'text' as const, text: GUIDES[topic] }],
+    }),
   );
 }
 
@@ -550,7 +580,7 @@ export function registerAgendaTool(server: McpServer, memory: D1MemoryService): 
       'Completed and cancelled memories are excluded by default.',
       '',
       'Call this at the start of a work session or when the user asks what needs doing.',
-      'Use lodestone_orient for recent conversational context; use lodestone_agenda for tasks.',
+      'Use lodestone_recall for conversational context; use lodestone_agenda for tasks.',
       '',
       'Parameters:',
       '  when             \u2014 Time window for upcoming items. Accepts:',
@@ -678,7 +708,7 @@ export function registerReadTool(server: McpServer, memory: D1MemoryService): vo
       'Note: d-prefixed IDs (d1, d2, ...) are directory references from lodestone_explore.',
       'They cannot be read \u2014 use lodestone_explore with startPath to browse directories.',
       '',
-      'Note: m-prefixed IDs (m1, m2, ...) are memory references from lodestone_recall or lodestone_orient.',
+      'Note: m-prefixed IDs (m1, m2, ...) are memory references from lodestone_recall.',
       'Use lodestone_read with an m-puid to retrieve the full memory body when the preview is truncated.',
       '',
       'Examples:',
@@ -755,7 +785,7 @@ export function registerReadTool(server: McpServer, memory: D1MemoryService): vo
 
             outputParts.push(lines.join('\n'));
           } else {
-            outputParts.push(`## ${id}: Not supported in this Worker (only m-prefixed memory IDs are available)`);
+            outputParts.push(`## ${id}: Not supported on lodestone-memory (only m-prefixed memory IDs are available). Use lodestone_read on the lodestone-files server for file references.`);
           }
         }
 

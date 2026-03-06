@@ -41,7 +41,7 @@ function patchWithDatetimeFooter(server: McpServer): void {
         const last = content[content.length - 1];
         if (last?.type === 'text') {
           const text = last.text ?? '';
-          const footer = `\n\n---\n💡 Save new learnings and decisions with lodestone_remember\n🕐 ${buildDatetime()}`;
+          const footer = `\n\n---\n💡 Save learnings with lodestone_remember (on lodestone-memory)\n🕐 ${buildDatetime()}`;
           content[content.length - 1] = { type: 'text' as const, text: text + footer };
         }
         return { content };
@@ -61,7 +61,7 @@ function patchWithDatetimeFooter(server: McpServer): void {
 export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHandle> {
   const server = new McpServer(
     {
-      name: 'lodestone',
+      name: 'lodestone-files',
       version: '0.1.0',
     },
     {
@@ -96,7 +96,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
   await server.connect(transport);
 
   const mode = deps.input ? 'named pipe' : 'stdio';
-  console.error(`[mcp] Lodestone MCP server started on ${mode}`);
+  console.error(`[mcp] lodestone-files MCP server started on ${mode}`);
 
   return {
     stop: async () => {

@@ -24,7 +24,7 @@
  * Claude Desktop config (claude_desktop_config.json):
  *   {
  *     "mcpServers": {
- *       "lodestone": {
+ *       "lodestone-files": {
  *         "command": "node",
  *         "args": ["C:\\Users\\james\\Documents\\lodestone\\mcp-wrapper.js"]
  *       }
@@ -80,7 +80,7 @@ if (installedPath) {
 
 // Generate a unique named pipe path for this session
 const pipeId = crypto.randomBytes(4).toString('hex');
-const pipePath = `\\\\.\\pipe\\lodestone-mcp-${pipeId}`;
+const pipePath = `\\\\.\\pipe\\lodestone-files-mcp-${pipeId}`;
 
 let child = null;
 let electronSocket = null;

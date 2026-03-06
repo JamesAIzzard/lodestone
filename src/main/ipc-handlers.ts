@@ -369,7 +369,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       if (fs.existsSync(configPath)) {
         const raw = fs.readFileSync(configPath, 'utf-8');
         const parsed = JSON.parse(raw);
-        isConfigured = !!parsed?.mcpServers?.lodestone;
+        isConfigured = !!parsed?.mcpServers?.['lodestone-files'];
       }
     } catch {
       // Malformed JSON — treat as not configured
@@ -396,7 +396,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       const mcpServers = (config.mcpServers as Record<string, unknown>) ?? {};
       config.mcpServers = {
         ...mcpServers,
-        lodestone: { command: 'node', args: [wrapperPath] },
+        'lodestone-files': { command: 'node', args: [wrapperPath] },
       };
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');

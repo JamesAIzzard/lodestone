@@ -265,30 +265,21 @@ export function PriorityCell({
   );
 }
 
-// ── CalendarPicker ─────────────────────────────────────────────────────────
+// ── CalendarGrid (shared day-picker used by CalendarPicker & DateRangeFilter) ──
 
-export function CalendarPicker({
+export function CalendarGrid({
   value,
   onSelect,
-  onClose,
+  showClear = true,
 }: {
   value: string | null;
   onSelect: (v: string | null) => void;
-  onClose: () => void;
+  showClear?: boolean;
 }) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const initial = value ? new Date(value + 'T00:00:00') : new Date();
   const [year, setYear] = useState(initial.getFullYear());
   const [month, setMonth] = useState(initial.getMonth());
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleMouseDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    document.addEventListener('mousedown', handleMouseDown);
-    return () => document.removeEventListener('mousedown', handleMouseDown);
-  }, [onClose]);
 
   const firstDow = (new Date(year, month, 1).getDay() + 6) % 7;
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -312,13 +303,16 @@ export function CalendarPicker({
     else setMonth(m => m + 1);
   }
 
+  function goToday() {
+    const now = new Date();
+    setYear(now.getFullYear());
+    setMonth(now.getMonth());
+  }
+
   const monthLabel = new Date(year, month).toLocaleString('en-GB', { month: 'long' });
 
   return (
-    <div
-      ref={ref}
-      className="absolute right-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-background shadow-lg p-3 select-none"
-    >
+    <>
       <div className="flex items-center justify-between mb-2">
         <button
           onMouseDown={(e) => { e.preventDefault(); prev(); }}
@@ -348,13 +342,13 @@ export function CalendarPicker({
           d === null ? <div key={i} /> : (
             <button
               key={i}
-              onMouseDown={(e) => { e.preventDefault(); onSelect(toStr(d)); onClose(); }}
+              onMouseDown={(e) => { e.preventDefault(); onSelect(toStr(d)); }}
               className={cn(
                 'h-6 w-full flex items-center justify-center text-[11px] rounded transition-colors',
                 toStr(d) === value
                   ? 'bg-primary text-primary-foreground font-semibold'
                   : toStr(d) === todayStr
-                    ? 'text-primary font-medium hover:bg-accent'
+                    ? 'ring-1 ring-primary/50 text-primary font-medium hover:bg-accent'
                     : 'text-foreground hover:bg-accent',
               )}
             >
@@ -364,16 +358,56 @@ export function CalendarPicker({
         )}
       </div>
 
-      {value && (
-        <div className="mt-2 pt-2 border-t border-border/60">
+      <div className="mt-2 pt-2 border-t border-border/60 flex items-center gap-2">
+        <button
+          onMouseDown={(e) => { e.preventDefault(); goToday(); onSelect(todayStr); }}
+          className="text-[11px] text-primary hover:text-primary/80 transition-colors py-0.5 font-medium"
+        >
+          Today
+        </button>
+        {showClear && value && (
           <button
-            onMouseDown={(e) => { e.preventDefault(); onSelect(null); onClose(); }}
-            className="w-full text-[11px] text-muted-foreground hover:text-foreground transition-colors py-0.5 rounded hover:bg-accent"
+            onMouseDown={(e) => { e.preventDefault(); onSelect(null); }}
+            className="text-[11px] text-muted-foreground hover:text-foreground transition-colors py-0.5 ml-auto"
           >
-            Clear date
+            Clear
           </button>
-        </div>
-      )}
+        )}
+      </div>
+    </>
+  );
+}
+
+// ── CalendarPicker (popup wrapper around CalendarGrid) ─────────────────────
+
+export function CalendarPicker({
+  value,
+  onSelect,
+  onClose,
+}: {
+  value: string | null;
+  onSelect: (v: string | null) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleMouseDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute right-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-background shadow-lg p-3 select-none"
+    >
+      <CalendarGrid
+        value={value}
+        onSelect={(v) => { onSelect(v); onClose(); }}
+      />
     </div>
   );
 }

@@ -1,5 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, Repeat, SkipForward } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Circle,
+  CircleDot,
+  CircleCheck,
+  CircleAlert,
+  CircleMinus,
+  Repeat,
+  SkipForward,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { MemoryStatusValue, PriorityLevel, MemoryRecord } from '../../shared/types';
 
@@ -12,7 +23,7 @@ export function getTodayStr(): string {
 export function isOverdue(task: MemoryRecord): boolean {
   if (!task.actionDate) return false;
   if (task.status === 'completed' || task.completedOn) return false;
-  if (task.status === 'cancelled') return false;
+  if (task.status === 'cancelled' || task.status === 'blocked') return false;
   return task.actionDate < getTodayStr();
 }
 
@@ -34,15 +45,27 @@ export function formatDate(dateStr: string | null): string {
 }
 
 export const STATUS_COLORS: Record<string, string> = {
-  open: 'text-blue-400',
+  open: 'text-amber-400',
+  in_progress: 'text-blue-400',
   completed: 'text-emerald-400',
+  blocked: 'text-red-400',
   cancelled: 'text-muted-foreground/40',
 };
 
 export const STATUS_LABELS: Record<string, string> = {
   open: 'Open',
+  in_progress: 'In Progress',
   completed: 'Done',
+  blocked: 'Blocked',
   cancelled: 'Cancelled',
+};
+
+export const STATUS_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  open: Circle,
+  in_progress: CircleDot,
+  completed: CircleCheck,
+  blocked: CircleAlert,
+  cancelled: CircleMinus,
 };
 
 export const PRIORITY_DOT_COLORS: Record<number, string> = {
@@ -66,7 +89,7 @@ export function InlineDropdown<T extends string | number>({
   onSelect,
   onClose,
 }: {
-  options: { value: T; label: string; className?: string }[];
+  options: { value: T; label: string; className?: string; icon?: React.ReactNode }[];
   onSelect: (value: T) => void;
   onClose: () => void;
 }) {
@@ -90,10 +113,11 @@ export function InlineDropdown<T extends string | number>({
           key={i}
           onMouseDown={(e) => { e.preventDefault(); onSelect(opt.value); onClose(); }}
           className={cn(
-            'block w-full px-3 py-1.5 text-left text-xs hover:bg-accent transition-colors',
+            'flex items-center gap-2 w-full px-3 py-1.5 text-left text-xs hover:bg-accent transition-colors',
             opt.className ?? 'text-foreground',
           )}
         >
+          {opt.icon}
           {opt.label}
         </button>
       ))}
@@ -104,6 +128,11 @@ export function InlineDropdown<T extends string | number>({
 // ── StatusCell ─────────────────────────────────────────────────────────────
 
 const SKIP_SENTINEL = '__skip__' as unknown as MemoryStatusValue;
+
+function statusIcon(status: MemoryStatusValue | null, className?: string) {
+  const Icon = status ? STATUS_ICONS[status] : Circle;
+  return <Icon className={className} />;
+}
 
 export function StatusCell({
   value,
@@ -117,27 +146,56 @@ export function StatusCell({
   onSkip?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const label = value ? STATUS_LABELS[value] : '—';
-  const colorClass = value ? STATUS_COLORS[value] : 'text-muted-foreground/40';
+  const colorClass = value ? STATUS_COLORS[value] : 'text-muted-foreground/20';
+  const isCompleted = value === 'completed';
 
-  const options: { value: MemoryStatusValue; label: string; className?: string }[] = [
-    { value: 'open' as MemoryStatusValue, label: 'Open', className: 'text-blue-400' },
-    { value: 'completed' as MemoryStatusValue, label: 'Done', className: 'text-emerald-400' },
-    ...(isRecurring ? [{ value: SKIP_SENTINEL, label: 'Skip \u203a', className: 'text-violet-400' }] : []),
-    { value: 'cancelled' as MemoryStatusValue, label: 'Cancelled', className: 'text-muted-foreground/40' },
+  const iconSize = 'h-3.5 w-3.5';
+
+  const options: { value: MemoryStatusValue; label: string; className?: string; icon?: React.ReactNode }[] = [
+    { value: 'open' as MemoryStatusValue, label: 'Open', className: 'text-amber-400', icon: <Circle className={iconSize} /> },
+    { value: 'in_progress' as MemoryStatusValue, label: 'In Progress', className: 'text-blue-400', icon: <CircleDot className={iconSize} /> },
+    { value: 'completed' as MemoryStatusValue, label: 'Done', className: 'text-emerald-400', icon: <CircleCheck className={iconSize} /> },
+    { value: 'blocked' as MemoryStatusValue, label: 'Blocked', className: 'text-red-400', icon: <CircleAlert className={iconSize} /> },
+    ...(isRecurring ? [{ value: SKIP_SENTINEL, label: 'Skip', className: 'text-violet-400', icon: <SkipForward className={iconSize} /> }] : []),
+    { value: 'cancelled' as MemoryStatusValue, label: 'Cancelled', className: 'text-muted-foreground/40', icon: <CircleMinus className={iconSize} /> },
   ];
 
+  function handleQuickToggle() {
+    onChange(isCompleted ? 'open' as MemoryStatusValue : 'completed' as MemoryStatusValue);
+  }
+
   return (
-    <div className="relative shrink-0 w-24">
-      <button
-        onClick={() => setOpen(!open)}
-        className={cn(
-          'h-5 w-full rounded px-1.5 text-[11px] font-medium border border-transparent hover:border-border/60 transition-colors text-center',
-          colorClass,
-        )}
-      >
-        {label}
-      </button>
+    <div className="relative shrink-0 w-12">
+      <div className="h-5 flex items-center">
+        {/* Left: quick-complete toggle */}
+        <button
+          onClick={handleQuickToggle}
+          title={isCompleted ? 'Reopen' : 'Complete'}
+          className={cn(
+            'flex items-center justify-center h-full w-6 rounded-l border border-r-0 transition-colors',
+            isCompleted
+              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+              : cn('border-border/40', colorClass, 'hover:text-emerald-400 hover:bg-accent'),
+          )}
+        >
+          {statusIcon(value, 'h-3.5 w-3.5')}
+        </button>
+
+        {/* Right: dropdown trigger */}
+        <button
+          onClick={() => setOpen(!open)}
+          title="Change status"
+          className={cn(
+            'flex items-center justify-center h-full w-5 rounded-r border transition-colors',
+            isCompleted
+              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400/60 hover:text-emerald-400 hover:bg-emerald-500/20'
+              : 'border-border/40 text-muted-foreground/30 hover:text-muted-foreground hover:bg-accent',
+          )}
+        >
+          <ChevronDown className="h-3 w-3" />
+        </button>
+      </div>
+
       {open && (
         <InlineDropdown
           options={options}
@@ -314,27 +372,23 @@ export function DateCell({
   value,
   overdue,
   onChange,
-  recurrence,
 }: {
   value: string | null;
   overdue: boolean;
   onChange: (v: string | null) => void;
-  recurrence?: string | null;
 }) {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="relative shrink-0 w-24">
+    <div className="relative shrink-0 w-20">
       <button
         onClick={() => setOpen(!open)}
         className={cn(
-          'h-5 w-full rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors tabular-nums text-center inline-flex items-center justify-center gap-1',
+          'h-5 w-full rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors tabular-nums flex items-center justify-center',
           overdue ? 'text-amber-400' : value ? 'text-muted-foreground' : 'text-muted-foreground/30',
         )}
-        title={recurrence ? `Repeats ${recurrence}` : undefined}
       >
         {value ? formatDate(value) : '—'}
-        {recurrence && <Repeat className="h-2.5 w-2.5 text-violet-400/70 shrink-0" />}
       </button>
       {open && (
         <CalendarPicker
@@ -408,16 +462,16 @@ export function RecurrenceCell({
   const label = formatRecurrenceLabel(value);
 
   return (
-    <div className="relative shrink-0">
+    <div className="relative shrink-0 w-20">
       <button
         onClick={() => { setOpen(!open); setCustomMode(false); }}
         className={cn(
-          'h-5 rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors inline-flex items-center gap-1',
+          'h-5 w-full rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors flex items-center gap-1',
           value ? 'text-violet-400' : 'text-muted-foreground/30',
         )}
       >
         <Repeat className="h-2.5 w-2.5 shrink-0" />
-        {label}
+        <span className="truncate">{label}</span>
       </button>
       {open && !customMode && (
         <InlineDropdown

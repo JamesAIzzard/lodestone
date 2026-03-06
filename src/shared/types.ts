@@ -224,7 +224,7 @@ export interface DefaultSettings {
 // ── Memory ────────────────────────────────────────────────────────────────────
 
 /** Lifecycle status values for memory/task entries. */
-export type MemoryStatusValue = 'open' | 'completed' | 'cancelled';
+export type MemoryStatusValue = 'open' | 'in_progress' | 'completed' | 'blocked' | 'cancelled';
 
 /** Priority levels: 1=low, 2=medium, 3=high, 4=critical. */
 export type PriorityLevel = 1 | 2 | 3 | 4;

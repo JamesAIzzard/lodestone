@@ -89,7 +89,9 @@ export function priorityLabel(p: PriorityLevel): string {
 export function statusLabel(s: MemoryStatusValue): string {
   switch (s) {
     case 'open': return 'open';
+    case 'in_progress': return 'in progress';
     case 'completed': return 'completed \u2713';
+    case 'blocked': return 'blocked';
     case 'cancelled': return 'cancelled';
   }
 }

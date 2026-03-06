@@ -29,6 +29,8 @@ export default function TasksView() {
   const pendingKeyRef = useRef(0);
   const showCompletedRef = useRef(showCompleted);
   showCompletedRef.current = showCompleted;
+  const [recentlyCompleted, setRecentlyCompleted] = useState<Set<number>>(new Set());
+  const completionTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
   const loadTasks = useCallback(async (includeCompleted: boolean) => {
     setLoading(true);
@@ -53,6 +55,12 @@ export default function TasksView() {
     return () => clearInterval(interval);
   }, [showCompleted, loadTasks]);
 
+  // Cleanup completion timers on unmount
+  useEffect(() => {
+    const timers = completionTimers.current;
+    return () => { for (const t of timers.values()) clearTimeout(t); };
+  }, []);
+
   async function revise(id: number, fields: {
     status?: MemoryStatusValue | null;
     priority?: PriorityLevel | null;
@@ -63,6 +71,26 @@ export default function TasksView() {
     setTasks(prev => prev.map(t =>
       t.id === id ? { ...t, ...fields, updatedAt: new Date().toISOString() } : t
     ));
+
+    // Grace period: keep completed tasks visible briefly when "show completed" is off
+    if (fields.status === 'completed' && !showCompletedRef.current) {
+      // Cancel any existing timer for this task
+      const existing = completionTimers.current.get(id);
+      if (existing) clearTimeout(existing);
+      // Add to recently-completed set
+      setRecentlyCompleted(prev => new Set(prev).add(id));
+      // Schedule removal after 10s
+      completionTimers.current.set(id, setTimeout(() => {
+        setRecentlyCompleted(prev => { const next = new Set(prev); next.delete(id); return next; });
+        completionTimers.current.delete(id);
+      }, 10_000));
+    } else if (fields.status && fields.status !== 'completed') {
+      // Undo / status change — cancel timer and remove from grace set immediately
+      const existing = completionTimers.current.get(id);
+      if (existing) { clearTimeout(existing); completionTimers.current.delete(id); }
+      setRecentlyCompleted(prev => { const next = new Set(prev); next.delete(id); return next; });
+    }
+
     const result = await window.electronAPI?.reviseTask(id, fields as Record<string, unknown>);
     if (!result?.success) {
       loadTasks(showCompletedRef.current);
@@ -112,6 +140,7 @@ export default function TasksView() {
 
   const filtered = tasks
     .filter(t => filterPriority === 'all' || t.priority === filterPriority)
+    .filter(t => showCompleted || t.status !== 'completed' || recentlyCompleted.has(t.id))
     .sort((a, b) => {
       const aOver = isOverdue(a);
       const bOver = isOverdue(b);
@@ -224,9 +253,10 @@ export default function TasksView() {
           <div className="flex flex-col divide-y divide-border/50">
             {/* Create row */}
             {isCreating && (
-              <div className="flex items-center gap-3 py-2.5">
-                <div className="w-14 shrink-0" />
-                <div className="w-24 shrink-0" />
+              <div className="flex items-center gap-2 py-2.5">
+                <div className="w-10 shrink-0" />
+                <div className="w-5 shrink-0" />
+                <div className="w-12 shrink-0" />
                 <div className="flex-1 min-w-0">
                   <input
                     autoFocus
@@ -241,29 +271,26 @@ export default function TasksView() {
                     className="w-full bg-transparent text-sm text-foreground border-b border-ring focus:outline-none placeholder:text-muted-foreground/30"
                   />
                 </div>
-                <div className="w-5 shrink-0" />
-                <div className="w-24 shrink-0" />
-                <div className="w-10 shrink-0" />
-                <div className="w-7 shrink-0" />
-                <div className="w-7 shrink-0" />
+                <div className="shrink-0 flex items-center gap-1.5">
+                  <div className="w-5" /><div className="w-20" /><div className="w-20" /><div className="w-7" />
+                </div>
               </div>
             )}
 
             {/* Pending create rows */}
             {pendingCreates.map(({ key, topic }) => (
-              <div key={key} className="flex items-center gap-3 py-2.5 opacity-50">
-                <div className="w-14 shrink-0" />
-                <div className="w-24 shrink-0 flex items-center justify-center">
+              <div key={key} className="flex items-center gap-2 py-2.5 opacity-50">
+                <div className="w-10 shrink-0" />
+                <div className="w-5 shrink-0" />
+                <div className="w-12 shrink-0 flex items-center justify-center">
                   <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <span className="block truncate text-sm text-muted-foreground italic">{topic}</span>
                 </div>
-                <div className="w-5 shrink-0" />
-                <div className="w-24 shrink-0" />
-                <div className="w-10 shrink-0" />
-                <div className="w-7 shrink-0" />
-                <div className="w-7 shrink-0" />
+                <div className="shrink-0 flex items-center gap-1.5">
+                  <div className="w-5" /><div className="w-20" /><div className="w-20" /><div className="w-7" />
+                </div>
               </div>
             ))}
 
@@ -271,18 +298,30 @@ export default function TasksView() {
               const overdue = isOverdue(task);
               const isEditingTopic = editingTopicId === task.id;
 
+              const isGracePeriod = recentlyCompleted.has(task.id);
+
               return (
                 <div
                   key={task.id}
                   className={cn(
-                    'group flex items-center gap-3 py-2.5',
+                    'group flex items-center gap-2 py-2.5 transition-opacity duration-500',
                     overdue && '-mx-1 px-1 border-l-2 border-l-amber-500/50',
+                    isGracePeriod && 'opacity-50',
                   )}
                 >
                   {/* UID */}
-                  <span className="w-14 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground/25 select-all">
+                  <span className="w-10 shrink-0 h-5 leading-5 text-right text-[11px] tabular-nums text-muted-foreground/25 select-all">
                     m{task.id}
                   </span>
+
+                  {/* Expand to detail */}
+                  <button
+                    onClick={() => navigate(`/tasks/${task.id}`, { state: { task } })}
+                    title="Open detail"
+                    className="w-5 shrink-0 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-foreground transition-colors"
+                  >
+                    <Maximize2 className="h-3 w-3" />
+                  </button>
 
                   {/* Status */}
                   <StatusCell
@@ -311,7 +350,7 @@ export default function TasksView() {
                         onClick={() => startEditTopic(task)}
                         title={task.topic}
                         className={cn(
-                          'block truncate text-sm cursor-text',
+                          'text-sm cursor-text line-clamp-2',
                           task.status === 'completed'
                             ? 'line-through text-muted-foreground/50'
                             : 'text-foreground',
@@ -322,49 +361,35 @@ export default function TasksView() {
                     )}
                   </div>
 
-                  {/* Priority */}
-                  <PriorityCell
-                    value={task.priority}
-                    onChange={(v) => revise(task.id, { priority: v })}
-                  />
-
-                  {/* Action date */}
-                  <DateCell
-                    value={task.actionDate}
-                    overdue={overdue}
-                    onChange={(v) => revise(task.id, { actionDate: v })}
-                    recurrence={task.recurrence}
-                  />
-
-                  {/* Recurrence */}
-                  <RecurrenceCell
-                    value={task.recurrence}
-                    onChange={(v) => {
-                      if (v && !task.actionDate) {
-                        revise(task.id, { recurrence: v, actionDate: getTodayStr() });
-                      } else {
-                        revise(task.id, { recurrence: v });
-                      }
-                    }}
-                  />
-
-                  {/* Expand to detail */}
-                  <button
-                    onClick={() => navigate(`/tasks/${task.id}`, { state: { task } })}
-                    title="Open detail"
-                    className="w-7 shrink-0 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-foreground transition-colors"
-                  >
-                    <Maximize2 className="h-3 w-3" />
-                  </button>
-
-                  {/* Delete */}
-                  <button
-                    onClick={() => deleteTask(task.id)}
-                    title="Delete task"
-                    className="w-7 shrink-0 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-red-400 transition-colors"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  {/* Right-side controls */}
+                  <div className="shrink-0 flex items-center gap-1.5">
+                    <PriorityCell
+                      value={task.priority}
+                      onChange={(v) => revise(task.id, { priority: v })}
+                    />
+                    <DateCell
+                      value={task.actionDate}
+                      overdue={overdue}
+                      onChange={(v) => revise(task.id, { actionDate: v })}
+                    />
+                    <RecurrenceCell
+                      value={task.recurrence}
+                      onChange={(v) => {
+                        if (v && !task.actionDate) {
+                          revise(task.id, { recurrence: v, actionDate: getTodayStr() });
+                        } else {
+                          revise(task.id, { recurrence: v });
+                        }
+                      }}
+                    />
+                    <button
+                      onClick={() => deleteTask(task.id)}
+                      title="Delete task"
+                      className="w-7 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-red-400 transition-colors"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
               );
             })}

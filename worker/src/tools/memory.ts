@@ -153,7 +153,7 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
       action_date: z.string().optional().describe('Date when this memory is actionable. Flexible expressions accepted ("tomorrow", "next Monday", "2026-03-15"). Stored as ISO 8601.'),
       recurrence: z.string().optional().describe('Recurrence rule: "daily", "weekly", "biweekly", "monthly", "yearly", "every monday", "every weekday", "every N days", "every N weeks". Requires action_date.'),
       priority: z.number().int().min(1).max(4).optional().describe('Urgency: 1=low, 2=medium, 3=high, 4=critical'),
-      status: z.union([z.enum(['open', 'completed', 'cancelled']), z.null()]).optional().describe('Lifecycle status. Omit to default to "open". Pass null for no lifecycle status. "completed" auto-fills completed_on=today. "open" clears completed_on.'),
+      status: z.union([z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']), z.null()]).optional().describe('Lifecycle status. Omit to default to "open". Pass null for no lifecycle status. "completed" auto-fills completed_on=today. "open" clears completed_on.'),
       completed_on: z.string().optional().describe('Date completed. Flexible expressions accepted. Implies status="completed".'),
     },
     async ({ topic, body, confidence, context_hint, force, action_date, recurrence, priority, status, completed_on }) => {
@@ -289,7 +289,7 @@ export function registerRecallTool(server: McpServer, memory: D1MemoryService): 
       action_before: z.string().optional().describe('Filter: action_date <= this date. Flexible expressions accepted.'),
       completed_after: z.string().optional().describe('Filter: completed_on >= this date. Flexible expressions accepted.'),
       completed_before: z.string().optional().describe('Filter: completed_on <= this date. Flexible expressions accepted.'),
-      status: z.enum(['open', 'completed', 'cancelled']).optional().describe('Filter by status.'),
+      status: z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']).optional().describe('Filter by status.'),
     },
     async ({ query, max_results, mode, updated_after, updated_before, action_after, action_before, completed_after, completed_before, status }) => {
       try {
@@ -405,7 +405,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       recurrence: z.union([z.string(), z.null()]).optional().describe('New recurrence rule (null to clear). Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.'),
       priority: z.union([z.number().int().min(1).max(4), z.null()]).optional().describe('New priority (null to clear). 1=low, 2=medium, 3=high, 4=critical.'),
       topic: z.string().optional().describe('New topic label'),
-      status: z.union([z.enum(['open', 'completed', 'cancelled']), z.null()]).optional().describe('New status (null to clear). "completed" auto-fills completed_on. "open" clears completed_on.'),
+      status: z.union([z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']), z.null()]).optional().describe('New status (null to clear). "completed" auto-fills completed_on. "open" clears completed_on.'),
       completed_on: z.union([z.string(), z.null()]).optional().describe('New completion date (null to clear). Flexible expressions accepted.'),
     },
     async ({ id: rawId, body, confidence, context_hint, action_date, recurrence, priority, topic, status, completed_on }) => {

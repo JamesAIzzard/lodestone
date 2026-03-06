@@ -191,7 +191,6 @@ export default function TaskDetailView() {
             value={task.actionDate}
             overdue={overdue}
             onChange={(v) => revise(task.id, { actionDate: v })}
-            recurrence={task.recurrence}
           />
           <RecurrenceCell
             value={task.recurrence}

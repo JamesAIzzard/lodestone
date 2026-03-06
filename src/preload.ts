@@ -103,6 +103,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('tasks:list', includeCompleted ?? false),
   reviseTask: (id: number, fields: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('tasks:revise', id, fields),
+  skipTask: (id: number, reason?: string): Promise<unknown> =>
+    ipcRenderer.invoke('tasks:skip', id, reason),
   createTask: (topic: string): Promise<unknown> =>
     ipcRenderer.invoke('tasks:create', topic),
   deleteTask: (id: number): Promise<unknown> =>

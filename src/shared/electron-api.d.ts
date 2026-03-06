@@ -100,8 +100,10 @@ export interface ElectronAPI {
     status?: MemoryStatusValue | null;
     priority?: PriorityLevel | null;
     actionDate?: string | null;
+    recurrence?: string | null;
     topic?: string;
-  }) => Promise<{ success: boolean; error?: string }>;
+  }) => Promise<{ success: boolean; completionRecordId?: number; nextActionDate?: string; error?: string }>;
+  skipTask: (id: number, reason?: string) => Promise<{ success: boolean; nextActionDate?: string; error?: string }>;
   createTask: (topic: string) => Promise<{ success: boolean; id?: number; error?: string }>;
   deleteTask: (id: number) => Promise<{ success: boolean; error?: string }>;
 }

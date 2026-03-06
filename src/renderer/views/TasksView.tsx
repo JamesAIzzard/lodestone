@@ -6,7 +6,9 @@ import {
   StatusCell,
   PriorityCell,
   DateCell,
+  RecurrenceCell,
   isOverdue,
+  getTodayStr,
 } from '@/components/TaskCells';
 import type { MemoryRecord, MemoryStatusValue, PriorityLevel } from '../../shared/types';
 
@@ -55,6 +57,7 @@ export default function TasksView() {
     status?: MemoryStatusValue | null;
     priority?: PriorityLevel | null;
     actionDate?: string | null;
+    recurrence?: string | null;
     topic?: string;
   }) {
     setTasks(prev => prev.map(t =>
@@ -62,6 +65,16 @@ export default function TasksView() {
     ));
     const result = await window.electronAPI?.reviseTask(id, fields as Record<string, unknown>);
     if (!result?.success) {
+      loadTasks(showCompletedRef.current);
+    } else if (result.nextActionDate) {
+      // Recurring task was auto-advanced — reload to show updated date/status
+      loadTasks(showCompletedRef.current);
+    }
+  }
+
+  async function skipTask(id: number) {
+    const result = await window.electronAPI?.skipTask(id);
+    if (result?.success) {
       loadTasks(showCompletedRef.current);
     }
   }
@@ -230,6 +243,7 @@ export default function TasksView() {
                 </div>
                 <div className="w-5 shrink-0" />
                 <div className="w-24 shrink-0" />
+                <div className="w-10 shrink-0" />
                 <div className="w-7 shrink-0" />
                 <div className="w-7 shrink-0" />
               </div>
@@ -247,6 +261,7 @@ export default function TasksView() {
                 </div>
                 <div className="w-5 shrink-0" />
                 <div className="w-24 shrink-0" />
+                <div className="w-10 shrink-0" />
                 <div className="w-7 shrink-0" />
                 <div className="w-7 shrink-0" />
               </div>
@@ -273,6 +288,8 @@ export default function TasksView() {
                   <StatusCell
                     value={task.status}
                     onChange={(v) => revise(task.id, { status: v })}
+                    isRecurring={!!task.recurrence}
+                    onSkip={() => skipTask(task.id)}
                   />
 
                   {/* Topic */}
@@ -316,6 +333,19 @@ export default function TasksView() {
                     value={task.actionDate}
                     overdue={overdue}
                     onChange={(v) => revise(task.id, { actionDate: v })}
+                    recurrence={task.recurrence}
+                  />
+
+                  {/* Recurrence */}
+                  <RecurrenceCell
+                    value={task.recurrence}
+                    onChange={(v) => {
+                      if (v && !task.actionDate) {
+                        revise(task.id, { recurrence: v, actionDate: getTodayStr() });
+                      } else {
+                        revise(task.id, { recurrence: v });
+                      }
+                    }}
                   />
 
                   {/* Expand to detail */}

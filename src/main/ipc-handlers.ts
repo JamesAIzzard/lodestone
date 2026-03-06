@@ -316,7 +316,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
     }
   });
 
-  ipcMain.handle('tasks:revise', async (_event, id: number, fields: Record<string, unknown>): Promise<{ success: boolean; error?: string }> => {
+  ipcMain.handle('tasks:revise', async (_event, id: number, fields: Record<string, unknown>): Promise<{ success: boolean; completionRecordId?: number; nextActionDate?: string; error?: string }> => {
     const cloudUrl = ctx.config?.memory.cloud_url;
     if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
     try {
@@ -329,7 +329,28 @@ export function registerIpcHandlers(ctx: AppContext): void {
       if (!res.ok) {
         return { success: false, error: `${res.status}: ${await res.text()}` };
       }
-      return { success: true };
+      const data = await res.json() as { success: boolean; completionRecordId?: number; nextActionDate?: string };
+      return data;
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('tasks:skip', async (_event, id: number, reason?: string): Promise<{ success: boolean; nextActionDate?: string; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${id}/skip`, {
+        method: 'POST',
+        headers: getCloudHeaders(ctx),
+        body: JSON.stringify({ reason }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) {
+        return { success: false, error: `${res.status}: ${await res.text()}` };
+      }
+      const data = await res.json() as { success: boolean; nextActionDate?: string };
+      return data;
     } catch (err) {
       return { success: false, error: String(err) };
     }

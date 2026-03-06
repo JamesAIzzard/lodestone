@@ -127,6 +127,18 @@ export default {
       });
     }
 
+    // Skip task occurrence: POST /tasks/:id/skip
+    const taskSkipMatch = url.pathname.match(/^\/tasks\/(\d+)\/skip$/);
+    if (taskSkipMatch && request.method === 'POST') {
+      const id = parseInt(taskSkipMatch[1], 10);
+      const body = await request.json().catch(() => ({})) as { reason?: string };
+      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+      const result = await memory.skip(id, body.reason);
+      return new Response(JSON.stringify({ success: true, nextActionDate: result.nextActionDate }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Revise / Delete task: PATCH|DELETE /tasks/:id
     const taskPatchMatch = url.pathname.match(/^\/tasks\/(\d+)$/);
     if (taskPatchMatch && request.method === 'PATCH') {
@@ -136,18 +148,20 @@ export default {
         status?: MemoryStatusValue | null;
         priority?: PriorityLevel | null;
         actionDate?: string | null;
+        recurrence?: string | null;
         topic?: string;
       };
       const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
-      await memory.revise({
+      const result = await memory.revise({
         id,
         ...(payload.body !== undefined && { body: payload.body }),
         ...(payload.status !== undefined && { status: payload.status }),
         ...(payload.priority !== undefined && { priority: payload.priority }),
         ...(payload.actionDate !== undefined && { actionDate: payload.actionDate }),
+        ...(payload.recurrence !== undefined && { recurrence: payload.recurrence }),
         ...(payload.topic !== undefined && { topic: payload.topic }),
       });
-      return new Response(JSON.stringify({ success: true }), {
+      return new Response(JSON.stringify({ success: true, ...result }), {
         headers: { 'Content-Type': 'application/json' },
       });
     }

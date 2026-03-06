@@ -7,7 +7,9 @@ import {
   StatusCell,
   PriorityCell,
   DateCell,
+  RecurrenceCell,
   isOverdue,
+  getTodayStr,
 } from '@/components/TaskCells';
 import type { MemoryRecord } from '../../shared/types';
 
@@ -66,7 +68,16 @@ export default function TaskDetailView() {
     if (!result?.success) {
       setSaveError(result?.error ?? 'Save failed');
       fetchTask();
+    } else if (result.nextActionDate) {
+      // Recurring task was auto-advanced — reload to show updated state
+      fetchTask();
     }
+  }
+
+  async function skipTask() {
+    if (!task) return;
+    const result = await window.electronAPI?.skipTask(task.id);
+    if (result?.success) fetchTask();
   }
 
   // ── Topic editing ──────────────────────────────────────────────────────
@@ -169,6 +180,8 @@ export default function TaskDetailView() {
           <StatusCell
             value={task.status}
             onChange={(v) => revise(task.id, { status: v })}
+            isRecurring={!!task.recurrence}
+            onSkip={skipTask}
           />
           <PriorityCell
             value={task.priority}
@@ -178,6 +191,18 @@ export default function TaskDetailView() {
             value={task.actionDate}
             overdue={overdue}
             onChange={(v) => revise(task.id, { actionDate: v })}
+            recurrence={task.recurrence}
+          />
+          <RecurrenceCell
+            value={task.recurrence}
+            onChange={(v) => {
+              // When setting recurrence on a task without a date, auto-set to today
+              if (v && !task.actionDate) {
+                revise(task.id, { recurrence: v, actionDate: getTodayStr() });
+              } else {
+                revise(task.id, { recurrence: v });
+              }
+            }}
           />
         </div>
       </div>

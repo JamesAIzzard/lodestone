@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Repeat, SkipForward } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { MemoryStatusValue, PriorityLevel, MemoryRecord } from '../../shared/types';
 
@@ -103,16 +103,29 @@ export function InlineDropdown<T extends string | number>({
 
 // ── StatusCell ─────────────────────────────────────────────────────────────
 
+const SKIP_SENTINEL = '__skip__' as unknown as MemoryStatusValue;
+
 export function StatusCell({
   value,
   onChange,
+  isRecurring,
+  onSkip,
 }: {
   value: MemoryStatusValue | null;
   onChange: (v: MemoryStatusValue | null) => void;
+  isRecurring?: boolean;
+  onSkip?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const label = value ? STATUS_LABELS[value] : '—';
   const colorClass = value ? STATUS_COLORS[value] : 'text-muted-foreground/40';
+
+  const options: { value: MemoryStatusValue; label: string; className?: string }[] = [
+    { value: 'open' as MemoryStatusValue, label: 'Open', className: 'text-blue-400' },
+    { value: 'completed' as MemoryStatusValue, label: 'Done', className: 'text-emerald-400' },
+    ...(isRecurring ? [{ value: SKIP_SENTINEL, label: 'Skip \u203a', className: 'text-violet-400' }] : []),
+    { value: 'cancelled' as MemoryStatusValue, label: 'Cancelled', className: 'text-muted-foreground/40' },
+  ];
 
   return (
     <div className="relative shrink-0 w-24">
@@ -127,12 +140,11 @@ export function StatusCell({
       </button>
       {open && (
         <InlineDropdown
-          options={[
-            { value: 'open' as MemoryStatusValue, label: 'Open', className: 'text-blue-400' },
-            { value: 'completed' as MemoryStatusValue, label: 'Done', className: 'text-emerald-400' },
-            { value: 'cancelled' as MemoryStatusValue, label: 'Cancelled', className: 'text-muted-foreground/40' },
-          ]}
-          onSelect={(v) => onChange(v)}
+          options={options}
+          onSelect={(v) => {
+            if (v === SKIP_SENTINEL) onSkip?.();
+            else onChange(v);
+          }}
           onClose={() => setOpen(false)}
         />
       )}
@@ -302,10 +314,12 @@ export function DateCell({
   value,
   overdue,
   onChange,
+  recurrence,
 }: {
   value: string | null;
   overdue: boolean;
   onChange: (v: string | null) => void;
+  recurrence?: string | null;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -314,11 +328,13 @@ export function DateCell({
       <button
         onClick={() => setOpen(!open)}
         className={cn(
-          'h-5 w-full rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors tabular-nums text-center',
+          'h-5 w-full rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors tabular-nums text-center inline-flex items-center justify-center gap-1',
           overdue ? 'text-amber-400' : value ? 'text-muted-foreground' : 'text-muted-foreground/30',
         )}
+        title={recurrence ? `Repeats ${recurrence}` : undefined}
       >
         {value ? formatDate(value) : '—'}
+        {recurrence && <Repeat className="h-2.5 w-2.5 text-violet-400/70 shrink-0" />}
       </button>
       {open && (
         <CalendarPicker
@@ -327,6 +343,144 @@ export function DateCell({
           onClose={() => setOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+// ── RecurrenceCell ─────────────────────────────────────────────────────────
+
+const RECURRENCE_NONE = '__none__';
+const RECURRENCE_CUSTOM = '__custom__';
+
+const RECURRENCE_PRESETS: { value: string; label: string; className: string }[] = [
+  { value: RECURRENCE_NONE, label: '— None', className: 'text-muted-foreground/40' },
+  { value: 'daily', label: 'Daily', className: 'text-violet-400' },
+  { value: 'weekly', label: 'Weekly', className: 'text-violet-400' },
+  { value: 'biweekly', label: 'Biweekly', className: 'text-violet-400' },
+  { value: 'monthly', label: 'Monthly', className: 'text-violet-400' },
+  { value: 'yearly', label: 'Yearly', className: 'text-violet-400' },
+  { value: RECURRENCE_CUSTOM, label: 'Custom\u2026', className: 'text-muted-foreground' },
+];
+
+function formatRecurrenceLabel(value: string | null): string {
+  if (!value) return '—';
+  const preset = RECURRENCE_PRESETS.find(p => p.value === value);
+  if (preset) return preset.label;
+  // Capitalize first letter of custom values like "every monday"
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+export function RecurrenceCell({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (v: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [customMode, setCustomMode] = useState(false);
+  const [customValue, setCustomValue] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (customMode && inputRef.current) inputRef.current.focus();
+  }, [customMode]);
+
+  function handlePresetSelect(v: string) {
+    if (v === RECURRENCE_NONE) {
+      onChange(null);
+    } else if (v === RECURRENCE_CUSTOM) {
+      setCustomMode(true);
+      setCustomValue('');
+    } else {
+      onChange(v);
+    }
+  }
+
+  function commitCustom() {
+    const trimmed = customValue.trim().toLowerCase();
+    if (trimmed) onChange(trimmed);
+    setCustomMode(false);
+    setCustomValue('');
+    setOpen(false);
+  }
+
+  const label = formatRecurrenceLabel(value);
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => { setOpen(!open); setCustomMode(false); }}
+        className={cn(
+          'h-5 rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors inline-flex items-center gap-1',
+          value ? 'text-violet-400' : 'text-muted-foreground/30',
+        )}
+      >
+        <Repeat className="h-2.5 w-2.5 shrink-0" />
+        {label}
+      </button>
+      {open && !customMode && (
+        <InlineDropdown
+          options={RECURRENCE_PRESETS}
+          onSelect={handlePresetSelect}
+          onClose={() => setOpen(false)}
+        />
+      )}
+      {open && customMode && (
+        <CustomRecurrenceInput
+          value={customValue}
+          inputRef={inputRef}
+          onChange={setCustomValue}
+          onCommit={commitCustom}
+          onClose={() => { setCustomMode(false); setOpen(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CustomRecurrenceInput({
+  value,
+  inputRef,
+  onChange,
+  onCommit,
+  onClose,
+}: {
+  value: string;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  onChange: (v: string) => void;
+  onCommit: () => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleMouseDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute left-0 top-full mt-0.5 z-50 min-w-[180px] rounded-md border border-border bg-background shadow-md p-2"
+    >
+      <p className="text-[10px] text-muted-foreground/60 mb-1.5">
+        e.g. every 3 days, every monday
+      </p>
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); onCommit(); }
+          if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+        }}
+        className="w-full h-6 px-2 text-xs rounded border border-border bg-background text-foreground outline-none focus:border-primary/60"
+        placeholder="every 2 weeks"
+      />
     </div>
   );
 }

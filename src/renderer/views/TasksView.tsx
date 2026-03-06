@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { MemoryRecord, MemoryStatusValue, PriorityLevel } from '../../shared/types';
 
@@ -113,11 +113,11 @@ function StatusCell({
   const colorClass = value ? STATUS_COLORS[value] : 'text-muted-foreground/40';
 
   return (
-    <div className="relative shrink-0">
+    <div className="relative shrink-0 w-24">
       <button
         onClick={() => setOpen(!open)}
         className={cn(
-          'h-5 min-w-[52px] rounded px-1.5 text-[11px] font-medium border border-transparent hover:border-border/60 transition-colors text-left',
+          'h-5 w-full rounded px-1.5 text-[11px] font-medium border border-transparent hover:border-border/60 transition-colors text-center',
           colorClass,
         )}
       >
@@ -126,12 +126,11 @@ function StatusCell({
       {open && (
         <InlineDropdown
           options={[
-            { value: '' as MemoryStatusValue, label: '—', className: 'text-muted-foreground/40' },
             { value: 'open', label: 'Open', className: 'text-blue-400' },
             { value: 'completed', label: 'Done', className: 'text-emerald-400' },
             { value: 'cancelled', label: 'Cancelled', className: 'text-muted-foreground/40' },
           ]}
-          onSelect={(v) => onChange(v === ('' as MemoryStatusValue) ? null : v)}
+          onSelect={(v) => onChange(v)}
           onClose={() => setOpen(false)}
         />
       )}
@@ -178,6 +177,117 @@ function PriorityCell({
   );
 }
 
+function CalendarPicker({
+  value,
+  onSelect,
+  onClose,
+}: {
+  value: string | null;
+  onSelect: (v: string | null) => void;
+  onClose: () => void;
+}) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const initial = value ? new Date(value + 'T00:00:00') : new Date();
+  const [year, setYear] = useState(initial.getFullYear());
+  const [month, setMonth] = useState(initial.getMonth());
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleMouseDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [onClose]);
+
+  const firstDow = (new Date(year, month, 1).getDay() + 6) % 7; // Mon=0
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells: (number | null)[] = [
+    ...Array(firstDow).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  function toStr(d: number) {
+    return `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+
+  function prev() {
+    if (month === 0) { setYear(y => y - 1); setMonth(11); }
+    else setMonth(m => m - 1);
+  }
+
+  function next() {
+    if (month === 11) { setYear(y => y + 1); setMonth(0); }
+    else setMonth(m => m + 1);
+  }
+
+  const monthLabel = new Date(year, month).toLocaleString('en-GB', { month: 'long' });
+
+  return (
+    <div
+      ref={ref}
+      className="absolute right-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-background shadow-lg p-3 select-none"
+    >
+      <div className="flex items-center justify-between mb-2">
+        <button
+          onMouseDown={(e) => { e.preventDefault(); prev(); }}
+          className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </button>
+        <span className="text-xs font-medium text-foreground">{monthLabel} {year}</span>
+        <button
+          onMouseDown={(e) => { e.preventDefault(); next(); }}
+          className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-7 mb-1">
+        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
+          <div key={i} className="h-6 flex items-center justify-center text-[10px] text-muted-foreground/40 font-medium">
+            {d}
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-7 gap-y-0.5">
+        {cells.map((d, i) =>
+          d === null ? <div key={i} /> : (
+            <button
+              key={i}
+              onMouseDown={(e) => { e.preventDefault(); onSelect(toStr(d)); onClose(); }}
+              className={cn(
+                'h-6 w-full flex items-center justify-center text-[11px] rounded transition-colors',
+                toStr(d) === value
+                  ? 'bg-primary text-primary-foreground font-semibold'
+                  : toStr(d) === todayStr
+                    ? 'text-primary font-medium hover:bg-accent'
+                    : 'text-foreground hover:bg-accent',
+              )}
+            >
+              {d}
+            </button>
+          )
+        )}
+      </div>
+
+      {value && (
+        <div className="mt-2 pt-2 border-t border-border/60">
+          <button
+            onMouseDown={(e) => { e.preventDefault(); onSelect(null); onClose(); }}
+            className="w-full text-[11px] text-muted-foreground hover:text-foreground transition-colors py-0.5 rounded hover:bg-accent"
+          >
+            Clear date
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DateCell({
   value,
   overdue,
@@ -187,40 +297,27 @@ function DateCell({
   overdue: boolean;
   onChange: (v: string | null) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-
-  if (editing) {
-    return (
-      <input
-        type="date"
-        autoFocus
-        defaultValue={value ?? ''}
-        onBlur={(e) => {
-          onChange(e.target.value || null);
-          setEditing(false);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') setEditing(false);
-          if (e.key === 'Enter') {
-            onChange((e.target as HTMLInputElement).value || null);
-            setEditing(false);
-          }
-        }}
-        className="h-5 w-28 rounded border border-ring bg-background px-1.5 text-[11px] text-foreground focus:outline-none"
-      />
-    );
-  }
+  const [open, setOpen] = useState(false);
 
   return (
-    <button
-      onClick={() => setEditing(true)}
-      className={cn(
-        'h-5 rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors shrink-0 tabular-nums',
-        overdue ? 'text-amber-400' : value ? 'text-muted-foreground' : 'text-muted-foreground/30',
+    <div className="relative shrink-0 w-24">
+      <button
+        onClick={() => setOpen(!open)}
+        className={cn(
+          'h-5 w-full rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors tabular-nums text-center',
+          overdue ? 'text-amber-400' : value ? 'text-muted-foreground' : 'text-muted-foreground/30',
+        )}
+      >
+        {value ? formatDate(value) : '—'}
+      </button>
+      {open && (
+        <CalendarPicker
+          value={value}
+          onSelect={onChange}
+          onClose={() => setOpen(false)}
+        />
       )}
-    >
-      {value ? formatDate(value) : '—'}
-    </button>
+    </div>
   );
 }
 

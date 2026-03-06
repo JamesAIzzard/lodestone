@@ -87,4 +87,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('mcp:getClaudeDesktopStatus'),
   configureClaudeDesktop: (): Promise<unknown> =>
     ipcRenderer.invoke('mcp:configureClaudeDesktop'),
+
+  // App info
+  getAppVersion: (): Promise<string> =>
+    ipcRenderer.invoke('app:version'),
 });

@@ -86,6 +86,9 @@ export interface ElectronAPI {
     configPath: string;
     error?: string;
   }>;
+
+  // App info
+  getAppVersion: () => Promise<string>;
 }
 
 declare global {

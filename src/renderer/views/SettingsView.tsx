@@ -24,6 +24,7 @@ export default function SettingsView() {
   const [claudeStatus, setClaudeStatus] = useState<{ configPath: string; hasClaudeDesktop: boolean; isConfigured: boolean } | null>(null);
   const [configuringClaude, setConfiguringClaude] = useState(false);
   const [claudeConfigResult, setClaudeConfigResult] = useState<{ success: boolean; configPath: string; error?: string } | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((s) => {
@@ -40,6 +41,7 @@ export default function SettingsView() {
     });
     window.electronAPI?.getDataDir().then((dir) => setDataDir(dir));
     window.electronAPI?.getClaudeDesktopStatus().then(setClaudeStatus);
+    window.electronAPI?.getAppVersion().then(setAppVersion);
   }, []);
 
   async function handleTestConnection() {
@@ -348,6 +350,11 @@ export default function SettingsView() {
                 Remove all silos and restore default settings.
               </p>
             </div>
+            {appVersion && (
+              <p className="text-xs text-muted-foreground/50">
+                Lodestone v{appVersion}
+              </p>
+            )}
           </div>
         </Section>
       </div>

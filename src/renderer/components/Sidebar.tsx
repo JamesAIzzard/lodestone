@@ -23,6 +23,7 @@ const NARROW_THRESHOLD = 640;
 
 export default function Sidebar() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
+  const [version, setVersion] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem('sidebar-collapsed') === 'true',
   );
@@ -35,6 +36,10 @@ export default function Sidebar() {
     fetchStatus();
     const interval = setInterval(fetchStatus, 10_000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    window.electronAPI?.getAppVersion().then(setVersion);
   }, []);
 
   useEffect(() => {
@@ -158,6 +163,11 @@ export default function Sidebar() {
                 {status ? formatUptime(status.uptimeSeconds) : '—'}
               </span>
             </div>
+            {version && (
+              <div className="mt-1 text-muted-foreground/50">
+                v{version}
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -255,6 +255,10 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return ctx.getUserDataDir();
   });
 
+  ipcMain.handle('app:version', (): string => {
+    return app.getVersion();
+  });
+
   // ── Defaults ──────────────────────────────────────────────────────────
 
   ipcMain.handle('defaults:get', async (): Promise<DefaultSettings> => {

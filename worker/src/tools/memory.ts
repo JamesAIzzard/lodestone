@@ -33,6 +33,7 @@ Before producing any response, use \`lodestone_recall\` with a natural language 
 - **\`lodestone_forget\`** — soft-delete a memory that is wrong or superseded.
 - **\`lodestone_agenda\`** — view overdue + upcoming tasks for a time window.
 - **\`lodestone_skip\`** — advance a recurring task without recording a completion.
+- **\`lodestone_project\`** — manage projects (list, create, rename, recolor, merge, delete).
 - **\`lodestone_get_datetime\`** — get current date and time for timestamps.
 
 Cross-reference memories by embedding "see m42" or "related: m7, m15" in the body. Memory IDs are stable primary keys.
@@ -53,6 +54,10 @@ Before storing a new memory, use \`lodestone_recall\` to check whether a related
 ## Cross-Referencing
 
 Cross-referencing by m-id is a first-class pattern: embed "see m42" or "related: m7, m15" directly in the body to build a navigable knowledge graph. \`lodestone_read\` on a single m-id returns the full body plus the top-5 related memories by cosine similarity, so cross-references surface automatically during exploration. Memory IDs are stable primary keys and safe to reference.
+
+## Projects
+
+Memories and tasks can optionally belong to a project. Use \`lodestone_project\` (action: "list") to see available projects. When storing or revising a memory, pass the \`project\` parameter with the exact project name. If the name doesn't match, the server returns fuzzy suggestions. Create projects first with \`lodestone_project\` (action: "create") before assigning memories to them.
 
 ## Reminders
 
@@ -87,6 +92,10 @@ No further action needed after a single revise call.
 ## Skipping a Recurring Task
 
 Use \`lodestone_skip\` when an occurrence should be skipped without recording a completion (e.g. holiday, postponed). The \`action_date\` advances to the next occurrence. Pass a \`reason\` to append an audit note to the memory body.
+
+## Assigning Tasks to Projects
+
+Tasks can belong to a project. When creating with \`lodestone_remember\`, pass \`project: "project name"\`. When updating with \`lodestone_revise\`, pass \`project: "name"\` to assign or \`project: null\` to unassign. The project name must match an existing project — if it doesn't, close matches are suggested. Use \`lodestone_project\` (action: "list") to see projects, and (action: "create") to make new ones.
 
 ## Handling Overdue Items
 
@@ -141,6 +150,9 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
       '                  Setting status="open" clears completed_on.',
       '  completed_on \u2014 Optional date the memory was completed. Implies status="completed".',
       '                  Accepts flexible expressions ("today", "yesterday", "2026-03-15").',
+      '  project      \u2014 Optional project name to assign to. Must match an existing project',
+      '                  (fuzzy matched). If not found, close matches are suggested. Use',
+      '                  lodestone_project with action "create" to create new projects first.',
       '',
       'Returns: { id } on success, or details of a similar existing memory for review.',
     ].join('\n'),
@@ -155,8 +167,9 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
       priority: z.number().int().min(1).max(4).optional().describe('Urgency: 1=low, 2=medium, 3=high, 4=critical'),
       status: z.union([z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']), z.null()]).optional().describe('Lifecycle status. Omit to default to "open". Pass null for no lifecycle status. "completed" auto-fills completed_on=today. "open" clears completed_on.'),
       completed_on: z.string().optional().describe('Date completed. Flexible expressions accepted. Implies status="completed".'),
+      project: z.string().optional().describe('Project name to assign to. Must match an existing project (fuzzy matched). If not found, suggestions are returned. Use lodestone_project to create/list projects. Omit to leave unassigned.'),
     },
-    async ({ topic, body, confidence, context_hint, force, action_date, recurrence, priority, status, completed_on }) => {
+    async ({ topic, body, confidence, context_hint, force, action_date, recurrence, priority, status, completed_on, project }) => {
       try {
         // Parse flexible action_date to ISO 8601
         let parsedActionDate: string | null = null;
@@ -188,6 +201,23 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
           }
         }
 
+        // Resolve project name to ID (fuzzy match)
+        let projectId: number | null = null;
+        if (project) {
+          const resolved = await memory.resolveProjectName(project);
+          if (resolved.status === 'not_found') {
+            const suggestions = resolved.suggestions
+              .filter(s => s.distance <= Math.max(3, Math.ceil(project.length * 0.4)))
+              .map(s => `  - "${s.name}" (distance: ${s.distance})`)
+              .join('\n');
+            const hint = suggestions
+              ? `Did you mean one of these?\n${suggestions}\n\nUse lodestone_project with action "create" to create a new project, or retry with the correct name.`
+              : 'No similar projects found. Use lodestone_project with action "create" to create one first.';
+            return { content: [{ type: 'text' as const, text: `Project "${project}" not found.\n\n${hint}` }] };
+          }
+          projectId = resolved.id;
+        }
+
         const result = await memory.remember({
           topic,
           body,
@@ -199,6 +229,7 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
           priority: (priority ?? null) as PriorityLevel | null,
           status: (status === undefined || (status === null && parsedActionDate) ? 'open' : status ?? null) as MemoryStatusValue | null,
           completedOn: parsedCompletedOn,
+          projectId,
         });
 
         if (result.status === 'duplicate') {
@@ -395,6 +426,8 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       '  status       \u2014 New status (optional, pass null to clear): "open", "completed", "cancelled".',
       '                  "completed" auto-fills completed_on=today. "open" clears completed_on.',
       '  completed_on \u2014 New completion date (optional, pass null to clear). Flexible expressions accepted.',
+      '  project      \u2014 Project name to assign to (null to clear). Must match an existing project',
+      '                  (fuzzy matched). Use lodestone_project to create/list projects.',
     ].join('\n'),
     {
       id: z.union([z.number().int(), z.string()]).describe('Memory id to update (number or m-prefixed id like "m5")'),
@@ -407,8 +440,9 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       topic: z.string().optional().describe('New topic label'),
       status: z.union([z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']), z.null()]).optional().describe('New status (null to clear). "completed" auto-fills completed_on. "open" clears completed_on.'),
       completed_on: z.union([z.string(), z.null()]).optional().describe('New completion date (null to clear). Flexible expressions accepted.'),
+      project: z.union([z.string(), z.null()]).optional().describe('Project name (null to clear assignment). Must match an existing project (fuzzy matched). Use lodestone_project to create/list projects.'),
     },
-    async ({ id: rawId, body, confidence, context_hint, action_date, recurrence, priority, topic, status, completed_on }) => {
+    async ({ id: rawId, body, confidence, context_hint, action_date, recurrence, priority, topic, status, completed_on, project }) => {
       try {
         const id = resolveMemoryId(rawId);
 
@@ -445,6 +479,25 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
           }
         }
 
+        // Resolve project name to ID (null clears it, string resolves with fuzzy match)
+        let projectId: number | null | undefined;
+        if (project === null) {
+          projectId = null;
+        } else if (project !== undefined) {
+          const resolved = await memory.resolveProjectName(project);
+          if (resolved.status === 'not_found') {
+            const suggestions = resolved.suggestions
+              .filter(s => s.distance <= Math.max(3, Math.ceil(project.length * 0.4)))
+              .map(s => `  - "${s.name}" (distance: ${s.distance})`)
+              .join('\n');
+            const hint = suggestions
+              ? `Did you mean one of these?\n${suggestions}\n\nUse lodestone_project with action "create" to create a new project, or retry with the correct name.`
+              : 'No similar projects found. Use lodestone_project with action "create" to create one first.';
+            return { content: [{ type: 'text' as const, text: `Project "${project}" not found.\n\n${hint}` }] };
+          }
+          projectId = resolved.id;
+        }
+
         const reviseResult = await memory.revise({
           id,
           body,
@@ -456,6 +509,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
           topic,
           status: status as MemoryStatusValue | null | undefined,
           completedOn: parsedCompletedOn,
+          projectId,
         });
         const warning = body ? memoryBodyWarning(body) : '';
         let msg = `Memory m${id} revised.`;
@@ -790,6 +844,107 @@ export function registerReadTool(server: McpServer, memory: D1MemoryService): vo
         }
 
         return { content: [{ type: 'text' as const, text: outputParts.join('\n\n') }] };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
+      }
+    },
+  );
+}
+
+// ── Project tool ────────────────────────────────────────────────────────────
+
+export function registerProjectTool(server: McpServer, memory: D1MemoryService): void {
+  server.tool(
+    'lodestone_project',
+    [
+      'Manage projects for grouping memories and tasks.',
+      '',
+      'Projects provide a way to organise related memories/tasks under a named group',
+      'with a colour. Each memory/task can belong to one project.',
+      '',
+      'Actions:',
+      '  list    — List all projects with task counts',
+      '  create  — Create a new project: { name, color? }',
+      '  rename  — Rename a project: { name, new_name }',
+      '  recolor — Change project colour: { name, color }',
+      '  merge   — Merge source into target: { source, target } (all source tasks move to target)',
+      '  delete  — Delete a project: { name } (tasks become unassigned)',
+      '',
+      'Available colours: slate, red, orange, amber, emerald, teal, cyan, blue,',
+      'indigo, violet, purple, rose, pink. Default: blue.',
+    ].join('\n'),
+    {
+      action: z.enum(['list', 'create', 'rename', 'recolor', 'merge', 'delete']).describe('Operation to perform'),
+      name: z.string().optional().describe('Project name (required for all actions except list)'),
+      new_name: z.string().optional().describe('New name for rename action'),
+      color: z.string().optional().describe('Colour for create/recolor: slate, red, orange, amber, emerald, teal, cyan, blue, indigo, violet, purple, rose, pink'),
+      source: z.string().optional().describe('Source project name for merge action'),
+      target: z.string().optional().describe('Target project name for merge action'),
+    },
+    async ({ action, name, new_name, color, source, target }) => {
+      try {
+        switch (action) {
+          case 'list': {
+            const projects = await memory.getProjectsWithCounts();
+            if (projects.length === 0) {
+              return { content: [{ type: 'text' as const, text: 'No projects found.' }] };
+            }
+            const lines: string[] = [`## Projects (${projects.length})`, ''];
+            for (const p of projects) {
+              const counts = `${p.openCount} open, ${p.completedCount} completed, ${p.totalCount} total`;
+              lines.push(`- **${p.name}** (${p.color}) — ${counts}`);
+            }
+            return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+          }
+
+          case 'create': {
+            if (!name) return { content: [{ type: 'text' as const, text: 'Error: name is required for create.' }] };
+            const existing = await memory.getProjectByName(name);
+            if (existing) {
+              return { content: [{ type: 'text' as const, text: `Project "${name}" already exists (id: ${existing.id}).` }] };
+            }
+            const id = await memory.createProject(name, color ?? 'blue');
+            return { content: [{ type: 'text' as const, text: `Created project "${name}" (id: ${id}, colour: ${color ?? 'blue'}).` }] };
+          }
+
+          case 'rename': {
+            if (!name) return { content: [{ type: 'text' as const, text: 'Error: name is required for rename.' }] };
+            if (!new_name) return { content: [{ type: 'text' as const, text: 'Error: new_name is required for rename.' }] };
+            const proj = await memory.getProjectByName(name);
+            if (!proj) return { content: [{ type: 'text' as const, text: `Error: Project "${name}" not found.` }] };
+            await memory.updateProject(proj.id, { name: new_name });
+            return { content: [{ type: 'text' as const, text: `Renamed project "${name}" to "${new_name}".` }] };
+          }
+
+          case 'recolor': {
+            if (!name) return { content: [{ type: 'text' as const, text: 'Error: name is required for recolor.' }] };
+            if (!color) return { content: [{ type: 'text' as const, text: 'Error: color is required for recolor.' }] };
+            const proj = await memory.getProjectByName(name);
+            if (!proj) return { content: [{ type: 'text' as const, text: `Error: Project "${name}" not found.` }] };
+            await memory.updateProject(proj.id, { color });
+            return { content: [{ type: 'text' as const, text: `Changed "${name}" colour to ${color}.` }] };
+          }
+
+          case 'merge': {
+            if (!source) return { content: [{ type: 'text' as const, text: 'Error: source is required for merge.' }] };
+            if (!target) return { content: [{ type: 'text' as const, text: 'Error: target is required for merge.' }] };
+            const srcProj = await memory.getProjectByName(source);
+            if (!srcProj) return { content: [{ type: 'text' as const, text: `Error: Source project "${source}" not found.` }] };
+            const tgtProj = await memory.getProjectByName(target);
+            if (!tgtProj) return { content: [{ type: 'text' as const, text: `Error: Target project "${target}" not found.` }] };
+            const reassigned = await memory.mergeProjects(srcProj.id, tgtProj.id);
+            return { content: [{ type: 'text' as const, text: `Merged "${source}" into "${target}". ${reassigned} task${reassigned === 1 ? '' : 's'} reassigned. Source project deleted.` }] };
+          }
+
+          case 'delete': {
+            if (!name) return { content: [{ type: 'text' as const, text: 'Error: name is required for delete.' }] };
+            const proj = await memory.getProjectByName(name);
+            if (!proj) return { content: [{ type: 'text' as const, text: `Error: Project "${name}" not found.` }] };
+            await memory.deleteProject(proj.id);
+            return { content: [{ type: 'text' as const, text: `Deleted project "${name}". Tasks in this project are now unassigned.` }] };
+          }
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };

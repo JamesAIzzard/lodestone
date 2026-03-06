@@ -5,8 +5,8 @@
  * D1 quirk: `.all()` returns `{ results: Row[] }`, not a bare array.
  */
 
-import type { MemoryRecord } from '../shared/types';
-import { rowToRecord } from './helpers';
+import type { MemoryRecord, ProjectRecord, ProjectWithCounts } from '../shared/types';
+import { rowToRecord, rowToProject } from './helpers';
 
 /** Get a single memory record by id. Returns null if not found. */
 export async function getMemory(db: D1Database, id: number): Promise<MemoryRecord | null> {
@@ -65,6 +65,7 @@ export async function filterMemoryIdsByDate(
     completedAfter?: string;
     completedBefore?: string;
     status?: MemoryRecord['status'];
+    projectId?: number;
   },
 ): Promise<Set<number> | null> {
   const clauses: string[] = [];
@@ -105,6 +106,10 @@ export async function filterMemoryIdsByDate(
       clauses.push(`status = ?`);
       params.push(filters.status);
     }
+  }
+  if (filters.projectId !== undefined) {
+    clauses.push(`project_id = ?`);
+    params.push(filters.projectId);
   }
 
   if (clauses.length === 0) return null; // no filters active
@@ -168,24 +173,30 @@ export async function getActiveUpcomingMemories(
  *  Only includes memories that have an explicit status (excludes pure knowledge memories). */
 export async function getAllTasks(
   db: D1Database,
-  opts: { includeCompleted: boolean; includeCancelled: boolean },
+  opts: { includeCompleted: boolean; includeCancelled: boolean; projectId?: number },
   limit: number,
 ): Promise<MemoryRecord[]> {
   let query = `SELECT * FROM memories
      WHERE deleted_at IS NULL
        AND status IS NOT NULL`;
+  const binds: unknown[] = [];
   if (!opts.includeCancelled) {
     query += ` AND status != 'cancelled'`;
   }
   if (!opts.includeCompleted) {
     query += ` AND status != 'completed' AND completed_on IS NULL`;
   }
+  if (opts.projectId !== undefined) {
+    query += ` AND project_id = ?`;
+    binds.push(opts.projectId);
+  }
   query += ` ORDER BY
        CASE WHEN action_date IS NULL THEN 1 ELSE 0 END,
        action_date ASC,
        COALESCE(priority, 0) DESC
      LIMIT ?`;
-  const { results } = await db.prepare(query).bind(limit).all();
+  binds.push(limit);
+  const { results } = await db.prepare(query).bind(...binds).all();
   return results.map((r) => rowToRecord(r as Record<string, unknown>));
 }
 
@@ -204,4 +215,55 @@ export async function getRecentActiveMemories(
      LIMIT ?`,
   ).bind(maxResults).all();
   return results.map((r) => rowToRecord(r as Record<string, unknown>));
+}
+
+// ── Project reads ─────────────────────────────────────────────────────────────
+
+/** Return all active projects ordered by name. */
+export async function getAllProjects(db: D1Database): Promise<ProjectRecord[]> {
+  const { results } = await db.prepare(
+    `SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE`,
+  ).all();
+  return results.map((r) => rowToProject(r as Record<string, unknown>));
+}
+
+/** Get a single project by id. Returns null if not found or deleted. */
+export async function getProjectById(db: D1Database, id: number): Promise<ProjectRecord | null> {
+  const row = await db.prepare(
+    `SELECT * FROM projects WHERE id = ? AND deleted_at IS NULL`,
+  ).bind(id).first();
+  return row ? rowToProject(row as Record<string, unknown>) : null;
+}
+
+/** Get a project by name (case-insensitive). Returns null if not found. */
+export async function getProjectByName(db: D1Database, name: string): Promise<ProjectRecord | null> {
+  const row = await db.prepare(
+    `SELECT * FROM projects WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL`,
+  ).bind(name).first();
+  return row ? rowToProject(row as Record<string, unknown>) : null;
+}
+
+/** Return per-project task counts (open, completed, total) for all active projects. */
+export async function getProjectTaskCounts(db: D1Database): Promise<ProjectWithCounts[]> {
+  const { results } = await db.prepare(`
+    SELECT
+      p.*,
+      COALESCE(SUM(CASE WHEN m.status IN ('open', 'in_progress', 'blocked') THEN 1 ELSE 0 END), 0) AS open_count,
+      COALESCE(SUM(CASE WHEN m.status = 'completed' OR m.completed_on IS NOT NULL THEN 1 ELSE 0 END), 0) AS completed_count,
+      COALESCE(COUNT(m.id), 0) AS total_count
+    FROM projects p
+    LEFT JOIN memories m ON m.project_id = p.id AND m.deleted_at IS NULL AND m.status IS NOT NULL
+    WHERE p.deleted_at IS NULL
+    GROUP BY p.id
+    ORDER BY p.name COLLATE NOCASE
+  `).all();
+  return results.map((r) => {
+    const row = r as Record<string, unknown>;
+    return {
+      ...rowToProject(row),
+      openCount: (row.open_count as number) ?? 0,
+      completedCount: (row.completed_count as number) ?? 0,
+      totalCount: (row.total_count as number) ?? 0,
+    };
+  });
 }

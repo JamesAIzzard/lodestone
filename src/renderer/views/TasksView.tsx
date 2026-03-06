@@ -1,18 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Maximize2, Search, X, Calendar, ChevronDown, ChevronLeft } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Maximize2, Search, X, Calendar, ChevronDown, ChevronLeft, FolderOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   StatusCell,
   PriorityCell,
   DateCell,
   RecurrenceCell,
+  ProjectCell,
   CalendarGrid,
   isOverdue,
   getTodayStr,
   formatDate,
 } from '@/components/TaskCells';
-import type { MemoryRecord, MemoryStatusValue, PriorityLevel } from '../../shared/types';
+import { SILO_COLOR_MAP, type SiloColor } from '../../shared/silo-appearance';
+import type { MemoryRecord, MemoryStatusValue, PriorityLevel, ProjectWithCounts } from '../../shared/types';
+
+type SubView = 'tasks' | 'projects';
 
 // ── Toggle switch ─────────────────────────────────────────────────────────────
 
@@ -248,6 +252,199 @@ function DateRangeFilter({
   );
 }
 
+// ── Levenshtein distance ──────────────────────────────────────────────────────
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  let curr = new Array<number>(n + 1);
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+/** Best fuzzy score of query against a project name (lower = better match). */
+function fuzzyScore(query: string, name: string): number {
+  const q = query.toLowerCase();
+  const n = name.toLowerCase();
+  if (n.includes(q)) return 0; // substring match is best
+  let best = Infinity;
+  // Compare against name prefixes of varying lengths (handles typos + missed/extra chars)
+  for (let len = Math.max(1, q.length - 1); len <= Math.min(n.length, q.length + 2); len++) {
+    best = Math.min(best, levenshtein(q, n.slice(0, len)));
+  }
+  // Also compare against each word in compound names (e.g. "cellular-origins")
+  for (const word of n.split(/[\s\-_]+/)) {
+    if (word.length < 2) continue;
+    for (let len = Math.max(1, q.length - 1); len <= Math.min(word.length, q.length + 2); len++) {
+      best = Math.min(best, levenshtein(q, word.slice(0, len)));
+    }
+  }
+  return best;
+}
+
+// ── Project search filter (multi-select with pills) ──────────────────────────
+
+function projectDot(color: string, size = 'h-2 w-2') {
+  const mapping = SILO_COLOR_MAP[color as SiloColor];
+  return <span className={cn(size, 'rounded-full shrink-0', mapping?.dot ?? 'bg-muted-foreground/30')} />;
+}
+
+function ProjectSearchFilter({
+  projects,
+  selectedIds,
+  onChange,
+}: {
+  projects: ProjectWithCounts[];
+  selectedIds: number[];
+  onChange: (ids: number[]) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [focused, setFocused] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const internalClick = useRef(false);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!focused) return;
+    function handleMouseDown() {
+      if (internalClick.current) { internalClick.current = false; return; }
+      setFocused(false);
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [focused]);
+
+  // Fuzzy search: score unselected projects and keep close matches
+  const q = query.trim();
+  const unselected = projects.filter(p => !selectedIds.includes(p.id));
+  const suggestions = q
+    ? unselected
+        .map(p => ({ ...p, dist: fuzzyScore(q, p.name) }))
+        .filter(p => p.dist <= Math.max(2, Math.ceil(q.length * 0.4)))
+        .sort((a, b) => a.dist - b.dist)
+        .slice(0, 8)
+    : unselected.slice(0, 8);
+
+  const showDropdown = focused && (suggestions.length > 0 || q);
+
+  function addProject(id: number) {
+    onChange([...selectedIds, id]);
+    setQuery('');
+    inputRef.current?.focus();
+  }
+
+  function removeProject(id: number) {
+    onChange(selectedIds.filter(x => x !== id));
+  }
+
+  const selectedProjects = selectedIds.map(id => projects.find(p => p.id === id)).filter(Boolean) as ProjectWithCounts[];
+
+  if (selectedIds.length === 0 && !focused) {
+    // Collapsed state: styled to align with the DateRangeFilter button above (same px-2 + border)
+    return (
+      <button
+        onClick={() => { setFocused(true); setTimeout(() => inputRef.current?.focus(), 0); }}
+        className="flex items-center gap-1.5 h-6 px-2 rounded-md border border-transparent text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+      >
+        <FolderOpen className="h-3 w-3" />
+        Filter by project…
+      </button>
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="relative" onMouseDown={() => { internalClick.current = true; }}>
+      <div className="flex items-center gap-1.5 flex-wrap min-h-[26px] pl-2">
+        {/* Selected pills */}
+        {selectedProjects.map(p => {
+          const colorMap = SILO_COLOR_MAP[p.color as SiloColor];
+          return (
+            <span
+              key={p.id}
+              className={cn(
+                'inline-flex items-center gap-1 h-[22px] pl-1.5 pr-1 rounded-full text-[11px] font-medium border transition-colors',
+                colorMap?.bgSoft ?? 'bg-muted',
+                colorMap?.border ?? 'border-border/50',
+                colorMap?.text ?? 'text-foreground',
+              )}
+            >
+              {projectDot(p.color, 'h-1.5 w-1.5')}
+              <span className="max-w-[100px] truncate">{p.name}</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); removeProject(p.id); }}
+                className="h-3.5 w-3.5 flex items-center justify-center rounded-full hover:bg-foreground/10 transition-colors ml-0.5"
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </span>
+          );
+        })}
+
+        {/* Search input */}
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') { setQuery(''); setFocused(false); inputRef.current?.blur(); }
+            if (e.key === 'Backspace' && !query && selectedIds.length > 0) {
+              removeProject(selectedIds[selectedIds.length - 1]);
+            }
+            if (e.key === 'Enter' && suggestions.length > 0) {
+              e.preventDefault();
+              addProject(suggestions[0].id);
+            }
+          }}
+          placeholder={selectedIds.length > 0 ? 'Add project…' : 'Search projects…'}
+          className="h-[22px] min-w-[80px] flex-1 bg-transparent text-[11px] text-foreground placeholder:text-muted-foreground/30 focus:outline-none"
+        />
+
+        {/* Clear all */}
+        {selectedIds.length > 0 && (
+          <button
+            onClick={() => { onChange([]); setQuery(''); }}
+            className="h-4 w-4 flex items-center justify-center rounded-sm text-muted-foreground/40 hover:text-foreground transition-colors"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+
+      {/* Dropdown */}
+      {showDropdown && (
+        <div className="absolute left-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-background shadow-lg py-1 max-h-48 overflow-y-auto">
+          {suggestions.length === 0 && q && (
+            <div className="px-3 py-2 text-[11px] text-muted-foreground">
+              No matching projects
+            </div>
+          )}
+          {suggestions.map((p) => (
+            <button
+              key={p.id}
+              onMouseDown={(e) => { e.preventDefault(); addProject(p.id); }}
+              className="flex items-center w-full px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors gap-2"
+            >
+              {projectDot(p.color)}
+              <span className="truncate flex-1">{p.name}</span>
+              <span className="text-muted-foreground/30 tabular-nums text-[11px]">{p.openCount}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main view ─────────────────────────────────────────────────────────────────
 
 export default function TasksView() {
@@ -276,8 +473,18 @@ export default function TasksView() {
   const [datePreset, setDatePreset] = useState<DatePreset>('all');
   const [customFrom, setCustomFrom] = useState<string | null>(null);
   const [customTo, setCustomTo] = useState<string | null>(null);
+  const [subView, setSubView] = useState<SubView>('tasks');
+  const [projects, setProjects] = useState<ProjectWithCounts[]>([]);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<number[]>([]);
 
-  const loadTasks = useCallback(async (opts: { includeCompleted: boolean; includeCancelled: boolean }) => {
+  const loadProjects = useCallback(async () => {
+    try {
+      const result = await window.electronAPI?.listProjects();
+      if (result?.success) setProjects(result.projects ?? []);
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadTasks = useCallback(async (opts: { includeCompleted: boolean; includeCancelled: boolean; projectId?: number }) => {
     setLoading(true);
     setError(null);
     try {
@@ -294,11 +501,16 @@ export default function TasksView() {
     }
   }, []);
 
+  // When exactly one project is selected, filter server-side; otherwise filter client-side
+  const serverProjectId = selectedProjectIds.length === 1 ? selectedProjectIds[0] : undefined;
+
   useEffect(() => {
-    loadTasks({ includeCompleted: showCompleted, includeCancelled: showCancelled });
-    const interval = setInterval(() => loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current }), 30_000);
+    loadTasks({ includeCompleted: showCompleted, includeCancelled: showCancelled, projectId: serverProjectId });
+    const interval = setInterval(() => loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current, projectId: serverProjectId }), 30_000);
     return () => clearInterval(interval);
-  }, [showCompleted, showCancelled, loadTasks]);
+  }, [showCompleted, showCancelled, serverProjectId, loadTasks]);
+
+  useEffect(() => { loadProjects(); }, [loadProjects]);
 
   // Debounced search
   useEffect(() => {
@@ -342,12 +554,17 @@ export default function TasksView() {
     setSearchResults(prev => prev?.filter(t => t.id !== id) ?? null);
   }
 
+  function reloadOpts() {
+    return { includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current, projectId: serverProjectId };
+  }
+
   async function revise(id: number, fields: {
     status?: MemoryStatusValue | null;
     priority?: PriorityLevel | null;
     actionDate?: string | null;
     recurrence?: string | null;
     topic?: string;
+    projectId?: number | null;
   }) {
     optimisticUpdate(id, t => ({ ...t, ...fields, updatedAt: new Date().toISOString() }));
 
@@ -372,17 +589,19 @@ export default function TasksView() {
 
     const result = await window.electronAPI?.reviseTask(id, fields as Record<string, unknown>);
     if (!result?.success) {
-      loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
+      loadTasks(reloadOpts());
     } else if (result.nextActionDate) {
       // Recurring task was auto-advanced — reload to show updated date/status
-      loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
+      loadTasks(reloadOpts());
     }
+    // If projectId changed, refresh project counts
+    if (fields.projectId !== undefined) loadProjects();
   }
 
   async function skipTask(id: number) {
     const result = await window.electronAPI?.skipTask(id);
     if (result?.success) {
-      loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
+      loadTasks(reloadOpts());
     }
   }
 
@@ -404,15 +623,17 @@ export default function TasksView() {
     setNewTaskTopic('');
     const key = ++pendingKeyRef.current;
     setPendingCreates(prev => [...prev, { key, topic: trimmed }]);
-    await window.electronAPI?.createTask(trimmed);
+    await window.electronAPI?.createTask(trimmed, selectedProjectIds.length === 1 ? selectedProjectIds[0] : undefined);
     setPendingCreates(prev => prev.filter(p => p.key !== key));
-    loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
+    loadTasks(reloadOpts());
+    if (selectedProjectIds.length > 0) loadProjects();
   }
 
   async function deleteTask(id: number) {
     optimisticRemove(id);
     const result = await window.electronAPI?.deleteTask(id);
-    if (!result?.success) loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
+    if (!result?.success) loadTasks(reloadOpts());
+    loadProjects();
   }
 
   // ── Filtering & sorting ──────────────────────────────────────────────────
@@ -426,13 +647,20 @@ export default function TasksView() {
     return true;
   };
 
+  // Client-side project filter (used when 0 or 2+ projects selected; single-project is server-side)
+  const projectFilter = (t: MemoryRecord) => {
+    if (selectedProjectIds.length <= 1) return true; // 0 = all, 1 = server-filtered
+    return t.projectId != null && selectedProjectIds.includes(t.projectId);
+  };
+
   const filtered = tasks
     .filter(t =>
       recentlyCompleted.has(t.id) ||
       (t.status != null &&
         (showCompleted || t.status !== 'completed') &&
         (showCancelled || t.status !== 'cancelled') &&
-        dateFilter(t))
+        dateFilter(t) &&
+        projectFilter(t))
     )
     .sort((a, b) => {
       const aOver = isOverdue(a);
@@ -450,7 +678,8 @@ export default function TasksView() {
         recentlyCompleted.has(t.id) ||
         ((showCompleted || t.status !== 'completed') &&
          (showCancelled || t.status !== 'cancelled') &&
-         dateFilter(t)))
+         dateFilter(t) &&
+         projectFilter(t)))
     : filtered;
   const overdueCount = filtered.filter(isOverdue).length;
   const noCloudUrl = !loading && error?.includes('No cloud URL');
@@ -460,23 +689,40 @@ export default function TasksView() {
       {/* Sticky header */}
       <div className="sticky top-0 z-10 bg-background border-b border-border px-6 pt-6 pb-4">
         <div className="flex items-center justify-between mb-4">
-          <h1 className="text-lg font-semibold text-foreground">Tasks</h1>
+          <div className="flex items-center gap-1">
+            {(['tasks', 'projects'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setSubView(tab)}
+                className={cn(
+                  'px-2.5 py-1 rounded-md text-sm font-medium transition-colors',
+                  subView === tab
+                    ? 'text-foreground bg-accent'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {tab === 'tasks' ? 'Tasks' : 'Projects'}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-3">
-            {overdueCount > 0 && (
+            {subView === 'tasks' && overdueCount > 0 && (
               <span className="inline-flex items-center text-xs font-medium text-amber-400">
                 {overdueCount} overdue
               </span>
             )}
+            {subView === 'tasks' && (
+              <button
+                onClick={() => { setIsCreating(true); setNewTaskTopic(''); }}
+                title="New task"
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                New task
+              </button>
+            )}
             <button
-              onClick={() => { setIsCreating(true); setNewTaskTopic(''); }}
-              title="New task"
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              New task
-            </button>
-            <button
-              onClick={() => loadTasks({ includeCompleted: showCompleted, includeCancelled: showCancelled })}
+              onClick={() => { loadTasks(reloadOpts()); loadProjects(); }}
               disabled={loading}
               title="Refresh"
               className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
@@ -486,44 +732,57 @@ export default function TasksView() {
           </div>
         </div>
 
-        {/* Search */}
-        <div className="relative mb-3">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/40" />
-          <input
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Escape') setSearchQuery(''); }}
-            placeholder="Search tasks…"
-            className="w-full h-8 rounded-md border border-input bg-background pl-8 pr-8 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-          {(searchQuery || searching) && (
-            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
-              {searching && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="h-4 w-4 flex items-center justify-center rounded-sm text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <X className="h-3 w-3" />
-                </button>
+        {subView === 'tasks' && (
+          <>
+            {/* Search */}
+            <div className="relative mb-3">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/40" />
+              <input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Escape') setSearchQuery(''); }}
+                placeholder="Search tasks…"
+                className="w-full h-8 rounded-md border border-input bg-background pl-8 pr-8 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              {(searchQuery || searching) && (
+                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                  {searching && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="h-4 w-4 flex items-center justify-center rounded-sm text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
 
-        {/* Filters */}
-        <div className="flex items-center gap-3">
-          <DateRangeFilter
-            preset={datePreset}
-            customFrom={customFrom}
-            customTo={customTo}
-            onPreset={setDatePreset}
-            onCustomFrom={setCustomFrom}
-            onCustomTo={setCustomTo}
-          />
-          <ToggleSwitch checked={showCompleted} onChange={setShowCompleted} label="Completed" />
-          <ToggleSwitch checked={showCancelled} onChange={setShowCancelled} label="Cancelled" />
-        </div>
+            {/* Filters */}
+            <div className="flex items-center gap-3 flex-wrap">
+              <DateRangeFilter
+                preset={datePreset}
+                customFrom={customFrom}
+                customTo={customTo}
+                onPreset={setDatePreset}
+                onCustomFrom={setCustomFrom}
+                onCustomTo={setCustomTo}
+              />
+              <ToggleSwitch checked={showCompleted} onChange={setShowCompleted} label="Completed" />
+              <ToggleSwitch checked={showCancelled} onChange={setShowCancelled} label="Cancelled" />
+            </div>
+
+            {/* Project filter */}
+            <div className="mt-2">
+              <ProjectSearchFilter
+                projects={projects}
+                selectedIds={selectedProjectIds}
+                onChange={setSelectedProjectIds}
+              />
+            </div>
+          </>
+        )}
       </div>
 
       {/* Body */}
@@ -531,7 +790,7 @@ export default function TasksView() {
         {loading && tasks.length === 0 && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Loading tasks…
+            Loading…
           </div>
         )}
 
@@ -560,158 +819,263 @@ export default function TasksView() {
           </div>
         )}
 
-        {!loading && !error && displayTasks.length === 0 && !searching && (
-          <p className="text-sm text-muted-foreground">
-            {isSearching ? 'No matching tasks.' : 'No tasks found.'}
-          </p>
-        )}
-
-        {(isCreating || pendingCreates.length > 0 || displayTasks.length > 0) && (
-          <div className="flex flex-col divide-y divide-border/50">
-            {/* Create row */}
-            {isCreating && (
-              <div className="flex items-center gap-2 py-2.5">
-                <div className="w-10 shrink-0" />
-                <div className="w-5 shrink-0" />
-                <div className="w-12 shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <input
-                    autoFocus
-                    placeholder="New task…"
-                    value={newTaskTopic}
-                    onChange={(e) => setNewTaskTopic(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') commitCreate();
-                      if (e.key === 'Escape') { setIsCreating(false); setNewTaskTopic(''); }
-                    }}
-                    onBlur={() => { if (!newTaskTopic.trim()) { setIsCreating(false); setNewTaskTopic(''); } }}
-                    className="w-full bg-transparent text-sm text-foreground border-b border-ring focus:outline-none placeholder:text-muted-foreground/30"
-                  />
-                </div>
-                <div className="shrink-0 flex items-center gap-1.5">
-                  <div className="w-5" /><div className="w-20" /><div className="w-20" /><div className="w-7" />
-                </div>
-              </div>
+        {/* ── Tasks sub-view ─────────────────────────────────────── */}
+        {subView === 'tasks' && !noCloudUrl && (
+          <>
+            {!loading && !error && displayTasks.length === 0 && !searching && (
+              <p className="text-sm text-muted-foreground">
+                {isSearching ? 'No matching tasks.' : 'No tasks found.'}
+              </p>
             )}
 
-            {/* Pending create rows */}
-            {pendingCreates.map(({ key, topic }) => (
-              <div key={key} className="flex items-center gap-2 py-2.5 opacity-50">
-                <div className="w-10 shrink-0" />
-                <div className="w-5 shrink-0" />
-                <div className="w-12 shrink-0 flex items-center justify-center">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <span className="block truncate text-sm text-muted-foreground italic">{topic}</span>
-                </div>
-                <div className="shrink-0 flex items-center gap-1.5">
-                  <div className="w-5" /><div className="w-20" /><div className="w-20" /><div className="w-7" />
-                </div>
-              </div>
-            ))}
-
-            {displayTasks.map((task) => {
-              const overdue = isOverdue(task);
-              const isEditingTopic = editingTopicId === task.id;
-
-              const isGracePeriod = recentlyCompleted.has(task.id);
-
-              return (
-                <div
-                  key={task.id}
-                  className={cn(
-                    'group flex items-center gap-2 py-2.5 transition-opacity duration-500',
-                    overdue && '-mx-1 px-1 border-l-2 border-l-amber-500/50',
-                    isGracePeriod && 'opacity-50',
-                  )}
-                >
-                  {/* UID */}
-                  <span className="w-10 shrink-0 h-5 leading-5 text-right text-[11px] tabular-nums text-muted-foreground/25 select-all">
-                    m{task.id}
-                  </span>
-
-                  {/* Expand to detail */}
-                  <button
-                    onClick={() => navigate(`/tasks/${task.id}`, { state: { task } })}
-                    title="Open detail"
-                    className="w-5 shrink-0 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-foreground transition-colors"
-                  >
-                    <Maximize2 className="h-3 w-3" />
-                  </button>
-
-                  {/* Status */}
-                  <StatusCell
-                    value={task.status}
-                    onChange={(v) => revise(task.id, { status: v })}
-                    isRecurring={!!task.recurrence}
-                    onSkip={() => skipTask(task.id)}
-                  />
-
-                  {/* Topic */}
-                  <div className="flex-1 min-w-0">
-                    {isEditingTopic ? (
+            {(isCreating || pendingCreates.length > 0 || displayTasks.length > 0) && (
+              <div className="flex flex-col divide-y divide-border/50">
+                {/* Create row */}
+                {isCreating && (
+                  <div className="flex items-center gap-2 py-2.5">
+                    <div className="w-10 shrink-0" />
+                    <div className="w-5 shrink-0" />
+                    <div className="w-12 shrink-0" />
+                    <div className="flex-1 min-w-0">
                       <input
                         autoFocus
-                        value={editingTopicValue}
-                        onChange={(e) => setEditingTopicValue(e.target.value)}
-                        onBlur={() => commitTopicEdit(task.id, editingTopicValue)}
+                        placeholder="New task…"
+                        value={newTaskTopic}
+                        onChange={(e) => setNewTaskTopic(e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter') commitTopicEdit(task.id, editingTopicValue);
-                          if (e.key === 'Escape') setEditingTopicId(null);
+                          if (e.key === 'Enter') commitCreate();
+                          if (e.key === 'Escape') { setIsCreating(false); setNewTaskTopic(''); }
                         }}
-                        className="w-full bg-transparent text-sm text-foreground border-b border-ring focus:outline-none"
+                        onBlur={() => { if (!newTaskTopic.trim()) { setIsCreating(false); setNewTaskTopic(''); } }}
+                        className="w-full bg-transparent text-sm text-foreground border-b border-ring focus:outline-none placeholder:text-muted-foreground/30"
                       />
-                    ) : (
-                      <span
-                        onClick={() => startEditTopic(task)}
-                        title={task.topic}
-                        className={cn(
-                          'text-sm cursor-text line-clamp-2',
-                          task.status === 'completed'
-                            ? 'line-through text-muted-foreground/50'
-                            : 'text-foreground',
-                        )}
-                      >
-                        {task.topic}
-                      </span>
-                    )}
+                    </div>
+                    <div className="shrink-0 flex items-center gap-1.5">
+                      <div className="w-24" /><div className="w-5" /><div className="w-20" /><div className="w-20" /><div className="w-7" />
+                    </div>
                   </div>
+                )}
 
-                  {/* Right-side controls */}
-                  <div className="shrink-0 flex items-center gap-1.5">
-                    <PriorityCell
-                      value={task.priority}
-                      onChange={(v) => revise(task.id, { priority: v })}
-                    />
-                    <DateCell
-                      value={task.actionDate}
-                      overdue={overdue}
-                      onChange={(v) => revise(task.id, { actionDate: v })}
-                    />
-                    <RecurrenceCell
-                      value={task.recurrence}
-                      onChange={(v) => {
-                        if (v && !task.actionDate) {
-                          revise(task.id, { recurrence: v, actionDate: getTodayStr() });
-                        } else {
-                          revise(task.id, { recurrence: v });
-                        }
-                      }}
-                    />
-                    <button
-                      onClick={() => deleteTask(task.id)}
-                      title="Delete task"
-                      className="w-7 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-red-400 transition-colors"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                {/* Pending create rows */}
+                {pendingCreates.map(({ key, topic }) => (
+                  <div key={key} className="flex items-center gap-2 py-2.5 opacity-50">
+                    <div className="w-10 shrink-0" />
+                    <div className="w-5 shrink-0" />
+                    <div className="w-12 shrink-0 flex items-center justify-center">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <span className="block truncate text-sm text-muted-foreground italic">{topic}</span>
+                    </div>
+                    <div className="shrink-0 flex items-center gap-1.5">
+                      <div className="w-24" /><div className="w-5" /><div className="w-20" /><div className="w-20" /><div className="w-7" />
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                ))}
+
+                {displayTasks.map((task) => {
+                  const overdue = isOverdue(task);
+                  const isEditingTopic = editingTopicId === task.id;
+                  const isGracePeriod = recentlyCompleted.has(task.id);
+
+                  return (
+                    <div
+                      key={task.id}
+                      className={cn(
+                        'group flex items-center gap-2 py-2.5 transition-opacity duration-500',
+                        overdue && '-mx-1 px-1 border-l-2 border-l-amber-500/50',
+                        isGracePeriod && 'opacity-50',
+                      )}
+                    >
+                      {/* UID */}
+                      <span className="w-10 shrink-0 h-5 leading-5 text-right text-[11px] tabular-nums text-muted-foreground/25 select-all">
+                        m{task.id}
+                      </span>
+
+                      {/* Expand to detail */}
+                      <button
+                        onClick={() => navigate(`/tasks/${task.id}`, { state: { task } })}
+                        title="Open detail"
+                        className="w-5 shrink-0 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-foreground transition-colors"
+                      >
+                        <Maximize2 className="h-3 w-3" />
+                      </button>
+
+                      {/* Status */}
+                      <StatusCell
+                        value={task.status}
+                        onChange={(v) => revise(task.id, { status: v })}
+                        isRecurring={!!task.recurrence}
+                        onSkip={() => skipTask(task.id)}
+                      />
+
+                      {/* Topic */}
+                      <div className="flex-1 min-w-0">
+                        {isEditingTopic ? (
+                          <input
+                            autoFocus
+                            value={editingTopicValue}
+                            onChange={(e) => setEditingTopicValue(e.target.value)}
+                            onBlur={() => commitTopicEdit(task.id, editingTopicValue)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') commitTopicEdit(task.id, editingTopicValue);
+                              if (e.key === 'Escape') setEditingTopicId(null);
+                            }}
+                            className="w-full bg-transparent text-sm text-foreground border-b border-ring focus:outline-none"
+                          />
+                        ) : (
+                          <span
+                            onClick={() => startEditTopic(task)}
+                            title={task.topic}
+                            className={cn(
+                              'text-sm cursor-text line-clamp-2',
+                              task.status === 'completed'
+                                ? 'line-through text-muted-foreground/50'
+                                : 'text-foreground',
+                            )}
+                          >
+                            {task.topic}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Right-side controls */}
+                      <div className="shrink-0 flex items-center gap-1.5">
+                        <ProjectCell
+                          value={task.projectId}
+                          projects={projects}
+                          onChange={(v) => revise(task.id, { projectId: v })}
+                        />
+                        <PriorityCell
+                          value={task.priority}
+                          onChange={(v) => revise(task.id, { priority: v })}
+                        />
+                        <DateCell
+                          value={task.actionDate}
+                          overdue={overdue}
+                          onChange={(v) => revise(task.id, { actionDate: v })}
+                        />
+                        <RecurrenceCell
+                          value={task.recurrence}
+                          onChange={(v) => {
+                            if (v && !task.actionDate) {
+                              revise(task.id, { recurrence: v, actionDate: getTodayStr() });
+                            } else {
+                              revise(task.id, { recurrence: v });
+                            }
+                          }}
+                        />
+                        <button
+                          onClick={() => deleteTask(task.id)}
+                          title="Delete task"
+                          className="w-7 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-red-400 transition-colors"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
+
+        {/* ── Projects sub-view ──────────────────────────────────── */}
+        {subView === 'projects' && !noCloudUrl && !error && (
+          <ProjectsSubView projects={projects} onRefresh={loadProjects} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Projects sub-view (inline within Tasks) ───────────────────────────────────
+
+function ProjectsSubView({
+  projects,
+  onRefresh,
+}: {
+  projects: ProjectWithCounts[];
+  onRefresh: () => void;
+}) {
+  const navigate = useNavigate();
+  const [isCreating, setIsCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+
+  async function handleCreate() {
+    const name = newName.trim();
+    if (!name) return;
+    setIsCreating(false);
+    setNewName('');
+    await window.electronAPI?.createProject(name);
+    onRefresh();
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-xs text-muted-foreground">{projects.length} project{projects.length !== 1 ? 's' : ''}</p>
+        <button
+          onClick={() => { setIsCreating(true); setNewName(''); }}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New project
+        </button>
+      </div>
+
+      {isCreating && (
+        <div className="flex items-center gap-2 mb-3 p-3 rounded-lg border border-border/50">
+          <input
+            autoFocus
+            placeholder="Project name…"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleCreate();
+              if (e.key === 'Escape') { setIsCreating(false); setNewName(''); }
+            }}
+            onBlur={() => { if (!newName.trim()) { setIsCreating(false); setNewName(''); } }}
+            className="flex-1 bg-transparent text-sm text-foreground border-b border-ring focus:outline-none placeholder:text-muted-foreground/30"
+          />
+        </div>
+      )}
+
+      {projects.length === 0 && !isCreating && (
+        <p className="text-sm text-muted-foreground">No projects yet.</p>
+      )}
+
+      <div className="flex flex-col divide-y divide-border/50">
+        {projects.map((p) => {
+          const total = p.openCount + p.completedCount;
+          const pct = total > 0 ? Math.round((p.completedCount / total) * 100) : 0;
+          const colorMap = SILO_COLOR_MAP[p.color as SiloColor];
+          return (
+            <button
+              key={p.id}
+              onClick={() => navigate(`/tasks/projects/${p.id}`)}
+              className="flex items-center gap-3 py-3 text-left group hover:bg-accent/30 -mx-2 px-2 rounded-md transition-colors"
+            >
+              {projectDot(p.color, 'h-2.5 w-2.5')}
+              <span className="flex-1 min-w-0 text-sm font-medium text-foreground truncate">
+                {p.name}
+              </span>
+              <div className="flex items-center gap-3 shrink-0">
+                {/* Progress bar */}
+                <div className="w-20 h-1.5 rounded-full bg-border/40 overflow-hidden">
+                  <div
+                    className={cn('h-full rounded-full transition-all', colorMap?.dot ?? 'bg-blue-500')}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <span className="text-[11px] tabular-nums text-muted-foreground w-16 text-right">
+                  {p.completedCount}/{total} done
+                </span>
+              </div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

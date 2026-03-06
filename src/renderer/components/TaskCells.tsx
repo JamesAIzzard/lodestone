@@ -13,7 +13,8 @@ import {
   SkipForward,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { MemoryStatusValue, PriorityLevel, MemoryRecord } from '../../shared/types';
+import type { MemoryStatusValue, PriorityLevel, MemoryRecord, ProjectWithCounts } from '../../shared/types';
+import { SILO_COLOR_MAP, type SiloColor } from '../../shared/silo-appearance';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -581,6 +582,61 @@ function CustomRecurrenceInput({
         className="w-full h-6 px-2 text-xs rounded border border-border bg-background text-foreground outline-none focus:border-primary/60"
         placeholder="every 2 weeks"
       />
+    </div>
+  );
+}
+
+// ── ProjectCell ────────────────────────────────────────────────────────────
+
+const PROJECT_NONE = '__none__';
+
+function projectDot(color: string, size = 'h-2 w-2') {
+  const mapping = SILO_COLOR_MAP[color as SiloColor];
+  return <span className={cn(size, 'rounded-full shrink-0', mapping?.dot ?? 'bg-muted-foreground/30')} />;
+}
+
+export function ProjectCell({
+  value,
+  projects,
+  onChange,
+}: {
+  value: number | null;
+  projects: ProjectWithCounts[];
+  onChange: (projectId: number | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const current = value ? projects.find(p => p.id === value) : null;
+
+  const options = [
+    { value: PROJECT_NONE, label: 'None', className: 'text-muted-foreground/40', icon: projectDot('', 'h-2 w-2') },
+    ...projects.map(p => ({
+      value: String(p.id),
+      label: p.name,
+      className: SILO_COLOR_MAP[p.color as SiloColor]?.text ?? 'text-foreground',
+      icon: projectDot(p.color),
+    })),
+  ];
+
+  return (
+    <div className="relative shrink-0 w-24">
+      <button
+        onClick={() => setOpen(!open)}
+        className={cn(
+          'h-5 w-full rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors flex items-center gap-1.5 truncate',
+          current ? (SILO_COLOR_MAP[current.color as SiloColor]?.text ?? 'text-foreground') : 'text-muted-foreground/30',
+        )}
+      >
+        {current && projectDot(current.color)}
+        <span className="truncate">{current?.name ?? '—'}</span>
+      </button>
+      {open && (
+        <InlineDropdown
+          options={options}
+          onSelect={(v) => onChange(v === PROJECT_NONE ? null : parseInt(v, 10))}
+          onClose={() => setOpen(false)}
+        />
+      )}
     </div>
   );
 }

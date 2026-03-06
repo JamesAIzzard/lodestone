@@ -62,8 +62,6 @@ export interface SearchConfig {
 }
 
 export interface MemoryConfig {
-  /** Absolute path to the memory database file. Null when not configured. */
-  db_path?: string;
   /** URL of the Cloudflare Worker memory server. */
   cloud_url?: string;
   /** Bearer token for authenticating with the cloud Worker. */
@@ -167,7 +165,6 @@ export function loadConfig(configPath: string): LodestoneConfig {
     },
     search: {},
     memory: {
-      db_path: typeof memory.db_path === 'string' ? memory.db_path : undefined,
       cloud_url: typeof memory.cloud_url === 'string' ? memory.cloud_url : undefined,
     },
     silos: validatedSilos,

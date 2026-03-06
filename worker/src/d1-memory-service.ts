@@ -12,13 +12,15 @@ import type {
   MemoryStatus,
   MemoryStatusValue,
   PriorityLevel,
+  ProjectRecord,
+  ProjectWithCounts,
   RelatedMemoryResult,
 } from './shared/types';
 import { formatDateISO, syncStatusAndCompletedOn } from './shared/memory-utils';
 import { advanceRecurrence, type DateRangeResult } from './date-parser';
 import { searchMemory, type MemorySearchMode, type MemoryDateFilters } from './memory-search';
-import { getMemory, getMemoryCount, getRecentActiveMemories, getActiveUpcomingMemories, getOverdueMemories, getMemoriesByActionDateRange } from './d1/read';
-import { insertMemory, updateMemory, deleteMemory } from './d1/write';
+import { getMemory, getMemoryCount, getRecentActiveMemories, getActiveUpcomingMemories, getOverdueMemories, getMemoriesByActionDateRange, getAllProjects, getProjectById, getProjectByName, getProjectTaskCounts } from './d1/read';
+import { insertMemory, updateMemory, deleteMemory, insertProject, updateProject, deleteProject, mergeProjects } from './d1/write';
 import { embedDocument, embedQuery } from './embedding';
 import { rowToRecord } from './d1/helpers';
 
@@ -35,6 +37,7 @@ export interface RememberParams {
   priority?: PriorityLevel | null;
   status?: MemoryStatusValue | null;
   completedOn?: string | null;
+  projectId?: number | null;
 }
 
 export type RememberResult =
@@ -59,6 +62,7 @@ export interface ReviseParams {
   topic?: string;
   status?: MemoryStatusValue | null;
   completedOn?: string | null;
+  projectId?: number | null;
 }
 
 export interface ReviseResult {
@@ -127,6 +131,7 @@ export class D1MemoryService {
       recurrence = null,
       priority = null,
       completedOn: rawCompletedOn = null,
+      projectId = null,
     } = params;
     let { status: memStatus = null } = params;
     let completedOn = rawCompletedOn;
@@ -160,7 +165,7 @@ export class D1MemoryService {
     const id = await insertMemory(
       this.db, topic, body, confidence, contextHint,
       actionDate, recurrence, priority, memStatus, completedOn,
-      this.vectorize, embedding,
+      projectId, this.vectorize, embedding,
     );
 
     return { status: 'created', id };
@@ -254,6 +259,7 @@ export class D1MemoryService {
           null, null, null,
           'completed',
           today,
+          null, // completion records are not assigned to projects
           this.vectorize, completionEmbedding,
         );
 
@@ -428,4 +434,89 @@ export class D1MemoryService {
         similarity: m.score,
       }));
   }
+
+  // ── Project operations ──────────────────────────────────────────────────
+
+  async listProjects(): Promise<ProjectRecord[]> {
+    return getAllProjects(this.db);
+  }
+
+  async getProject(id: number): Promise<ProjectRecord | null> {
+    return getProjectById(this.db, id);
+  }
+
+  async getProjectByName(name: string): Promise<ProjectRecord | null> {
+    return getProjectByName(this.db, name);
+  }
+
+  async getProjectsWithCounts(): Promise<ProjectWithCounts[]> {
+    return getProjectTaskCounts(this.db);
+  }
+
+  async createProject(name: string, color = 'blue'): Promise<number> {
+    return insertProject(this.db, name, color);
+  }
+
+  async updateProject(id: number, updates: { name?: string; color?: string }): Promise<void> {
+    return updateProject(this.db, id, updates);
+  }
+
+  async deleteProject(id: number): Promise<void> {
+    return deleteProject(this.db, id);
+  }
+
+  /**
+   * Merge source project into target. Returns the number of memories reassigned.
+   */
+  async mergeProjects(sourceId: number, targetId: number): Promise<number> {
+    return mergeProjects(this.db, sourceId, targetId);
+  }
+
+  /**
+   * Resolve a project name to its ID.
+   *
+   * Tries exact match first (case-insensitive). If not found, returns
+   * fuzzy Levenshtein matches so the caller can suggest alternatives.
+   */
+  async resolveProjectName(name: string): Promise<
+    | { status: 'found'; id: number }
+    | { status: 'not_found'; suggestions: { name: string; id: number; distance: number }[] }
+  > {
+    // Try exact match (case-insensitive — SQLite COLLATE NOCASE on the column)
+    const existing = await getProjectByName(this.db, name);
+    if (existing) return { status: 'found', id: existing.id };
+
+    // Fuzzy search: compute Levenshtein distance against all project names
+    const allProjects = await getAllProjects(this.db);
+    const scored = allProjects
+      .map(p => ({ name: p.name, id: p.id, distance: levenshtein(name.toLowerCase(), p.name.toLowerCase()) }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 5);
+
+    return { status: 'not_found', suggestions: scored };
+  }
+}
+
+// ── Levenshtein distance ────────────────────────────────────────────────────
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+
+  // Use single-row optimization
+  let prev = new Array<number>(n + 1);
+  let curr = new Array<number>(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
 }

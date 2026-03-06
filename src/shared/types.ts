@@ -240,10 +240,26 @@ export interface MemoryRecord {
   priority: PriorityLevel | null;
   status: MemoryStatusValue | null;
   completedOn: string | null;   // ISO 8601 date — implies completed when set
+  projectId: number | null;      // FK to projects table
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;      // ISO 8601 datetime — set on soft delete, null for active
   deletionReason: string | null;  // optional explanation stored on soft delete
+}
+
+export interface ProjectRecord {
+  id: number;
+  name: string;
+  color: string;        // SiloColor palette key (e.g. 'blue', 'red', 'emerald')
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+}
+
+export interface ProjectWithCounts extends ProjectRecord {
+  openCount: number;
+  completedCount: number;
+  totalCount: number;
 }
 
 export interface MemorySearchResult extends MemoryRecord {

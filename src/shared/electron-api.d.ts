@@ -1,4 +1,4 @@
-import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams, MemoryRecord, MemoryStatusValue, PriorityLevel } from './types';
+import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams, MemoryRecord, MemoryStatusValue, PriorityLevel, ProjectWithCounts } from './types';
 
 /** Config snapshot stored inside a portable silo database. */
 export interface StoredSiloConfigResponse {
@@ -95,7 +95,7 @@ export interface ElectronAPI {
   setCloudAuthToken: (token: string) => Promise<{ success: boolean }>;
 
   // Tasks
-  listTasks: (opts?: { includeCompleted?: boolean; includeCancelled?: boolean }) => Promise<{ success: boolean; tasks: MemoryRecord[]; error?: string }>;
+  listTasks: (opts?: { includeCompleted?: boolean; includeCancelled?: boolean; projectId?: number }) => Promise<{ success: boolean; tasks: MemoryRecord[]; error?: string }>;
   searchTasks: (query: string) => Promise<{ success: boolean; tasks: (MemoryRecord & { _score?: number })[]; error?: string }>;
   reviseTask: (id: number, fields: {
     status?: MemoryStatusValue | null;
@@ -103,10 +103,18 @@ export interface ElectronAPI {
     actionDate?: string | null;
     recurrence?: string | null;
     topic?: string;
+    projectId?: number | null;
   }) => Promise<{ success: boolean; completionRecordId?: number; nextActionDate?: string; error?: string }>;
   skipTask: (id: number, reason?: string) => Promise<{ success: boolean; nextActionDate?: string; error?: string }>;
-  createTask: (topic: string) => Promise<{ success: boolean; id?: number; error?: string }>;
+  createTask: (topic: string, projectId?: number) => Promise<{ success: boolean; id?: number; error?: string }>;
   deleteTask: (id: number) => Promise<{ success: boolean; error?: string }>;
+
+  // Projects
+  listProjects: () => Promise<{ success: boolean; projects: ProjectWithCounts[]; error?: string }>;
+  createProject: (name: string, color?: string) => Promise<{ success: boolean; id?: number; error?: string }>;
+  updateProject: (id: number, updates: { name?: string; color?: string }) => Promise<{ success: boolean; error?: string }>;
+  deleteProject: (id: number) => Promise<{ success: boolean; error?: string }>;
+  mergeProjects: (sourceId: number, targetId: number) => Promise<{ success: boolean; reassigned?: number; error?: string }>;
 }
 
 declare global {

@@ -99,7 +99,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('cloud:setAuthToken', token),
 
   // Tasks
-  listTasks: (opts?: { includeCompleted?: boolean; includeCancelled?: boolean }): Promise<unknown> =>
+  listTasks: (opts?: { includeCompleted?: boolean; includeCancelled?: boolean; projectId?: number }): Promise<unknown> =>
     ipcRenderer.invoke('tasks:list', opts ?? {}),
   searchTasks: (query: string): Promise<unknown> =>
     ipcRenderer.invoke('tasks:search', query),
@@ -107,8 +107,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('tasks:revise', id, fields),
   skipTask: (id: number, reason?: string): Promise<unknown> =>
     ipcRenderer.invoke('tasks:skip', id, reason),
-  createTask: (topic: string): Promise<unknown> =>
-    ipcRenderer.invoke('tasks:create', topic),
+  createTask: (topic: string, projectId?: number): Promise<unknown> =>
+    ipcRenderer.invoke('tasks:create', topic, projectId),
   deleteTask: (id: number): Promise<unknown> =>
     ipcRenderer.invoke('tasks:delete', id),
+
+  // Projects
+  listProjects: (): Promise<unknown> =>
+    ipcRenderer.invoke('projects:list'),
+  createProject: (name: string, color?: string): Promise<unknown> =>
+    ipcRenderer.invoke('projects:create', name, color),
+  updateProject: (id: number, updates: { name?: string; color?: string }): Promise<unknown> =>
+    ipcRenderer.invoke('projects:update', id, updates),
+  deleteProject: (id: number): Promise<unknown> =>
+    ipcRenderer.invoke('projects:delete', id),
+  mergeProjects: (sourceId: number, targetId: number): Promise<unknown> =>
+    ipcRenderer.invoke('projects:merge', sourceId, targetId),
 });

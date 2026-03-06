@@ -26,14 +26,15 @@ export async function insertMemory(
   priority: MemoryRecord['priority'] = null,
   status: MemoryRecord['status'] = null,
   completedOn: string | null = null,
+  projectId: number | null = null,
   vectorize?: Vectorize,
   embedding?: number[],
 ): Promise<number> {
   // Insert the memory row first to get its ID
   const result = await db.prepare(
-    `INSERT INTO memories (topic, body, confidence, context_hint, action_date, recurrence, priority, status, completed_on)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(topic, body, confidence, contextHint, actionDate, recurrence, priority, status, completedOn).run();
+    `INSERT INTO memories (topic, body, confidence, context_hint, action_date, recurrence, priority, status, completed_on, project_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(topic, body, confidence, contextHint, actionDate, recurrence, priority, status, completedOn, projectId).run();
 
   const id = result.meta.last_row_id as number;
 
@@ -71,6 +72,7 @@ export async function updateMemory(
     topic?: string;
     status?: MemoryRecord['status'];
     completedOn?: string | null;
+    projectId?: number | null;
   },
   vectorize?: Vectorize,
   embedding?: number[],
@@ -114,6 +116,10 @@ export async function updateMemory(
     sets.push('completed_on = ?');
     vals.push(updates.completedOn);
   }
+  if (updates.projectId !== undefined) {
+    sets.push('project_id = ?');
+    vals.push(updates.projectId);
+  }
 
   vals.push(id);
   await db.prepare(`UPDATE memories SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
@@ -150,4 +156,66 @@ export async function deleteMemory(db: D1Database, id: number, reason?: string, 
   if (vectorize) {
     await vectorize.deleteByIds([String(id)]);
   }
+}
+
+// ── Project writes ────────────────────────────────────────────────────────────
+
+/** Create a new project. Returns the new project's id. */
+export async function insertProject(db: D1Database, name: string, color: string = 'blue'): Promise<number> {
+  const result = await db.prepare(
+    `INSERT INTO projects (name, color) VALUES (?, ?)`,
+  ).bind(name, color).run();
+  return result.meta.last_row_id as number;
+}
+
+/** Update a project's name and/or color. */
+export async function updateProject(
+  db: D1Database,
+  id: number,
+  updates: { name?: string; color?: string },
+): Promise<void> {
+  const sets: string[] = [`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`];
+  const vals: unknown[] = [];
+
+  if (updates.name !== undefined) {
+    sets.push('name = ?');
+    vals.push(updates.name);
+  }
+  if (updates.color !== undefined) {
+    sets.push('color = ?');
+    vals.push(updates.color);
+  }
+
+  vals.push(id);
+  await db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
+}
+
+/**
+ * Soft-delete a project. Unassigns all memories from this project
+ * (sets project_id = NULL) and marks the project as deleted.
+ */
+export async function deleteProject(db: D1Database, id: number): Promise<void> {
+  await db.batch([
+    db.prepare(`UPDATE memories SET project_id = NULL WHERE project_id = ?`).bind(id),
+    db.prepare(`UPDATE projects SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).bind(id),
+  ]);
+}
+
+/**
+ * Merge source project into target: reassign all memories, then soft-delete source.
+ * Returns the number of memories reassigned.
+ */
+export async function mergeProjects(db: D1Database, sourceId: number, targetId: number): Promise<number> {
+  // Count affected memories first
+  const countRow = await db.prepare(
+    `SELECT COUNT(*) as cnt FROM memories WHERE project_id = ? AND deleted_at IS NULL`,
+  ).bind(sourceId).first();
+  const count = (countRow as Record<string, unknown>)?.cnt as number ?? 0;
+
+  await db.batch([
+    db.prepare(`UPDATE memories SET project_id = ? WHERE project_id = ?`).bind(targetId, sourceId),
+    db.prepare(`UPDATE projects SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).bind(sourceId),
+  ]);
+
+  return count;
 }

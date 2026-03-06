@@ -23,6 +23,7 @@ import {
   registerGetDatetimeTool,
   registerReadTool,
   registerGuideTool,
+  registerProjectTool,
 } from './tools/memory';
 
 // ── Env bindings (populated by wrangler.jsonc) ──────────────────────────────
@@ -76,6 +77,7 @@ function createServer(env: Env): McpServer {
   registerAgendaTool(server, memory);
   registerGetDatetimeTool(server);
   registerReadTool(server, memory);
+  registerProjectTool(server, memory);
   registerGuideTool(server);
 
   return server;
@@ -127,7 +129,9 @@ export default {
 
       const includeCompleted = url.searchParams.get('includeCompleted') === 'true';
       const includeCancelled = url.searchParams.get('includeCancelled') === 'true';
-      const tasks = await getAllTasks(env.DB, { includeCompleted, includeCancelled }, limit);
+      const rawProjectId = url.searchParams.get('projectId');
+      const projectId = rawProjectId ? parseInt(rawProjectId, 10) : undefined;
+      const tasks = await getAllTasks(env.DB, { includeCompleted, includeCancelled, projectId }, limit);
       return new Response(JSON.stringify({ tasks }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -135,7 +139,7 @@ export default {
 
     // Create task: POST /tasks
     if (url.pathname === '/tasks' && request.method === 'POST') {
-      const body = await request.json() as { topic: string; status?: MemoryStatusValue; priority?: PriorityLevel; actionDate?: string };
+      const body = await request.json() as { topic: string; status?: MemoryStatusValue; priority?: PriorityLevel; actionDate?: string; projectId?: number | null };
       const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
       const result = await memory.remember({
         topic: body.topic.trim(),
@@ -143,6 +147,7 @@ export default {
         status: body.status ?? 'open',
         priority: body.priority ?? null,
         actionDate: body.actionDate ?? null,
+        projectId: body.projectId ?? null,
         force: true,
       });
       const id = result.status === 'created' ? result.id : (result as { existing: { id: number } }).existing.id;
@@ -174,6 +179,7 @@ export default {
         actionDate?: string | null;
         recurrence?: string | null;
         topic?: string;
+        projectId?: number | null;
       };
       const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
       const result = await memory.revise({
@@ -184,6 +190,7 @@ export default {
         ...(payload.actionDate !== undefined && { actionDate: payload.actionDate }),
         ...(payload.recurrence !== undefined && { recurrence: payload.recurrence }),
         ...(payload.topic !== undefined && { topic: payload.topic }),
+        ...(payload.projectId !== undefined && { projectId: payload.projectId }),
       });
       return new Response(JSON.stringify({ success: true, ...result }), {
         headers: { 'Content-Type': 'application/json' },
@@ -195,6 +202,80 @@ export default {
       const id = parseInt(taskPatchMatch[1], 10);
       const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
       await memory.forget(id, 'Deleted via Tasks GUI');
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // ── Project routes ──────────────────────────────────────────────────────
+
+    // List projects: GET /projects
+    if (url.pathname === '/projects' && request.method === 'GET') {
+      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+      const projects = await memory.getProjectsWithCounts();
+      return new Response(JSON.stringify({ projects }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Create project: POST /projects
+    if (url.pathname === '/projects' && request.method === 'POST') {
+      const body = await request.json() as { name: string; color?: string };
+      if (!body.name?.trim()) {
+        return new Response(JSON.stringify({ error: 'Project name is required' }), {
+          status: 400, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+      try {
+        const id = await memory.createProject(body.name.trim(), body.color ?? 'blue');
+        return new Response(JSON.stringify({ success: true, id }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } catch (err) {
+        const msg = String(err);
+        if (msg.includes('UNIQUE constraint')) {
+          return new Response(JSON.stringify({ error: `Project "${body.name}" already exists` }), {
+            status: 409, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        throw err;
+      }
+    }
+
+    // Merge project: POST /projects/:id/merge
+    const projectMergeMatch = url.pathname.match(/^\/projects\/(\d+)\/merge$/);
+    if (projectMergeMatch && request.method === 'POST') {
+      const sourceId = parseInt(projectMergeMatch[1], 10);
+      const body = await request.json() as { targetId: number };
+      if (!body.targetId) {
+        return new Response(JSON.stringify({ error: 'targetId is required' }), {
+          status: 400, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+      const reassigned = await memory.mergeProjects(sourceId, body.targetId);
+      return new Response(JSON.stringify({ success: true, reassigned }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Update / Delete project: PATCH|DELETE /projects/:id
+    const projectMatch = url.pathname.match(/^\/projects\/(\d+)$/);
+    if (projectMatch && request.method === 'PATCH') {
+      const id = parseInt(projectMatch[1], 10);
+      const body = await request.json() as { name?: string; color?: string };
+      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+      await memory.updateProject(id, body);
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (projectMatch && request.method === 'DELETE') {
+      const id = parseInt(projectMatch[1], 10);
+      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+      await memory.deleteProject(id);
       return new Response(JSON.stringify({ success: true }), {
         headers: { 'Content-Type': 'application/json' },
       });

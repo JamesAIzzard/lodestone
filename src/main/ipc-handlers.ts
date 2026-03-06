@@ -298,13 +298,14 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return { success: true };
   });
 
-  ipcMain.handle('tasks:list', async (_event, opts: { includeCompleted?: boolean; includeCancelled?: boolean } = {}): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
+  ipcMain.handle('tasks:list', async (_event, opts: { includeCompleted?: boolean; includeCancelled?: boolean; projectId?: number } = {}): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
     const cloudUrl = ctx.config?.memory.cloud_url;
     if (!cloudUrl) return { success: false, tasks: [], error: 'No cloud URL configured' };
     try {
       const params = new URLSearchParams();
       if (opts.includeCompleted) params.set('includeCompleted', 'true');
       if (opts.includeCancelled) params.set('includeCancelled', 'true');
+      if (opts.projectId !== undefined) params.set('projectId', String(opts.projectId));
       const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks?${params}`, {
         headers: getCloudHeaders(ctx),
         signal: AbortSignal.timeout(10000),
@@ -378,14 +379,14 @@ export function registerIpcHandlers(ctx: AppContext): void {
     }
   });
 
-  ipcMain.handle('tasks:create', async (_event, topic: string): Promise<{ success: boolean; id?: number; error?: string }> => {
+  ipcMain.handle('tasks:create', async (_event, topic: string, projectId?: number): Promise<{ success: boolean; id?: number; error?: string }> => {
     const cloudUrl = ctx.config?.memory.cloud_url;
     if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
     try {
       const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks`, {
         method: 'POST',
         headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ topic }),
+        body: JSON.stringify({ topic, ...(projectId !== undefined && { projectId }) }),
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
@@ -406,6 +407,94 @@ export function registerIpcHandlers(ctx: AppContext): void {
       });
       if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
       return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  // ── Projects ─────────────────────────────────────────────────────────
+
+  ipcMain.handle('projects:list', async (): Promise<{ success: boolean; projects: unknown[]; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, projects: [], error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects`, {
+        headers: getCloudHeaders(ctx),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return { success: false, projects: [], error: `${res.status}: ${await res.text()}` };
+      const data = await res.json() as { projects: unknown[] };
+      return { success: true, projects: data.projects };
+    } catch (err) {
+      return { success: false, projects: [], error: String(err) };
+    }
+  });
+
+  ipcMain.handle('projects:create', async (_event, name: string, color?: string): Promise<{ success: boolean; id?: number; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects`, {
+        method: 'POST',
+        headers: getCloudHeaders(ctx),
+        body: JSON.stringify({ name, color }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        return { success: false, error: `${res.status}: ${text}` };
+      }
+      return await res.json() as { success: boolean; id?: number };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('projects:update', async (_event, id: number, updates: { name?: string; color?: string }): Promise<{ success: boolean; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}`, {
+        method: 'PATCH',
+        headers: getCloudHeaders(ctx),
+        body: JSON.stringify(updates),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('projects:delete', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}`, {
+        method: 'DELETE',
+        headers: getCloudHeaders(ctx),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('projects:merge', async (_event, sourceId: number, targetId: number): Promise<{ success: boolean; reassigned?: number; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${sourceId}/merge`, {
+        method: 'POST',
+        headers: getCloudHeaders(ctx),
+        body: JSON.stringify({ targetId }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
+      return await res.json() as { success: boolean; reassigned?: number };
     } catch (err) {
       return { success: false, error: String(err) };
     }

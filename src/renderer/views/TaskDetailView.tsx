@@ -8,10 +8,11 @@ import {
   PriorityCell,
   DateCell,
   RecurrenceCell,
+  ProjectCell,
   isOverdue,
   getTodayStr,
 } from '@/components/TaskCells';
-import type { MemoryRecord } from '../../shared/types';
+import type { MemoryRecord, ProjectWithCounts } from '../../shared/types';
 
 // ── Component ──────────────────────────────────────────────────────────────
 
@@ -29,6 +30,7 @@ export default function TaskDetailView() {
   const [isEditingTopic, setIsEditingTopic] = useState(false);
   const [topicValue, setTopicValue] = useState(task?.topic ?? '');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [projects, setProjects] = useState<ProjectWithCounts[]>([]);
 
   const taskRef = useRef(task);
   taskRef.current = task;
@@ -58,6 +60,10 @@ export default function TaskDetailView() {
     if (!task) fetchTask();
     else setTopicValue(task.topic);
   }, [task, fetchTask]);
+
+  useEffect(() => {
+    window.electronAPI?.listProjects().then(r => { if (r?.success) setProjects(r.projects ?? []); });
+  }, []);
 
   // ── Revise ─────────────────────────────────────────────────────────────
 
@@ -202,6 +208,11 @@ export default function TaskDetailView() {
                 revise(task.id, { recurrence: v });
               }
             }}
+          />
+          <ProjectCell
+            value={task.projectId}
+            projects={projects}
+            onChange={(v) => revise(task.id, { projectId: v })}
           />
         </div>
       </div>

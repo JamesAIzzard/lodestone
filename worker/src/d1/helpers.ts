@@ -6,7 +6,7 @@
  *   - No getMemoryDatabaseSizeBytes (no filesystem in Worker)
  */
 
-import type { MemoryRecord } from '../shared/types';
+import type { MemoryRecord, ProjectRecord } from '../shared/types';
 
 /** Convert a raw D1 row to a typed MemoryRecord. */
 export function rowToRecord(row: Record<string, unknown>): MemoryRecord {
@@ -21,9 +21,22 @@ export function rowToRecord(row: Record<string, unknown>): MemoryRecord {
     priority: (row.priority as MemoryRecord['priority']) ?? null,
     status: (row.status as MemoryRecord['status']) ?? null,
     completedOn: (row.completed_on as string | null) ?? null,
+    projectId: (row.project_id as number | null) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     deletedAt: (row.deleted_at as string | null) ?? null,
     deletionReason: (row.deletion_reason as string | null) ?? null,
+  };
+}
+
+/** Convert a raw D1 row to a typed ProjectRecord. */
+export function rowToProject(row: Record<string, unknown>): ProjectRecord {
+  return {
+    id: row.id as number,
+    name: row.name as string,
+    color: row.color as string,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+    deletedAt: (row.deleted_at as string | null) ?? null,
   };
 }

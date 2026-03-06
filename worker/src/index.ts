@@ -106,16 +106,23 @@ export default {
       const limit = Number.isNaN(rawLimit) ? 200 : Math.min(rawLimit, 500);
 
       if (q) {
-        // Hybrid search — fetch more than needed, then filter to status-bearing tasks
-        const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
-        const results = await memory.recall({ query: q, maxResults: limit * 2, mode: 'hybrid' });
-        const tasks = results
-          .filter((r) => r.status != null)
-          .slice(0, limit)
-          .map(({ score, scoreLabel, signals, ...task }) => ({ ...task, _score: score }));
-        return new Response(JSON.stringify({ tasks }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
+        try {
+          // Hybrid search — fetch more than needed, then filter to status-bearing tasks
+          const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+          const results = await memory.recall({ query: q, maxResults: Math.min(limit, 50), mode: 'hybrid' });
+          const tasks = results
+            .filter((r) => r.status != null)
+            .slice(0, limit)
+            .map(({ score, scoreLabel, signals, ...task }) => ({ ...task, _score: score }));
+          return new Response(JSON.stringify({ tasks }), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: String(err), stack: (err as Error).stack }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
       }
 
       const includeCompleted = url.searchParams.get('includeCompleted') === 'true';

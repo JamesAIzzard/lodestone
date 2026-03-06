@@ -69,7 +69,7 @@ const memorySemanticSignal: MemorySignal = {
     const scores = new Map<number, number>();
     if (!ctx.vectorize || !ctx.queryVector) return scores;
 
-    const k = Math.max(ctx.maxResults * CANDIDATE_FANOUT, MIN_CANDIDATES);
+    const k = Math.min(Math.max(ctx.maxResults * CANDIDATE_FANOUT, MIN_CANDIDATES), 100);
     const results = await ctx.vectorize.query(ctx.queryVector, { topK: k });
 
     for (const match of results.matches) {

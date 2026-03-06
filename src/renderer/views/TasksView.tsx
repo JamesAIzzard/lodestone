@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Maximize2 } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Maximize2, Search, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   StatusCell,
@@ -63,6 +63,10 @@ export default function TasksView() {
   showCancelledRef.current = showCancelled;
   const [recentlyCompleted, setRecentlyCompleted] = useState<Set<number>>(new Set());
   const completionTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<(MemoryRecord & { _score?: number })[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const searchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const loadTasks = useCallback(async (opts: { includeCompleted: boolean; includeCancelled: boolean }) => {
     setLoading(true);
@@ -87,11 +91,47 @@ export default function TasksView() {
     return () => clearInterval(interval);
   }, [showCompleted, showCancelled, loadTasks]);
 
+  // Debounced search
+  useEffect(() => {
+    if (searchDebounce.current) clearTimeout(searchDebounce.current);
+    const q = searchQuery.trim();
+    if (!q) { setSearchResults(null); setSearching(false); return; }
+    setSearching(true);
+    searchDebounce.current = setTimeout(async () => {
+      try {
+        const result = await window.electronAPI?.searchTasks(q);
+        if (result?.success) {
+          setSearchResults(result.tasks);
+        } else {
+          console.warn('Task search failed:', result?.error);
+          setSearchResults(null);
+        }
+      } catch (err) {
+        console.warn('Task search error:', err);
+        setSearchResults(null);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+    return () => { if (searchDebounce.current) clearTimeout(searchDebounce.current); };
+  }, [searchQuery]);
+
   // Cleanup completion timers on unmount
   useEffect(() => {
     const timers = completionTimers.current;
     return () => { for (const t of timers.values()) clearTimeout(t); };
   }, []);
+
+  // Optimistically update a task in both the main list and search results
+  function optimisticUpdate(id: number, updater: (t: MemoryRecord) => MemoryRecord) {
+    setTasks(prev => prev.map(t => t.id === id ? updater(t) : t));
+    setSearchResults(prev => prev?.map(t => t.id === id ? updater(t) : t) ?? null);
+  }
+
+  function optimisticRemove(id: number) {
+    setTasks(prev => prev.filter(t => t.id !== id));
+    setSearchResults(prev => prev?.filter(t => t.id !== id) ?? null);
+  }
 
   async function revise(id: number, fields: {
     status?: MemoryStatusValue | null;
@@ -100,9 +140,7 @@ export default function TasksView() {
     recurrence?: string | null;
     topic?: string;
   }) {
-    setTasks(prev => prev.map(t =>
-      t.id === id ? { ...t, ...fields, updatedAt: new Date().toISOString() } : t
-    ));
+    optimisticUpdate(id, t => ({ ...t, ...fields, updatedAt: new Date().toISOString() }));
 
     // Grace period: keep disappearing tasks visible briefly for undo
     const willDisappear =
@@ -163,7 +201,7 @@ export default function TasksView() {
   }
 
   async function deleteTask(id: number) {
-    setTasks(prev => prev.filter(t => t.id !== id));
+    optimisticRemove(id);
     const result = await window.electronAPI?.deleteTask(id);
     if (!result?.success) loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
   }
@@ -187,6 +225,8 @@ export default function TasksView() {
       return (b.priority ?? 0) - (a.priority ?? 0);
     });
 
+  const isSearching = searchResults !== null;
+  const displayTasks = isSearching ? searchResults : filtered;
   const overdueCount = filtered.filter(isOverdue).length;
   const noCloudUrl = !loading && error?.includes('No cloud URL');
 
@@ -221,7 +261,32 @@ export default function TasksView() {
           </div>
         </div>
 
-        {/* Filter bar */}
+        {/* Search */}
+        <div className="relative mb-3">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/40" />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') setSearchQuery(''); }}
+            placeholder="Search tasks…"
+            className="w-full h-8 rounded-md border border-input bg-background pl-8 pr-8 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          {(searchQuery || searching) && (
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+              {searching && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="h-4 w-4 flex items-center justify-center rounded-sm text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Filters */}
         <div className="flex items-center gap-3">
           <ToggleSwitch checked={showCompleted} onChange={setShowCompleted} label="Completed" />
           <ToggleSwitch checked={showCancelled} onChange={setShowCancelled} label="Cancelled" />
@@ -262,11 +327,13 @@ export default function TasksView() {
           </div>
         )}
 
-        {!loading && !error && filtered.length === 0 && (
-          <p className="text-sm text-muted-foreground">No tasks found.</p>
+        {!loading && !error && displayTasks.length === 0 && !searching && (
+          <p className="text-sm text-muted-foreground">
+            {isSearching ? 'No matching tasks.' : 'No tasks found.'}
+          </p>
         )}
 
-        {(isCreating || pendingCreates.length > 0 || filtered.length > 0) && (
+        {(isCreating || pendingCreates.length > 0 || displayTasks.length > 0) && (
           <div className="flex flex-col divide-y divide-border/50">
             {/* Create row */}
             {isCreating && (
@@ -311,7 +378,7 @@ export default function TasksView() {
               </div>
             ))}
 
-            {filtered.map((task) => {
+            {displayTasks.map((task) => {
               const overdue = isOverdue(task);
               const isEditingTopic = editingTopicId === task.id;
 

@@ -102,6 +102,8 @@ export interface ElectronAPI {
     actionDate?: string | null;
     topic?: string;
   }) => Promise<{ success: boolean; error?: string }>;
+  createTask: (topic: string) => Promise<{ success: boolean; id?: number; error?: string }>;
+  deleteTask: (id: number) => Promise<{ success: boolean; error?: string }>;
 }
 
 declare global {

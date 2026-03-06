@@ -109,7 +109,25 @@ export default {
       });
     }
 
-    // Revise task: PATCH /tasks/:id
+    // Create task: POST /tasks
+    if (url.pathname === '/tasks' && request.method === 'POST') {
+      const body = await request.json() as { topic: string; status?: MemoryStatusValue; priority?: PriorityLevel; actionDate?: string };
+      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+      const result = await memory.remember({
+        topic: body.topic.trim(),
+        body: '',
+        status: body.status ?? 'open',
+        priority: body.priority ?? null,
+        actionDate: body.actionDate ?? null,
+        force: true,
+      });
+      const id = result.status === 'created' ? result.id : (result as { existing: { id: number } }).existing.id;
+      return new Response(JSON.stringify({ success: true, id }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Revise / Delete task: PATCH|DELETE /tasks/:id
     const taskPatchMatch = url.pathname.match(/^\/tasks\/(\d+)$/);
     if (taskPatchMatch && request.method === 'PATCH') {
       const id = parseInt(taskPatchMatch[1], 10);
@@ -127,6 +145,16 @@ export default {
         ...(body.actionDate !== undefined && { actionDate: body.actionDate }),
         ...(body.topic !== undefined && { topic: body.topic }),
       });
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Delete task: DELETE /tasks/:id
+    if (taskPatchMatch && request.method === 'DELETE') {
+      const id = parseInt(taskPatchMatch[1], 10);
+      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+      await memory.forget(id, 'Deleted via Tasks GUI');
       return new Response(JSON.stringify({ success: true }), {
         headers: { 'Content-Type': 'application/json' },
       });

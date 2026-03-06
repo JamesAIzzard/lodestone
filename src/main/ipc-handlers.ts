@@ -335,6 +335,39 @@ export function registerIpcHandlers(ctx: AppContext): void {
     }
   });
 
+  ipcMain.handle('tasks:create', async (_event, topic: string): Promise<{ success: boolean; id?: number; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks`, {
+        method: 'POST',
+        headers: getCloudHeaders(ctx),
+        body: JSON.stringify({ topic }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
+      return await res.json() as { success: boolean; id?: number };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('tasks:delete', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${id}`, {
+        method: 'DELETE',
+        headers: getCloudHeaders(ctx),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
   // ── Defaults ──────────────────────────────────────────────────────────
 
   ipcMain.handle('defaults:get', async (): Promise<DefaultSettings> => {

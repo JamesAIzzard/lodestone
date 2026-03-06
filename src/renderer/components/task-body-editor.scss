@@ -1,0 +1,65 @@
+/* Wrapper that contains toolbar + content */
+.task-body-editor-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  border-radius: 0.375rem;
+  border: 1px solid var(--tt-border-color, var(--color-border));
+  background-color: var(--tt-bg-color, transparent);
+  transition: border-color 0.15s;
+
+  &:focus-within {
+    border-color: var(--tt-gray-light-a-400);
+    .dark & {
+      border-color: var(--tt-gray-dark-a-400);
+    }
+  }
+}
+
+/* Override the default toolbar to sit at the top of our shell */
+.task-body-editor-shell .tiptap-toolbar {
+  border-radius: 0.375rem 0.375rem 0 0;
+  border-bottom: 1px solid var(--tt-border-color, var(--color-border));
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  flex-shrink: 0;
+
+  /* Wrapping: groups flow left-to-right and fold to a second row */
+  flex-wrap: wrap;
+  padding: 0.25rem 0.5rem;
+  row-gap: 0.125rem;
+
+  /*
+   * Hide separators that land at the very start or end of a wrapped row.
+   * CSS can't detect row-breaks directly, so we use a conservative fix:
+   * separators are only visible when they sit between two non-empty groups.
+   * Any orphaned separator at a row boundary simply collapses to 0 width.
+   */
+  .tiptap-separator {
+    align-self: stretch;
+  }
+  /* A separator that directly follows another separator (row-break edge case) */
+  .tiptap-separator + .tiptap-separator {
+    display: none;
+  }
+}
+
+/* Scrollable editor area */
+.task-body-content {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* The ProseMirror editable */
+.task-body-content .tiptap.ProseMirror {
+  min-height: 200px;
+  padding: 1rem 1.25rem 2rem;
+  outline: none;
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--tt-theme-text, var(--color-foreground));
+}

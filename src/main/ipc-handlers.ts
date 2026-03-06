@@ -228,8 +228,10 @@ export function registerIpcHandlers(ctx: AppContext): void {
       getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
     );
 
-    // Cloud memories health check
-    const cloudUrl = ctx.config?.memory.cloud_url ?? null;
+    // Cloud memories health check — pick dev or prod URL based on packaging
+    const cloudUrlProd = ctx.config?.memory.cloud_url ?? null;
+    const cloudUrlDev = ctx.config?.memory.cloud_url_dev ?? null;
+    const cloudUrl = app.isPackaged ? cloudUrlProd : cloudUrlDev;
     let cloudConnected = false;
     if (cloudUrl) {
       try {
@@ -252,6 +254,8 @@ export function registerIpcHandlers(ctx: AppContext): void {
       modelPathSafeIds,
       cloudUrl,
       cloudConnected,
+      cloudUrlProd,
+      cloudUrlDev,
     };
   });
 
@@ -279,6 +283,14 @@ export function registerIpcHandlers(ctx: AppContext): void {
     if (!ctx.config) return { success: false };
     const trimmed = url.trim();
     ctx.config.memory.cloud_url = trimmed || undefined;
+    saveConfig(ctx.configPath(), ctx.config);
+    return { success: true };
+  });
+
+  ipcMain.handle('cloud:setDevUrl', async (_event, url: string): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+    const trimmed = url.trim();
+    ctx.config.memory.cloud_url_dev = trimmed || undefined;
     saveConfig(ctx.configPath(), ctx.config);
     return { success: true };
   });

@@ -26,14 +26,17 @@ export default function SettingsView() {
   const [claudeConfigResult, setClaudeConfigResult] = useState<{ success: boolean; configPath: string; error?: string } | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [cloudUrl, setCloudUrl] = useState('');
+  const [cloudUrlDev, setCloudUrlDev] = useState('');
   const [cloudSaved, setCloudSaved] = useState(false);
+  const [cloudDevSaved, setCloudDevSaved] = useState(false);
 
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((s) => {
       setStatus(s);
       setOllamaUrl(s.ollamaUrl);
       setSelectedModel(s.defaultModel);
-      setCloudUrl(s.cloudUrl ?? '');
+      setCloudUrl(s.cloudUrlProd ?? '');
+      setCloudUrlDev(s.cloudUrlDev ?? '');
     });
     window.electronAPI?.getDefaults().then((d) => {
       setExtensions(d.extensions);
@@ -117,6 +120,12 @@ export default function SettingsView() {
     await window.electronAPI?.setCloudUrl(cloudUrl);
     setCloudSaved(true);
     setTimeout(() => setCloudSaved(false), 3000);
+  }
+
+  async function handleSaveCloudDevUrl() {
+    await window.electronAPI?.setCloudDevUrl(cloudUrlDev);
+    setCloudDevSaved(true);
+    setTimeout(() => setCloudDevSaved(false), 3000);
   }
 
   async function handleOpenConfig() {
@@ -276,35 +285,65 @@ export default function SettingsView() {
         {/* ── Cloud Memories ───────────────────────────────────── */}
         <Section
           title="Cloud Memories"
-          description="URL of your Cloudflare Worker memory server. Used to show connection status in the sidebar."
+          description="Cloudflare Worker memory server URLs. Dev and production instances share the same config file, so each has its own URL."
         >
-          <div className="flex flex-col gap-3">
-            {status?.cloudUrl && (
-              <div className={`flex items-center gap-2 text-sm ${status.cloudConnected ? 'text-emerald-400' : 'text-muted-foreground'}`}>
-                <Cloud className="h-4 w-4" />
-                {status.cloudConnected ? 'Connected' : 'Unreachable'}
-              </div>
-            )}
-            <div className="flex items-center gap-3">
-              <input
-                type="text"
-                value={cloudUrl}
-                onChange={(e) => setCloudUrl(e.target.value)}
-                placeholder="https://lodestone-mcp.your-account.workers.dev"
-                className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-              />
-              <Button variant="outline" size="sm" onClick={handleSaveCloudUrl}>
-                Save
-              </Button>
+          <div className="flex flex-col gap-5">
+            {/* Status */}
+            <div className={`flex items-center gap-2 text-sm ${status?.cloudConnected ? 'text-emerald-400' : 'text-muted-foreground/60'}`}>
+              <Cloud className="h-4 w-4" />
+              {status?.cloudUrl
+                ? status.cloudConnected ? 'Connected' : 'Unreachable'
+                : 'Not configured for this environment'}
             </div>
-            {cloudSaved && (
-              <div className="flex items-center gap-2 text-sm text-emerald-400">
-                <CheckCircle2 className="h-4 w-4" />
-                Saved — status updates on next poll
+
+            {/* Production URL */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Production URL</label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="text"
+                  value={cloudUrl}
+                  onChange={(e) => setCloudUrl(e.target.value)}
+                  placeholder="https://lodestone-mcp.your-account.workers.dev"
+                  className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <Button variant="outline" size="sm" onClick={handleSaveCloudUrl}>
+                  Save
+                </Button>
               </div>
-            )}
+              {cloudSaved && (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-400">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Saved
+                </div>
+              )}
+            </div>
+
+            {/* Development URL */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Development URL</label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="text"
+                  value={cloudUrlDev}
+                  onChange={(e) => setCloudUrlDev(e.target.value)}
+                  placeholder="https://lodestone-mcp-dev.your-account.workers.dev"
+                  className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <Button variant="outline" size="sm" onClick={handleSaveCloudDevUrl}>
+                  Save
+                </Button>
+              </div>
+              {cloudDevSaved && (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-400">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Saved
+                </div>
+              )}
+            </div>
+
             <p className="text-xs text-muted-foreground/60">
-              Leave blank to disable. The connection is checked every 10 seconds.
+              Leave blank to disable. The active URL is checked every 10 seconds.
             </p>
           </div>
         </Section>

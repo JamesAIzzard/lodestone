@@ -92,6 +92,7 @@ export interface ElectronAPI {
 
   // Cloud memories
   setCloudUrl: (url: string) => Promise<{ success: boolean }>;
+  setCloudDevUrl: (url: string) => Promise<{ success: boolean }>;
 }
 
 declare global {

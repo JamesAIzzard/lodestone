@@ -361,4 +361,6 @@ export const mockServerStatus: ServerStatus = {
   modelPathSafeIds: { 'snowflake-arctic-embed-xs': 'arctic-xs', 'nomic-embed-text-v1.5': 'nomic-v1' },
   cloudUrl: null,
   cloudConnected: false,
+  cloudUrlProd: null,
+  cloudUrlDev: null,
 };

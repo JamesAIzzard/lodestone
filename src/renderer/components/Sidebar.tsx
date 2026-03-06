@@ -73,15 +73,23 @@ export default function Sidebar() {
           <div className="flex w-full items-center gap-2.5">
             <img src={logoUrl} alt="" className="h-6 w-6 shrink-0" />
             <span className="text-sm font-semibold tracking-wide text-foreground">Lodestone</span>
-            {status?.cloudUrl && (
-              <Cloud
-                className={cn(
-                  'ml-auto h-3.5 w-3.5 shrink-0',
-                  status.cloudConnected ? 'text-emerald-400' : 'text-muted-foreground/30',
-                )}
-                title={status.cloudConnected ? 'Cloud memories: connected' : 'Cloud memories: offline'}
-              />
-            )}
+            <Cloud
+              className={cn(
+                'ml-auto h-3.5 w-3.5 shrink-0',
+                !status?.cloudUrl
+                  ? 'text-muted-foreground/20'
+                  : status.cloudConnected
+                    ? 'text-emerald-400'
+                    : 'text-muted-foreground/40',
+              )}
+              title={
+                !status?.cloudUrl
+                  ? 'Cloud memories: not configured'
+                  : status.cloudConnected
+                    ? 'Cloud memories: connected'
+                    : 'Cloud memories: offline'
+              }
+            />
           </div>
         )}
       </div>

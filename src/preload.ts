@@ -95,4 +95,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Cloud memories
   setCloudUrl: (url: string): Promise<unknown> =>
     ipcRenderer.invoke('cloud:setUrl', url),
+  setCloudDevUrl: (url: string): Promise<unknown> =>
+    ipcRenderer.invoke('cloud:setDevUrl', url),
 });

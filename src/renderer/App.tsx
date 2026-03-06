@@ -7,6 +7,7 @@ import ActivityView from './views/ActivityView';
 import SettingsView from './views/SettingsView';
 import OnboardingView from './views/OnboardingView';
 import TasksView from './views/TasksView';
+import TaskDetailView from './views/TaskDetailView';
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
               <main className="flex-1 overflow-y-auto">
                 <Routes>
                   <Route path="/tasks" element={<TasksView />} />
+                  <Route path="/tasks/:id" element={<TaskDetailView />} />
                   <Route path="/" element={<SilosView />} />
                   <Route path="/silos/:name" element={<SiloDetailView />} />
                   <Route path="/search" element={<SearchView />} />

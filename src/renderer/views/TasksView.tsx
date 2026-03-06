@@ -1,326 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, AlertCircle, RefreshCw, ChevronLeft, ChevronRight, Cloud, Plus, Trash2 } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Maximize2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import {
+  StatusCell,
+  PriorityCell,
+  DateCell,
+  isOverdue,
+} from '@/components/TaskCells';
 import type { MemoryRecord, MemoryStatusValue, PriorityLevel } from '../../shared/types';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function getTodayStr(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function isOverdue(task: MemoryRecord): boolean {
-  if (!task.actionDate) return false;
-  if (task.status === 'completed' || task.completedOn) return false;
-  if (task.status === 'cancelled') return false;
-  return task.actionDate < getTodayStr();
-}
-
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return '';
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const d = new Date(dateStr + 'T00:00:00');
-  const diffDays = Math.round((d.getTime() - today.getTime()) / 86400000);
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Tomorrow';
-  if (diffDays === -1) return 'Yesterday';
-  const currentYear = new Date().getFullYear();
-  return d.toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    ...(d.getFullYear() !== currentYear && { year: 'numeric' }),
-  });
-}
-
-const STATUS_COLORS: Record<string, string> = {
-  open: 'text-blue-400',
-  completed: 'text-emerald-400',
-  cancelled: 'text-muted-foreground/40',
-};
-
-const STATUS_LABELS: Record<string, string> = {
-  open: 'Open',
-  completed: 'Done',
-  cancelled: 'Cancelled',
-};
-
-const PRIORITY_DOT_COLORS: Record<number, string> = {
-  1: 'bg-muted-foreground/30',
-  2: 'bg-sky-400',
-  3: 'bg-amber-400',
-  4: 'bg-red-400',
-};
-
-const PRIORITY_LABELS: Record<number, string> = {
-  1: 'Low',
-  2: 'Medium',
-  3: 'High',
-  4: 'Critical',
-};
-
-// ── Inline edit subcomponents ─────────────────────────────────────────────────
-
-function InlineDropdown<T extends string>({
-  options,
-  onSelect,
-  onClose,
-}: {
-  options: { value: T; label: string; className?: string }[];
-  onSelect: (value: T) => void;
-  onClose: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleMouseDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    document.addEventListener('mousedown', handleMouseDown);
-    return () => document.removeEventListener('mousedown', handleMouseDown);
-  }, [onClose]);
-
-  return (
-    <div
-      ref={ref}
-      className="absolute left-0 top-full mt-0.5 z-50 min-w-[110px] rounded-md border border-border bg-background shadow-md py-1"
-    >
-      {options.map((opt) => (
-        <button
-          key={opt.value}
-          onMouseDown={(e) => { e.preventDefault(); onSelect(opt.value); onClose(); }}
-          className={cn(
-            'block w-full px-3 py-1.5 text-left text-xs hover:bg-accent transition-colors',
-            opt.className ?? 'text-foreground',
-          )}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function StatusCell({
-  value,
-  onChange,
-}: {
-  value: MemoryStatusValue | null;
-  onChange: (v: MemoryStatusValue | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const label = value ? STATUS_LABELS[value] : '—';
-  const colorClass = value ? STATUS_COLORS[value] : 'text-muted-foreground/40';
-
-  return (
-    <div className="relative shrink-0 w-24">
-      <button
-        onClick={() => setOpen(!open)}
-        className={cn(
-          'h-5 w-full rounded px-1.5 text-[11px] font-medium border border-transparent hover:border-border/60 transition-colors text-center',
-          colorClass,
-        )}
-      >
-        {label}
-      </button>
-      {open && (
-        <InlineDropdown
-          options={[
-            { value: 'open', label: 'Open', className: 'text-blue-400' },
-            { value: 'completed', label: 'Done', className: 'text-emerald-400' },
-            { value: 'cancelled', label: 'Cancelled', className: 'text-muted-foreground/40' },
-          ]}
-          onSelect={(v) => onChange(v)}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-function PriorityCell({
-  value,
-  onChange,
-}: {
-  value: PriorityLevel | null;
-  onChange: (v: PriorityLevel | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <div className="relative shrink-0">
-      <button
-        onClick={() => setOpen(!open)}
-        title={value ? PRIORITY_LABELS[value] : 'No priority'}
-        className="flex items-center justify-center h-5 w-5 rounded border border-transparent hover:border-border/60 transition-colors"
-      >
-        {value ? (
-          <span className={cn('h-2 w-2 rounded-sm shrink-0', PRIORITY_DOT_COLORS[value])} />
-        ) : (
-          <span className="h-2 w-2 rounded-sm bg-muted-foreground/20" />
-        )}
-      </button>
-      {open && (
-        <InlineDropdown
-          options={[
-            { value: '' as unknown as PriorityLevel, label: '— None', className: 'text-muted-foreground/40' },
-            { value: 4, label: 'Critical', className: 'text-red-400' },
-            { value: 3, label: 'High', className: 'text-amber-400' },
-            { value: 2, label: 'Medium', className: 'text-sky-400' },
-            { value: 1, label: 'Low', className: 'text-muted-foreground/60' },
-          ]}
-          onSelect={(v) => onChange(v === ('' as unknown as PriorityLevel) ? null : v)}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-function CalendarPicker({
-  value,
-  onSelect,
-  onClose,
-}: {
-  value: string | null;
-  onSelect: (v: string | null) => void;
-  onClose: () => void;
-}) {
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const initial = value ? new Date(value + 'T00:00:00') : new Date();
-  const [year, setYear] = useState(initial.getFullYear());
-  const [month, setMonth] = useState(initial.getMonth());
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleMouseDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    document.addEventListener('mousedown', handleMouseDown);
-    return () => document.removeEventListener('mousedown', handleMouseDown);
-  }, [onClose]);
-
-  const firstDow = (new Date(year, month, 1).getDay() + 6) % 7; // Mon=0
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const cells: (number | null)[] = [
-    ...Array(firstDow).fill(null),
-    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
-  ];
-  while (cells.length % 7 !== 0) cells.push(null);
-
-  function toStr(d: number) {
-    return `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-  }
-
-  function prev() {
-    if (month === 0) { setYear(y => y - 1); setMonth(11); }
-    else setMonth(m => m - 1);
-  }
-
-  function next() {
-    if (month === 11) { setYear(y => y + 1); setMonth(0); }
-    else setMonth(m => m + 1);
-  }
-
-  const monthLabel = new Date(year, month).toLocaleString('en-GB', { month: 'long' });
-
-  return (
-    <div
-      ref={ref}
-      className="absolute right-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-background shadow-lg p-3 select-none"
-    >
-      <div className="flex items-center justify-between mb-2">
-        <button
-          onMouseDown={(e) => { e.preventDefault(); prev(); }}
-          className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ChevronLeft className="h-3.5 w-3.5" />
-        </button>
-        <span className="text-xs font-medium text-foreground">{monthLabel} {year}</span>
-        <button
-          onMouseDown={(e) => { e.preventDefault(); next(); }}
-          className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <ChevronRight className="h-3.5 w-3.5" />
-        </button>
-      </div>
-
-      <div className="grid grid-cols-7 mb-1">
-        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
-          <div key={i} className="h-6 flex items-center justify-center text-[10px] text-muted-foreground/40 font-medium">
-            {d}
-          </div>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-7 gap-y-0.5">
-        {cells.map((d, i) =>
-          d === null ? <div key={i} /> : (
-            <button
-              key={i}
-              onMouseDown={(e) => { e.preventDefault(); onSelect(toStr(d)); onClose(); }}
-              className={cn(
-                'h-6 w-full flex items-center justify-center text-[11px] rounded transition-colors',
-                toStr(d) === value
-                  ? 'bg-primary text-primary-foreground font-semibold'
-                  : toStr(d) === todayStr
-                    ? 'text-primary font-medium hover:bg-accent'
-                    : 'text-foreground hover:bg-accent',
-              )}
-            >
-              {d}
-            </button>
-          )
-        )}
-      </div>
-
-      {value && (
-        <div className="mt-2 pt-2 border-t border-border/60">
-          <button
-            onMouseDown={(e) => { e.preventDefault(); onSelect(null); onClose(); }}
-            className="w-full text-[11px] text-muted-foreground hover:text-foreground transition-colors py-0.5 rounded hover:bg-accent"
-          >
-            Clear date
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DateCell({
-  value,
-  overdue,
-  onChange,
-}: {
-  value: string | null;
-  overdue: boolean;
-  onChange: (v: string | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <div className="relative shrink-0 w-24">
-      <button
-        onClick={() => setOpen(!open)}
-        className={cn(
-          'h-5 w-full rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors tabular-nums text-center',
-          overdue ? 'text-amber-400' : value ? 'text-muted-foreground' : 'text-muted-foreground/30',
-        )}
-      >
-        {value ? formatDate(value) : '—'}
-      </button>
-      {open && (
-        <CalendarPicker
-          value={value}
-          onSelect={onChange}
-          onClose={() => setOpen(false)}
-        />
-      )}
-    </div>
-  );
-}
 
 // ── Main view ─────────────────────────────────────────────────────────────────
 
@@ -335,6 +23,8 @@ export default function TasksView() {
   const [editingTopicValue, setEditingTopicValue] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [newTaskTopic, setNewTaskTopic] = useState('');
+  const [pendingCreates, setPendingCreates] = useState<{ key: number; topic: string }[]>([]);
+  const pendingKeyRef = useRef(0);
   const showCompletedRef = useRef(showCompleted);
   showCompletedRef.current = showCompleted;
 
@@ -367,7 +57,6 @@ export default function TasksView() {
     actionDate?: string | null;
     topic?: string;
   }) {
-    // Optimistic update
     setTasks(prev => prev.map(t =>
       t.id === id ? { ...t, ...fields, updatedAt: new Date().toISOString() } : t
     ));
@@ -393,7 +82,10 @@ export default function TasksView() {
     if (!trimmed) return;
     setIsCreating(false);
     setNewTaskTopic('');
+    const key = ++pendingKeyRef.current;
+    setPendingCreates(prev => [...prev, { key, topic: trimmed }]);
     await window.electronAPI?.createTask(trimmed);
+    setPendingCreates(prev => prev.filter(p => p.key !== key));
     loadTasks(showCompletedRef.current);
   }
 
@@ -428,7 +120,7 @@ export default function TasksView() {
           <h1 className="text-lg font-semibold text-foreground">Tasks</h1>
           <div className="flex items-center gap-3">
             {overdueCount > 0 && (
-              <span className="text-xs font-medium text-amber-400">
+              <span className="inline-flex items-center text-xs font-medium text-amber-400">
                 {overdueCount} overdue
               </span>
             )}
@@ -515,7 +207,7 @@ export default function TasksView() {
           <p className="text-sm text-muted-foreground">No tasks found.</p>
         )}
 
-        {(isCreating || filtered.length > 0) && (
+        {(isCreating || pendingCreates.length > 0 || filtered.length > 0) && (
           <div className="flex flex-col divide-y divide-border/50">
             {/* Create row */}
             {isCreating && (
@@ -539,8 +231,26 @@ export default function TasksView() {
                 <div className="w-5 shrink-0" />
                 <div className="w-24 shrink-0" />
                 <div className="w-7 shrink-0" />
+                <div className="w-7 shrink-0" />
               </div>
             )}
+
+            {/* Pending create rows */}
+            {pendingCreates.map(({ key, topic }) => (
+              <div key={key} className="flex items-center gap-3 py-2.5 opacity-50">
+                <div className="w-14 shrink-0" />
+                <div className="w-24 shrink-0 flex items-center justify-center">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className="block truncate text-sm text-muted-foreground italic">{topic}</span>
+                </div>
+                <div className="w-5 shrink-0" />
+                <div className="w-24 shrink-0" />
+                <div className="w-7 shrink-0" />
+                <div className="w-7 shrink-0" />
+              </div>
+            ))}
 
             {filtered.map((task) => {
               const overdue = isOverdue(task);
@@ -607,6 +317,15 @@ export default function TasksView() {
                     overdue={overdue}
                     onChange={(v) => revise(task.id, { actionDate: v })}
                   />
+
+                  {/* Expand to detail */}
+                  <button
+                    onClick={() => navigate(`/tasks/${task.id}`, { state: { task } })}
+                    title="Open detail"
+                    className="w-7 shrink-0 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-foreground transition-colors"
+                  >
+                    <Maximize2 className="h-3 w-3" />
+                  </button>
 
                   {/* Delete */}
                   <button

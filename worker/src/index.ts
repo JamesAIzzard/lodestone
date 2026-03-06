@@ -131,7 +131,8 @@ export default {
     const taskPatchMatch = url.pathname.match(/^\/tasks\/(\d+)$/);
     if (taskPatchMatch && request.method === 'PATCH') {
       const id = parseInt(taskPatchMatch[1], 10);
-      const body = await request.json() as {
+      const payload = await request.json() as {
+        body?: string;
         status?: MemoryStatusValue | null;
         priority?: PriorityLevel | null;
         actionDate?: string | null;
@@ -140,10 +141,11 @@ export default {
       const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
       await memory.revise({
         id,
-        ...(body.status !== undefined && { status: body.status }),
-        ...(body.priority !== undefined && { priority: body.priority }),
-        ...(body.actionDate !== undefined && { actionDate: body.actionDate }),
-        ...(body.topic !== undefined && { topic: body.topic }),
+        ...(payload.body !== undefined && { body: payload.body }),
+        ...(payload.status !== undefined && { status: payload.status }),
+        ...(payload.priority !== undefined && { priority: payload.priority }),
+        ...(payload.actionDate !== undefined && { actionDate: payload.actionDate }),
+        ...(payload.topic !== undefined && { topic: payload.topic }),
       });
       return new Response(JSON.stringify({ success: true }), {
         headers: { 'Content-Type': 'application/json' },

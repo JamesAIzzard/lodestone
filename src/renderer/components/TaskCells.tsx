@@ -1,0 +1,332 @@
+import { useState, useEffect, useRef } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import type { MemoryStatusValue, PriorityLevel, MemoryRecord } from '../../shared/types';
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+export function getTodayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+export function isOverdue(task: MemoryRecord): boolean {
+  if (!task.actionDate) return false;
+  if (task.status === 'completed' || task.completedOn) return false;
+  if (task.status === 'cancelled') return false;
+  return task.actionDate < getTodayStr();
+}
+
+export function formatDate(dateStr: string | null): string {
+  if (!dateStr) return '';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const d = new Date(dateStr + 'T00:00:00');
+  const diffDays = Math.round((d.getTime() - today.getTime()) / 86400000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Tomorrow';
+  if (diffDays === -1) return 'Yesterday';
+  const currentYear = new Date().getFullYear();
+  return d.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    ...(d.getFullYear() !== currentYear && { year: 'numeric' }),
+  });
+}
+
+export const STATUS_COLORS: Record<string, string> = {
+  open: 'text-blue-400',
+  completed: 'text-emerald-400',
+  cancelled: 'text-muted-foreground/40',
+};
+
+export const STATUS_LABELS: Record<string, string> = {
+  open: 'Open',
+  completed: 'Done',
+  cancelled: 'Cancelled',
+};
+
+export const PRIORITY_DOT_COLORS: Record<number, string> = {
+  1: 'bg-muted-foreground/30',
+  2: 'bg-sky-400',
+  3: 'bg-amber-400',
+  4: 'bg-red-400',
+};
+
+export const PRIORITY_LABELS: Record<number, string> = {
+  1: 'Low',
+  2: 'Medium',
+  3: 'High',
+  4: 'Critical',
+};
+
+// ── InlineDropdown ─────────────────────────────────────────────────────────
+
+export function InlineDropdown<T extends string | number>({
+  options,
+  onSelect,
+  onClose,
+}: {
+  options: { value: T; label: string; className?: string }[];
+  onSelect: (value: T) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleMouseDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute left-0 top-full mt-0.5 z-50 min-w-[110px] rounded-md border border-border bg-background shadow-md py-1"
+    >
+      {options.map((opt, i) => (
+        <button
+          key={i}
+          onMouseDown={(e) => { e.preventDefault(); onSelect(opt.value); onClose(); }}
+          className={cn(
+            'block w-full px-3 py-1.5 text-left text-xs hover:bg-accent transition-colors',
+            opt.className ?? 'text-foreground',
+          )}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── StatusCell ─────────────────────────────────────────────────────────────
+
+export function StatusCell({
+  value,
+  onChange,
+}: {
+  value: MemoryStatusValue | null;
+  onChange: (v: MemoryStatusValue | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const label = value ? STATUS_LABELS[value] : '—';
+  const colorClass = value ? STATUS_COLORS[value] : 'text-muted-foreground/40';
+
+  return (
+    <div className="relative shrink-0 w-24">
+      <button
+        onClick={() => setOpen(!open)}
+        className={cn(
+          'h-5 w-full rounded px-1.5 text-[11px] font-medium border border-transparent hover:border-border/60 transition-colors text-center',
+          colorClass,
+        )}
+      >
+        {label}
+      </button>
+      {open && (
+        <InlineDropdown
+          options={[
+            { value: 'open' as MemoryStatusValue, label: 'Open', className: 'text-blue-400' },
+            { value: 'completed' as MemoryStatusValue, label: 'Done', className: 'text-emerald-400' },
+            { value: 'cancelled' as MemoryStatusValue, label: 'Cancelled', className: 'text-muted-foreground/40' },
+          ]}
+          onSelect={(v) => onChange(v)}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── PriorityCell ───────────────────────────────────────────────────────────
+
+const PRIORITY_NONE = '__none__' as unknown as PriorityLevel;
+
+export function PriorityCell({
+  value,
+  onChange,
+}: {
+  value: PriorityLevel | null;
+  onChange: (v: PriorityLevel | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => setOpen(!open)}
+        title={value ? PRIORITY_LABELS[value] : 'No priority'}
+        className="flex items-center justify-center h-5 w-5 rounded border border-transparent hover:border-border/60 transition-colors"
+      >
+        {value ? (
+          <span className={cn('h-2 w-2 rounded-sm shrink-0', PRIORITY_DOT_COLORS[value])} />
+        ) : (
+          <span className="h-2 w-2 rounded-sm bg-muted-foreground/20" />
+        )}
+      </button>
+      {open && (
+        <InlineDropdown
+          options={[
+            { value: PRIORITY_NONE, label: '— None', className: 'text-muted-foreground/40' },
+            { value: 4 as PriorityLevel, label: 'Critical', className: 'text-red-400' },
+            { value: 3 as PriorityLevel, label: 'High', className: 'text-amber-400' },
+            { value: 2 as PriorityLevel, label: 'Medium', className: 'text-sky-400' },
+            { value: 1 as PriorityLevel, label: 'Low', className: 'text-muted-foreground/60' },
+          ]}
+          onSelect={(v) => onChange(v === PRIORITY_NONE ? null : v)}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── CalendarPicker ─────────────────────────────────────────────────────────
+
+export function CalendarPicker({
+  value,
+  onSelect,
+  onClose,
+}: {
+  value: string | null;
+  onSelect: (v: string | null) => void;
+  onClose: () => void;
+}) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const initial = value ? new Date(value + 'T00:00:00') : new Date();
+  const [year, setYear] = useState(initial.getFullYear());
+  const [month, setMonth] = useState(initial.getMonth());
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleMouseDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [onClose]);
+
+  const firstDow = (new Date(year, month, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells: (number | null)[] = [
+    ...Array(firstDow).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  function toStr(d: number) {
+    return `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+
+  function prev() {
+    if (month === 0) { setYear(y => y - 1); setMonth(11); }
+    else setMonth(m => m - 1);
+  }
+
+  function next() {
+    if (month === 11) { setYear(y => y + 1); setMonth(0); }
+    else setMonth(m => m + 1);
+  }
+
+  const monthLabel = new Date(year, month).toLocaleString('en-GB', { month: 'long' });
+
+  return (
+    <div
+      ref={ref}
+      className="absolute right-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-background shadow-lg p-3 select-none"
+    >
+      <div className="flex items-center justify-between mb-2">
+        <button
+          onMouseDown={(e) => { e.preventDefault(); prev(); }}
+          className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+        </button>
+        <span className="text-xs font-medium text-foreground">{monthLabel} {year}</span>
+        <button
+          onMouseDown={(e) => { e.preventDefault(); next(); }}
+          className="h-6 w-6 flex items-center justify-center rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-7 mb-1">
+        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => (
+          <div key={i} className="h-6 flex items-center justify-center text-[10px] text-muted-foreground/40 font-medium">
+            {d}
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-7 gap-y-0.5">
+        {cells.map((d, i) =>
+          d === null ? <div key={i} /> : (
+            <button
+              key={i}
+              onMouseDown={(e) => { e.preventDefault(); onSelect(toStr(d)); onClose(); }}
+              className={cn(
+                'h-6 w-full flex items-center justify-center text-[11px] rounded transition-colors',
+                toStr(d) === value
+                  ? 'bg-primary text-primary-foreground font-semibold'
+                  : toStr(d) === todayStr
+                    ? 'text-primary font-medium hover:bg-accent'
+                    : 'text-foreground hover:bg-accent',
+              )}
+            >
+              {d}
+            </button>
+          )
+        )}
+      </div>
+
+      {value && (
+        <div className="mt-2 pt-2 border-t border-border/60">
+          <button
+            onMouseDown={(e) => { e.preventDefault(); onSelect(null); onClose(); }}
+            className="w-full text-[11px] text-muted-foreground hover:text-foreground transition-colors py-0.5 rounded hover:bg-accent"
+          >
+            Clear date
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── DateCell ───────────────────────────────────────────────────────────────
+
+export function DateCell({
+  value,
+  overdue,
+  onChange,
+}: {
+  value: string | null;
+  overdue: boolean;
+  onChange: (v: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative shrink-0 w-24">
+      <button
+        onClick={() => setOpen(!open)}
+        className={cn(
+          'h-5 w-full rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors tabular-nums text-center',
+          overdue ? 'text-amber-400' : value ? 'text-muted-foreground' : 'text-muted-foreground/30',
+        )}
+      >
+        {value ? formatDate(value) : '—'}
+      </button>
+      {open && (
+        <CalendarPicker
+          value={value}
+          onSelect={onChange}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </div>
+  );
+}

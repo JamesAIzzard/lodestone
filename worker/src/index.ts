@@ -99,11 +99,27 @@ export default {
     if (authError) return authError;
 
     // List tasks: GET /tasks?includeCompleted=false&includeCancelled=false&limit=200
+    // Search tasks: GET /tasks?q=search+terms  (hybrid search, sorted by relevance)
     if (url.pathname === '/tasks' && request.method === 'GET') {
-      const includeCompleted = url.searchParams.get('includeCompleted') === 'true';
-      const includeCancelled = url.searchParams.get('includeCancelled') === 'true';
+      const q = url.searchParams.get('q')?.trim();
       const rawLimit = parseInt(url.searchParams.get('limit') ?? '200', 10);
       const limit = Number.isNaN(rawLimit) ? 200 : Math.min(rawLimit, 500);
+
+      if (q) {
+        // Hybrid search — fetch more than needed, then filter to status-bearing tasks
+        const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+        const results = await memory.recall({ query: q, maxResults: limit * 2, mode: 'hybrid' });
+        const tasks = results
+          .filter((r) => r.status != null)
+          .slice(0, limit)
+          .map(({ score, scoreLabel, signals, ...task }) => ({ ...task, _score: score }));
+        return new Response(JSON.stringify({ tasks }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const includeCompleted = url.searchParams.get('includeCompleted') === 'true';
+      const includeCancelled = url.searchParams.get('includeCancelled') === 'true';
       const tasks = await getAllTasks(env.DB, { includeCompleted, includeCancelled }, limit);
       return new Response(JSON.stringify({ tasks }), {
         headers: { 'Content-Type': 'application/json' },

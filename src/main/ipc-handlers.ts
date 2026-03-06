@@ -319,6 +319,25 @@ export function registerIpcHandlers(ctx: AppContext): void {
     }
   });
 
+  ipcMain.handle('tasks:search', async (_event, query: string): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, tasks: [], error: 'No cloud URL configured' };
+    try {
+      const params = new URLSearchParams({ q: query });
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks?${params}`, {
+        headers: getCloudHeaders(ctx),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) {
+        return { success: false, tasks: [], error: `${res.status}: ${await res.text()}` };
+      }
+      const data = await res.json() as { tasks: unknown[] };
+      return { success: true, tasks: data.tasks };
+    } catch (err) {
+      return { success: false, tasks: [], error: String(err) };
+    }
+  });
+
   ipcMain.handle('tasks:revise', async (_event, id: number, fields: Record<string, unknown>): Promise<{ success: boolean; completionRecordId?: number; nextActionDate?: string; error?: string }> => {
     const cloudUrl = ctx.config?.memory.cloud_url;
     if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };

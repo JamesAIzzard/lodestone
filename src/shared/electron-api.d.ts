@@ -96,6 +96,7 @@ export interface ElectronAPI {
 
   // Tasks
   listTasks: (opts?: { includeCompleted?: boolean; includeCancelled?: boolean }) => Promise<{ success: boolean; tasks: MemoryRecord[]; error?: string }>;
+  searchTasks: (query: string) => Promise<{ success: boolean; tasks: (MemoryRecord & { _score?: number })[]; error?: string }>;
   reviseTask: (id: number, fields: {
     status?: MemoryStatusValue | null;
     priority?: PriorityLevel | null;

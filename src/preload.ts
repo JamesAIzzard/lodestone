@@ -101,6 +101,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Tasks
   listTasks: (opts?: { includeCompleted?: boolean; includeCancelled?: boolean }): Promise<unknown> =>
     ipcRenderer.invoke('tasks:list', opts ?? {}),
+  searchTasks: (query: string): Promise<unknown> =>
+    ipcRenderer.invoke('tasks:search', query),
   reviseTask: (id: number, fields: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('tasks:revise', id, fields),
   skipTask: (id: number, reason?: string): Promise<unknown> =>

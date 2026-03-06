@@ -27,6 +27,8 @@ export default function SettingsView() {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [cloudUrl, setCloudUrl] = useState('');
   const [cloudSaved, setCloudSaved] = useState(false);
+  const [cloudAuthToken, setCloudAuthToken] = useState('');
+  const [cloudAuthTokenSaved, setCloudAuthTokenSaved] = useState(false);
 
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((s) => {
@@ -34,6 +36,7 @@ export default function SettingsView() {
       setOllamaUrl(s.ollamaUrl);
       setSelectedModel(s.defaultModel);
       setCloudUrl(s.cloudUrl ?? '');
+      setCloudAuthToken(s.cloudAuthToken ?? '');
     });
     window.electronAPI?.getDefaults().then((d) => {
       setExtensions(d.extensions);
@@ -118,6 +121,12 @@ export default function SettingsView() {
     setCloudSaved(true);
     setTimeout(() => setCloudSaved(false), 3000);
     window.dispatchEvent(new Event('cloud-url-changed'));
+  }
+
+  async function handleSaveCloudAuthToken() {
+    await window.electronAPI?.setCloudAuthToken(cloudAuthToken);
+    setCloudAuthTokenSaved(true);
+    setTimeout(() => setCloudAuthTokenSaved(false), 3000);
   }
 
   async function handleOpenConfig() {
@@ -296,6 +305,29 @@ export default function SettingsView() {
                 </Button>
               </div>
               {cloudSaved && (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-400">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Saved
+                </div>
+              )}
+            </div>
+
+            {/* Auth token */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Auth Token</label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="password"
+                  value={cloudAuthToken}
+                  onChange={(e) => setCloudAuthToken(e.target.value)}
+                  placeholder="Bearer token (leave blank if not required)"
+                  className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+                <Button variant="outline" size="sm" onClick={handleSaveCloudAuthToken}>
+                  Save
+                </Button>
+              </div>
+              {cloudAuthTokenSaved && (
                 <div className="flex items-center gap-1.5 text-xs text-emerald-400">
                   <CheckCircle2 className="h-3.5 w-3.5" />
                   Saved

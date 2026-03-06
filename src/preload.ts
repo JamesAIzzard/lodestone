@@ -95,4 +95,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Cloud memories
   setCloudUrl: (url: string): Promise<unknown> =>
     ipcRenderer.invoke('cloud:setUrl', url),
+  setCloudAuthToken: (token: string): Promise<unknown> =>
+    ipcRenderer.invoke('cloud:setAuthToken', token),
+
+  // Tasks
+  listTasks: (includeCompleted?: boolean): Promise<unknown> =>
+    ipcRenderer.invoke('tasks:list', includeCompleted ?? false),
+  reviseTask: (id: number, fields: Record<string, unknown>): Promise<unknown> =>
+    ipcRenderer.invoke('tasks:revise', id, fields),
 });

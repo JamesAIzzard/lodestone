@@ -11,6 +11,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { D1MemoryService } from './d1-memory-service';
 import { embedDocument } from './embedding';
 import { addToInvertedIndex, removeFromInvertedIndex, updateMemoryCorpusStats } from './d1/inverted-index';
+import { getAllTasks } from './d1/read';
+import type { MemoryStatusValue, PriorityLevel } from './shared/types';
 import {
   registerRememberTool,
   registerRecallTool,
@@ -95,6 +97,40 @@ export default {
     // All other routes require auth
     const authError = authenticate(request, env);
     if (authError) return authError;
+
+    // List tasks: GET /tasks?includeCompleted=false&limit=200
+    if (url.pathname === '/tasks' && request.method === 'GET') {
+      const includeCompleted = url.searchParams.get('includeCompleted') === 'true';
+      const rawLimit = parseInt(url.searchParams.get('limit') ?? '200', 10);
+      const limit = Number.isNaN(rawLimit) ? 200 : Math.min(rawLimit, 500);
+      const tasks = await getAllTasks(env.DB, includeCompleted, limit);
+      return new Response(JSON.stringify({ tasks }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Revise task: PATCH /tasks/:id
+    const taskPatchMatch = url.pathname.match(/^\/tasks\/(\d+)$/);
+    if (taskPatchMatch && request.method === 'PATCH') {
+      const id = parseInt(taskPatchMatch[1], 10);
+      const body = await request.json() as {
+        status?: MemoryStatusValue | null;
+        priority?: PriorityLevel | null;
+        actionDate?: string | null;
+        topic?: string;
+      };
+      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+      await memory.revise({
+        id,
+        ...(body.status !== undefined && { status: body.status }),
+        ...(body.priority !== undefined && { priority: body.priority }),
+        ...(body.actionDate !== undefined && { actionDate: body.actionDate }),
+        ...(body.topic !== undefined && { topic: body.topic }),
+      });
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Rebuild all indexes: inverted index (BM25) + Vectorize embeddings
     // ?scope=bm25|vectors|all (default: all)

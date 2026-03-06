@@ -66,6 +66,8 @@ export interface MemoryConfig {
   db_path?: string;
   /** URL of the Cloudflare Worker memory server. */
   cloud_url?: string;
+  /** Bearer token for authenticating with the cloud Worker. */
+  cloud_auth_token?: string;
 }
 
 export interface LodestoneConfig {

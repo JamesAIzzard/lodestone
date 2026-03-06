@@ -283,4 +283,6 @@ export interface ServerStatus {
   cloudUrl: string | null;
   /** True when the cloud Worker's /health endpoint responded successfully. */
   cloudConnected: boolean;
+  /** Bearer token for authenticating with the cloud Worker. */
+  cloudAuthToken: string | null;
 }

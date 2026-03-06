@@ -1,4 +1,4 @@
-import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams } from './types';
+import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams, MemoryRecord, MemoryStatusValue, PriorityLevel } from './types';
 
 /** Config snapshot stored inside a portable silo database. */
 export interface StoredSiloConfigResponse {
@@ -92,6 +92,16 @@ export interface ElectronAPI {
 
   // Cloud memories
   setCloudUrl: (url: string) => Promise<{ success: boolean }>;
+  setCloudAuthToken: (token: string) => Promise<{ success: boolean }>;
+
+  // Tasks
+  listTasks: (includeCompleted?: boolean) => Promise<{ success: boolean; tasks: MemoryRecord[]; error?: string }>;
+  reviseTask: (id: number, fields: {
+    status?: MemoryStatusValue | null;
+    priority?: PriorityLevel | null;
+    actionDate?: string | null;
+    topic?: string;
+  }) => Promise<{ success: boolean; error?: string }>;
 }
 
 declare global {

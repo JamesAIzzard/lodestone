@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Database, Search, Activity, Settings, ChevronLeft, ChevronRight, BrainCircuit, Boxes, FileStack, Clock } from 'lucide-react';
+import { Database, Search, Activity, Settings, ChevronLeft, ChevronRight, BrainCircuit, Boxes, FileStack, Clock, CheckSquare } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ServerStatus } from '../../shared/types';
 import logoUrl from '../../../assets/icon.png';
 
 const navItems = [
+  { to: '/tasks', label: 'Tasks', icon: CheckSquare },
   { to: '/', label: 'Silos', icon: Database },
   { to: '/search', label: 'Search', icon: Search },
   { to: '/activity', label: 'Activity', icon: Activity },

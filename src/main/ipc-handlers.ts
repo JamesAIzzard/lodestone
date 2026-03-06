@@ -23,6 +23,13 @@ import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerSt
 import type { AppContext } from './context';
 import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
 
+function getCloudHeaders(ctx: AppContext): Record<string, string> {
+  const token = ctx.config?.memory.cloud_auth_token;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
 export function registerIpcHandlers(ctx: AppContext): void {
   // ── Dialog & Shell ──────────────────────────────────────────────────────
 
@@ -252,6 +259,7 @@ export function registerIpcHandlers(ctx: AppContext): void {
       modelPathSafeIds,
       cloudUrl,
       cloudConnected,
+      cloudAuthToken: ctx.config?.memory.cloud_auth_token ?? null,
     };
   });
 
@@ -281,6 +289,50 @@ export function registerIpcHandlers(ctx: AppContext): void {
     ctx.config.memory.cloud_url = trimmed || undefined;
     saveConfig(ctx.configPath(), ctx.config);
     return { success: true };
+  });
+
+  ipcMain.handle('cloud:setAuthToken', async (_event, token: string): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+    ctx.config.memory.cloud_auth_token = token.trim() || undefined;
+    saveConfig(ctx.configPath(), ctx.config);
+    return { success: true };
+  });
+
+  ipcMain.handle('tasks:list', async (_event, includeCompleted = false): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, tasks: [], error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks?includeCompleted=${includeCompleted}`, {
+        headers: getCloudHeaders(ctx),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) {
+        return { success: false, tasks: [], error: `${res.status}: ${await res.text()}` };
+      }
+      const data = await res.json() as { tasks: unknown[] };
+      return { success: true, tasks: data.tasks };
+    } catch (err) {
+      return { success: false, tasks: [], error: String(err) };
+    }
+  });
+
+  ipcMain.handle('tasks:revise', async (_event, id: number, fields: Record<string, unknown>): Promise<{ success: boolean; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${id}`, {
+        method: 'PATCH',
+        headers: getCloudHeaders(ctx),
+        body: JSON.stringify(fields),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) {
+        return { success: false, error: `${res.status}: ${await res.text()}` };
+      }
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
   });
 
   // ── Defaults ──────────────────────────────────────────────────────────

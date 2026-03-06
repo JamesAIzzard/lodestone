@@ -91,4 +91,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // App info
   getAppVersion: (): Promise<string> =>
     ipcRenderer.invoke('app:version'),
+
+  // Cloud memories
+  setCloudUrl: (url: string): Promise<unknown> =>
+    ipcRenderer.invoke('cloud:setUrl', url),
 });

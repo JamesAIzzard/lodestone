@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Loader2, CheckCircle2, XCircle, FileCode, FolderOpen, TriangleAlert } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, FileCode, FolderOpen, TriangleAlert, Cloud } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
@@ -25,12 +25,15 @@ export default function SettingsView() {
   const [configuringClaude, setConfiguringClaude] = useState(false);
   const [claudeConfigResult, setClaudeConfigResult] = useState<{ success: boolean; configPath: string; error?: string } | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [cloudUrl, setCloudUrl] = useState('');
+  const [cloudSaved, setCloudSaved] = useState(false);
 
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((s) => {
       setStatus(s);
       setOllamaUrl(s.ollamaUrl);
       setSelectedModel(s.defaultModel);
+      setCloudUrl(s.cloudUrl ?? '');
     });
     window.electronAPI?.getDefaults().then((d) => {
       setExtensions(d.extensions);
@@ -108,6 +111,12 @@ export default function SettingsView() {
     } finally {
       setConfiguringClaude(false);
     }
+  }
+
+  async function handleSaveCloudUrl() {
+    await window.electronAPI?.setCloudUrl(cloudUrl);
+    setCloudSaved(true);
+    setTimeout(() => setCloudSaved(false), 3000);
   }
 
   async function handleOpenConfig() {
@@ -261,6 +270,42 @@ export default function SettingsView() {
                 Older events are pruned automatically. Takes effect on next indexing event.
               </p>
             </div>
+          </div>
+        </Section>
+
+        {/* ── Cloud Memories ───────────────────────────────────── */}
+        <Section
+          title="Cloud Memories"
+          description="URL of your Cloudflare Worker memory server. Used to show connection status in the sidebar."
+        >
+          <div className="flex flex-col gap-3">
+            {status?.cloudUrl && (
+              <div className={`flex items-center gap-2 text-sm ${status.cloudConnected ? 'text-emerald-400' : 'text-muted-foreground'}`}>
+                <Cloud className="h-4 w-4" />
+                {status.cloudConnected ? 'Connected' : 'Unreachable'}
+              </div>
+            )}
+            <div className="flex items-center gap-3">
+              <input
+                type="text"
+                value={cloudUrl}
+                onChange={(e) => setCloudUrl(e.target.value)}
+                placeholder="https://lodestone-mcp.your-account.workers.dev"
+                className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              <Button variant="outline" size="sm" onClick={handleSaveCloudUrl}>
+                Save
+              </Button>
+            </div>
+            {cloudSaved && (
+              <div className="flex items-center gap-2 text-sm text-emerald-400">
+                <CheckCircle2 className="h-4 w-4" />
+                Saved — status updates on next poll
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground/60">
+              Leave blank to disable. The connection is checked every 10 seconds.
+            </p>
           </div>
         </Section>
 

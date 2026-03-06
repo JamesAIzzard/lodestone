@@ -279,4 +279,8 @@ export interface ServerStatus {
   totalIndexedFiles: number;
   /** Maps model registry key → path-safe ID for use in auto-generated filenames */
   modelPathSafeIds: Record<string, string>;
+  /** URL of the configured cloud memory Worker (null if not set). */
+  cloudUrl: string | null;
+  /** True when the cloud Worker's /health endpoint responded successfully. */
+  cloudConnected: boolean;
 }

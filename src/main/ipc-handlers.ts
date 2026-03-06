@@ -228,6 +228,20 @@ export function registerIpcHandlers(ctx: AppContext): void {
       getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
     );
 
+    // Cloud memories health check
+    const cloudUrl = ctx.config?.memory.cloud_url ?? null;
+    let cloudConnected = false;
+    if (cloudUrl) {
+      try {
+        const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/health`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        cloudConnected = res.ok;
+      } catch {
+        cloudConnected = false;
+      }
+    }
+
     return {
       uptimeSeconds,
       ollamaState: ollamaResult ? 'connected' : 'disconnected',
@@ -236,6 +250,8 @@ export function registerIpcHandlers(ctx: AppContext): void {
       defaultModel: resolveModelAlias(ctx.config?.embeddings.model ?? 'snowflake-arctic-embed-xs'),
       totalIndexedFiles: totalFiles,
       modelPathSafeIds,
+      cloudUrl,
+      cloudConnected,
     };
   });
 
@@ -257,6 +273,14 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
   ipcMain.handle('app:version', (): string => {
     return app.getVersion();
+  });
+
+  ipcMain.handle('cloud:setUrl', async (_event, url: string): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+    const trimmed = url.trim();
+    ctx.config.memory.cloud_url = trimmed || undefined;
+    saveConfig(ctx.configPath(), ctx.config);
+    return { success: true };
   });
 
   // ── Defaults ──────────────────────────────────────────────────────────

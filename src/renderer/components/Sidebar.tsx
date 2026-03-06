@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Database, Search, Activity, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Database, Search, Activity, Settings, ChevronLeft, ChevronRight, Cloud } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ServerStatus } from '../../shared/types';
 import logoUrl from '../../../assets/icon.png';
@@ -70,9 +70,18 @@ export default function Sidebar() {
         {isCollapsed ? (
           <img src={logoUrl} alt="Lodestone" className="h-7 w-7" />
         ) : (
-          <div className="flex items-center gap-2.5">
+          <div className="flex w-full items-center gap-2.5">
             <img src={logoUrl} alt="" className="h-6 w-6 shrink-0" />
             <span className="text-sm font-semibold tracking-wide text-foreground">Lodestone</span>
+            {status?.cloudUrl && (
+              <Cloud
+                className={cn(
+                  'ml-auto h-3.5 w-3.5 shrink-0',
+                  status.cloudConnected ? 'text-emerald-400' : 'text-muted-foreground/30',
+                )}
+                title={status.cloudConnected ? 'Cloud memories: connected' : 'Cloud memories: offline'}
+              />
+            )}
           </div>
         )}
       </div>

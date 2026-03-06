@@ -359,4 +359,6 @@ export const mockServerStatus: ServerStatus = {
   defaultModel: DEFAULT_MODEL,
   totalIndexedFiles: mockSilos.reduce((sum, s) => sum + s.indexedFileCount, 0),
   modelPathSafeIds: { 'snowflake-arctic-embed-xs': 'arctic-xs', 'nomic-embed-text-v1.5': 'nomic-v1' },
+  cloudUrl: null,
+  cloudConnected: false,
 };

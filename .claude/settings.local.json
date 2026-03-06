@@ -39,14 +39,14 @@
       "mcp__Windows-MCP__Shell",
       "Bash(npm run make)",
       "mcp__lodestone-dev__lodestone_orient",
-      "mcp__lodestone-remote__lodestone_orient",
-      "mcp__lodestone-remote__lodestone_recall",
+      "mcp__lodestone-dev__lodestone_search",
+      "mcp__lodestone-dev__lodestone_read",
       "Bash(timeout 12 npx wrangler dev)",
       "Bash(npx wrangler d1 create lodestone-memory-dev)",
       "Bash(npx wrangler vectorize create lodestone-memory-vectors-dev --dimensions=768 --metric=cosine)"
     ]
   },
   "enabledMcpjsonServers": [
-    "lodestone-remote"
+    "lodestone-dev"
   ]
 }

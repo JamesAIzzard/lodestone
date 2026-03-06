@@ -1,5 +1,18 @@
 # Lodestone — Claude Code Instructions
 
+## MCP Server Identity Map
+
+Claude Code shows connectors by UUID instead of name. Use this mapping:
+
+| MCP prefix | Component |
+|---|---|
+| `mcp__lodestone__` | Stable — local silo ops (installed MCP) |
+| `mcp__e81c08be-8a1e-44e9-8197-983783613eb5__` | Stable — cloud memories (production Worker) |
+| `mcp__lodestone-dev__` | Dev — local silo ops (from `.mcp.json`) |
+| `mcp__61402c1d-20ba-47f1-a812-4d2f15990837__` | Dev — cloud memories (dev Worker) |
+
+**When developing Lodestone**, use the `-dev` / `61402c1d` tools. The stable tools point at the installed app and production database.
+
 ## Memory: Use Lodestone Memory Tools
 
 - **Start of every conversation**: call `lodestone_orient` before anything else.
@@ -34,3 +47,4 @@ Operations: `str_replace`, `insert_at_line`, `overwrite`, `append`, `create`, `m
 **When the built-in Edit/Write is still appropriate:**
 - Files outside indexed silos (e.g., config files, CLAUDE.md itself)
 - Quick one-off edits where puid tracking isn't needed
+

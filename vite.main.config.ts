@@ -21,7 +21,7 @@ export default defineConfig({
         'better-sqlite3',
         'sqlite-vec',
         'trash',
-        'pdfjs-dist',
+        /^pdfjs-dist/,
       ],
     },
   },

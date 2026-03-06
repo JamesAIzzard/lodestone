@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "lodestone-remote": {
-      "type": "http",
-      "url": "https://lodestone-mcp-dev.jamesaizzard.workers.dev/mcp"
+    "lodestone-dev": {
+      "command": "node",
+      "args": ["C:\\Users\\James\\Documents\\lodestone\\mcp-wrapper.js", "--dev"]
     }
   }
 }

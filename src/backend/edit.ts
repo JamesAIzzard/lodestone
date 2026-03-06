@@ -85,6 +85,15 @@ function isSiloRoot(target: string, siloDirectories: string[]): boolean {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/** Detect the line ending style used in a string. */
+export function detectLineEnding(content: string): 'CRLF' | 'LF' | 'mixed' {
+  const crlfCount = (content.match(/\r\n/g) || []).length;
+  const lfOnlyCount = (content.match(/(?<!\r)\n/g) || []).length;
+  if (crlfCount > 0 && lfOnlyCount > 0) return 'mixed';
+  if (crlfCount > 0) return 'CRLF';
+  return 'LF';
+}
+
 /** Compute SHA-256 hex digest of raw bytes. */
 function computeHash(content: Buffer): string {
   return createHash('sha256').update(content).digest('hex');
@@ -211,14 +220,26 @@ function executeStrReplace(
   if (validated.ok === false) return validated.result;
   const { content: oldContent } = validated;
 
+  // MCP tool parameters cannot carry \r bytes (JSON double-escaping in the
+  // LLM→tool transport turns \r\n into literal backslash-r-backslash-n).
+  // When the file uses CRLF, expand bare \n in old_str/new_str to \r\n so
+  // the match succeeds against the file's actual bytes.
+  const fileEnding = detectLineEnding(oldContent);
+  let oldStr = op.oldStr;
+  let newStr = op.newStr;
+  if (fileEnding === 'CRLF') {
+    oldStr = oldStr.replace(/(?<!\r)\n/g, '\r\n');
+    newStr = newStr.replace(/(?<!\r)\n/g, '\r\n');
+  }
+
   // Count occurrences
   let count = 0;
   let searchFrom = 0;
   while (true) {
-    const idx = oldContent.indexOf(op.oldStr, searchFrom);
+    const idx = oldContent.indexOf(oldStr, searchFrom);
     if (idx === -1) break;
     count++;
-    searchFrom = idx + op.oldStr.length;
+    searchFrom = idx + oldStr.length;
   }
 
   if (count === 0) {
@@ -233,8 +254,8 @@ function executeStrReplace(
 
   // Use indexOf + slice rather than String.replace to avoid JS replacement
   // pattern special characters (e.g. $ → $ in replace's replacement string).
-  const matchIdx = oldContent.indexOf(op.oldStr);
-  const newContent = oldContent.slice(0, matchIdx) + op.newStr + oldContent.slice(matchIdx + op.oldStr.length);
+  const matchIdx = oldContent.indexOf(oldStr);
+  const newContent = oldContent.slice(0, matchIdx) + newStr + oldContent.slice(matchIdx + oldStr.length);
 
   if (op.dryRun) {
     return { success: true, diff: generateUnifiedDiff(op.filePath, oldContent, newContent) };

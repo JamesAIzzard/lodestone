@@ -59,7 +59,7 @@ function checkStaleness(filePath: string, puidRecord?: PuidRecord): string | nul
   // Stale — refresh hash and return error
   const oldHash = puidRecord.contentHash;
   puidRecord.contentHash = currentHash;
-  return `File has been modified externally since last read.\nStored hash: ${oldHash}\nCurrent hash: ${currentHash}`;
+  return `File has been modified externally since last read. Call lodestone_read to get the current content before retrying the edit.\nStored hash: ${oldHash}\nCurrent hash: ${currentHash}`;
 }
 
 export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: PuidManager): void {
@@ -608,7 +608,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         if (puidRecord?.contentHash) {
           const currentHash = PuidManager.computeFileHash(filePath);
           if (currentHash !== puidRecord.contentHash) {
-            let body = `File has been modified externally since last read.\nStored hash: ${puidRecord.contentHash}\nCurrent hash: ${currentHash}`;
+            let body = `File has been modified externally since last read. Call lodestone_read to get the current content before retrying the edit.\nStored hash: ${puidRecord.contentHash}\nCurrent hash: ${currentHash}`;
             try {
               const currentContent = fs.readFileSync(filePath, 'utf-8');
               body += `\n\nCurrent content:\n\`\`\`\n${currentContent}\n\`\`\``;

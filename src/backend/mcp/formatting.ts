@@ -376,7 +376,7 @@ export const EDIT_DESCRIPTION = [
   'Edit files within indexed silos. Nine operations:',
   '',
   'Text editing (requires target parameter):',
-  '  \u2022 str_replace \u2014 Replace a unique string (must match exactly once)',
+  '  \u2022 str_replace \u2014 Replace a unique string (must match exactly once, including line endings)',
   '  \u2022 insert_at_line \u2014 Insert content before a specific line number',
   '  \u2022 overwrite \u2014 Replace entire file content',
   '  \u2022 append \u2014 Add content to end of file',

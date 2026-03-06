@@ -31,9 +31,6 @@ For detailed guidance: call `lodestone_guide` with topic `"memory"` (storage, cr
 
 Operations: `str_replace`, `insert_at_line`, `overwrite`, `append`, `create`, `mkdir`, `rename`, `move`, `delete`
 
-**Prefer standard tooling** for code edits, until we have resolved some final issues with lodestone edit for detailed coding work.
-
-
 **When the built-in Edit/Write is still appropriate:**
 - Files outside indexed silos (e.g., config files, CLAUDE.md itself)
 - Quick one-off edits where puid tracking isn't needed

@@ -9,6 +9,7 @@ import type { McpServerDeps } from './types';
 import type { LocationHint } from '../../shared/types';
 import { PuidManager } from './puid-manager';
 import { getProcessor } from '../pipeline';
+import { detectLineEnding } from '../edit';
 import {
   SEARCH_DESCRIPTION, READ_DESCRIPTION, EXPLORE_DESCRIPTION,
   formatSearchResults, formatExploreResults,
@@ -217,6 +218,10 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
                   }
                   case 'page':  header += ` (page ${hint.page})`; break;
                 }
+              }
+              // Annotate CRLF files so the LLM knows to preserve \r\n in edits
+              if (detectLineEnding(text) === 'CRLF') {
+                header += ' [CRLF line endings]';
               }
               content.push({
                 type: 'text' as const,

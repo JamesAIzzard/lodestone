@@ -99,8 +99,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('cloud:setAuthToken', token),
 
   // Tasks
-  listTasks: (includeCompleted?: boolean): Promise<unknown> =>
-    ipcRenderer.invoke('tasks:list', includeCompleted ?? false),
+  listTasks: (opts?: { includeCompleted?: boolean; includeCancelled?: boolean }): Promise<unknown> =>
+    ipcRenderer.invoke('tasks:list', opts ?? {}),
   reviseTask: (id: number, fields: Record<string, unknown>): Promise<unknown> =>
     ipcRenderer.invoke('tasks:revise', id, fields),
   skipTask: (id: number, reason?: string): Promise<unknown> =>

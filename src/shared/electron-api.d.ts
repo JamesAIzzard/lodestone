@@ -95,7 +95,7 @@ export interface ElectronAPI {
   setCloudAuthToken: (token: string) => Promise<{ success: boolean }>;
 
   // Tasks
-  listTasks: (includeCompleted?: boolean) => Promise<{ success: boolean; tasks: MemoryRecord[]; error?: string }>;
+  listTasks: (opts?: { includeCompleted?: boolean; includeCancelled?: boolean }) => Promise<{ success: boolean; tasks: MemoryRecord[]; error?: string }>;
   reviseTask: (id: number, fields: {
     status?: MemoryStatusValue | null;
     priority?: PriorityLevel | null;

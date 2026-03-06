@@ -298,11 +298,14 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return { success: true };
   });
 
-  ipcMain.handle('tasks:list', async (_event, includeCompleted = false): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
+  ipcMain.handle('tasks:list', async (_event, opts: { includeCompleted?: boolean; includeCancelled?: boolean } = {}): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
     const cloudUrl = ctx.config?.memory.cloud_url;
     if (!cloudUrl) return { success: false, tasks: [], error: 'No cloud URL configured' };
     try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks?includeCompleted=${includeCompleted}`, {
+      const params = new URLSearchParams();
+      if (opts.includeCompleted) params.set('includeCompleted', 'true');
+      if (opts.includeCancelled) params.set('includeCancelled', 'true');
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks?${params}`, {
         headers: getCloudHeaders(ctx),
         signal: AbortSignal.timeout(10000),
       });

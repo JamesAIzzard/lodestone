@@ -40,7 +40,7 @@ export default function TaskDetailView() {
     setLoading(true);
     setError(null);
     try {
-      const result = await window.electronAPI?.listTasks(true);
+      const result = await window.electronAPI?.listTasks({ includeCompleted: true, includeCancelled: true });
       if (!result?.success) {
         setError(result?.error ?? 'Failed to load task');
         return;

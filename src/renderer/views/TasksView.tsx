@@ -12,6 +12,36 @@ import {
 } from '@/components/TaskCells';
 import type { MemoryRecord, MemoryStatusValue, PriorityLevel } from '../../shared/types';
 
+// ── Toggle switch ─────────────────────────────────────────────────────────────
+
+function ToggleSwitch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none group"
+    >
+      <span
+        className={cn(
+          'relative inline-flex h-3.5 w-6 shrink-0 rounded-full border transition-colors',
+          checked ? 'bg-foreground/80 border-foreground/80' : 'bg-muted border-border',
+        )}
+      >
+        <span
+          className={cn(
+            'absolute top-px h-2.5 w-2.5 rounded-full bg-background shadow-sm transition-transform',
+            checked ? 'translate-x-[10px]' : 'translate-x-px',
+          )}
+        />
+      </span>
+      <span className={cn('transition-colors', checked ? 'text-foreground' : 'text-muted-foreground')}>
+        {label}
+      </span>
+    </button>
+  );
+}
+
 // ── Main view ─────────────────────────────────────────────────────────────────
 
 export default function TasksView() {
@@ -20,7 +50,7 @@ export default function TasksView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCompleted, setShowCompleted] = useState(false);
-  const [filterPriority, setFilterPriority] = useState<PriorityLevel | 'all'>('all');
+  const [showCancelled, setShowCancelled] = useState(false);
   const [editingTopicId, setEditingTopicId] = useState<number | null>(null);
   const [editingTopicValue, setEditingTopicValue] = useState('');
   const [isCreating, setIsCreating] = useState(false);
@@ -29,14 +59,16 @@ export default function TasksView() {
   const pendingKeyRef = useRef(0);
   const showCompletedRef = useRef(showCompleted);
   showCompletedRef.current = showCompleted;
+  const showCancelledRef = useRef(showCancelled);
+  showCancelledRef.current = showCancelled;
   const [recentlyCompleted, setRecentlyCompleted] = useState<Set<number>>(new Set());
   const completionTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
-  const loadTasks = useCallback(async (includeCompleted: boolean) => {
+  const loadTasks = useCallback(async (opts: { includeCompleted: boolean; includeCancelled: boolean }) => {
     setLoading(true);
     setError(null);
     try {
-      const result = await window.electronAPI?.listTasks(includeCompleted);
+      const result = await window.electronAPI?.listTasks(opts);
       if (!result || !result.success) {
         setError(result?.error ?? 'Failed to load tasks');
       } else {
@@ -50,10 +82,10 @@ export default function TasksView() {
   }, []);
 
   useEffect(() => {
-    loadTasks(showCompleted);
-    const interval = setInterval(() => loadTasks(showCompletedRef.current), 30_000);
+    loadTasks({ includeCompleted: showCompleted, includeCancelled: showCancelled });
+    const interval = setInterval(() => loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current }), 30_000);
     return () => clearInterval(interval);
-  }, [showCompleted, loadTasks]);
+  }, [showCompleted, showCancelled, loadTasks]);
 
   // Cleanup completion timers on unmount
   useEffect(() => {
@@ -72,14 +104,14 @@ export default function TasksView() {
       t.id === id ? { ...t, ...fields, updatedAt: new Date().toISOString() } : t
     ));
 
-    // Grace period: keep completed tasks visible briefly when "show completed" is off
-    if (fields.status === 'completed' && !showCompletedRef.current) {
-      // Cancel any existing timer for this task
+    // Grace period: keep disappearing tasks visible briefly for undo
+    const willDisappear =
+      (fields.status === 'completed' && !showCompletedRef.current) ||
+      fields.status === null; // converted to memory — no longer a task
+    if (willDisappear) {
       const existing = completionTimers.current.get(id);
       if (existing) clearTimeout(existing);
-      // Add to recently-completed set
       setRecentlyCompleted(prev => new Set(prev).add(id));
-      // Schedule removal after 10s
       completionTimers.current.set(id, setTimeout(() => {
         setRecentlyCompleted(prev => { const next = new Set(prev); next.delete(id); return next; });
         completionTimers.current.delete(id);
@@ -93,17 +125,17 @@ export default function TasksView() {
 
     const result = await window.electronAPI?.reviseTask(id, fields as Record<string, unknown>);
     if (!result?.success) {
-      loadTasks(showCompletedRef.current);
+      loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
     } else if (result.nextActionDate) {
       // Recurring task was auto-advanced — reload to show updated date/status
-      loadTasks(showCompletedRef.current);
+      loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
     }
   }
 
   async function skipTask(id: number) {
     const result = await window.electronAPI?.skipTask(id);
     if (result?.success) {
-      loadTasks(showCompletedRef.current);
+      loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
     }
   }
 
@@ -127,20 +159,24 @@ export default function TasksView() {
     setPendingCreates(prev => [...prev, { key, topic: trimmed }]);
     await window.electronAPI?.createTask(trimmed);
     setPendingCreates(prev => prev.filter(p => p.key !== key));
-    loadTasks(showCompletedRef.current);
+    loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
   }
 
   async function deleteTask(id: number) {
     setTasks(prev => prev.filter(t => t.id !== id));
     const result = await window.electronAPI?.deleteTask(id);
-    if (!result?.success) loadTasks(showCompletedRef.current);
+    if (!result?.success) loadTasks({ includeCompleted: showCompletedRef.current, includeCancelled: showCancelledRef.current });
   }
 
   // ── Filtering & sorting ──────────────────────────────────────────────────
 
   const filtered = tasks
-    .filter(t => filterPriority === 'all' || t.priority === filterPriority)
-    .filter(t => showCompleted || t.status !== 'completed' || recentlyCompleted.has(t.id))
+    .filter(t =>
+      recentlyCompleted.has(t.id) ||
+      (t.status != null &&
+        (showCompleted || t.status !== 'completed') &&
+        (showCancelled || t.status !== 'cancelled'))
+    )
     .sort((a, b) => {
       const aOver = isOverdue(a);
       const bOver = isOverdue(b);
@@ -175,7 +211,7 @@ export default function TasksView() {
               New task
             </button>
             <button
-              onClick={() => loadTasks(showCompleted)}
+              onClick={() => loadTasks({ includeCompleted: showCompleted, includeCancelled: showCancelled })}
               disabled={loading}
               title="Refresh"
               className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
@@ -187,27 +223,8 @@ export default function TasksView() {
 
         {/* Filter bar */}
         <div className="flex items-center gap-3">
-          <select
-            value={filterPriority}
-            onChange={(e) => setFilterPriority(e.target.value === 'all' ? 'all' : parseInt(e.target.value, 10) as PriorityLevel)}
-            className="h-7 rounded-md border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            <option value="all">All priorities</option>
-            <option value="4">Critical</option>
-            <option value="3">High</option>
-            <option value="2">Medium</option>
-            <option value="1">Low</option>
-          </select>
-
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={showCompleted}
-              onChange={(e) => setShowCompleted(e.target.checked)}
-              className="h-3.5 w-3.5"
-            />
-            Show completed
-          </label>
+          <ToggleSwitch checked={showCompleted} onChange={setShowCompleted} label="Completed" />
+          <ToggleSwitch checked={showCancelled} onChange={setShowCancelled} label="Cancelled" />
         </div>
       </div>
 

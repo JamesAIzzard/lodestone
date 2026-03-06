@@ -197,7 +197,7 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
           actionDate: parsedActionDate,
           recurrence: parsedRecurrence,
           priority: (priority ?? null) as PriorityLevel | null,
-          status: (status === undefined ? 'open' : status) as MemoryStatusValue | null,
+          status: (status === undefined || (status === null && parsedActionDate) ? 'open' : status ?? null) as MemoryStatusValue | null,
           completedOn: parsedCompletedOn,
         });
 

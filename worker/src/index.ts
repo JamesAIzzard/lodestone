@@ -98,12 +98,13 @@ export default {
     const authError = authenticate(request, env);
     if (authError) return authError;
 
-    // List tasks: GET /tasks?includeCompleted=false&limit=200
+    // List tasks: GET /tasks?includeCompleted=false&includeCancelled=false&limit=200
     if (url.pathname === '/tasks' && request.method === 'GET') {
       const includeCompleted = url.searchParams.get('includeCompleted') === 'true';
+      const includeCancelled = url.searchParams.get('includeCancelled') === 'true';
       const rawLimit = parseInt(url.searchParams.get('limit') ?? '200', 10);
       const limit = Number.isNaN(rawLimit) ? 200 : Math.min(rawLimit, 500);
-      const tasks = await getAllTasks(env.DB, includeCompleted, limit);
+      const tasks = await getAllTasks(env.DB, { includeCompleted, includeCancelled }, limit);
       return new Response(JSON.stringify({ tasks }), {
         headers: { 'Content-Type': 'application/json' },
       });

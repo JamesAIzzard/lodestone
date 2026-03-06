@@ -163,18 +163,22 @@ export async function getActiveUpcomingMemories(
   return results.map((r) => rowToRecord(r as Record<string, unknown>));
 }
 
-/** Return all non-deleted, non-cancelled tasks ordered by action_date ASC (nulls last),
- *  then priority DESC. Used by the Tasks GUI. */
+/** Return all non-deleted tasks ordered by action_date ASC (nulls last),
+ *  then priority DESC. Used by the Tasks GUI.
+ *  Only includes memories that have an explicit status (excludes pure knowledge memories). */
 export async function getAllTasks(
   db: D1Database,
-  includeCompleted: boolean,
+  opts: { includeCompleted: boolean; includeCancelled: boolean },
   limit: number,
 ): Promise<MemoryRecord[]> {
   let query = `SELECT * FROM memories
      WHERE deleted_at IS NULL
-       AND (status IS NULL OR status != 'cancelled')`;
-  if (!includeCompleted) {
-    query += ` AND (status IS NULL OR status != 'completed') AND completed_on IS NULL`;
+       AND status IS NOT NULL`;
+  if (!opts.includeCancelled) {
+    query += ` AND status != 'cancelled'`;
+  }
+  if (!opts.includeCompleted) {
+    query += ` AND status != 'completed' AND completed_on IS NULL`;
   }
   query += ` ORDER BY
        CASE WHEN action_date IS NULL THEN 1 ELSE 0 END,

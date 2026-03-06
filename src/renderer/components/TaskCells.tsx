@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import {
+  BookOpen,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -89,7 +90,7 @@ export function InlineDropdown<T extends string | number>({
   onSelect,
   onClose,
 }: {
-  options: { value: T; label: string; className?: string; icon?: React.ReactNode }[];
+  options: { value: T; label: string; className?: string; icon?: React.ReactNode; divider?: boolean }[];
   onSelect: (value: T) => void;
   onClose: () => void;
 }) {
@@ -109,17 +110,19 @@ export function InlineDropdown<T extends string | number>({
       className="absolute left-0 top-full mt-0.5 z-50 min-w-[110px] rounded-md border border-border bg-background shadow-md py-1"
     >
       {options.map((opt, i) => (
-        <button
-          key={i}
-          onMouseDown={(e) => { e.preventDefault(); onSelect(opt.value); onClose(); }}
-          className={cn(
-            'flex items-center gap-2 w-full px-3 py-1.5 text-left text-xs hover:bg-accent transition-colors',
-            opt.className ?? 'text-foreground',
-          )}
-        >
-          {opt.icon}
-          {opt.label}
-        </button>
+        <div key={i}>
+          {opt.divider && <div className="my-1 border-t border-border/50" />}
+          <button
+            onMouseDown={(e) => { e.preventDefault(); onSelect(opt.value); onClose(); }}
+            className={cn(
+              'flex items-center gap-2 w-full px-3 py-1.5 text-left text-xs hover:bg-accent transition-colors',
+              opt.className ?? 'text-foreground',
+            )}
+          >
+            {opt.icon}
+            {opt.label}
+          </button>
+        </div>
       ))}
     </div>
   );
@@ -128,6 +131,7 @@ export function InlineDropdown<T extends string | number>({
 // ── StatusCell ─────────────────────────────────────────────────────────────
 
 const SKIP_SENTINEL = '__skip__' as unknown as MemoryStatusValue;
+const MEMORY_SENTINEL = '__memory__' as unknown as MemoryStatusValue;
 
 function statusIcon(status: MemoryStatusValue | null, className?: string) {
   const Icon = status ? STATUS_ICONS[status] : Circle;
@@ -151,13 +155,14 @@ export function StatusCell({
 
   const iconSize = 'h-3.5 w-3.5';
 
-  const options: { value: MemoryStatusValue; label: string; className?: string; icon?: React.ReactNode }[] = [
+  const options: { value: MemoryStatusValue; label: string; className?: string; icon?: React.ReactNode; divider?: boolean }[] = [
     { value: 'open' as MemoryStatusValue, label: 'Open', className: 'text-amber-400', icon: <Circle className={iconSize} /> },
     { value: 'in_progress' as MemoryStatusValue, label: 'In Progress', className: 'text-blue-400', icon: <CircleDot className={iconSize} /> },
     { value: 'completed' as MemoryStatusValue, label: 'Done', className: 'text-emerald-400', icon: <CircleCheck className={iconSize} /> },
     { value: 'blocked' as MemoryStatusValue, label: 'Blocked', className: 'text-red-400', icon: <CircleAlert className={iconSize} /> },
     ...(isRecurring ? [{ value: SKIP_SENTINEL, label: 'Skip', className: 'text-violet-400', icon: <SkipForward className={iconSize} /> }] : []),
     { value: 'cancelled' as MemoryStatusValue, label: 'Cancelled', className: 'text-muted-foreground/40', icon: <CircleMinus className={iconSize} /> },
+    { value: MEMORY_SENTINEL, label: 'Memory', className: 'text-muted-foreground/60', icon: <BookOpen className={iconSize} />, divider: true },
   ];
 
   function handleQuickToggle() {
@@ -201,6 +206,7 @@ export function StatusCell({
           options={options}
           onSelect={(v) => {
             if (v === SKIP_SENTINEL) onSkip?.();
+            else if (v === MEMORY_SENTINEL) onChange(null);
             else onChange(v);
           }}
           onClose={() => setOpen(false)}
@@ -214,6 +220,17 @@ export function StatusCell({
 
 const PRIORITY_NONE = '__none__' as unknown as PriorityLevel;
 
+function priorityDot(level: PriorityLevel | null, size = 'h-2 w-2') {
+  return <span className={cn(size, 'rounded-sm shrink-0', level ? PRIORITY_DOT_COLORS[level] : 'bg-muted-foreground/20')} />;
+}
+
+const PRIORITY_OPTIONS: { value: PriorityLevel; label: string; className: string }[] = [
+  { value: 4 as PriorityLevel, label: 'Critical', className: 'text-red-400' },
+  { value: 3 as PriorityLevel, label: 'High', className: 'text-amber-400' },
+  { value: 2 as PriorityLevel, label: 'Medium', className: 'text-sky-400' },
+  { value: 1 as PriorityLevel, label: 'Low', className: 'text-muted-foreground/60' },
+];
+
 export function PriorityCell({
   value,
   onChange,
@@ -223,6 +240,11 @@ export function PriorityCell({
 }) {
   const [open, setOpen] = useState(false);
 
+  const options = [
+    { value: PRIORITY_NONE, label: 'None', className: 'text-muted-foreground/40', icon: priorityDot(null) },
+    ...PRIORITY_OPTIONS.map(o => ({ ...o, value: o.value as typeof PRIORITY_NONE, icon: priorityDot(o.value) })),
+  ];
+
   return (
     <div className="relative shrink-0">
       <button
@@ -230,22 +252,12 @@ export function PriorityCell({
         title={value ? PRIORITY_LABELS[value] : 'No priority'}
         className="flex items-center justify-center h-5 w-5 rounded border border-transparent hover:border-border/60 transition-colors"
       >
-        {value ? (
-          <span className={cn('h-2 w-2 rounded-sm shrink-0', PRIORITY_DOT_COLORS[value])} />
-        ) : (
-          <span className="h-2 w-2 rounded-sm bg-muted-foreground/20" />
-        )}
+        {priorityDot(value)}
       </button>
       {open && (
         <InlineDropdown
-          options={[
-            { value: PRIORITY_NONE, label: '— None', className: 'text-muted-foreground/40' },
-            { value: 4 as PriorityLevel, label: 'Critical', className: 'text-red-400' },
-            { value: 3 as PriorityLevel, label: 'High', className: 'text-amber-400' },
-            { value: 2 as PriorityLevel, label: 'Medium', className: 'text-sky-400' },
-            { value: 1 as PriorityLevel, label: 'Low', className: 'text-muted-foreground/60' },
-          ]}
-          onSelect={(v) => onChange(v === PRIORITY_NONE ? null : v)}
+          options={options}
+          onSelect={(v) => onChange(v === PRIORITY_NONE ? null : v as PriorityLevel)}
           onClose={() => setOpen(false)}
         />
       )}

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Loader2, CheckCircle2, XCircle, FileCode, FolderOpen, TriangleAlert, Cloud } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, FileCode, FolderOpen, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
@@ -26,17 +26,14 @@ export default function SettingsView() {
   const [claudeConfigResult, setClaudeConfigResult] = useState<{ success: boolean; configPath: string; error?: string } | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [cloudUrl, setCloudUrl] = useState('');
-  const [cloudUrlDev, setCloudUrlDev] = useState('');
   const [cloudSaved, setCloudSaved] = useState(false);
-  const [cloudDevSaved, setCloudDevSaved] = useState(false);
 
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((s) => {
       setStatus(s);
       setOllamaUrl(s.ollamaUrl);
       setSelectedModel(s.defaultModel);
-      setCloudUrl(s.cloudUrlProd ?? '');
-      setCloudUrlDev(s.cloudUrlDev ?? '');
+      setCloudUrl(s.cloudUrl ?? '');
     });
     window.electronAPI?.getDefaults().then((d) => {
       setExtensions(d.extensions);
@@ -120,12 +117,7 @@ export default function SettingsView() {
     await window.electronAPI?.setCloudUrl(cloudUrl);
     setCloudSaved(true);
     setTimeout(() => setCloudSaved(false), 3000);
-  }
-
-  async function handleSaveCloudDevUrl() {
-    await window.electronAPI?.setCloudDevUrl(cloudUrlDev);
-    setCloudDevSaved(true);
-    setTimeout(() => setCloudDevSaved(false), 3000);
+    window.dispatchEvent(new Event('cloud-url-changed'));
   }
 
   async function handleOpenConfig() {
@@ -285,20 +277,12 @@ export default function SettingsView() {
         {/* ── Cloud Memories ───────────────────────────────────── */}
         <Section
           title="Cloud Memories"
-          description="Cloudflare Worker memory server URLs. Dev and production instances share the same config file, so each has its own URL."
+          description="Cloudflare Worker memory server URL. Dev and installed builds use separate config files automatically."
         >
           <div className="flex flex-col gap-5">
-            {/* Status */}
-            <div className={`flex items-center gap-2 text-sm ${status?.cloudConnected ? 'text-emerald-400' : 'text-muted-foreground/60'}`}>
-              <Cloud className="h-4 w-4" />
-              {status?.cloudUrl
-                ? status.cloudConnected ? 'Connected' : 'Unreachable'
-                : 'Not configured for this environment'}
-            </div>
-
-            {/* Production URL */}
+            {/* Worker URL */}
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Production URL</label>
+              <label className="text-xs font-medium text-muted-foreground">Worker URL</label>
               <div className="flex items-center gap-3">
                 <input
                   type="text"
@@ -312,29 +296,6 @@ export default function SettingsView() {
                 </Button>
               </div>
               {cloudSaved && (
-                <div className="flex items-center gap-1.5 text-xs text-emerald-400">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  Saved
-                </div>
-              )}
-            </div>
-
-            {/* Development URL */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Development URL</label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="text"
-                  value={cloudUrlDev}
-                  onChange={(e) => setCloudUrlDev(e.target.value)}
-                  placeholder="https://lodestone-mcp-dev.your-account.workers.dev"
-                  className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-                <Button variant="outline" size="sm" onClick={handleSaveCloudDevUrl}>
-                  Save
-                </Button>
-              </div>
-              {cloudDevSaved && (
                 <div className="flex items-center gap-1.5 text-xs text-emerald-400">
                   <CheckCircle2 className="h-3.5 w-3.5" />
                   Saved

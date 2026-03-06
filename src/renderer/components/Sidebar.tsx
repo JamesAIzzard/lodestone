@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Database, Search, Activity, Settings, ChevronLeft, ChevronRight, Cloud } from 'lucide-react';
+import { Database, Search, Activity, Settings, ChevronLeft, ChevronRight, BrainCircuit, Boxes, FileStack, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ServerStatus } from '../../shared/types';
 import logoUrl from '../../../assets/icon.png';
@@ -35,7 +35,13 @@ export default function Sidebar() {
     const fetchStatus = () => window.electronAPI?.getServerStatus().then(setStatus);
     fetchStatus();
     const interval = setInterval(fetchStatus, 10_000);
-    return () => clearInterval(interval);
+    // Allow other components (e.g. Settings) to trigger an immediate refresh
+    const handleCloudChange = () => fetchStatus();
+    window.addEventListener('cloud-url-changed', handleCloudChange);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('cloud-url-changed', handleCloudChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -73,23 +79,6 @@ export default function Sidebar() {
           <div className="flex w-full items-center gap-2.5">
             <img src={logoUrl} alt="" className="h-6 w-6 shrink-0" />
             <span className="text-sm font-semibold tracking-wide text-foreground">Lodestone</span>
-            <Cloud
-              className={cn(
-                'ml-auto h-3.5 w-3.5 shrink-0',
-                !status?.cloudUrl
-                  ? 'text-muted-foreground/20'
-                  : status.cloudConnected
-                    ? 'text-emerald-400'
-                    : 'text-muted-foreground/40',
-              )}
-              title={
-                !status?.cloudUrl
-                  ? 'Cloud memories: not configured'
-                  : status.cloudConnected
-                    ? 'Cloud memories: connected'
-                    : 'Cloud memories: offline'
-              }
-            />
           </div>
         )}
       </div>
@@ -143,39 +132,84 @@ export default function Sidebar() {
       {/* Status panel */}
       <div className={cn('border-t border-border py-4', isCollapsed ? 'px-2' : 'px-5')}>
         {isCollapsed ? (
-          <div className="flex justify-center">
-            <span
-              title={
-                status?.ollamaState === 'connected' ? 'Ollama: Connected' : 'Ollama: Disconnected'
-              }
+          <div className="flex flex-col items-center gap-3">
+            <Boxes
               className={cn(
-                'inline-block h-2 w-2 rounded-full',
-                status?.ollamaState === 'connected' ? 'bg-emerald-500' : 'bg-red-500',
+                'h-3.5 w-3.5',
+                status?.ollamaState === 'connected' ? 'text-emerald-400' : 'text-red-400',
               )}
+              title={status?.ollamaState === 'connected' ? 'Ollama: Connected' : 'Ollama: Disconnected'}
+            />
+            <BrainCircuit
+              className={cn(
+                'h-3.5 w-3.5',
+                !status?.cloudUrl
+                  ? 'text-muted-foreground/30'
+                  : status.cloudConnected
+                    ? 'text-emerald-400'
+                    : 'text-red-400',
+              )}
+              title={
+                !status?.cloudUrl
+                  ? 'Cloud memories: not configured'
+                  : status.cloudConnected
+                    ? 'Cloud memories: connected'
+                    : 'Cloud memories: offline'
+              }
+            />
+            <FileStack
+              className="h-3.5 w-3.5 text-muted-foreground/60"
+              title={`Indexed files: ${status?.totalIndexedFiles?.toLocaleString() ?? '—'}`}
+            />
+            <Clock
+              className="h-3.5 w-3.5 text-muted-foreground/60"
+              title={`Uptime: ${status ? formatUptime(status.uptimeSeconds) : '—'}`}
             />
           </div>
         ) : (
           <div className="flex flex-col gap-2 text-xs text-muted-foreground">
             <div className="flex items-center justify-between">
-              <span>Ollama</span>
-              <span className="flex items-center gap-1.5">
-                <span
-                  className={cn(
-                    'inline-block h-2 w-2 rounded-full',
-                    status?.ollamaState === 'connected' ? 'bg-emerald-500' : 'bg-red-500',
-                  )}
-                />
-                {status?.ollamaState === 'connected' ? 'Connected' : 'Disconnected'}
+              <span className="flex items-center gap-2">
+                <Boxes className={cn(
+                  'h-3.5 w-3.5 shrink-0',
+                  status?.ollamaState === 'connected' ? 'text-emerald-400' : 'text-red-400',
+                )} />
+                Ollama
+              </span>
+              <span>{status?.ollamaState === 'connected' ? 'Connected' : 'Disconnected'}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <BrainCircuit className={cn(
+                  'h-3.5 w-3.5 shrink-0',
+                  !status?.cloudUrl
+                    ? 'text-muted-foreground/30'
+                    : status.cloudConnected
+                      ? 'text-emerald-400'
+                      : 'text-red-400',
+                )} />
+                Cloud memories
+              </span>
+              <span>
+                {status?.cloudUrl
+                  ? status.cloudConnected ? 'Connected' : 'Offline'
+                  : <span className="text-muted-foreground/50">Not configured</span>}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span>Indexed files</span>
+              <span className="flex items-center gap-2">
+                <FileStack className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+                Indexed files
+              </span>
               <span className="text-foreground">
                 {status?.totalIndexedFiles?.toLocaleString() ?? '—'}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span>Uptime</span>
+              <span className="flex items-center gap-2">
+                <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+                Uptime
+              </span>
               <span className="text-foreground">
                 {status ? formatUptime(status.uptimeSeconds) : '—'}
               </span>

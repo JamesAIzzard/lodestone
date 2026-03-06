@@ -279,12 +279,8 @@ export interface ServerStatus {
   totalIndexedFiles: number;
   /** Maps model registry key → path-safe ID for use in auto-generated filenames */
   modelPathSafeIds: Record<string, string>;
-  /** URL of the cloud Worker being checked for this run (dev or prod, based on app.isPackaged). */
+  /** Configured Cloudflare Worker memory server URL. */
   cloudUrl: string | null;
   /** True when the cloud Worker's /health endpoint responded successfully. */
   cloudConnected: boolean;
-  /** Configured production Worker URL (for the Settings UI). */
-  cloudUrlProd: string | null;
-  /** Configured development Worker URL (for the Settings UI). */
-  cloudUrlDev: string | null;
 }

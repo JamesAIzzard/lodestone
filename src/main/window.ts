@@ -8,15 +8,23 @@ import type { AppContext } from './context';
 
 export function createWindow(ctx: AppContext): BrowserWindow {
   const win = new BrowserWindow({
+    title: app.name,
     width: 1200,
     height: 800,
     minWidth: 400,
     minHeight: 600,
     backgroundColor: '#1a1a1a',
+    autoHideMenuBar: true,
     icon: path.join(app.getAppPath(), 'assets', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
     },
+  });
+
+  // Keep the window title as app.name (e.g. "Lodestone-Dev") instead of
+  // letting the HTML <title> tag override it.
+  win.on('page-title-updated', (event) => {
+    event.preventDefault();
   });
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {

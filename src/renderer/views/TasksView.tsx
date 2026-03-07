@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Maximize2, Search, X, Calendar, ChevronDown, ChevronLeft, FolderOpen } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Search, X, Calendar, ChevronDown, ChevronLeft, FolderOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   StatusCell,
@@ -834,7 +834,6 @@ export default function TasksView() {
                 {isCreating && (
                   <div className="flex items-center gap-2 py-2.5">
                     <div className="w-10 shrink-0" />
-                    <div className="w-5 shrink-0" />
                     <div className="w-12 shrink-0" />
                     <div className="flex-1 min-w-0">
                       <input
@@ -860,7 +859,6 @@ export default function TasksView() {
                 {pendingCreates.map(({ key, topic }) => (
                   <div key={key} className="flex items-center gap-2 py-2.5 opacity-50">
                     <div className="w-10 shrink-0" />
-                    <div className="w-5 shrink-0" />
                     <div className="w-12 shrink-0 flex items-center justify-center">
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                     </div>
@@ -881,24 +879,24 @@ export default function TasksView() {
                   return (
                     <div
                       key={task.id}
+                      onClick={(e) => {
+                        if (!(e.target as HTMLElement).closest('button, input, [role="button"]')) {
+                          navigate(`/tasks/${task.id}`, { state: { task } });
+                        }
+                      }}
                       className={cn(
-                        'group flex items-center gap-2 py-2.5 transition-opacity duration-500',
+                        'group flex items-center gap-2 py-2.5 transition-opacity duration-500 cursor-pointer',
                         overdue && '-mx-1 px-1 border-l-2 border-l-amber-500/50',
                         isGracePeriod && 'opacity-50',
                       )}
                     >
-                      {/* UID */}
-                      <span className="w-10 shrink-0 h-5 leading-5 text-right text-[11px] tabular-nums text-muted-foreground/25 select-all">
-                        m{task.id}
-                      </span>
-
-                      {/* Expand to detail */}
+                      {/* UID — acts as navigation button on row hover */}
                       <button
-                        onClick={() => navigate(`/tasks/${task.id}`, { state: { task } })}
+                        onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${task.id}`, { state: { task } }); }}
                         title="Open detail"
-                        className="w-5 shrink-0 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-foreground transition-colors"
+                        className="w-10 shrink-0 h-5 flex items-center justify-end text-[11px] tabular-nums text-muted-foreground/20 group-hover:text-primary/60 hover:!text-primary transition-colors cursor-pointer"
                       >
-                        <Maximize2 className="h-3 w-3" />
+                        m{task.id}
                       </button>
 
                       {/* Status */}
@@ -925,7 +923,7 @@ export default function TasksView() {
                           />
                         ) : (
                           <span
-                            onClick={() => startEditTopic(task)}
+                            onClick={(e) => { e.stopPropagation(); startEditTopic(task); }}
                             title={task.topic}
                             className={cn(
                               'text-sm cursor-text line-clamp-2',

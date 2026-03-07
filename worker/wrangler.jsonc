@@ -24,6 +24,12 @@
       "migrations_dir": "migrations"
     }
   ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "6f9bab0f53fd4a31bdfca3328b4b3e7f"
+    }
+  ],
   "env": {
     "dev": {
       "name": "lodestone-mcp-dev",
@@ -42,6 +48,12 @@
           "database_name": "lodestone-memory-dev",
           "database_id": "31224b4e-676f-454a-9d31-5572f5f96024",
           "migrations_dir": "migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "OAUTH_KV",
+          "id": "9c72a596e95f4f5290910e0900b891bf"
         }
       ]
     }

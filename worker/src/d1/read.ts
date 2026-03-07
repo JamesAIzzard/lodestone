@@ -200,24 +200,26 @@ export async function getAllTasks(
   opts: { includeCompleted: boolean; includeCancelled: boolean; projectId?: number },
   limit: number,
 ): Promise<MemoryRecord[]> {
-  let query = `SELECT * FROM memories
-     WHERE deleted_at IS NULL
-       AND status IS NOT NULL`;
+  let query = `SELECT m.* FROM memories m
+     LEFT JOIN projects p ON m.project_id = p.id
+     WHERE m.deleted_at IS NULL
+       AND m.status IS NOT NULL
+       AND (m.project_id IS NULL OR p.archived_at IS NULL)`;
   const binds: unknown[] = [];
   if (!opts.includeCancelled) {
-    query += ` AND status != 'cancelled'`;
+    query += ` AND m.status != 'cancelled'`;
   }
   if (!opts.includeCompleted) {
-    query += ` AND status != 'completed' AND completed_on IS NULL`;
+    query += ` AND m.status != 'completed' AND m.completed_on IS NULL`;
   }
   if (opts.projectId !== undefined) {
-    query += ` AND project_id = ?`;
+    query += ` AND m.project_id = ?`;
     binds.push(opts.projectId);
   }
   query += ` ORDER BY
-       CASE WHEN action_date IS NULL THEN 1 ELSE 0 END,
-       action_date ASC,
-       COALESCE(priority, 0) DESC
+       CASE WHEN m.action_date IS NULL THEN 1 ELSE 0 END,
+       m.action_date ASC,
+       COALESCE(m.priority, 0) DESC
      LIMIT ?`;
   binds.push(limit);
   const { results } = await db.prepare(query).bind(...binds).all();

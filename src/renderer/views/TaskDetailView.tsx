@@ -149,7 +149,7 @@ export default function TaskDetailView() {
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mb-5"
         >
           <ChevronLeft className="h-3.5 w-3.5" />
-          Back
+          Tasks
         </button>
 
         <div className="text-[11px] tabular-nums text-muted-foreground/30 mb-2 select-all">

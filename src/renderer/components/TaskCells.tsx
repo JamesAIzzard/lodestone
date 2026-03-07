@@ -671,7 +671,7 @@ export function ProjectCell({
   const current = value ? projects.find(p => p.id === value) : null;
 
   const options = [
-    ...projects.map(p => ({
+    ...projects.filter(p => !p.archivedAt).map(p => ({
       value: String(p.id),
       label: p.name,
       className: SILO_COLOR_MAP[p.color as SiloColor]?.text ?? 'text-foreground',

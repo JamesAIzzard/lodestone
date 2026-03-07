@@ -98,6 +98,7 @@ export default function SearchView() {
   const [searchMode, setSearchMode] = useState<ViewMode>(() => readSession('search.searchMode', 'file'));
   const [fileSearchMode, setFileSearchMode] = useState<SearchMode>(() => readSession('search.fileSearchMode', 'hybrid'));
   const [startPath, setStartPath] = useState(() => readSession('search.startPath', ''));
+  const [filePattern, setFilePattern] = useState(() => readSession('search.filePattern', ''));
   const [depthSetting, setDepthSetting] = useState(() => readSession('search.depthSetting', 2));
 
   useEffect(() => { writeSession('search.query', query); }, [query]);
@@ -105,6 +106,7 @@ export default function SearchView() {
   useEffect(() => { writeSession('search.searchMode', searchMode); }, [searchMode]);
   useEffect(() => { writeSession('search.fileSearchMode', fileSearchMode); }, [fileSearchMode]);
   useEffect(() => { writeSession('search.startPath', startPath); }, [startPath]);
+  useEffect(() => { writeSession('search.filePattern', filePattern); }, [filePattern]);
   useEffect(() => { writeSession('search.depthSetting', depthSetting); }, [depthSetting]);
 
   useEffect(() => {
@@ -120,7 +122,7 @@ export default function SearchView() {
     return map;
   }, [silos]);
 
-  const runSearch = useCallback(async (q: string, silo: string | undefined, sp?: string, mode?: SearchMode) => {
+  const runSearch = useCallback(async (q: string, silo: string | undefined, sp?: string, mode?: SearchMode, fp?: string) => {
     if (!q.trim()) return;
     setHasSearched(true);
     setSearching(true);
@@ -129,6 +131,7 @@ export default function SearchView() {
       const res = await window.electronAPI?.search({
         query: q,
         startPath: sp || undefined,
+        filePattern: fp || undefined,
         mode: mode ?? 'hybrid',
       }, silo || undefined) ?? [];
       setResults(res);
@@ -164,7 +167,7 @@ export default function SearchView() {
     if (searchMode === 'directory') {
       await runExplore(query, silo, startPath, depthSetting);
     } else {
-      await runSearch(query, silo, startPath, fileSearchMode);
+      await runSearch(query, silo, startPath, fileSearchMode, filePattern);
     }
   }
 
@@ -247,7 +250,7 @@ export default function SearchView() {
           </div>
         </div>
 
-        {/* Start path filter + depth (directory mode) + file search mode */}
+        {/* Start path filter + filetype filter + depth (directory mode) + file search mode */}
         <div className="mt-2 flex items-center gap-2">
           {!isDirectoryMode && (
             <FilterBar
@@ -273,6 +276,25 @@ export default function SearchView() {
               </button>
             )}
           </div>
+          {!isDirectoryMode && (
+            <div className="relative w-40 shrink-0">
+              <input
+                type="text"
+                value={filePattern}
+                onChange={(e) => setFilePattern(e.target.value)}
+                placeholder="Filetype (e.g. *.md)"
+                className="h-9 w-full rounded-md border border-input bg-background px-3 pr-7 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              {filePattern && (
+                <button
+                  onClick={() => setFilePattern('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          )}
           {isDirectoryMode && (
             <>
               <span className="text-[10px] text-muted-foreground/50 shrink-0">depth</span>

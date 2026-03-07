@@ -76,6 +76,30 @@ export default function ExtensionPicker({
         </div>
       )}
 
+      {/* Select all / Deselect all */}
+      {!disabled && (
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              const custom = extensions.filter((e) => !COMMON_EXTENSIONS.includes(e));
+              onChange([...COMMON_EXTENSIONS, ...custom]);
+            }}
+            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2"
+          >
+            Select all
+          </button>
+          <button
+            onClick={() => {
+              const custom = extensions.filter((e) => !COMMON_EXTENSIONS.includes(e));
+              onChange(custom);
+            }}
+            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2"
+          >
+            Deselect all
+          </button>
+        </div>
+      )}
+
       {/* Toggle chips for common extensions */}
       {!disabled && (
         <div className="flex flex-wrap gap-1.5">

@@ -143,7 +143,7 @@ export default function TaskDetailView() {
     <div className="flex flex-col h-full">
 
       {/* Header */}
-      <div className="sticky top-0 z-10 bg-background px-6 pt-6 pb-4 border-b border-border shrink-0">
+      <div className="sticky top-0 z-20 bg-background px-6 pt-6 pb-4 border-b border-border shrink-0">
         <button
           onClick={() => navigate(-1)}
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mb-5"
@@ -184,48 +184,66 @@ export default function TaskDetailView() {
           )}
         </div>
 
-        <div className="flex items-center gap-4">
-          <StatusCell
-            value={task.status}
-            onChange={(v) => revise(task.id, { status: v })}
-            isRecurring={!!task.recurrence}
-            onSkip={skipTask}
-          />
-          <PriorityCell
-            value={task.priority}
-            onChange={(v) => revise(task.id, { priority: v })}
-          />
-          <DateCell
-            value={task.actionDate}
-            overdue={overdue}
-            onChange={(v) => revise(task.id, { actionDate: v })}
-          />
-          <DueDateCell
-            value={task.dueDate}
-            pastDue={isPastDue(task)}
-            onChange={(v) => revise(task.id, { dueDate: v })}
-          />
-          <RecurrenceCell
-            value={task.recurrence}
-            onChange={(v) => {
-              // When setting recurrence on a task without a date, auto-set to today
-              if (v && !task.actionDate) {
-                revise(task.id, { recurrence: v, actionDate: getTodayStr() });
-              } else {
-                revise(task.id, { recurrence: v });
-              }
-            }}
-          />
-          <ProjectCell
-            value={task.projectId}
-            projects={projects}
-            onChange={(v) => revise(task.id, { projectId: v })}
-          />
+        <div className="flex items-end gap-4">
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground/30 leading-none">Status</span>
+            <StatusCell
+              value={task.status}
+              onChange={(v) => revise(task.id, { status: v })}
+              isRecurring={!!task.recurrence}
+              onSkip={skipTask}
+            />
+          </div>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground/30 leading-none">Priority</span>
+            <PriorityCell
+              value={task.priority}
+              onChange={(v) => revise(task.id, { priority: v })}
+            />
+          </div>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground/30 leading-none">Date</span>
+            <DateCell
+              value={task.actionDate}
+              overdue={overdue}
+              onChange={(v) => revise(task.id, { actionDate: v })}
+            />
+          </div>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground/30 leading-none">Due</span>
+            <DueDateCell
+              value={task.dueDate}
+              pastDue={isPastDue(task)}
+              onChange={(v) => revise(task.id, { dueDate: v })}
+            />
+          </div>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground/30 leading-none">Repeat</span>
+            <RecurrenceCell
+              value={task.recurrence}
+              onChange={(v) => {
+                // When setting recurrence on a task without a date, auto-set to today
+                if (v && !task.actionDate) {
+                  revise(task.id, { recurrence: v, actionDate: getTodayStr() });
+                } else {
+                  revise(task.id, { recurrence: v });
+                }
+              }}
+            />
+          </div>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground/30 leading-none">Project</span>
+            <ProjectCell
+              value={task.projectId}
+              projects={projects}
+              onChange={(v) => revise(task.id, { projectId: v })}
+            />
+          </div>
         </div>
       </div>
 
       {/* Body editor - full width, fills remaining height */}
-      <div className="flex flex-col flex-1 min-h-0 px-6 pb-4">
+      <div className="flex flex-col flex-1 min-h-0 px-6 pt-4 pb-4">
         <TaskBodyEditor
           initialContent={task.body ?? ''}
           onChange={(markdown) => revise(task.id, { body: markdown })}

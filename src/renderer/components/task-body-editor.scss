@@ -37,9 +37,6 @@
    * separators are only visible when they sit between two non-empty groups.
    * Any orphaned separator at a row boundary simply collapses to 0 width.
    */
-  .tiptap-separator {
-    align-self: stretch;
-  }
   /* A separator that directly follows another separator (row-break edge case) */
   .tiptap-separator + .tiptap-separator {
     display: none;
@@ -53,13 +50,19 @@
   min-height: 0;
 }
 
+/* Override paragraph font-size from tiptap internals (paragraph-node.scss sets 1rem on p:not(:first-child)) */
+.task-body-editor-shell .task-body-content .tiptap.ProseMirror p {
+  font-size: 0.9rem;
+}
+
 /* The ProseMirror editable */
 .task-body-content .tiptap.ProseMirror {
   min-height: 200px;
   padding: 1rem 1.25rem 2rem;
   outline: none;
-  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
-  font-size: 0.875rem;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+  font-weight: 300;
+  font-size: 0.9rem;
   line-height: 1.6;
   color: var(--tt-theme-text, var(--color-foreground));
 }

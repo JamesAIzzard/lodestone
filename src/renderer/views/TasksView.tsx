@@ -813,6 +813,12 @@ export default function TasksView() {
       const aDate = a.actionDate ?? '9999-99-99';
       const bDate = b.actionDate ?? '9999-99-99';
       if (aDate !== bDate) return aDate.localeCompare(bDate);
+      // Within same date: manual position first, then priority fallback
+      const aPos = a.dayOrderPosition;
+      const bPos = b.dayOrderPosition;
+      if (aPos != null && bPos != null) return aPos - bPos;
+      if (aPos != null) return -1;
+      if (bPos != null) return 1;
       return (b.priority ?? 0) - (a.priority ?? 0);
     });
 

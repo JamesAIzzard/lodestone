@@ -26,6 +26,7 @@ export interface MemoryRecord {
   status: MemoryStatusValue | null;
   completedOn: string | null;   // ISO 8601 date — implies completed when set
   projectId: number | null;      // FK to projects table
+  dayOrderPosition: number | null; // manual within-day sort position (from day_order table)
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;      // ISO 8601 datetime — set on soft delete, null for active

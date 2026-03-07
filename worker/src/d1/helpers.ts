@@ -23,6 +23,7 @@ export function rowToRecord(row: Record<string, unknown>): MemoryRecord {
     status: (row.status as MemoryRecord['status']) ?? null,
     completedOn: (row.completed_on as string | null) ?? null,
     projectId: (row.project_id as number | null) ?? null,
+    dayOrderPosition: (row.day_order_position as number | null) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     deletedAt: (row.deleted_at as string | null) ?? null,

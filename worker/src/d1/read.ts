@@ -193,15 +193,17 @@ export async function getActiveUpcomingMemories(
 }
 
 /** Return all non-deleted tasks ordered by action_date ASC (nulls last),
- *  then priority DESC. Used by the Tasks GUI.
+ *  then manual day_order position (if set), then priority DESC fallback.
+ *  Used by the Tasks GUI.
  *  Only includes memories that have an explicit status (excludes pure knowledge memories). */
 export async function getAllTasks(
   db: D1Database,
   opts: { includeCompleted: boolean; includeCancelled: boolean; projectId?: number },
   limit: number,
 ): Promise<MemoryRecord[]> {
-  let query = `SELECT m.* FROM memories m
+  let query = `SELECT m.*, do_pos.position AS day_order_position FROM memories m
      LEFT JOIN projects p ON m.project_id = p.id
+     LEFT JOIN day_order do_pos ON do_pos.memory_id = m.id AND do_pos.action_date = m.action_date
      WHERE m.deleted_at IS NULL
        AND m.status IS NOT NULL
        AND (m.project_id IS NULL OR p.archived_at IS NULL)`;
@@ -219,6 +221,8 @@ export async function getAllTasks(
   query += ` ORDER BY
        CASE WHEN m.action_date IS NULL THEN 1 ELSE 0 END,
        m.action_date ASC,
+       CASE WHEN do_pos.position IS NOT NULL THEN 0 ELSE 1 END,
+       do_pos.position ASC,
        COALESCE(m.priority, 0) DESC
      LIMIT ?`;
   binds.push(limit);

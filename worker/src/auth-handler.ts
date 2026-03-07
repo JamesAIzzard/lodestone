@@ -14,7 +14,8 @@ import type { AuthRequest } from '@cloudflare/workers-oauth-provider';
 import { authenticate, type Env } from './auth';
 import { D1MemoryService } from './d1-memory-service';
 import { addToInvertedIndex, updateMemoryCorpusStats } from './d1/inverted-index';
-import { getAllTasks } from './d1/read';
+import { getAllTasks, getMemory } from './d1/read';
+import { upsertDayOrder, deleteDayOrder, rebalanceDayOrder } from './d1/write';
 import { embedDocument } from './embedding';
 import type { MemoryStatusValue, PriorityLevel } from './shared/types';
 
@@ -203,6 +204,49 @@ export async function handleDefaultRequest(
     });
   }
 
+  // Upsert day order: PUT /tasks/:id/day-order
+  const dayOrderMatch = pathname.match(/^\/tasks\/(\d+)\/day-order$/);
+  if (dayOrderMatch && request.method === 'PUT') {
+    const id = parseInt(dayOrderMatch[1], 10);
+    const body = (await request.json()) as { actionDate: string; position: number };
+    if (!body.actionDate || typeof body.position !== 'number') {
+      return new Response(JSON.stringify({ error: 'actionDate and position are required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    await upsertDayOrder(env.DB, id, body.actionDate, body.position);
+    // Auto-rebalance if position gap is too small
+    if (body.position !== Math.round(body.position)) {
+      const { results } = await env.DB.prepare(
+        `SELECT position FROM day_order WHERE action_date = ? ORDER BY position ASC`,
+      ).bind(body.actionDate).all();
+      const positions = results.map((r) => (r as Record<string, unknown>).position as number);
+      let needsRebalance = false;
+      for (let i = 1; i < positions.length; i++) {
+        if (positions[i] - positions[i - 1] < 0.001) {
+          needsRebalance = true;
+          break;
+        }
+      }
+      if (needsRebalance) {
+        await rebalanceDayOrder(env.DB, body.actionDate);
+      }
+    }
+    return new Response(JSON.stringify({ success: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Delete day order: DELETE /tasks/:id/day-order
+  if (dayOrderMatch && request.method === 'DELETE') {
+    const id = parseInt(dayOrderMatch[1], 10);
+    await deleteDayOrder(env.DB, id);
+    return new Response(JSON.stringify({ success: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   // Revise task: PATCH /tasks/:id
   const taskPatchMatch = pathname.match(/^\/tasks\/(\d+)$/);
   if (taskPatchMatch && request.method === 'PATCH') {
@@ -217,6 +261,13 @@ export async function handleDefaultRequest(
       topic?: string;
       projectId?: number | null;
     };
+    // When actionDate changes, clean up the old day_order entry
+    if (payload.actionDate !== undefined) {
+      const current = await getMemory(env.DB, id);
+      if (current?.actionDate && current.actionDate !== payload.actionDate) {
+        await deleteDayOrder(env.DB, id, current.actionDate);
+      }
+    }
     const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     const result = await memory.revise({
       id,

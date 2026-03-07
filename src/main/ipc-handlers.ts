@@ -412,6 +412,39 @@ export function registerIpcHandlers(ctx: AppContext): void {
     }
   });
 
+  ipcMain.handle('tasks:update-day-order', async (_event, taskId: number, actionDate: string, position: number): Promise<{ success: boolean; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${taskId}/day-order`, {
+        method: 'PUT',
+        headers: getCloudHeaders(ctx),
+        body: JSON.stringify({ actionDate, position }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('tasks:delete-day-order', async (_event, taskId: number): Promise<{ success: boolean; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${taskId}/day-order`, {
+        method: 'DELETE',
+        headers: getCloudHeaders(ctx),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
   // ── Projects ─────────────────────────────────────────────────────────
 
   ipcMain.handle('projects:list', async (_event, opts?: { includeArchived?: boolean }): Promise<{ success: boolean; projects: unknown[]; error?: string }> => {

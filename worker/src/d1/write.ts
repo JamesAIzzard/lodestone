@@ -164,6 +164,65 @@ export async function deleteMemory(db: D1Database, id: number, reason?: string, 
   }
 }
 
+// ── Day order writes ──────────────────────────────────────────────────────────
+
+/** Upsert a manual position for a task within a specific date. */
+export async function upsertDayOrder(
+  db: D1Database,
+  memoryId: number,
+  actionDate: string,
+  position: number,
+): Promise<void> {
+  await db.prepare(
+    `INSERT INTO day_order (memory_id, action_date, position)
+     VALUES (?, ?, ?)
+     ON CONFLICT (memory_id, action_date)
+     DO UPDATE SET position = excluded.position,
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
+  ).bind(memoryId, actionDate, position).run();
+}
+
+/** Remove day_order entry for a task. If actionDate is provided, only removes
+ *  that specific date entry; otherwise removes all entries for the task. */
+export async function deleteDayOrder(
+  db: D1Database,
+  memoryId: number,
+  actionDate?: string,
+): Promise<void> {
+  if (actionDate) {
+    await db.prepare(
+      `DELETE FROM day_order WHERE memory_id = ? AND action_date = ?`,
+    ).bind(memoryId, actionDate).run();
+  } else {
+    await db.prepare(
+      `DELETE FROM day_order WHERE memory_id = ?`,
+    ).bind(memoryId).run();
+  }
+}
+
+/** Rebalance positions for a given date to clean integer values (1.0, 2.0, ...).
+ *  Called when fractional precision gets too small (gap < 0.001). */
+export async function rebalanceDayOrder(
+  db: D1Database,
+  actionDate: string,
+): Promise<void> {
+  const { results } = await db.prepare(
+    `SELECT memory_id FROM day_order
+     WHERE action_date = ?
+     ORDER BY position ASC`,
+  ).bind(actionDate).all();
+
+  if (results.length === 0) return;
+
+  const stmts = results.map((row, i) =>
+    db.prepare(
+      `UPDATE day_order SET position = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE memory_id = ? AND action_date = ?`,
+    ).bind(i + 1, (row as Record<string, unknown>).memory_id, actionDate),
+  );
+  await db.batch(stmts);
+}
+
 // ── Project writes ────────────────────────────────────────────────────────────
 
 /** Create a new project. Returns the new project's id. */

@@ -111,6 +111,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('tasks:create', topic, projectId),
   deleteTask: (id: number): Promise<unknown> =>
     ipcRenderer.invoke('tasks:delete', id),
+  updateDayOrder: (taskId: number, actionDate: string, position: number): Promise<unknown> =>
+    ipcRenderer.invoke('tasks:update-day-order', taskId, actionDate, position),
+  deleteDayOrder: (taskId: number): Promise<unknown> =>
+    ipcRenderer.invoke('tasks:delete-day-order', taskId),
 
   // Projects
   listProjects: (opts?: { includeArchived?: boolean }): Promise<unknown> =>

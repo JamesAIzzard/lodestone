@@ -1300,13 +1300,6 @@ export default function TasksView() {
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-lg font-semibold text-foreground">{subView === 'projects' ? 'Projects' : 'Tasks'}</h1>
           <div className="flex items-center gap-3">
-            {subView === 'tasks' && (
-              <ActionButton
-                icon={<Plus className="h-3.5 w-3.5" />}
-                label="New task"
-                onClick={() => { setIsCreating(true); setNewTaskTopic(''); setInsertAt(null); }}
-              />
-            )}
             {subView === 'projects' && (
               <ActionButton
                 icon={<Plus className="h-3.5 w-3.5" />}

@@ -159,6 +159,7 @@ export function TaskBodyEditor({
     <EditorContext.Provider value={{ editor }}>
       {/* Toolbar */}
       <Toolbar className="task-body-toolbar">
+        {/* History */}
         <ToolbarGroup>
           <UndoRedoButton action="undo" />
           <UndoRedoButton action="redo" />
@@ -166,11 +167,33 @@ export function TaskBodyEditor({
 
         <ToolbarSeparator />
 
+        {/* Block structure */}
         <ToolbarGroup>
           <HeadingDropdownMenu levels={[1, 2, 3]} />
           <ListDropdownMenu types={['bulletList', 'orderedList', 'taskList']} />
           <BlockquoteButton />
           <CodeBlockButton />
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
+        {/* Inline marks */}
+        <ToolbarGroup>
+          <MarkButton type="bold" />
+          <MarkButton type="italic" />
+          <MarkButton type="strike" />
+          <MarkButton type="code" />
+          <MarkButton type="underline" />
+          <MarkButton type="superscript" />
+          <MarkButton type="subscript" />
+          <ColorHighlightPopover />
+          <LinkPopover />
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
+        {/* Table */}
+        <ToolbarGroup>
           <TableButton />
           <AddColumnButton />
           <RemoveColumnButton />
@@ -185,25 +208,7 @@ export function TaskBodyEditor({
 
         <ToolbarSeparator />
 
-        <ToolbarGroup>
-          <MarkButton type="bold" />
-          <MarkButton type="italic" />
-          <MarkButton type="strike" />
-          <MarkButton type="code" />
-          <MarkButton type="underline" />
-          <ColorHighlightPopover />
-          <LinkPopover />
-        </ToolbarGroup>
-
-        <ToolbarSeparator />
-
-        <ToolbarGroup>
-          <MarkButton type="superscript" />
-          <MarkButton type="subscript" />
-        </ToolbarGroup>
-
-        <ToolbarSeparator />
-
+        {/* Math */}
         <ToolbarGroup>
           <InlineMathButton />
           <BlockMathButton />
@@ -211,6 +216,7 @@ export function TaskBodyEditor({
 
         <ToolbarSeparator />
 
+        {/* Alignment */}
         <ToolbarGroup>
           <TextAlignButton align="left" />
           <TextAlignButton align="center" />

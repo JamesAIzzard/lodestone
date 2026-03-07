@@ -446,6 +446,19 @@ function ProjectSearchFilter({
   );
 }
 
+// ── Session-persistent filter helpers ────────────────────────────────────────
+
+function readSession<T>(key: string, fallback: T): T {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw !== null ? (JSON.parse(raw) as T) : fallback;
+  } catch { return fallback; }
+}
+
+function writeSession<T>(key: string, value: T): void {
+  try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+}
+
 // ── Main view ─────────────────────────────────────────────────────────────────
 
 export default function TasksView() {
@@ -453,8 +466,8 @@ export default function TasksView() {
   const [tasks, setTasks] = useState<MemoryRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showCompleted, setShowCompleted] = useState(false);
-  const [showCancelled, setShowCancelled] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(() => readSession('tasks.showCompleted', false));
+  const [showCancelled, setShowCancelled] = useState(() => readSession('tasks.showCancelled', false));
   const [editingTopicId, setEditingTopicId] = useState<number | null>(null);
   const [editingTopicValue, setEditingTopicValue] = useState('');
   const [isCreating, setIsCreating] = useState(false);
@@ -467,17 +480,17 @@ export default function TasksView() {
   showCancelledRef.current = showCancelled;
   const [recentlyCompleted, setRecentlyCompleted] = useState<Set<number>>(new Set());
   const completionTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(() => readSession('tasks.searchQuery', ''));
   const [searchResults, setSearchResults] = useState<(MemoryRecord & { _score?: number })[] | null>(null);
   const [searching, setSearching] = useState(false);
   const searchDebounce = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const [datePreset, setDatePreset] = useState<DatePreset>('all');
-  const [customFrom, setCustomFrom] = useState<string | null>(null);
-  const [customTo, setCustomTo] = useState<string | null>(null);
+  const [datePreset, setDatePreset] = useState<DatePreset>(() => readSession('tasks.datePreset', 'all'));
+  const [customFrom, setCustomFrom] = useState<string | null>(() => readSession('tasks.customFrom', null));
+  const [customTo, setCustomTo] = useState<string | null>(() => readSession('tasks.customTo', null));
   const [subView, setSubView] = useState<SubView>('tasks');
   const [newProjectTrigger, setNewProjectTrigger] = useState(0);
   const [projects, setProjects] = useState<ProjectWithCounts[]>([]);
-  const [selectedProjectIds, setSelectedProjectIds] = useState<number[]>([]);
+  const [selectedProjectIds, setSelectedProjectIds] = useState<number[]>(() => readSession('tasks.selectedProjectIds', []));
 
   const loadProjects = useCallback(async () => {
     try {
@@ -544,6 +557,15 @@ export default function TasksView() {
     const timers = completionTimers.current;
     return () => { for (const t of timers.values()) clearTimeout(t); };
   }, []);
+
+  // Persist filter state across navigation
+  useEffect(() => { writeSession('tasks.showCompleted', showCompleted); }, [showCompleted]);
+  useEffect(() => { writeSession('tasks.showCancelled', showCancelled); }, [showCancelled]);
+  useEffect(() => { writeSession('tasks.searchQuery', searchQuery); }, [searchQuery]);
+  useEffect(() => { writeSession('tasks.datePreset', datePreset); }, [datePreset]);
+  useEffect(() => { writeSession('tasks.customFrom', customFrom); }, [customFrom]);
+  useEffect(() => { writeSession('tasks.customTo', customTo); }, [customTo]);
+  useEffect(() => { writeSession('tasks.selectedProjectIds', selectedProjectIds); }, [selectedProjectIds]);
 
   // Optimistically update a task in both the main list and search results
   function optimisticUpdate(id: number, updater: (t: MemoryRecord) => MemoryRecord) {
@@ -690,8 +712,17 @@ export default function TasksView() {
     <div>
       {/* Sticky header */}
       <div className="sticky top-0 z-10 bg-background border-b border-border px-6 pt-6 pb-4">
+        {subView === 'projects' && (
+          <button
+            onClick={() => setSubView('tasks')}
+            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mb-3"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+            Tasks
+          </button>
+        )}
         <div className="flex items-center justify-between mb-4">
-          <h1 className="text-lg font-semibold text-foreground">Tasks</h1>
+          <h1 className="text-lg font-semibold text-foreground">{subView === 'projects' ? 'Projects' : 'Tasks'}</h1>
           <div className="flex items-center gap-3">
             {subView === 'tasks' && overdueCount > 0 && (
               <span className="inline-flex items-center text-xs font-medium text-amber-400">

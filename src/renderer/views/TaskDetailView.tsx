@@ -121,11 +121,11 @@ export default function TaskDetailView() {
     return (
       <div className="px-6 py-8">
         <button
-          onClick={() => navigate('/tasks')}
+          onClick={() => navigate(-1)}
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mb-4"
         >
           <ChevronLeft className="h-3.5 w-3.5" />
-          Tasks
+          Back
         </button>
         <div className="flex items-center gap-2 text-sm text-red-400">
           <AlertCircle className="h-4 w-4 shrink-0" />
@@ -141,13 +141,13 @@ export default function TaskDetailView() {
     <div className="flex flex-col h-full">
 
       {/* Header */}
-      <div className="px-6 pt-6 pb-4 shrink-0">
+      <div className="sticky top-0 z-10 bg-background px-6 pt-6 pb-4 border-b border-border shrink-0">
         <button
-          onClick={() => navigate('/tasks')}
+          onClick={() => navigate(-1)}
           className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mb-5"
         >
           <ChevronLeft className="h-3.5 w-3.5" />
-          Tasks
+          Back
         </button>
 
         <div className="text-[11px] tabular-nums text-muted-foreground/30 mb-2 select-all">

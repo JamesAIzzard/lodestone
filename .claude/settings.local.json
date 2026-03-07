@@ -42,7 +42,8 @@
       "Bash(npx wrangler d1 create lodestone-memory-dev)",
       "Bash(npx wrangler vectorize create lodestone-memory-vectors-dev --dimensions=768 --metric=cosine)",
       "mcp__lodestone-files__lodestone_status",
-      "mcp__lodestone-files-dev__lodestone_status"
+      "mcp__lodestone-files-dev__lodestone_status",
+      "mcp__lodestone-files-dev__lodestone_guide"
     ]
   },
   "enabledMcpjsonServers": [

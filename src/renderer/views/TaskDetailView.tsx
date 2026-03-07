@@ -77,8 +77,14 @@ export default function TaskDetailView() {
       setSaveError(result?.error ?? 'Save failed');
       fetchTask();
     } else if (result.nextActionDate) {
-      // Recurring task was auto-advanced — reload to show updated state
-      fetchTask();
+      // Recurring task was auto-advanced — apply new state locally
+      setTask(prev => prev ? {
+        ...prev,
+        status: 'open' as typeof prev.status,
+        completedOn: null,
+        actionDate: result.nextActionDate!,
+        updatedAt: new Date().toISOString(),
+      } : prev);
     }
   }
 

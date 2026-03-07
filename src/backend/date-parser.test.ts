@@ -164,9 +164,9 @@ describe('advanceRecurrence', () => {
     expect(advanceRecurrence('2026-03-01', 'daily', REF)).toBe('2026-03-04');
   });
 
-  it('keeps future dates unchanged', () => {
-    // March 10 is in the future → no change
-    expect(advanceRecurrence('2026-03-10', 'daily', REF)).toBe('2026-03-10');
+  it('always advances future dates by at least one step', () => {
+    // March 10 is in the future → still advances one step to March 11
+    expect(advanceRecurrence('2026-03-10', 'daily', REF)).toBe('2026-03-11');
   });
 
   it('advances weekly', () => {
@@ -194,9 +194,8 @@ describe('advanceRecurrence', () => {
   it('advances "every weekday" skipping weekends', () => {
     // March 3 (Tue) is past → advance: Wed Mar 4 (today, >= today) ✓
     expect(advanceRecurrence('2026-03-03', 'every weekday', REF)).toBe('2026-03-04');
-    // Friday March 6 → advance from Friday skips Sat/Sun → Monday March 9
-    // But Mar 6 is in the future so no advance needed
-    expect(advanceRecurrence('2026-03-06', 'every weekday', REF)).toBe('2026-03-06');
+    // Friday March 6 → always advances at least one step → skips weekend → Monday March 9
+    expect(advanceRecurrence('2026-03-06', 'every weekday', REF)).toBe('2026-03-09');
   });
 
   it('advances "every weekday" from Friday past weekend', () => {

@@ -350,11 +350,14 @@ export function registerIpcHandlers(ctx: AppContext): void {
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) {
-        return { success: false, error: `${res.status}: ${await res.text()}` };
+        const errBody = await res.text();
+        console.error(`[ipc] tasks:revise PATCH failed for task ${id}: ${res.status} — ${errBody}`);
+        return { success: false, error: `${res.status}: ${errBody}` };
       }
       const data = await res.json() as { success: boolean; completionRecordId?: number; nextActionDate?: string };
       return data;
     } catch (err) {
+      console.error(`[ipc] tasks:revise error for task ${id}:`, err);
       return { success: false, error: String(err) };
     }
   });

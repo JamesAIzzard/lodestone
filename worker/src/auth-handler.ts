@@ -251,38 +251,46 @@ export async function handleDefaultRequest(
   const taskPatchMatch = pathname.match(/^\/tasks\/(\d+)$/);
   if (taskPatchMatch && request.method === 'PATCH') {
     const id = parseInt(taskPatchMatch[1], 10);
-    const payload = (await request.json()) as {
-      body?: string;
-      status?: MemoryStatusValue | null;
-      priority?: PriorityLevel | null;
-      actionDate?: string | null;
-      dueDate?: string | null;
-      recurrence?: string | null;
-      topic?: string;
-      projectId?: number | null;
-    };
-    // When actionDate changes, clean up the old day_order entry
-    if (payload.actionDate !== undefined) {
-      const current = await getMemory(env.DB, id);
-      if (current?.actionDate && current.actionDate !== payload.actionDate) {
-        await deleteDayOrder(env.DB, id, current.actionDate);
+    try {
+      const payload = (await request.json()) as {
+        body?: string;
+        status?: MemoryStatusValue | null;
+        priority?: PriorityLevel | null;
+        actionDate?: string | null;
+        dueDate?: string | null;
+        recurrence?: string | null;
+        topic?: string;
+        projectId?: number | null;
+      };
+      // When actionDate changes, clean up the old day_order entry
+      if (payload.actionDate !== undefined) {
+        const current = await getMemory(env.DB, id);
+        if (current?.actionDate && current.actionDate !== payload.actionDate) {
+          await deleteDayOrder(env.DB, id, current.actionDate);
+        }
       }
+      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+      const result = await memory.revise({
+        id,
+        ...(payload.body !== undefined && { body: payload.body }),
+        ...(payload.status !== undefined && { status: payload.status }),
+        ...(payload.priority !== undefined && { priority: payload.priority }),
+        ...(payload.actionDate !== undefined && { actionDate: payload.actionDate }),
+        ...(payload.dueDate !== undefined && { dueDate: payload.dueDate }),
+        ...(payload.recurrence !== undefined && { recurrence: payload.recurrence }),
+        ...(payload.topic !== undefined && { topic: payload.topic }),
+        ...(payload.projectId !== undefined && { projectId: payload.projectId }),
+      });
+      return new Response(JSON.stringify({ success: true, ...result }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (err) {
+      console.error(`[auth-handler] PATCH /tasks/${id} failed:`, err);
+      return new Response(JSON.stringify({ success: false, error: String(err), stack: (err as Error).stack }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
-    const result = await memory.revise({
-      id,
-      ...(payload.body !== undefined && { body: payload.body }),
-      ...(payload.status !== undefined && { status: payload.status }),
-      ...(payload.priority !== undefined && { priority: payload.priority }),
-      ...(payload.actionDate !== undefined && { actionDate: payload.actionDate }),
-      ...(payload.dueDate !== undefined && { dueDate: payload.dueDate }),
-      ...(payload.recurrence !== undefined && { recurrence: payload.recurrence }),
-      ...(payload.topic !== undefined && { topic: payload.topic }),
-      ...(payload.projectId !== undefined && { projectId: payload.projectId }),
-    });
-    return new Response(JSON.stringify({ success: true, ...result }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
   }
 
   // Delete task: DELETE /tasks/:id

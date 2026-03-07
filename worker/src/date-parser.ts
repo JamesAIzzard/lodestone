@@ -446,6 +446,10 @@ export function advanceRecurrence(actionDate: string, rule: string, now?: Date):
   const [y, m, d] = actionDate.split('-').map(Number);
   let current = new Date(y, m - 1, d);
 
+  // Always advance at least one step — this function is called on completion/skip,
+  // so the intent is always to move to the next occurrence.
+  current = advanceOneStep(current, rule);
+
   // Safety: cap iterations to prevent infinite loops on malformed rules
   const MAX_ITERATIONS = 10000;
   let i = 0;

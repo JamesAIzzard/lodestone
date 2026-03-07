@@ -966,10 +966,23 @@ export default function TasksView() {
 
     const result = await window.electronAPI?.reviseTask(id, fields as Record<string, unknown>);
     if (!result?.success) {
+      console.error('[TasksView] revise failed for task', id, '— fields:', fields, '— error:', result?.error);
       loadTasks(reloadOpts());
     } else if (result.nextActionDate) {
-      // Recurring task was auto-advanced — reload to show updated date/status
-      loadTasks(reloadOpts());
+      // Recurring task was auto-advanced — apply the new state locally instead
+      // of reloading (which would overwrite the optimistic update and make it
+      // look like the completion "didn't work").
+      // Cancel the grace period since the task is open again (not disappearing).
+      const existing = completionTimers.current.get(id);
+      if (existing) { clearTimeout(existing); completionTimers.current.delete(id); }
+      setRecentlyCompleted(prev => { const next = new Set(prev); next.delete(id); return next; });
+      optimisticUpdate(id, t => ({
+        ...t,
+        status: 'open' as MemoryStatusValue,
+        completedOn: null,
+        actionDate: result.nextActionDate!,
+        updatedAt: new Date().toISOString(),
+      }));
     }
     // If projectId changed, refresh project counts
     if (fields.projectId !== undefined) loadProjects();

@@ -19,6 +19,8 @@ import { Superscript } from '@tiptap/extension-superscript';
 import { Typography } from '@tiptap/extension-typography';
 import { Selection } from '@tiptap/extensions';
 import { Markdown } from 'tiptap-markdown';
+import { Mathematics } from '@tiptap/extension-mathematics';
+import 'katex/dist/katex.css';
 import DragHandle from '@tiptap/extension-drag-handle-react';
 import { GripVertical } from 'lucide-react';
 
@@ -37,6 +39,7 @@ import { LinkPopover } from '@/components/tiptap-ui/link-popover';
 import { MarkButton } from '@/components/tiptap-ui/mark-button';
 import { TextAlignButton } from '@/components/tiptap-ui/text-align-button';
 import { UndoRedoButton } from '@/components/tiptap-ui/undo-redo-button';
+import { InlineMathButton, BlockMathButton } from '@/components/tiptap-ui/math-button';
 
 // ── Node styles ────────────────────────────────────────────────────────────
 import '@/components/tiptap-node/blockquote-node/blockquote-node.scss';
@@ -103,6 +106,9 @@ export function TaskBodyEditor({
         transformPastedText: true,
         transformCopiedText: false,
       }),
+      Mathematics.configure({
+        katexOptions: { throwOnError: false },
+      }),
     ],
     content: initialContent,
     editorProps: {
@@ -164,6 +170,13 @@ export function TaskBodyEditor({
         <ToolbarGroup>
           <MarkButton type="superscript" />
           <MarkButton type="subscript" />
+        </ToolbarGroup>
+
+        <ToolbarSeparator />
+
+        <ToolbarGroup>
+          <InlineMathButton />
+          <BlockMathButton />
         </ToolbarGroup>
 
         <ToolbarSeparator />

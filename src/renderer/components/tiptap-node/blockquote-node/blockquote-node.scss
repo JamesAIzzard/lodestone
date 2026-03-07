@@ -13,9 +13,9 @@
   blockquote {
     position: relative;
     padding-left: 1em;
-    padding-top: 0.375em;
-    padding-bottom: 0.375em;
-    margin: 1.5rem 0;
+    padding-top: 0.2em;
+    padding-bottom: 0.2em;
+    margin: 0.5em 0;
 
     p {
       margin-top: 0;
@@ -24,11 +24,10 @@
     &::before,
     &.is-empty::before {
       position: absolute;
-      bottom: 0;
       left: 0;
-      top: 0;
-      height: 100%;
-      width: 0.25em;
+      top: 0.4em;
+      bottom: 0.4em;
+      width: 1.5px;
       background-color: var(--blockquote-bg-color);
       content: "";
       border-radius: 0;

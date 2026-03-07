@@ -12,9 +12,37 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { parseFlexibleDate, parseRecurrence, parseDateRange } from '../date-parser';
-import type { D1MemoryService } from '../d1-memory-service';
+import { type D1MemoryService, levenshtein as levenshteinDistance } from '../d1-memory-service';
 import type { PriorityLevel, MemoryStatusValue } from '../shared/types';
 import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, resolveMemoryId, buildDateContext, buildDatetime } from './formatting';
+
+// ── Shared project-name resolution helper ────────────────────────────────────
+
+/**
+ * Resolve a project name via fuzzy match, returning either the project ID or
+ * a formatted MCP error response with suggestions.
+ */
+async function resolveProjectOrError(
+  memory: D1MemoryService,
+  name: string,
+): Promise<{ id: number } | { error: ReturnType<typeof textResult> }> {
+  const resolved = await memory.resolveProjectName(name);
+  if (resolved.status === 'found') return { id: resolved.id };
+
+  const suggestions = resolved.suggestions
+    .filter(s => s.distance <= Math.max(3, Math.ceil(name.length * 0.4)))
+    .map(s => `  - "${s.name}" (distance: ${s.distance})`)
+    .join('\n');
+  const hint = suggestions
+    ? `Did you mean one of these?\n${suggestions}\n\nUse lodestone_project with action "create" to create a new project, or retry with the correct name.`
+    : 'No similar projects found. Use lodestone_project with action "create" to create one first.';
+  return { error: textResult(`Project "${name}" not found.\n\n${hint}`) };
+}
+
+/** Convenience wrapper to build a text MCP result. */
+function textResult(text: string) {
+  return { content: [{ type: 'text' as const, text }] };
+}
 
 // ── Guide content (lodestone-memory server) ─────────────────────────────────
 
@@ -204,17 +232,8 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
         // Resolve project name to ID (fuzzy match)
         let projectId: number | null = null;
         if (project) {
-          const resolved = await memory.resolveProjectName(project);
-          if (resolved.status === 'not_found') {
-            const suggestions = resolved.suggestions
-              .filter(s => s.distance <= Math.max(3, Math.ceil(project.length * 0.4)))
-              .map(s => `  - "${s.name}" (distance: ${s.distance})`)
-              .join('\n');
-            const hint = suggestions
-              ? `Did you mean one of these?\n${suggestions}\n\nUse lodestone_project with action "create" to create a new project, or retry with the correct name.`
-              : 'No similar projects found. Use lodestone_project with action "create" to create one first.';
-            return { content: [{ type: 'text' as const, text: `Project "${project}" not found.\n\n${hint}` }] };
-          }
+          const resolved = await resolveProjectOrError(memory, project);
+          if ('error' in resolved) return resolved.error;
           projectId = resolved.id;
         }
 
@@ -484,17 +503,8 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
         if (project === null) {
           projectId = null;
         } else if (project !== undefined) {
-          const resolved = await memory.resolveProjectName(project);
-          if (resolved.status === 'not_found') {
-            const suggestions = resolved.suggestions
-              .filter(s => s.distance <= Math.max(3, Math.ceil(project.length * 0.4)))
-              .map(s => `  - "${s.name}" (distance: ${s.distance})`)
-              .join('\n');
-            const hint = suggestions
-              ? `Did you mean one of these?\n${suggestions}\n\nUse lodestone_project with action "create" to create a new project, or retry with the correct name.`
-              : 'No similar projects found. Use lodestone_project with action "create" to create one first.';
-            return { content: [{ type: 'text' as const, text: `Project "${project}" not found.\n\n${hint}` }] };
-          }
+          const resolved = await resolveProjectOrError(memory, project);
+          if ('error' in resolved) return resolved.error;
           projectId = resolved.id;
         }
 
@@ -870,12 +880,13 @@ export function registerProjectTool(server: McpServer, memory: D1MemoryService):
       '  recolor — Change project colour: { name, color }',
       '  merge   — Merge source into target: { source, target } (all source tasks move to target)',
       '  delete  — Delete a project: { name } (tasks become unassigned)',
+      '  search  — Fuzzy search for projects by name: { name } (returns closest matches)',
       '',
       'Available colours: slate, red, orange, amber, emerald, teal, cyan, blue,',
       'indigo, violet, purple, rose, pink. Default: blue.',
     ].join('\n'),
     {
-      action: z.enum(['list', 'create', 'rename', 'recolor', 'merge', 'delete']).describe('Operation to perform'),
+      action: z.enum(['list', 'create', 'rename', 'recolor', 'merge', 'delete', 'search']).describe('Operation to perform'),
       name: z.string().optional().describe('Project name (required for all actions except list)'),
       new_name: z.string().optional().describe('New name for rename action'),
       color: z.string().optional().describe('Colour for create/recolor: slate, red, orange, amber, emerald, teal, cyan, blue, indigo, violet, purple, rose, pink'),
@@ -888,66 +899,105 @@ export function registerProjectTool(server: McpServer, memory: D1MemoryService):
           case 'list': {
             const projects = await memory.getProjectsWithCounts();
             if (projects.length === 0) {
-              return { content: [{ type: 'text' as const, text: 'No projects found.' }] };
+              return textResult('No projects found.');
             }
             const lines: string[] = [`## Projects (${projects.length})`, ''];
             for (const p of projects) {
               const counts = `${p.openCount} open, ${p.completedCount} completed, ${p.totalCount} total`;
               lines.push(`- **${p.name}** (${p.color}) — ${counts}`);
             }
-            return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+            return textResult(lines.join('\n'));
           }
 
           case 'create': {
-            if (!name) return { content: [{ type: 'text' as const, text: 'Error: name is required for create.' }] };
+            if (!name) return textResult('Error: name is required for create.');
+            // Exact match check (case-insensitive via COLLATE NOCASE)
             const existing = await memory.getProjectByName(name);
             if (existing) {
-              return { content: [{ type: 'text' as const, text: `Project "${name}" already exists (id: ${existing.id}).` }] };
+              return textResult(`Project "${name}" already exists (id: ${existing.id}).`);
             }
+            // Create the project
             const id = await memory.createProject(name, color ?? 'blue');
-            return { content: [{ type: 'text' as const, text: `Created project "${name}" (id: ${id}, colour: ${color ?? 'blue'}).` }] };
+            // Fuzzy dedup: non-blocking warning about near-matches
+            const resolved = await memory.resolveProjectName(name);
+            // resolveProjectName will find exact match now (just created), so check
+            // all projects for close names (excluding the one we just created)
+            if (resolved.status === 'found') {
+              const allProjects = await memory.getProjectsWithCounts();
+              const close = allProjects
+                .filter(p => p.id !== id)
+                .map(p => ({ name: p.name, distance: levenshteinDistance(name.toLowerCase(), p.name.toLowerCase()) }))
+                .filter(s => s.distance > 0 && s.distance <= Math.max(2, Math.ceil(name.length * 0.3)))
+                .sort((a, b) => a.distance - b.distance)
+                .slice(0, 3)
+                .map(s => `  - "${s.name}"`)
+                .join('\n');
+              if (close) {
+                return textResult(
+                  `Created project "${name}" (id: ${id}, colour: ${color ?? 'blue'}).\n\n`
+                  + `⚠️ Note: similar projects already exist:\n${close}\n`
+                  + 'Consider merging if this was a typo.',
+                );
+              }
+            }
+            return textResult(`Created project "${name}" (id: ${id}, colour: ${color ?? 'blue'}).`);
           }
 
           case 'rename': {
-            if (!name) return { content: [{ type: 'text' as const, text: 'Error: name is required for rename.' }] };
-            if (!new_name) return { content: [{ type: 'text' as const, text: 'Error: new_name is required for rename.' }] };
-            const proj = await memory.getProjectByName(name);
-            if (!proj) return { content: [{ type: 'text' as const, text: `Error: Project "${name}" not found.` }] };
-            await memory.updateProject(proj.id, { name: new_name });
-            return { content: [{ type: 'text' as const, text: `Renamed project "${name}" to "${new_name}".` }] };
+            if (!name) return textResult('Error: name is required for rename.');
+            if (!new_name) return textResult('Error: new_name is required for rename.');
+            const resolved = await resolveProjectOrError(memory, name);
+            if ('error' in resolved) return resolved.error;
+            await memory.updateProject(resolved.id, { name: new_name });
+            return textResult(`Renamed project "${name}" to "${new_name}".`);
           }
 
           case 'recolor': {
-            if (!name) return { content: [{ type: 'text' as const, text: 'Error: name is required for recolor.' }] };
-            if (!color) return { content: [{ type: 'text' as const, text: 'Error: color is required for recolor.' }] };
-            const proj = await memory.getProjectByName(name);
-            if (!proj) return { content: [{ type: 'text' as const, text: `Error: Project "${name}" not found.` }] };
-            await memory.updateProject(proj.id, { color });
-            return { content: [{ type: 'text' as const, text: `Changed "${name}" colour to ${color}.` }] };
+            if (!name) return textResult('Error: name is required for recolor.');
+            if (!color) return textResult('Error: color is required for recolor.');
+            const resolved = await resolveProjectOrError(memory, name);
+            if ('error' in resolved) return resolved.error;
+            await memory.updateProject(resolved.id, { color });
+            return textResult(`Changed "${name}" colour to ${color}.`);
           }
 
           case 'merge': {
-            if (!source) return { content: [{ type: 'text' as const, text: 'Error: source is required for merge.' }] };
-            if (!target) return { content: [{ type: 'text' as const, text: 'Error: target is required for merge.' }] };
-            const srcProj = await memory.getProjectByName(source);
-            if (!srcProj) return { content: [{ type: 'text' as const, text: `Error: Source project "${source}" not found.` }] };
-            const tgtProj = await memory.getProjectByName(target);
-            if (!tgtProj) return { content: [{ type: 'text' as const, text: `Error: Target project "${target}" not found.` }] };
-            const reassigned = await memory.mergeProjects(srcProj.id, tgtProj.id);
-            return { content: [{ type: 'text' as const, text: `Merged "${source}" into "${target}". ${reassigned} task${reassigned === 1 ? '' : 's'} reassigned. Source project deleted.` }] };
+            if (!source) return textResult('Error: source is required for merge.');
+            if (!target) return textResult('Error: target is required for merge.');
+            const srcResolved = await resolveProjectOrError(memory, source);
+            if ('error' in srcResolved) return srcResolved.error;
+            const tgtResolved = await resolveProjectOrError(memory, target);
+            if ('error' in tgtResolved) return tgtResolved.error;
+            const reassigned = await memory.mergeProjects(srcResolved.id, tgtResolved.id);
+            return textResult(`Merged "${source}" into "${target}". ${reassigned} task${reassigned === 1 ? '' : 's'} reassigned. Source project deleted.`);
           }
 
           case 'delete': {
-            if (!name) return { content: [{ type: 'text' as const, text: 'Error: name is required for delete.' }] };
-            const proj = await memory.getProjectByName(name);
-            if (!proj) return { content: [{ type: 'text' as const, text: `Error: Project "${name}" not found.` }] };
-            await memory.deleteProject(proj.id);
-            return { content: [{ type: 'text' as const, text: `Deleted project "${name}". Tasks in this project are now unassigned.` }] };
+            if (!name) return textResult('Error: name is required for delete.');
+            const resolved = await resolveProjectOrError(memory, name);
+            if ('error' in resolved) return resolved.error;
+            await memory.deleteProject(resolved.id);
+            return textResult(`Deleted project "${name}". Tasks in this project are now unassigned.`);
+          }
+
+          case 'search': {
+            if (!name) return textResult('Error: name is required for search.');
+            const allProjects = await memory.getProjectsWithCounts();
+            if (allProjects.length === 0) return textResult('No projects found.');
+            const scored = allProjects
+              .map(p => ({ ...p, distance: levenshteinDistance(name.toLowerCase(), p.name.toLowerCase()) }))
+              .sort((a, b) => a.distance - b.distance)
+              .slice(0, 5);
+            const lines = scored.map(p => {
+              const counts = `${p.openCount} open, ${p.completedCount} completed, ${p.totalCount} total`;
+              return `- **${p.name}** (${p.color}, distance: ${p.distance}) — ${counts}`;
+            });
+            return textResult(`## Search results for "${name}"\n\n${lines.join('\n')}`);
           }
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
+        return textResult(`Error: ${message}`);
       }
     },
   );

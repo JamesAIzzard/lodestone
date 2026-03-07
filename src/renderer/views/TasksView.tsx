@@ -18,7 +18,6 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import DragDatePopover, { type PendingCrossDateDrop } from '@/components/DragDatePopover';
 import ActionButton from '@/components/ActionButton';
 import { cn } from '@/lib/utils';
 import {
@@ -77,6 +76,20 @@ function addDays(dateStr: string, n: number): string {
   const d = new Date(dateStr + 'T00:00:00');
   d.setDate(d.getDate() + n);
   return d.toISOString().slice(0, 10);
+}
+
+function daysBetween(a: string, b: string): number {
+  const da = new Date(a + 'T00:00:00');
+  const db = new Date(b + 'T00:00:00');
+  return Math.round(Math.abs(db.getTime() - da.getTime()) / 86400000);
+}
+
+/** Auto-pick a date between two bounds: middle if odd gap, earlier if even or no gap. */
+function pickCrossDate(earlier: string, later: string): string {
+  const diff = daysBetween(earlier, later);
+  if (diff <= 1) return earlier;
+  if (diff % 2 === 0) return addDays(earlier, diff / 2);
+  return earlier;
 }
 
 const DATE_PRESETS: { value: DatePreset; label: string }[] = [
@@ -757,6 +770,42 @@ function SortableTaskRow(props: TaskRowProps) {
   );
 }
 
+// ── Insert zone (hover between rows to insert task) ──────────────────────────
+
+function InsertZone({ onInsert }: { onInsert: (anchorY: number) => void }) {
+  const [visible, setVisible] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const zoneRef = useRef<HTMLDivElement>(null);
+
+  return (
+    <div ref={zoneRef} className="relative" style={{ height: 0 }}>
+      <div
+        className="absolute inset-x-0 -top-[6px] h-3 z-[5]"
+        onMouseEnter={() => { timerRef.current = setTimeout(() => setVisible(true), 150); }}
+        onMouseLeave={() => { clearTimeout(timerRef.current); setVisible(false); }}
+      >
+        <div className={cn(
+          'absolute inset-x-2 top-1/2 -translate-y-1/2 flex items-center gap-1 transition-opacity duration-100',
+          visible ? 'opacity-100' : 'opacity-0 pointer-events-none',
+        )}>
+          <div className="flex-1 h-px bg-primary/30" />
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setVisible(false);
+              onInsert(zoneRef.current?.getBoundingClientRect().top ?? 200);
+            }}
+            className="shrink-0 h-3 w-3 rounded-full bg-primary/15 hover:bg-primary/30 flex items-center justify-center transition-colors"
+          >
+            <Plus className="h-2 w-2 text-primary/60" />
+          </button>
+          <div className="flex-1 h-px bg-primary/30" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Session-persistent filter helpers ────────────────────────────────────────
 
 function readSession<T>(key: string, fallback: T): T {
@@ -1029,7 +1078,14 @@ export default function TasksView() {
   const [activeId, setActiveId] = useState<number | null>(null);
   const activeTask = activeId != null ? displayTasks.find(t => t.id === activeId) ?? null : null;
   const taskIds = useMemo(() => displayTasks.map(t => t.id), [displayTasks]);
-  const [pendingDrop, setPendingDrop] = useState<PendingCrossDateDrop | null>(null);
+  // ── Contextual insertion ──────────────────────────────────────────────
+  const [insertAt, setInsertAt] = useState<{
+    index: number;
+    date: string;
+    position: number;
+    projectId?: number;
+  } | null>(null);
+  const [insertTopic, setInsertTopic] = useState('');
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -1087,94 +1143,131 @@ export default function TasksView() {
       return;
     }
 
-    // Cross-date drop: preview at drop position, show date popover
+    // Cross-date drop: auto-pick target date and apply immediately
     if (!draggedTask.actionDate) return;
     const overIndex = displayTasks.findIndex(t => t.id === overId);
 
     // Determine upper/lower dates around the drop position
     const upperTask = overIndex > 0 ? displayTasks[overIndex - 1] : null;
     const lowerTask = displayTasks[overIndex]; // the task we dropped onto
+    const upperDate = upperTask?.actionDate ?? null;
+    const lowerDate = lowerTask?.actionDate ?? null;
 
-    // Compute insert index within the target date group
-    const targetDate = overTask.actionDate;
-    if (!targetDate) return;
+    // Auto-pick target date from the boundary
+    let targetDate: string;
+    if (upperDate && lowerDate) {
+      targetDate = pickCrossDate(upperDate, lowerDate);
+    } else {
+      targetDate = overTask.actionDate ?? draggedTask.actionDate;
+    }
+
+    // Compute position on the target date
     const targetDateTasks = displayTasks.filter(t => t.actionDate === targetDate && t.id !== draggedId);
-    const insertIndex = targetDateTasks.findIndex(t => t.id === overId);
-    const resolvedInsertIndex = insertIndex === -1 ? targetDateTasks.length : insertIndex;
+    let position: number;
+    if (targetDate === overTask.actionDate && targetDateTasks.length > 0) {
+      // Dropping into an existing date group — insert at the drop position
+      const overIdx = targetDateTasks.findIndex(t => t.id === overId);
+      if (overIdx !== -1) {
+        const overPos = targetDateTasks[overIdx].dayOrderPosition ?? (overIdx + 1);
+        const prevPos = overIdx > 0
+          ? (targetDateTasks[overIdx - 1].dayOrderPosition ?? overIdx)
+          : 0;
+        position = (prevPos + overPos) / 2;
+      } else {
+        position = targetDateTasks.length + 1;
+      }
+    } else {
+      position = targetDateTasks.length > 0
+        ? Math.max(...targetDateTasks.map(t => t.dayOrderPosition ?? 0)) + 1
+        : 1;
+    }
 
-    // Optimistically move the task to the drop position so it stays there visually
-    const previewPosition = resolvedInsertIndex + 0.5; // place it at the drop slot
-    const originalPosition = draggedTask.dayOrderPosition;
+    // Optimistic update
     optimisticUpdate(draggedId, t => ({
       ...t,
       actionDate: targetDate,
-      dayOrderPosition: previewPosition,
-    }));
-
-    // Get the Y position of the over element for popover anchoring
-    // (must read DOM after optimistic update is queued, use a short delay)
-    const overElement = document.querySelector(`[data-task-id="${overId}"]`);
-    const anchorY = overElement ? overElement.getBoundingClientRect().top : 200;
-
-    setPendingDrop({
-      taskId: draggedId,
-      fromDate: draggedTask.actionDate,
-      previewDate: targetDate,
-      originalPosition,
-      upperDate: upperTask?.actionDate ?? null,
-      lowerDate: lowerTask?.actionDate ?? null,
-      insertIndex: resolvedInsertIndex,
-      anchorY,
-    });
-  }
-
-  /** Handle date selection from the cross-date popover. */
-  async function handleCrossDateSelect(date: string) {
-    if (!pendingDrop) return;
-    const { taskId, fromDate } = pendingDrop;
-    setPendingDrop(null);
-
-    if (date === fromDate) {
-      // User picked the original date — revert to original position
-      optimisticUpdate(taskId, t => ({
-        ...t,
-        actionDate: fromDate,
-        dayOrderPosition: pendingDrop.originalPosition,
-      }));
-      return;
-    }
-
-    // Get tasks already on the target date (excluding the moved task)
-    const targetDateTasks = displayTasks.filter(t => t.actionDate === date && t.id !== taskId);
-    const position = targetDateTasks.length + 1;
-
-    // Optimistic update: set final date + position
-    optimisticUpdate(taskId, t => ({
-      ...t,
-      actionDate: date,
       dayOrderPosition: position,
       updatedAt: new Date().toISOString(),
     }));
 
     // Persist: update action date, then set day order on new date
-    const revResult = await window.electronAPI?.reviseTask(taskId, { actionDate: date });
+    const revResult = await window.electronAPI?.reviseTask(draggedId, { actionDate: targetDate });
     if (revResult?.success) {
-      await window.electronAPI?.updateDayOrder(taskId, date, position);
+      await window.electronAPI?.updateDayOrder(draggedId, targetDate, position);
     }
-    // Reload to get server-authoritative state
     loadTasks(reloadOpts());
   }
 
-  /** Cancel cross-date drop — revert task to original position. */
-  function handleCrossDateCancel() {
-    if (!pendingDrop) return;
-    const { taskId, fromDate, originalPosition } = pendingDrop;
-    setPendingDrop(null);
-    optimisticUpdate(taskId, t => ({
-      ...t,
-      actionDate: fromDate,
-      dayOrderPosition: originalPosition,
-    }));
+  // ── Contextual insertion handlers ──────────────────────────────────────
+
+  function handleInsertClick(index: number, anchorY: number) {
+    // Clear conflicting state
+    setIsCreating(false);
+    setNewTaskTopic('');
+
+    const aboveTask = index > 0 ? displayTasks[index - 1] : null;
+    const belowTask = index < displayTasks.length ? displayTasks[index] : null;
+    const aboveDate = aboveTask?.actionDate ?? null;
+    const belowDate = belowTask?.actionDate ?? null;
+    const projectId = selectedProjectIds.length === 1 ? selectedProjectIds[0] : undefined;
+
+    function computePosition(above: MemoryRecord | null, below: MemoryRecord | null): number {
+      const aPos = above?.dayOrderPosition;
+      const bPos = below?.dayOrderPosition;
+      if (aPos != null && bPos != null) return (aPos + bPos) / 2;
+      if (aPos != null) return aPos + 1;
+      if (bPos != null) return Math.max(0, bPos - 1);
+      return 1;
+    }
+
+    if (aboveDate && belowDate && aboveDate === belowDate) {
+      // Same date — use it directly
+      setInsertAt({ index, date: aboveDate, position: computePosition(aboveTask, belowTask), projectId });
+      setInsertTopic('');
+    } else if (!aboveDate && belowDate) {
+      // Top of list
+      setInsertAt({ index, date: belowDate, position: computePosition(null, belowTask), projectId });
+      setInsertTopic('');
+    } else if (aboveDate && !belowDate) {
+      // Bottom of list
+      setInsertAt({ index, date: aboveDate, position: computePosition(aboveTask, null), projectId });
+      setInsertTopic('');
+    } else if (aboveDate && belowDate && aboveDate !== belowDate) {
+      // Cross-date boundary — auto-pick date
+      const date = pickCrossDate(aboveDate, belowDate);
+      const dateTasks = displayTasks.filter(t => t.actionDate === date);
+      const position = dateTasks.length > 0
+        ? Math.max(...dateTasks.map(t => t.dayOrderPosition ?? 0)) + 1
+        : 1;
+      setInsertAt({ index, date, position, projectId });
+      setInsertTopic('');
+    } else {
+      // No tasks
+      setInsertAt({ index, date: getTodayStr(), position: 1, projectId });
+      setInsertTopic('');
+    }
+  }
+
+  async function commitInsert() {
+    if (!insertAt) return;
+    const trimmed = insertTopic.trim();
+    if (!trimmed) { setInsertAt(null); return; }
+    const { date, position, projectId } = insertAt;
+    setInsertAt(null);
+    setInsertTopic('');
+    const key = ++pendingKeyRef.current;
+    setPendingCreates(prev => [...prev, { key, topic: trimmed }]);
+    const result = await window.electronAPI?.createTask(trimmed, projectId) as { success?: boolean; id?: number } | undefined;
+    if (result?.success && result.id) {
+      const today = getTodayStr();
+      if (date !== today) {
+        await window.electronAPI?.reviseTask(result.id, { actionDate: date });
+      }
+      await window.electronAPI?.updateDayOrder(result.id, date, position);
+    }
+    setPendingCreates(prev => prev.filter(p => p.key !== key));
+    loadTasks(reloadOpts());
+    if (projectId) loadProjects();
   }
 
   return (
@@ -1197,7 +1290,7 @@ export default function TasksView() {
               <ActionButton
                 icon={<Plus className="h-3.5 w-3.5" />}
                 label="New task"
-                onClick={() => { setIsCreating(true); setNewTaskTopic(''); }}
+                onClick={() => { setIsCreating(true); setNewTaskTopic(''); setInsertAt(null); }}
               />
             )}
             {subView === 'projects' && (
@@ -1403,28 +1496,79 @@ export default function TasksView() {
                         shade = shade === 0 ? 1 : 0;
                       }
 
-                      return displayTasks.map((task) => (
-                        <SortableTaskRow
-                          key={task.id}
-                          task={task}
-                          stripe={dateShade.get(task.actionDate ?? '') ?? 0}
-                          overdue={isOverdue(task)}
-                          isEditingTopic={editingTopicId === task.id}
-                          editingTopicValue={editingTopicValue}
-                          isGracePeriod={recentlyCompleted.has(task.id)}
-                          isSearching={isSearching}
-                          projects={projects}
-                          showCompleted={showCompleted}
-                          onNavigate={(id, t) => navigate(`/tasks/${id}`, { state: { task: t } })}
-                          onRevise={(id, fields) => revise(id, fields)}
-                          onDelete={deleteTask}
-                          onSkip={skipTask}
-                          onStartEditTopic={startEditTopic}
-                          onTopicChange={setEditingTopicValue}
-                          onCommitTopicEdit={commitTopicEdit}
-                          onCancelTopicEdit={() => setEditingTopicId(null)}
-                        />
-                      ));
+                      const showInsertZones = !isSearching && !activeId && !insertAt;
+                      const elements: React.ReactNode[] = [];
+
+                      function renderInsertRow() {
+                        if (!insertAt) return null;
+                        return (
+                          <div key="insert-row" className="flex items-center gap-2 py-2.5 -mx-2 px-2 rounded bg-primary/5 border border-primary/20">
+                            <div className="w-4 shrink-0" />
+                            <div className="w-10 shrink-0" />
+                            <div className="w-[72px] shrink-0 text-center">
+                              <span className="text-[11px] text-primary/60">{formatDate(insertAt.date)}</span>
+                            </div>
+                            <div className="w-12 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <input
+                                autoFocus
+                                placeholder="New task…"
+                                value={insertTopic}
+                                onChange={(e) => setInsertTopic(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') commitInsert();
+                                  if (e.key === 'Escape') { setInsertAt(null); setInsertTopic(''); }
+                                }}
+                                onBlur={() => { if (!insertTopic.trim()) { setInsertAt(null); setInsertTopic(''); } }}
+                                className="w-full bg-transparent text-sm text-foreground border-b border-primary/30 focus:outline-none placeholder:text-muted-foreground/30"
+                              />
+                            </div>
+                            <div className="shrink-0 flex items-center gap-1">
+                              <div className="w-24" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      for (let i = 0; i <= displayTasks.length; i++) {
+                        // Insert zone or inline creation row at this position
+                        if (insertAt?.index === i) {
+                          elements.push(renderInsertRow());
+                        } else if (showInsertZones && (i < displayTasks.length || displayTasks.length > 0)) {
+                          elements.push(
+                            <InsertZone key={`iz-${i}`} onInsert={(y) => handleInsertClick(i, y)} />
+                          );
+                        }
+
+                        // Task row
+                        if (i < displayTasks.length) {
+                          const task = displayTasks[i];
+                          elements.push(
+                            <SortableTaskRow
+                              key={task.id}
+                              task={task}
+                              stripe={dateShade.get(task.actionDate ?? '') ?? 0}
+                              overdue={isOverdue(task)}
+                              isEditingTopic={editingTopicId === task.id}
+                              editingTopicValue={editingTopicValue}
+                              isGracePeriod={recentlyCompleted.has(task.id)}
+                              isSearching={isSearching}
+                              projects={projects}
+                              showCompleted={showCompleted}
+                              onNavigate={(id, t) => navigate(`/tasks/${id}`, { state: { task: t } })}
+                              onRevise={(id, fields) => revise(id, fields)}
+                              onDelete={deleteTask}
+                              onSkip={skipTask}
+                              onStartEditTopic={startEditTopic}
+                              onTopicChange={setEditingTopicValue}
+                              onCommitTopicEdit={commitTopicEdit}
+                              onCancelTopicEdit={() => setEditingTopicId(null)}
+                            />
+                          );
+                        }
+                      }
+
+                      return elements;
                     })()}
                   </SortableContext>
                   <DragOverlay>
@@ -1454,14 +1598,6 @@ export default function TasksView() {
                   </DragOverlay>
                 </DndContext>
 
-                {/* Cross-date drop popover */}
-                {pendingDrop && (
-                  <DragDatePopover
-                    pending={pendingDrop}
-                    onSelect={handleCrossDateSelect}
-                    onCancel={handleCrossDateCancel}
-                  />
-                )}
               </div>
             )}
           </>

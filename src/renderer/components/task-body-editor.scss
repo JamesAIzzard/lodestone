@@ -72,6 +72,12 @@
   overflow-y: auto;
   min-height: 0;
   position: relative;
+
+  /* Content gutter — keeps ~45rem content column centred at any width.
+     Shared between ProseMirror padding and drag-handle positioning so the
+     handle sits just inside the gutter and the ProseMirror DOM spans the
+     full container (preventing mouseleave gaps on wide screens). */
+  --content-gutter: max(3.5rem, calc((100% - 45rem) / 2));
 }
 
 /* ── Block drag handle ──────────────────────────────────────────────────── */
@@ -88,8 +94,8 @@
   color: var(--editor-text-muted);
   z-index: 10;
 
-  /* Pin to a fixed gutter column — override floating-ui's per-block left */
-  left: 0.25rem !important;
+  /* Stay just left of the content column — follows the dynamic gutter */
+  left: calc(var(--content-gutter) - 1.5rem) !important;
 
   &:hover {
     opacity: 1 !important;
@@ -105,10 +111,10 @@
 /* ── ProseMirror editable ───────────────────────────────────────────────── */
 .task-body-content .tiptap.ProseMirror {
   min-height: 150px;
-  max-width: 52rem; /* ~A4 feel */
-  margin-left: auto;
-  margin-right: auto;
-  padding: 2rem 3.5rem 3rem;
+  /* Full-width element — dynamic padding centres the content column.
+     This ensures block nodes span the whole container so the drag-handle
+     extension's mouseleave never fires when moving toward the gutter. */
+  padding: 2rem var(--content-gutter) 3rem;
   outline: none;
 
   /* Iosevka — extralight for that crisp, editorial feel */

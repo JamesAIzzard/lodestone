@@ -684,10 +684,11 @@ function TaskRowContent({
           />
         ) : (
           <span
-            onClick={(e) => { e.stopPropagation(); onStartEditTopic(task); }}
+            onClick={(e) => { e.stopPropagation(); onNavigate(task.id, task); }}
+            onDoubleClick={(e) => { e.stopPropagation(); onStartEditTopic(task); }}
             title={task.topic}
             className={cn(
-              'text-sm cursor-text line-clamp-3',
+              'text-sm cursor-pointer line-clamp-3 hover:underline',
               task.status === 'completed'
                 ? 'line-through text-muted-foreground/50'
                 : 'text-foreground',
@@ -1091,6 +1092,8 @@ export default function TasksView() {
     projectId?: number;
   } | null>(null);
   const [insertTopic, setInsertTopic] = useState('');
+  const [insertBlockedFlash, setInsertBlockedFlash] = useState(false);
+  const insertBlockedTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -1215,6 +1218,14 @@ export default function TasksView() {
   // ── Contextual insertion handlers ──────────────────────────────────────
 
   function handleInsertClick(index: number, anchorY: number) {
+    // Block when multiple projects are in the filter — ambiguous which to assign
+    if (selectedProjectIds.length > 1) {
+      clearTimeout(insertBlockedTimer.current);
+      setInsertBlockedFlash(true);
+      insertBlockedTimer.current = setTimeout(() => setInsertBlockedFlash(false), 3000);
+      return;
+    }
+
     // Clear conflicting state
     setIsCreating(false);
     setNewTaskTopic('');
@@ -1372,6 +1383,11 @@ export default function TasksView() {
                 selectedIds={selectedProjectIds}
                 onChange={setSelectedProjectIds}
               />
+              {insertBlockedFlash && (
+                <p className="text-[10px] text-amber-500/80 mt-1 ml-2 animate-in fade-in duration-150">
+                  Filter to one project to add tasks inline
+                </p>
+              )}
             </div>
           </>
         )}

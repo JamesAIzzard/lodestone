@@ -173,12 +173,14 @@ export async function handleDefaultRequest(
       projectId?: number | null;
     };
     const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+    // Tasks always have an action_date — default to today if not provided
+    const today = new Date().toISOString().slice(0, 10);
     const result = await memory.remember({
       topic: body.topic.trim(),
       body: '',
       status: body.status ?? 'open',
       priority: body.priority ?? null,
-      actionDate: body.actionDate ?? null,
+      actionDate: body.actionDate ?? today,
       dueDate: body.dueDate ?? null,
       projectId: body.projectId ?? null,
       force: true,

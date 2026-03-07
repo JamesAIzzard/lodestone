@@ -140,6 +140,12 @@ export class D1MemoryService {
     let { status: memStatus = null } = params;
     let completedOn = rawCompletedOn;
 
+    // Tasks (non-null status) must have an action_date — default to today
+    let effectiveActionDate = actionDate;
+    if (memStatus != null && effectiveActionDate == null) {
+      effectiveActionDate = formatDateISO(new Date());
+    }
+
     // Sync status ↔ completedOn before writing
     const synced = syncStatusAndCompletedOn(memStatus, completedOn);
     memStatus = synced.status as MemoryStatusValue | null;
@@ -168,14 +174,14 @@ export class D1MemoryService {
 
     const id = await insertMemory(
       this.db, topic, body, confidence, contextHint,
-      actionDate, dueDate, recurrence, priority, memStatus, completedOn,
+      effectiveActionDate, dueDate, recurrence, priority, memStatus, completedOn,
       projectId, this.vectorize, embedding,
     );
 
     // Non-blocking warning if action_date is after due_date
     let warning: string | undefined;
-    if (actionDate && dueDate && actionDate > dueDate) {
-      warning = `Warning: action_date (${actionDate}) is after due_date (${dueDate}). The task is scheduled to start after its deadline.`;
+    if (effectiveActionDate && dueDate && effectiveActionDate > dueDate) {
+      warning = `Warning: action_date (${effectiveActionDate}) is after due_date (${dueDate}). The task is scheduled to start after its deadline.`;
     }
 
     return { status: 'created', id, warning };
@@ -233,6 +239,28 @@ export class D1MemoryService {
       const synced = syncStatusAndCompletedOn(updates.status, updates.completedOn);
       updates.status = synced.status as MemoryStatusValue | null | undefined;
       updates.completedOn = synced.completedOn as string | null | undefined;
+    }
+
+    // ── Enforce: tasks must have an action_date ─────────────────────────
+    // If setting status to non-null, ensure action_date is present
+    if (updates.status != null && updates.status !== 'completed' && updates.status !== 'cancelled') {
+      if (updates.actionDate === null) {
+        throw new Error('Cannot clear action_date on a task with an active status. Remove the status first, or set a new action_date.');
+      }
+      if (updates.actionDate === undefined) {
+        // Check if the existing record already has an action_date
+        const current = await getMemory(this.db, id);
+        if (current && !current.actionDate) {
+          updates.actionDate = formatDateISO(new Date());
+        }
+      }
+    }
+    // If clearing action_date, check if the task still has an active status
+    if (updates.actionDate === null && updates.status === undefined) {
+      const current = await getMemory(this.db, id);
+      if (current && current.status != null && current.status !== 'completed' && current.status !== 'cancelled') {
+        throw new Error('Cannot clear action_date on a task with an active status. Remove the status first, or set a new action_date.');
+      }
     }
 
     // ── Recurring completion: auto-advance + create completion record ────

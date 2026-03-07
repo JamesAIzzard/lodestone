@@ -135,8 +135,9 @@ const TASKS_GUIDE = `# Lodestone Tasks & Agenda Guide
 
 ## Creating Tasks
 
-Tasks are memories with an \`action_date\`. Create with \`lodestone_remember\`:
-- \`action_date\` — when the task is due or actionable (flexible: "tomorrow", "next Monday", "2026-03-15")
+Tasks are memories with a \`status\`. Every task must have an \`action_date\` — if omitted, it defaults to today. Create with \`lodestone_remember\`:
+- \`action_date\` — when the task is actionable (flexible: "tomorrow", "next Monday", "2026-03-15"). Defaults to today.
+- \`due_date\` — hard deadline (optional). A warning is emitted if action_date > due_date.
 - \`priority\` — 1=low, 2=medium, 3=high, 4=critical
 - \`status\` — "open" (default on creation)
 - \`recurrence\` — for repeating tasks: "daily", "weekly", "every monday", "every 3 days", etc.
@@ -203,9 +204,10 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
       '  confidence   \u2014 Float 0\u20131. 1.0 = reliable, lower = tentative. Default: 1.0',
       '  context_hint \u2014 Optional short string recording the conversational context',
       '  force        \u2014 Skip dedup check and always create a new memory. Default: false',
-      '  action_date  \u2014 Optional date for when this memory is actionable. Accepts flexible',
+      '  action_date  \u2014 Date for when this memory is actionable. Accepts flexible',
       '                  expressions ("tomorrow", "next Monday", "2026-03-15"). Stored as',
-      '                  ISO 8601 (YYYY-MM-DD).',
+      '                  ISO 8601 (YYYY-MM-DD). Required for tasks (memories with status);',
+      '                  defaults to today if omitted when status is set.',
       '  due_date     \u2014 Optional hard deadline. Accepts flexible expressions.',
       '                  Stored as ISO 8601 (YYYY-MM-DD). A warning is emitted',
       '                  if action_date falls after due_date.',
@@ -508,6 +510,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       '  confidence   \u2014 New confidence value 0\u20131 (optional)',
       '  context_hint \u2014 New context hint (optional, pass null to clear)',
       '  action_date  \u2014 New action date (optional, pass null to clear). Flexible expressions accepted.',
+      '                  Cannot be cleared on tasks with an active status (open, in_progress, blocked).',
       '  due_date     \u2014 New due date (optional, pass null to clear). Flexible expressions accepted.',
       '  recurrence   \u2014 New recurrence rule (optional, pass null to clear).',
       '                  Accepted: daily, weekly, biweekly, monthly, yearly,',

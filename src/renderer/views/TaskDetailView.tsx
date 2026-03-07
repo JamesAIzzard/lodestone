@@ -152,10 +152,6 @@ export default function TaskDetailView() {
           Tasks
         </button>
 
-        <div className="text-[11px] tabular-nums text-muted-foreground/30 mb-2 select-all">
-          m{task.id}
-        </div>
-
         <div className="mb-4 max-w-2xl">
           {isEditingTopic ? (
             <input

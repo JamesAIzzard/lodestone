@@ -652,15 +652,6 @@ function TaskRowContent({
         </div>
       )}
 
-      {/* UID */}
-      <button
-        onClick={(e) => { e.stopPropagation(); onNavigate(task.id, task); }}
-        title="Open detail"
-        className="w-10 shrink-0 h-5 flex items-center justify-end text-[11px] tabular-nums text-muted-foreground/20 group-hover:text-primary/60 hover:!text-primary transition-colors cursor-pointer"
-      >
-        m{task.id}
-      </button>
-
       {/* Action date */}
       <DateCell
         value={task.actionDate}
@@ -1162,6 +1153,8 @@ export default function TasksView() {
     }
 
     // Compute position on the target date
+    const draggedIndex = displayTasks.findIndex(t => t.id === draggedId);
+    const movingDown = draggedIndex < overIndex;
     const targetDateTasks = displayTasks.filter(t => t.actionDate === targetDate && t.id !== draggedId);
     let position: number;
     if (targetDate === overTask.actionDate && targetDateTasks.length > 0) {
@@ -1169,10 +1162,19 @@ export default function TasksView() {
       const overIdx = targetDateTasks.findIndex(t => t.id === overId);
       if (overIdx !== -1) {
         const overPos = targetDateTasks[overIdx].dayOrderPosition ?? (overIdx + 1);
-        const prevPos = overIdx > 0
-          ? (targetDateTasks[overIdx - 1].dayOrderPosition ?? overIdx)
-          : 0;
-        position = (prevPos + overPos) / 2;
+        if (movingDown) {
+          // Dragging down → insert after the over task
+          const nextPos = overIdx < targetDateTasks.length - 1
+            ? (targetDateTasks[overIdx + 1].dayOrderPosition ?? (overIdx + 2))
+            : overPos + 2;
+          position = (overPos + nextPos) / 2;
+        } else {
+          // Dragging up → insert before the over task
+          const prevPos = overIdx > 0
+            ? (targetDateTasks[overIdx - 1].dayOrderPosition ?? overIdx)
+            : 0;
+          position = (prevPos + overPos) / 2;
+        }
       } else {
         position = targetDateTasks.length + 1;
       }
@@ -1418,12 +1420,11 @@ export default function TasksView() {
                 {/* Column header row */}
                 <div className="flex items-center gap-2 pb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/40 font-medium select-none border-b border-border/30">
                   {!isSearching && <div className="w-4 shrink-0" />}
-                  <div className="w-10 shrink-0" />
                   <div className="w-[72px] shrink-0 text-center">Action</div>
                   <div className="w-12 shrink-0 text-center">Status</div>
                   <div className="flex-1 min-w-0">Task</div>
                   <div className="shrink-0 flex items-center gap-1">
-                    <div className="w-24 text-center">Project</div>
+                    <div className="w-32 text-center">Project</div>
                     <div className="w-6 text-center">Pri</div>
                     <div className="w-[72px] text-center">Due</div>
                     <div className="w-[72px] text-center">Repeat</div>
@@ -1434,7 +1435,6 @@ export default function TasksView() {
                 {/* Create row */}
                 {isCreating && (
                   <div className="flex items-center gap-2 py-2.5">
-                    <div className="w-10 shrink-0" />
                     <div className="w-[72px] shrink-0" />
                     <div className="w-12 shrink-0" />
                     <div className="flex-1 min-w-0">
@@ -1452,7 +1452,7 @@ export default function TasksView() {
                       />
                     </div>
                     <div className="shrink-0 flex items-center gap-1">
-                      <div className="w-24" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
+                      <div className="w-32" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
                     </div>
                   </div>
                 )}
@@ -1460,7 +1460,6 @@ export default function TasksView() {
                 {/* Pending create rows */}
                 {pendingCreates.map(({ key, topic }) => (
                   <div key={key} className="flex items-center gap-2 py-2.5 opacity-50">
-                    <div className="w-10 shrink-0" />
                     <div className="w-[72px] shrink-0" />
                     <div className="w-12 shrink-0 flex items-center justify-center">
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
@@ -1469,7 +1468,7 @@ export default function TasksView() {
                       <span className="block truncate text-sm text-muted-foreground italic">{topic}</span>
                     </div>
                     <div className="shrink-0 flex items-center gap-1">
-                      <div className="w-24" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
+                      <div className="w-32" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
                     </div>
                   </div>
                 ))}
@@ -1504,7 +1503,6 @@ export default function TasksView() {
                         return (
                           <div key="insert-row" className="flex items-center gap-2 py-2.5 -mx-2 px-2 rounded bg-primary/5 border border-primary/20">
                             <div className="w-4 shrink-0" />
-                            <div className="w-10 shrink-0" />
                             <div className="w-[72px] shrink-0 text-center">
                               <span className="text-[11px] text-primary/60">{formatDate(insertAt.date)}</span>
                             </div>
@@ -1524,7 +1522,7 @@ export default function TasksView() {
                               />
                             </div>
                             <div className="shrink-0 flex items-center gap-1">
-                              <div className="w-24" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
+                              <div className="w-32" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
                             </div>
                           </div>
                         );

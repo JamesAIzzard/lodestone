@@ -1143,7 +1143,7 @@ export default function TasksView() {
 
         {/* ── Projects sub-view ──────────────────────────────────── */}
         {subView === 'projects' && !noCloudUrl && !error && (
-          <ProjectsSubView projects={projects} onRefresh={loadProjects} createTrigger={newProjectTrigger} />
+          <ProjectsSubView projects={projects} onRefresh={() => { loadProjects(); loadTasks(reloadOpts()); }} createTrigger={newProjectTrigger} />
         )}
       </div>
     </div>

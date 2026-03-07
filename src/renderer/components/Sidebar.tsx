@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Database, Search, Activity, Settings, ChevronLeft, ChevronRight, BrainCircuit, Boxes, FileStack, Clock, CheckSquare } from 'lucide-react';
+import { Database, Search, Activity, Settings, ChevronLeft, ChevronRight, BrainCircuit, Boxes, FileStack, Clock, CheckSquare, Sun, Moon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ActionButton from '@/components/ActionButton';
 import type { ServerStatus } from '../../shared/types';
@@ -32,6 +32,10 @@ export default function Sidebar() {
   const [forceCollapsed, setForceCollapsed] = useState(
     () => window.innerWidth < NARROW_THRESHOLD,
   );
+  const [isDark, setIsDark] = useState(
+    () => document.documentElement.classList.contains('dark') ||
+      window.matchMedia('(prefers-color-scheme: dark)').matches,
+  );
 
   useEffect(() => {
     const fetchStatus = () => window.electronAPI?.getServerStatus().then(setStatus);
@@ -55,6 +59,10 @@ export default function Sidebar() {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', isDark);
+  }, [isDark]);
 
   const isCollapsed = collapsed || forceCollapsed;
 
@@ -110,15 +118,23 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {/* Collapse toggle */}
-      <div className={cn('px-2 pb-1', isCollapsed ? 'flex justify-center' : '')}>
+      {/* Collapse & theme toggles */}
+      <div className={cn('flex items-center gap-1 px-2 pb-1', isCollapsed ? 'flex-col' : '')}>
         <ActionButton
           icon={isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronLeft className="h-3 w-3" />}
           label="Collapse"
           collapsed={isCollapsed}
           onClick={toggleCollapsed}
           title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          className={cn('w-full rounded-md p-2 hover:bg-accent/50', isCollapsed ? 'justify-center' : '')}
+          className={cn('flex-1 rounded-md p-2 hover:bg-accent/50', isCollapsed ? 'justify-center' : '')}
+        />
+        <ActionButton
+          icon={isDark ? <Moon className="h-3 w-3" /> : <Sun className="h-3 w-3" />}
+          label={isDark ? 'Dark' : 'Light'}
+          collapsed={isCollapsed}
+          onClick={() => setIsDark(d => !d)}
+          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          className={cn('rounded-md p-2 hover:bg-accent/50', isCollapsed ? 'justify-center' : '')}
         />
       </div>
 

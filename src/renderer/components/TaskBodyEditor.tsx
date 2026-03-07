@@ -20,7 +20,6 @@ import { Typography } from '@tiptap/extension-typography';
 import { Selection } from '@tiptap/extensions';
 import { Markdown } from 'tiptap-markdown';
 import DragHandle from '@tiptap/extension-drag-handle-react';
-import { offset } from '@floating-ui/dom';
 import { GripVertical } from 'lucide-react';
 
 // ── Tiptap UI components (installed as source) ─────────────────────────────

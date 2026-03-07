@@ -74,20 +74,38 @@ function getFileIcon(filePath: string) {
 
 type ViewMode = 'file' | 'directory';
 
+function readSession<T>(key: string, fallback: T): T {
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw !== null ? (JSON.parse(raw) as T) : fallback;
+  } catch { return fallback; }
+}
+
+function writeSession<T>(key: string, value: T): void {
+  try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+}
+
 export default function SearchView() {
   const [searchParams] = useSearchParams();
-  const [query, setQuery] = useState('');
-  const [selectedSilo, setSelectedSilo] = useState(() => searchParams.get('silo') ?? 'all');
+  const [query, setQuery] = useState(() => readSession('search.query', ''));
+  const [selectedSilo, setSelectedSilo] = useState(() => searchParams.get('silo') ?? readSession('search.selectedSilo', 'all'));
   const [silos, setSilos] = useState<SiloStatus[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [directoryResults, setDirectoryResults] = useState<DirectoryResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [searching, setSearching] = useState(false);
   const [expandedResults, setExpandedResults] = useState<Set<number>>(new Set());
-  const [searchMode, setSearchMode] = useState<ViewMode>('file');
-  const [fileSearchMode, setFileSearchMode] = useState<SearchMode>('hybrid');
-  const [startPath, setStartPath] = useState('');
-  const [depthSetting, setDepthSetting] = useState(2);
+  const [searchMode, setSearchMode] = useState<ViewMode>(() => readSession('search.searchMode', 'file'));
+  const [fileSearchMode, setFileSearchMode] = useState<SearchMode>(() => readSession('search.fileSearchMode', 'hybrid'));
+  const [startPath, setStartPath] = useState(() => readSession('search.startPath', ''));
+  const [depthSetting, setDepthSetting] = useState(() => readSession('search.depthSetting', 2));
+
+  useEffect(() => { writeSession('search.query', query); }, [query]);
+  useEffect(() => { writeSession('search.selectedSilo', selectedSilo); }, [selectedSilo]);
+  useEffect(() => { writeSession('search.searchMode', searchMode); }, [searchMode]);
+  useEffect(() => { writeSession('search.fileSearchMode', fileSearchMode); }, [fileSearchMode]);
+  useEffect(() => { writeSession('search.startPath', startPath); }, [startPath]);
+  useEffect(() => { writeSession('search.depthSetting', depthSetting); }, [depthSetting]);
 
   useEffect(() => {
     const fetch = () => window.electronAPI?.getSilos().then(setSilos);

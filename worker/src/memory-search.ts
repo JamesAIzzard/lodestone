@@ -33,6 +33,8 @@ export interface MemoryDateFilters {
   dueBefore?: string;
   /** Filter by status. Use 'completed' to match completed_on IS NOT NULL too. Null = unclassified. */
   status?: MemoryStatusValue | null;
+  /** When true, include memories belonging to archived projects. Default: false. */
+  includeArchived?: boolean;
 }
 
 /** Everything a memory signal needs to produce its scores. */

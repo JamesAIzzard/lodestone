@@ -68,63 +68,73 @@ export async function filterMemoryIdsByDate(
     dueBefore?: string;
     status?: MemoryRecord['status'];
     projectId?: number;
+    includeArchived?: boolean;
   },
 ): Promise<Set<number> | null> {
   const clauses: string[] = [];
   const params: unknown[] = [];
 
   if (filters.updatedAfter) {
-    clauses.push(`updated_at >= ?`);
+    clauses.push(`m.updated_at >= ?`);
     params.push(filters.updatedAfter);
   }
   if (filters.updatedBefore) {
     // Add a day to make the comparison inclusive for date-only values
     // since updated_at is a datetime like "2026-02-26T15:30:00.000Z"
-    clauses.push(`updated_at <= ? || ' 23:59:59'`);
+    clauses.push(`m.updated_at <= ? || ' 23:59:59'`);
     params.push(filters.updatedBefore);
   }
   if (filters.actionAfter) {
-    clauses.push(`action_date IS NOT NULL AND action_date >= ?`);
+    clauses.push(`m.action_date IS NOT NULL AND m.action_date >= ?`);
     params.push(filters.actionAfter);
   }
   if (filters.actionBefore) {
-    clauses.push(`action_date IS NOT NULL AND action_date <= ?`);
+    clauses.push(`m.action_date IS NOT NULL AND m.action_date <= ?`);
     params.push(filters.actionBefore);
   }
   if (filters.completedAfter) {
-    clauses.push(`completed_on IS NOT NULL AND completed_on >= ?`);
+    clauses.push(`m.completed_on IS NOT NULL AND m.completed_on >= ?`);
     params.push(filters.completedAfter);
   }
   if (filters.completedBefore) {
-    clauses.push(`completed_on IS NOT NULL AND completed_on <= ?`);
+    clauses.push(`m.completed_on IS NOT NULL AND m.completed_on <= ?`);
     params.push(filters.completedBefore);
   }
   if (filters.dueAfter) {
-    clauses.push(`due_date IS NOT NULL AND due_date >= ?`);
+    clauses.push(`m.due_date IS NOT NULL AND m.due_date >= ?`);
     params.push(filters.dueAfter);
   }
   if (filters.dueBefore) {
-    clauses.push(`due_date IS NOT NULL AND due_date <= ?`);
+    clauses.push(`m.due_date IS NOT NULL AND m.due_date <= ?`);
     params.push(filters.dueBefore);
   }
   if (filters.status !== undefined) {
     if (filters.status === 'completed') {
-      clauses.push(`(status = 'completed' OR completed_on IS NOT NULL)`);
+      clauses.push(`(m.status = 'completed' OR m.completed_on IS NOT NULL)`);
     } else if (filters.status === null) {
-      clauses.push(`(status IS NULL AND completed_on IS NULL)`);
+      clauses.push(`(m.status IS NULL AND m.completed_on IS NULL)`);
     } else {
-      clauses.push(`status = ?`);
+      clauses.push(`m.status = ?`);
       params.push(filters.status);
     }
   }
   if (filters.projectId !== undefined) {
-    clauses.push(`project_id = ?`);
+    clauses.push(`m.project_id = ?`);
     params.push(filters.projectId);
+  }
+
+  // When not including archived, filter out memories belonging to archived projects
+  if (!filters.includeArchived) {
+    clauses.push(`(m.project_id IS NULL OR p.archived_at IS NULL)`);
   }
 
   if (clauses.length === 0) return null; // no filters active
 
-  const sql = `SELECT id FROM memories WHERE deleted_at IS NULL AND ${clauses.join(' AND ')}`;
+  const needsJoin = !filters.includeArchived;
+  const fromClause = needsJoin
+    ? `memories m LEFT JOIN projects p ON m.project_id = p.id`
+    : `memories m`;
+  const sql = `SELECT m.id FROM ${fromClause} WHERE m.deleted_at IS NULL AND ${clauses.join(' AND ')}`;
 
   // D1 doesn't support spread args like better-sqlite3 — we chain .bind() with all params
   let stmt = db.prepare(sql);
@@ -137,27 +147,29 @@ export async function filterMemoryIdsByDate(
 }
 
 /** Return memories with action_date before today that are not completed or cancelled.
- *  Used by agenda to surface overdue items. */
+ *  Used by agenda to surface overdue items. Excludes memories in archived projects. */
 export async function getOverdueMemories(
   db: D1Database,
   beforeDate: string,
   maxResults: number,
 ): Promise<MemoryRecord[]> {
   const { results } = await db.prepare(
-    `SELECT * FROM memories
-     WHERE deleted_at IS NULL
-       AND action_date IS NOT NULL
-       AND action_date < ?
-       AND completed_on IS NULL
-       AND (status IS NULL OR status = 'open')
-     ORDER BY COALESCE(priority, 0) DESC, action_date ASC
+    `SELECT m.* FROM memories m
+     LEFT JOIN projects p ON m.project_id = p.id
+     WHERE m.deleted_at IS NULL
+       AND m.action_date IS NOT NULL
+       AND m.action_date < ?
+       AND m.completed_on IS NULL
+       AND (m.status IS NULL OR m.status = 'open')
+       AND (m.project_id IS NULL OR p.archived_at IS NULL)
+     ORDER BY COALESCE(m.priority, 0) DESC, m.action_date ASC
      LIMIT ?`,
   ).bind(beforeDate, maxResults).all();
   return results.map((r) => rowToRecord(r as Record<string, unknown>));
 }
 
 /** Return upcoming memories (action_date in range) excluding completed and cancelled.
- *  Used by agenda and orient. */
+ *  Used by agenda and orient. Excludes memories in archived projects. */
 export async function getActiveUpcomingMemories(
   db: D1Database,
   fromDate: string,
@@ -165,14 +177,16 @@ export async function getActiveUpcomingMemories(
   maxResults: number,
 ): Promise<MemoryRecord[]> {
   const { results } = await db.prepare(
-    `SELECT * FROM memories
-     WHERE deleted_at IS NULL
-       AND action_date IS NOT NULL
-       AND action_date >= ?
-       AND action_date <= ?
-       AND completed_on IS NULL
-       AND (status IS NULL OR status = 'open')
-     ORDER BY action_date ASC
+    `SELECT m.* FROM memories m
+     LEFT JOIN projects p ON m.project_id = p.id
+     WHERE m.deleted_at IS NULL
+       AND m.action_date IS NOT NULL
+       AND m.action_date >= ?
+       AND m.action_date <= ?
+       AND m.completed_on IS NULL
+       AND (m.status IS NULL OR m.status = 'open')
+       AND (m.project_id IS NULL OR p.archived_at IS NULL)
+     ORDER BY m.action_date ASC
      LIMIT ?`,
   ).bind(fromDate, toDate, maxResults).all();
   return results.map((r) => rowToRecord(r as Record<string, unknown>));
@@ -229,10 +243,11 @@ export async function getRecentActiveMemories(
 
 // ── Project reads ─────────────────────────────────────────────────────────────
 
-/** Return all active projects ordered by name. */
-export async function getAllProjects(db: D1Database): Promise<ProjectRecord[]> {
+/** Return all active projects ordered by name. When includeArchived is false (default), excludes archived projects. */
+export async function getAllProjects(db: D1Database, includeArchived = false): Promise<ProjectRecord[]> {
+  const archiveClause = includeArchived ? '' : ' AND archived_at IS NULL';
   const { results } = await db.prepare(
-    `SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE`,
+    `SELECT * FROM projects WHERE deleted_at IS NULL${archiveClause} ORDER BY name COLLATE NOCASE`,
   ).all();
   return results.map((r) => rowToProject(r as Record<string, unknown>));
 }
@@ -245,16 +260,20 @@ export async function getProjectById(db: D1Database, id: number): Promise<Projec
   return row ? rowToProject(row as Record<string, unknown>) : null;
 }
 
-/** Get a project by name (case-insensitive). Returns null if not found. */
-export async function getProjectByName(db: D1Database, name: string): Promise<ProjectRecord | null> {
+/** Get a project by name (case-insensitive). Returns null if not found.
+ *  When opts.archived is true, searches only archived projects. */
+export async function getProjectByName(db: D1Database, name: string, opts?: { archived?: boolean }): Promise<ProjectRecord | null> {
+  const archiveClause = opts?.archived ? ' AND archived_at IS NOT NULL' : '';
   const row = await db.prepare(
-    `SELECT * FROM projects WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL`,
+    `SELECT * FROM projects WHERE name = ? COLLATE NOCASE AND deleted_at IS NULL${archiveClause}`,
   ).bind(name).first();
   return row ? rowToProject(row as Record<string, unknown>) : null;
 }
 
-/** Return per-project task counts (open, completed, total) for all active projects. */
-export async function getProjectTaskCounts(db: D1Database): Promise<ProjectWithCounts[]> {
+/** Return per-project task counts (open, completed, total) for all active projects.
+ *  When includeArchived is true, includes archived projects (marked in output). */
+export async function getProjectTaskCounts(db: D1Database, includeArchived = false): Promise<ProjectWithCounts[]> {
+  const archiveClause = includeArchived ? '' : ' AND p.archived_at IS NULL';
   const { results } = await db.prepare(`
     SELECT
       p.*,
@@ -263,7 +282,7 @@ export async function getProjectTaskCounts(db: D1Database): Promise<ProjectWithC
       COALESCE(COUNT(m.id), 0) AS total_count
     FROM projects p
     LEFT JOIN memories m ON m.project_id = p.id AND m.deleted_at IS NULL AND m.status IS NOT NULL
-    WHERE p.deleted_at IS NULL
+    WHERE p.deleted_at IS NULL${archiveClause}
     GROUP BY p.id
     ORDER BY p.name COLLATE NOCASE
   `).all();

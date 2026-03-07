@@ -20,7 +20,7 @@ import { formatDateISO, syncStatusAndCompletedOn } from './shared/memory-utils';
 import { advanceRecurrence, type DateRangeResult } from './date-parser';
 import { searchMemory, type MemorySearchMode, type MemoryDateFilters } from './memory-search';
 import { getMemory, getMemoryCount, getRecentActiveMemories, getActiveUpcomingMemories, getOverdueMemories, getMemoriesByActionDateRange, getAllProjects, getProjectById, getProjectByName, getProjectTaskCounts } from './d1/read';
-import { insertMemory, updateMemory, deleteMemory, insertProject, updateProject, deleteProject, mergeProjects } from './d1/write';
+import { insertMemory, updateMemory, deleteMemory, insertProject, updateProject, deleteProject, mergeProjects, archiveProject, unarchiveProject } from './d1/write';
 import { embedDocument, embedQuery } from './embedding';
 import { rowToRecord } from './d1/helpers';
 
@@ -195,8 +195,13 @@ export class D1MemoryService {
       queryVector = await embedQuery(this.ai, query);
     }
 
+    // Default includeArchived to false so archived project memories are excluded
+    const effectiveFilters = dateFilters
+      ? { includeArchived: false, ...dateFilters }
+      : { includeArchived: false };
+
     return searchMemory(
-      this.db, query, maxResults, mode as MemorySearchMode, dateFilters,
+      this.db, query, maxResults, mode as MemorySearchMode, effectiveFilters,
       this.vectorize, queryVector,
     );
   }
@@ -463,8 +468,8 @@ export class D1MemoryService {
 
   // ── Project operations ──────────────────────────────────────────────────
 
-  async listProjects(): Promise<ProjectRecord[]> {
-    return getAllProjects(this.db);
+  async listProjects(includeArchived = false): Promise<ProjectRecord[]> {
+    return getAllProjects(this.db, includeArchived);
   }
 
   async getProject(id: number): Promise<ProjectRecord | null> {
@@ -475,8 +480,8 @@ export class D1MemoryService {
     return getProjectByName(this.db, name);
   }
 
-  async getProjectsWithCounts(): Promise<ProjectWithCounts[]> {
-    return getProjectTaskCounts(this.db);
+  async getProjectsWithCounts(includeArchived = false): Promise<ProjectWithCounts[]> {
+    return getProjectTaskCounts(this.db, includeArchived);
   }
 
   async createProject(name: string, color = 'blue'): Promise<number> {
@@ -496,6 +501,37 @@ export class D1MemoryService {
    */
   async mergeProjects(sourceId: number, targetId: number): Promise<number> {
     return mergeProjects(this.db, sourceId, targetId);
+  }
+
+  async archiveProject(id: number): Promise<void> {
+    return archiveProject(this.db, id);
+  }
+
+  async unarchiveProject(id: number): Promise<void> {
+    return unarchiveProject(this.db, id);
+  }
+
+  /**
+   * Resolve a project name to its ID, searching only archived projects.
+   * Used by the unarchive action.
+   */
+  async resolveArchivedProjectName(name: string): Promise<
+    | { status: 'found'; id: number }
+    | { status: 'not_found'; suggestions: { name: string; id: number; distance: number }[] }
+  > {
+    // Try exact match among archived projects
+    const existing = await getProjectByName(this.db, name, { archived: true });
+    if (existing) return { status: 'found', id: existing.id };
+
+    // Fuzzy search among archived projects
+    const archivedProjects = await getAllProjects(this.db, true);
+    const archived = archivedProjects.filter(p => p.archivedAt !== null);
+    const scored = archived
+      .map(p => ({ name: p.name, id: p.id, distance: levenshtein(name.toLowerCase(), p.name.toLowerCase()) }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 5);
+
+    return { status: 'not_found', suggestions: scored };
   }
 
   /**

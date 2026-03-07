@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Merge, Search, X, Calendar, ChevronDown, ChevronLeft, Folder, FolderOpen } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Merge, Search, X, Calendar, ChevronDown, ChevronLeft, Folder, FolderOpen, Archive } from 'lucide-react';
 import ActionButton from '@/components/ActionButton';
 import { cn } from '@/lib/utils';
 import {
@@ -441,6 +441,123 @@ function ProjectSearchFilter({
               <span className="truncate flex-1">{p.name}</span>
               <span className="text-muted-foreground/30 tabular-nums text-[11px]">{p.openCount}</span>
             </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ArchivedProjectSearch({
+  onUnarchive,
+}: {
+  onUnarchive: (id: number) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [focused, setFocused] = useState(false);
+  const [archivedProjects, setArchivedProjects] = useState<ProjectWithCounts[]>([]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const internalClick = useRef(false);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    if (!focused) return;
+    function handleMouseDown() {
+      if (internalClick.current) { internalClick.current = false; return; }
+      setFocused(false);
+    }
+    document.addEventListener('mousedown', handleMouseDown);
+    return () => document.removeEventListener('mousedown', handleMouseDown);
+  }, [focused]);
+
+  // Load archived projects when opened
+  useEffect(() => {
+    if (!focused) return;
+    (async () => {
+      const res = await window.electronAPI?.listProjects({ includeArchived: true });
+      if (res?.success) {
+        setArchivedProjects(res.projects.filter((p: ProjectWithCounts) => p.archivedAt !== null));
+      }
+    })();
+  }, [focused]);
+
+  const q = query.trim();
+  const suggestions = q
+    ? archivedProjects
+        .map(p => ({ ...p, dist: fuzzyScore(q, p.name) }))
+        .filter(p => p.dist <= Math.max(2, Math.ceil(q.length * 0.4)))
+        .sort((a, b) => a.dist - b.dist)
+        .slice(0, 8)
+    : archivedProjects.slice(0, 8);
+
+  const showDropdown = focused && (suggestions.length > 0 || q || archivedProjects.length === 0);
+
+  function handleUnarchive(id: number) {
+    setArchivedProjects(prev => prev.filter(p => p.id !== id));
+    onUnarchive(id);
+    if (archivedProjects.length <= 1) {
+      setFocused(false);
+      setQuery('');
+    }
+  }
+
+  if (!focused) {
+    return (
+      <button
+        onClick={() => { setFocused(true); setTimeout(() => inputRef.current?.focus(), 0); }}
+        className="flex items-center gap-1.5 h-6 px-2 rounded-md border border-transparent text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+      >
+        <Archive className="h-3 w-3" />
+        Unarchive a project…
+      </button>
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="relative" onMouseDown={() => { internalClick.current = true; }}>
+      <div className="flex items-center gap-1.5 min-h-[26px] pl-2">
+        <Archive className="h-3 w-3 text-muted-foreground/50 shrink-0" />
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') { setQuery(''); setFocused(false); inputRef.current?.blur(); }
+          }}
+          placeholder="Search archived projects…"
+          className="h-[22px] min-w-[80px] flex-1 bg-transparent text-[11px] text-foreground placeholder:text-muted-foreground/30 focus:outline-none"
+        />
+      </div>
+
+      {/* Dropdown */}
+      {showDropdown && (
+        <div className="absolute left-0 top-full mt-1 z-50 w-64 rounded-md border border-border bg-background shadow-lg py-1 max-h-48 overflow-y-auto">
+          {archivedProjects.length === 0 && (
+            <div className="px-3 py-2 text-[11px] text-muted-foreground">
+              No archived projects
+            </div>
+          )}
+          {suggestions.length === 0 && q && archivedProjects.length > 0 && (
+            <div className="px-3 py-2 text-[11px] text-muted-foreground">
+              No matching projects
+            </div>
+          )}
+          {suggestions.map((p) => (
+            <div
+              key={p.id}
+              className="flex items-center w-full px-3 py-1.5 text-xs text-muted-foreground hover:bg-accent transition-colors gap-2"
+            >
+              {projectIcon(p.color)}
+              <span className="truncate flex-1">{p.name}</span>
+              <button
+                onMouseDown={(e) => { e.preventDefault(); handleUnarchive(p.id); }}
+                className="text-[11px] text-purple-400 hover:text-purple-300 transition-colors font-medium shrink-0"
+              >
+                Unarchive
+              </button>
+            </div>
           ))}
         </div>
       )}
@@ -1051,6 +1168,7 @@ function ProjectsSubView({
   const [editingNameValue, setEditingNameValue] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
   const [confirmMergeId, setConfirmMergeId] = useState<number | null>(null);
+  const [confirmArchiveId, setConfirmArchiveId] = useState<number | null>(null);
   const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
   const colorPopoverRef = useRef<HTMLDivElement>(null);
 
@@ -1108,10 +1226,24 @@ function ProjectsSubView({
     onRefresh();
   }
 
+  async function handleArchive(id: number) {
+    setConfirmArchiveId(null);
+    await window.electronAPI?.archiveProject(id);
+    onRefresh();
+  }
+
+  async function handleUnarchive(id: number) {
+    await window.electronAPI?.unarchiveProject(id);
+    onRefresh();
+  }
+
   return (
     <div>
       <div className="mb-4">
         <p className="text-xs text-muted-foreground">{projects.length} project{projects.length !== 1 ? 's' : ''}</p>
+        <div className="mt-2">
+          <ArchivedProjectSearch onUnarchive={handleUnarchive} />
+        </div>
       </div>
 
       {isCreating && (
@@ -1143,6 +1275,7 @@ function ProjectsSubView({
           const isColorOpen = openColorId === p.id;
           const isDeleting = confirmDeleteId === p.id;
           const isMerging = confirmMergeId === p.id;
+          const isArchiving = confirmArchiveId === p.id;
           const mergeTargets = projects.filter(q => q.id !== p.id);
 
           return (
@@ -1219,7 +1352,7 @@ function ProjectsSubView({
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                   {mergeTargets.length > 0 && (
                     <button
-                      onClick={() => { setConfirmMergeId(p.id); setMergeTargetId(null); setConfirmDeleteId(null); }}
+                      onClick={() => { setConfirmMergeId(p.id); setMergeTargetId(null); setConfirmDeleteId(null); setConfirmArchiveId(null); }}
                       title="Merge into another project"
                       className="p-1 rounded text-muted-foreground/40 hover:text-amber-400 transition-colors"
                     >
@@ -1227,7 +1360,14 @@ function ProjectsSubView({
                     </button>
                   )}
                   <button
-                    onClick={() => { setConfirmDeleteId(p.id); setConfirmMergeId(null); }}
+                    onClick={() => { setConfirmArchiveId(p.id); setConfirmDeleteId(null); setConfirmMergeId(null); }}
+                    title="Archive project"
+                    className="p-1 rounded text-muted-foreground/40 hover:text-purple-400 transition-colors"
+                  >
+                    <Archive className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => { setConfirmDeleteId(p.id); setConfirmMergeId(null); setConfirmArchiveId(null); }}
                     title="Delete project"
                     className="p-1 rounded text-muted-foreground/40 hover:text-red-400 transition-colors"
                   >
@@ -1286,10 +1426,32 @@ function ProjectsSubView({
                   </button>
                 </div>
               )}
+
+              {/* Archive confirmation (inline expand) */}
+              {isArchiving && (
+                <div className="flex items-center gap-3 mt-2 pl-7">
+                  <span className="text-xs text-muted-foreground">
+                    Archive "{p.name}"?{total > 0 ? ' Tasks will be hidden from recall & agenda.' : ''}
+                  </span>
+                  <button
+                    onClick={() => handleArchive(p.id)}
+                    className="text-xs text-purple-400 hover:text-purple-300 transition-colors font-medium"
+                  >
+                    Yes, archive
+                  </button>
+                  <button
+                    onClick={() => setConfirmArchiveId(null)}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}
       </div>
+
     </div>
   );
 }

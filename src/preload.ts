@@ -113,8 +113,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('tasks:delete', id),
 
   // Projects
-  listProjects: (): Promise<unknown> =>
-    ipcRenderer.invoke('projects:list'),
+  listProjects: (opts?: { includeArchived?: boolean }): Promise<unknown> =>
+    ipcRenderer.invoke('projects:list', opts ?? {}),
   createProject: (name: string, color?: string): Promise<unknown> =>
     ipcRenderer.invoke('projects:create', name, color),
   updateProject: (id: number, updates: { name?: string; color?: string }): Promise<unknown> =>
@@ -123,4 +123,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('projects:delete', id),
   mergeProjects: (sourceId: number, targetId: number): Promise<unknown> =>
     ipcRenderer.invoke('projects:merge', sourceId, targetId),
+  archiveProject: (id: number): Promise<unknown> =>
+    ipcRenderer.invoke('projects:archive', id),
+  unarchiveProject: (id: number): Promise<unknown> =>
+    ipcRenderer.invoke('projects:unarchive', id),
 });

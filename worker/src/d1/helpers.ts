@@ -39,5 +39,6 @@ export function rowToProject(row: Record<string, unknown>): ProjectRecord {
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
     deletedAt: (row.deleted_at as string | null) ?? null,
+    archivedAt: (row.archived_at as string | null) ?? null,
   };
 }

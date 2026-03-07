@@ -207,6 +207,20 @@ export async function deleteProject(db: D1Database, id: number): Promise<void> {
   ]);
 }
 
+/** Archive a project (set archived_at). Does NOT unlink memories. */
+export async function archiveProject(db: D1Database, id: number): Promise<void> {
+  await db.prepare(
+    `UPDATE projects SET archived_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`,
+  ).bind(id).run();
+}
+
+/** Unarchive a project (clear archived_at). */
+export async function unarchiveProject(db: D1Database, id: number): Promise<void> {
+  await db.prepare(
+    `UPDATE projects SET archived_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`,
+  ).bind(id).run();
+}
+
 /**
  * Merge source project into target: reassign all memories, then soft-delete source.
  * Returns the number of memories reassigned.

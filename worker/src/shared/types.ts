@@ -39,6 +39,7 @@ export interface ProjectRecord {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  archivedAt: string | null;
 }
 
 export interface ProjectWithCounts extends ProjectRecord {

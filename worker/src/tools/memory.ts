@@ -39,6 +39,27 @@ async function resolveProjectOrError(
   return { error: textResult(`Project "${name}" not found.\n\n${hint}`) };
 }
 
+/**
+ * Resolve an archived project name via fuzzy match, returning either the project ID or
+ * a formatted MCP error response with suggestions.
+ */
+async function resolveArchivedProjectOrError(
+  memory: D1MemoryService,
+  name: string,
+): Promise<{ id: number } | { error: ReturnType<typeof textResult> }> {
+  const resolved = await memory.resolveArchivedProjectName(name);
+  if (resolved.status === 'found') return { id: resolved.id };
+
+  const suggestions = resolved.suggestions
+    .filter(s => s.distance <= Math.max(3, Math.ceil(name.length * 0.4)))
+    .map(s => `  - "${s.name}" (distance: ${s.distance})`)
+    .join('\n');
+  const hint = suggestions
+    ? `Did you mean one of these?\n${suggestions}`
+    : 'No archived projects found.';
+  return { error: textResult(`Archived project "${name}" not found.\n\n${hint}`) };
+}
+
 /** Convenience wrapper to build a text MCP result. */
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -383,8 +404,9 @@ export function registerRecallTool(server: McpServer, memory: D1MemoryService): 
       due_after: z.string().optional().describe('Filter: due_date >= this date. Flexible expressions accepted.'),
       due_before: z.string().optional().describe('Filter: due_date <= this date. Flexible expressions accepted.'),
       status: z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']).optional().describe('Filter by status.'),
+      include_archived: z.boolean().optional().describe('Include memories belonging to archived projects. Default: false'),
     },
-    async ({ query, max_results, mode, updated_after, updated_before, action_after, action_before, completed_after, completed_before, due_after, due_before, status }) => {
+    async ({ query, max_results, mode, updated_after, updated_before, action_after, action_before, completed_after, completed_before, due_after, due_before, status, include_archived }) => {
       try {
         // Parse flexible date expressions to ISO 8601
         const dateFilters: Record<string, string> = {};
@@ -410,8 +432,8 @@ export function registerRecallTool(server: McpServer, memory: D1MemoryService): 
           query,
           maxResults: max_results,
           mode,
-          dateFilters: Object.keys(dateFilters).length > 0 || status !== undefined
-            ? { ...dateFilters, ...(status !== undefined ? { status } : {}) }
+          dateFilters: Object.keys(dateFilters).length > 0 || status !== undefined || include_archived
+            ? { ...dateFilters, ...(status !== undefined ? { status } : {}), ...(include_archived ? { includeArchived: true } : {}) }
             : undefined,
         });
 
@@ -946,37 +968,41 @@ export function registerProjectTool(server: McpServer, memory: D1MemoryService):
       'with a colour. Each memory/task can belong to one project.',
       '',
       'Actions:',
-      '  list    — List all projects with task counts',
-      '  create  — Create a new project: { name, color? }',
-      '  rename  — Rename a project: { name, new_name }',
-      '  recolor — Change project colour: { name, color }',
-      '  merge   — Merge source into target: { source, target } (all source tasks move to target)',
-      '  delete  — Delete a project: { name } (tasks become unassigned)',
-      '  search  — Fuzzy search for projects by name: { name } (returns closest matches)',
+      '  list      — List all projects with task counts',
+      '  create    — Create a new project: { name, color? }',
+      '  rename    — Rename a project: { name, new_name }',
+      '  recolor   — Change project colour: { name, color }',
+      '  merge     — Merge source into target: { source, target } (all source tasks move to target)',
+      '  delete    — Delete a project: { name } (tasks become unassigned)',
+      '  archive   — Archive a project: { name } (hides from recall/agenda without deleting)',
+      '  unarchive — Restore an archived project: { name }',
+      '  search    — Fuzzy search for projects by name: { name } (returns closest matches)',
       '',
       'Available colours: slate, red, orange, amber, emerald, teal, cyan, blue,',
       'indigo, violet, purple, rose, pink. Default: blue.',
     ].join('\n'),
     {
-      action: z.enum(['list', 'create', 'rename', 'recolor', 'merge', 'delete', 'search']).describe('Operation to perform'),
+      action: z.enum(['list', 'create', 'rename', 'recolor', 'merge', 'delete', 'archive', 'unarchive', 'search']).describe('Operation to perform'),
       name: z.string().optional().describe('Project name (required for all actions except list)'),
       new_name: z.string().optional().describe('New name for rename action'),
       color: z.string().optional().describe('Colour for create/recolor: slate, red, orange, amber, emerald, teal, cyan, blue, indigo, violet, purple, rose, pink'),
       source: z.string().optional().describe('Source project name for merge action'),
       target: z.string().optional().describe('Target project name for merge action'),
+      include_archived: z.boolean().optional().describe('Include archived projects in list output. Default: false'),
     },
-    async ({ action, name, new_name, color, source, target }) => {
+    async ({ action, name, new_name, color, source, target, include_archived }) => {
       try {
         switch (action) {
           case 'list': {
-            const projects = await memory.getProjectsWithCounts();
+            const projects = await memory.getProjectsWithCounts(include_archived ?? false);
             if (projects.length === 0) {
               return textResult('No projects found.');
             }
             const lines: string[] = [`## Projects (${projects.length})`, ''];
             for (const p of projects) {
               const counts = `${p.openCount} open, ${p.completedCount} completed, ${p.totalCount} total`;
-              lines.push(`- **${p.name}** (${p.color}) — ${counts}`);
+              const archivedTag = p.archivedAt ? ' (archived)' : '';
+              lines.push(`- **${p.name}**${archivedTag} (${p.color}) — ${counts}`);
             }
             return textResult(lines.join('\n'));
           }
@@ -1050,6 +1076,22 @@ export function registerProjectTool(server: McpServer, memory: D1MemoryService):
             if ('error' in resolved) return resolved.error;
             await memory.deleteProject(resolved.id);
             return textResult(`Deleted project "${name}". Tasks in this project are now unassigned.`);
+          }
+
+          case 'archive': {
+            if (!name) return textResult('Error: name is required for archive.');
+            const resolved = await resolveProjectOrError(memory, name);
+            if ('error' in resolved) return resolved.error;
+            await memory.archiveProject(resolved.id);
+            return textResult(`Archived project "${name}". Its memories are now hidden from recall and agenda. Use action "unarchive" to restore.`);
+          }
+
+          case 'unarchive': {
+            if (!name) return textResult('Error: name is required for unarchive.');
+            const resolved = await resolveArchivedProjectOrError(memory, name);
+            if ('error' in resolved) return resolved.error;
+            await memory.unarchiveProject(resolved.id);
+            return textResult(`Unarchived project "${name}". Its memories are now visible in recall and agenda again.`);
           }
 
           case 'search': {

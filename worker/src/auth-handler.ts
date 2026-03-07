@@ -246,8 +246,9 @@ export async function handleDefaultRequest(
 
   // List projects: GET /projects
   if (pathname === '/projects' && request.method === 'GET') {
+    const includeArchived = url.searchParams.get('includeArchived') === 'true';
     const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
-    const projects = await memory.getProjectsWithCounts();
+    const projects = await memory.getProjectsWithCounts(includeArchived);
     return new Response(JSON.stringify({ projects }), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -294,6 +295,28 @@ export async function handleDefaultRequest(
     const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     const reassigned = await memory.mergeProjects(sourceId, body.targetId);
     return new Response(JSON.stringify({ success: true, reassigned }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Archive project: POST /projects/:id/archive
+  const projectArchiveMatch = pathname.match(/^\/projects\/(\d+)\/archive$/);
+  if (projectArchiveMatch && request.method === 'POST') {
+    const id = parseInt(projectArchiveMatch[1], 10);
+    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+    await memory.archiveProject(id);
+    return new Response(JSON.stringify({ success: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Unarchive project: POST /projects/:id/unarchive
+  const projectUnarchiveMatch = pathname.match(/^\/projects\/(\d+)\/unarchive$/);
+  if (projectUnarchiveMatch && request.method === 'POST') {
+    const id = parseInt(projectUnarchiveMatch[1], 10);
+    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+    await memory.unarchiveProject(id);
+    return new Response(JSON.stringify({ success: true }), {
       headers: { 'Content-Type': 'application/json' },
     });
   }

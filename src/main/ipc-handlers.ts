@@ -414,11 +414,12 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
   // ── Projects ─────────────────────────────────────────────────────────
 
-  ipcMain.handle('projects:list', async (): Promise<{ success: boolean; projects: unknown[]; error?: string }> => {
+  ipcMain.handle('projects:list', async (_event, opts?: { includeArchived?: boolean }): Promise<{ success: boolean; projects: unknown[]; error?: string }> => {
     const cloudUrl = ctx.config?.memory.cloud_url;
     if (!cloudUrl) return { success: false, projects: [], error: 'No cloud URL configured' };
     try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects`, {
+      const qs = opts?.includeArchived ? '?includeArchived=true' : '';
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects${qs}`, {
         headers: getCloudHeaders(ctx),
         signal: AbortSignal.timeout(10000),
       });
@@ -495,6 +496,38 @@ export function registerIpcHandlers(ctx: AppContext): void {
       });
       if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
       return await res.json() as { success: boolean; reassigned?: number };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('projects:archive', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}/archive`, {
+        method: 'POST',
+        headers: getCloudHeaders(ctx),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('projects:unarchive', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
+    const cloudUrl = ctx.config?.memory.cloud_url;
+    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
+    try {
+      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}/unarchive`, {
+        method: 'POST',
+        headers: getCloudHeaders(ctx),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
+      return { success: true };
     } catch (err) {
       return { success: false, error: String(err) };
     }

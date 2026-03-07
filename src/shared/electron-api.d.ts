@@ -111,11 +111,13 @@ export interface ElectronAPI {
   deleteTask: (id: number) => Promise<{ success: boolean; error?: string }>;
 
   // Projects
-  listProjects: () => Promise<{ success: boolean; projects: ProjectWithCounts[]; error?: string }>;
+  listProjects: (opts?: { includeArchived?: boolean }) => Promise<{ success: boolean; projects: ProjectWithCounts[]; error?: string }>;
   createProject: (name: string, color?: string) => Promise<{ success: boolean; id?: number; error?: string }>;
   updateProject: (id: number, updates: { name?: string; color?: string }) => Promise<{ success: boolean; error?: string }>;
   deleteProject: (id: number) => Promise<{ success: boolean; error?: string }>;
   mergeProjects: (sourceId: number, targetId: number) => Promise<{ success: boolean; reassigned?: number; error?: string }>;
+  archiveProject: (id: number) => Promise<{ success: boolean; error?: string }>;
+  unarchiveProject: (id: number) => Promise<{ success: boolean; error?: string }>;
 }
 
 declare global {

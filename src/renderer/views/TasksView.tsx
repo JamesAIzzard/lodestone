@@ -975,12 +975,12 @@ export default function TasksView() {
                 {/* Column header row */}
                 <div className="flex items-center gap-2 pb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/40 font-medium select-none border-b border-border/30">
                   <div className="w-10 shrink-0" />
+                  <div className="w-[72px] shrink-0 text-center">Action</div>
                   <div className="w-12 shrink-0 text-center">Status</div>
                   <div className="flex-1 min-w-0">Task</div>
                   <div className="shrink-0 flex items-center gap-1">
                     <div className="w-24 text-center">Project</div>
                     <div className="w-6 text-center">Pri</div>
-                    <div className="w-[72px] text-center">Action</div>
                     <div className="w-[72px] text-center">Due</div>
                     <div className="w-[72px] text-center">Repeat</div>
                     <div className="w-7" />
@@ -991,6 +991,7 @@ export default function TasksView() {
                 {isCreating && (
                   <div className="flex items-center gap-2 py-2.5">
                     <div className="w-10 shrink-0" />
+                    <div className="w-[72px] shrink-0" />
                     <div className="w-12 shrink-0" />
                     <div className="flex-1 min-w-0">
                       <input
@@ -1007,7 +1008,7 @@ export default function TasksView() {
                       />
                     </div>
                     <div className="shrink-0 flex items-center gap-1">
-                      <div className="w-24" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
+                      <div className="w-24" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
                     </div>
                   </div>
                 )}
@@ -1016,6 +1017,7 @@ export default function TasksView() {
                 {pendingCreates.map(({ key, topic }) => (
                   <div key={key} className="flex items-center gap-2 py-2.5 opacity-50">
                     <div className="w-10 shrink-0" />
+                    <div className="w-[72px] shrink-0" />
                     <div className="w-12 shrink-0 flex items-center justify-center">
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                     </div>
@@ -1023,119 +1025,139 @@ export default function TasksView() {
                       <span className="block truncate text-sm text-muted-foreground italic">{topic}</span>
                     </div>
                     <div className="shrink-0 flex items-center gap-1">
-                      <div className="w-24" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
+                      <div className="w-24" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
                     </div>
                   </div>
                 ))}
 
-                {displayTasks.map((task) => {
-                  const overdue = isOverdue(task);
-                  const isEditingTopic = editingTopicId === task.id;
-                  const isGracePeriod = recentlyCompleted.has(task.id);
+                {(() => {
+                  // Build a shade map: unique sorted dates → alternating 0/1
+                  const uniqueDates: string[] = [];
+                  const seen = new Set<string>();
+                  for (const t of displayTasks) {
+                    const d = t.actionDate ?? '';
+                    if (!seen.has(d)) { seen.add(d); uniqueDates.push(d); }
+                  }
+                  const dateShade = new Map<string, number>();
+                  let shade = 0;
+                  for (const d of uniqueDates) {
+                    dateShade.set(d, shade);
+                    shade = shade === 0 ? 1 : 0;
+                  }
 
-                  return (
-                    <div
-                      key={task.id}
-                      onClick={(e) => {
-                        if (!(e.target as HTMLElement).closest('button, input, [role="button"]')) {
-                          navigate(`/tasks/${task.id}`, { state: { task } });
-                        }
-                      }}
-                      className={cn(
-                        'group flex items-center gap-2 py-2.5 transition-opacity duration-500 cursor-pointer',
-                        overdue && '-mx-1 px-1 border-l-2 border-l-amber-500/50',
-                        isGracePeriod && 'opacity-50',
-                      )}
-                    >
-                      {/* UID — acts as navigation button on row hover */}
-                      <button
-                        onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${task.id}`, { state: { task } }); }}
-                        title="Open detail"
-                        className="w-10 shrink-0 h-5 flex items-center justify-end text-[11px] tabular-nums text-muted-foreground/20 group-hover:text-primary/60 hover:!text-primary transition-colors cursor-pointer"
-                      >
-                        m{task.id}
-                      </button>
+                  return displayTasks.map((task) => {
+                    const overdue = isOverdue(task);
+                    const isEditingTopic = editingTopicId === task.id;
+                    const isGracePeriod = recentlyCompleted.has(task.id);
+                    const stripe = dateShade.get(task.actionDate ?? '') ?? 0;
 
-                      {/* Status */}
-                      <StatusCell
-                        value={task.status}
-                        onChange={(v) => revise(task.id, { status: v })}
-                        isRecurring={!!task.recurrence}
-                        onSkip={() => skipTask(task.id)}
-                      />
-
-                      {/* Topic */}
-                      <div className="flex-1 min-w-0">
-                        {isEditingTopic ? (
-                          <input
-                            autoFocus
-                            value={editingTopicValue}
-                            onChange={(e) => setEditingTopicValue(e.target.value)}
-                            onBlur={() => commitTopicEdit(task.id, editingTopicValue)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') commitTopicEdit(task.id, editingTopicValue);
-                              if (e.key === 'Escape') setEditingTopicId(null);
-                            }}
-                            className="w-full bg-transparent text-sm text-foreground border-b border-ring focus:outline-none"
-                          />
-                        ) : (
-                          <span
-                            onClick={(e) => { e.stopPropagation(); startEditTopic(task); }}
-                            title={task.topic}
-                            className={cn(
-                              'text-sm cursor-text line-clamp-3',
-                              task.status === 'completed'
-                                ? 'line-through text-muted-foreground/50'
-                                : 'text-foreground',
-                            )}
-                          >
-                            {task.topic}
-                          </span>
+                    return (
+                      <div
+                        key={task.id}
+                        onClick={(e) => {
+                          if (!(e.target as HTMLElement).closest('button, input, [role="button"]')) {
+                            navigate(`/tasks/${task.id}`, { state: { task } });
+                          }
+                        }}
+                        className={cn(
+                          'group flex items-center gap-2 py-2.5 -mx-2 px-2 rounded transition-opacity duration-500 cursor-pointer',
+                          stripe === 1 && 'bg-muted/30',
+                          overdue && 'border-l-2 border-l-amber-500/50',
+                          isGracePeriod && 'opacity-50',
                         )}
-                      </div>
+                      >
+                        {/* UID — acts as navigation button on row hover */}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${task.id}`, { state: { task } }); }}
+                          title="Open detail"
+                          className="w-10 shrink-0 h-5 flex items-center justify-end text-[11px] tabular-nums text-muted-foreground/20 group-hover:text-primary/60 hover:!text-primary transition-colors cursor-pointer"
+                        >
+                          m{task.id}
+                        </button>
 
-                      {/* Right-side controls */}
-                      <div className="shrink-0 flex items-center gap-1">
-                        <ProjectCell
-                          value={task.projectId}
-                          projects={projects}
-                          onChange={(v) => revise(task.id, { projectId: v })}
-                        />
-                        <PriorityCell
-                          value={task.priority}
-                          onChange={(v) => revise(task.id, { priority: v })}
-                        />
+                        {/* Action date — LHS timeline */}
                         <DateCell
                           value={task.actionDate}
                           overdue={overdue}
                           onChange={(v) => revise(task.id, { actionDate: v })}
                         />
-                        <DueDateCell
-                          value={task.dueDate}
-                          pastDue={isPastDue(task)}
-                          onChange={(v) => revise(task.id, { dueDate: v })}
+
+                        {/* Status */}
+                        <StatusCell
+                          value={task.status}
+                          onChange={(v) => revise(task.id, { status: v })}
+                          isRecurring={!!task.recurrence}
+                          onSkip={() => skipTask(task.id)}
                         />
-                        <RecurrenceCell
-                          value={task.recurrence}
-                          onChange={(v) => {
-                            if (v && !task.actionDate) {
-                              revise(task.id, { recurrence: v, actionDate: getTodayStr() });
-                            } else {
-                              revise(task.id, { recurrence: v });
-                            }
-                          }}
-                        />
-                        <button
-                          onClick={() => deleteTask(task.id)}
-                          title="Delete task"
-                          className="w-7 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-red-400 transition-colors"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+
+                        {/* Topic */}
+                        <div className="flex-1 min-w-0">
+                          {isEditingTopic ? (
+                            <input
+                              autoFocus
+                              value={editingTopicValue}
+                              onChange={(e) => setEditingTopicValue(e.target.value)}
+                              onBlur={() => commitTopicEdit(task.id, editingTopicValue)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') commitTopicEdit(task.id, editingTopicValue);
+                                if (e.key === 'Escape') setEditingTopicId(null);
+                              }}
+                              className="w-full bg-transparent text-sm text-foreground border-b border-ring focus:outline-none"
+                            />
+                          ) : (
+                            <span
+                              onClick={(e) => { e.stopPropagation(); startEditTopic(task); }}
+                              title={task.topic}
+                              className={cn(
+                                'text-sm cursor-text line-clamp-3',
+                                task.status === 'completed'
+                                  ? 'line-through text-muted-foreground/50'
+                                  : 'text-foreground',
+                              )}
+                            >
+                              {task.topic}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Right-side controls */}
+                        <div className="shrink-0 flex items-center gap-1">
+                          <ProjectCell
+                            value={task.projectId}
+                            projects={projects}
+                            onChange={(v) => revise(task.id, { projectId: v })}
+                          />
+                          <PriorityCell
+                            value={task.priority}
+                            onChange={(v) => revise(task.id, { priority: v })}
+                          />
+                          <DueDateCell
+                            value={task.dueDate}
+                            pastDue={isPastDue(task)}
+                            onChange={(v) => revise(task.id, { dueDate: v })}
+                          />
+                          <RecurrenceCell
+                            value={task.recurrence}
+                            onChange={(v) => {
+                              if (v && !task.actionDate) {
+                                revise(task.id, { recurrence: v, actionDate: getTodayStr() });
+                              } else {
+                                revise(task.id, { recurrence: v });
+                              }
+                            }}
+                          />
+                          <button
+                            onClick={() => deleteTask(task.id)}
+                            title="Delete task"
+                            className="w-7 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-red-400 transition-colors"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  });
+                })()}
               </div>
             )}
           </>

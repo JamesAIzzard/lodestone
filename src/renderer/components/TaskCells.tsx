@@ -447,7 +447,7 @@ export function CalendarPicker({
   return (
     <div
       ref={ref}
-      className="absolute right-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-background shadow-lg p-3 select-none"
+      className="absolute left-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-background shadow-lg p-3 select-none"
     >
       <CalendarGrid
         value={value}

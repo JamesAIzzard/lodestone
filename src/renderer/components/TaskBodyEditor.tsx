@@ -20,6 +20,7 @@ import { Typography } from '@tiptap/extension-typography';
 import { Selection } from '@tiptap/extensions';
 import { Markdown } from 'tiptap-markdown';
 import DragHandle from '@tiptap/extension-drag-handle-react';
+import { offset } from '@floating-ui/dom';
 import { GripVertical } from 'lucide-react';
 
 // ── Tiptap UI components (installed as source) ─────────────────────────────
@@ -179,7 +180,16 @@ export function TaskBodyEditor({
       {/* Editor content */}
       <div className="task-body-content">
         {editor && (
-          <DragHandle editor={editor} className="task-body-drag-handle" nested>
+          <DragHandle
+            editor={editor}
+            className="task-body-drag-handle"
+            nested
+            computePositionConfig={{
+              placement: 'left-start',
+              strategy: 'absolute',
+              middleware: [],
+            }}
+          >
             <GripVertical className="h-3.5 w-3.5" />
           </DragHandle>
         )}

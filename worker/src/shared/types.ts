@@ -20,6 +20,7 @@ export interface MemoryRecord {
   confidence: number;
   contextHint: string | null;
   actionDate: string | null;
+  dueDate: string | null;       // ISO 8601 date — hard deadline
   recurrence: string | null;
   priority: PriorityLevel | null;
   status: MemoryStatusValue | null;

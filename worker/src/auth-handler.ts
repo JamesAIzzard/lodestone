@@ -169,6 +169,7 @@ export async function handleDefaultRequest(
       status?: MemoryStatusValue;
       priority?: PriorityLevel;
       actionDate?: string;
+      dueDate?: string;
       projectId?: number | null;
     };
     const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
@@ -178,6 +179,7 @@ export async function handleDefaultRequest(
       status: body.status ?? 'open',
       priority: body.priority ?? null,
       actionDate: body.actionDate ?? null,
+      dueDate: body.dueDate ?? null,
       projectId: body.projectId ?? null,
       force: true,
     });
@@ -208,6 +210,7 @@ export async function handleDefaultRequest(
       status?: MemoryStatusValue | null;
       priority?: PriorityLevel | null;
       actionDate?: string | null;
+      dueDate?: string | null;
       recurrence?: string | null;
       topic?: string;
       projectId?: number | null;
@@ -219,6 +222,7 @@ export async function handleDefaultRequest(
       ...(payload.status !== undefined && { status: payload.status }),
       ...(payload.priority !== undefined && { priority: payload.priority }),
       ...(payload.actionDate !== undefined && { actionDate: payload.actionDate }),
+      ...(payload.dueDate !== undefined && { dueDate: payload.dueDate }),
       ...(payload.recurrence !== undefined && { recurrence: payload.recurrence }),
       ...(payload.topic !== undefined && { topic: payload.topic }),
       ...(payload.projectId !== undefined && { projectId: payload.projectId }),

@@ -7,10 +7,12 @@ import {
   StatusCell,
   PriorityCell,
   DateCell,
+  DueDateCell,
   RecurrenceCell,
   ProjectCell,
   CalendarGrid,
   isOverdue,
+  isPastDue,
   getTodayStr,
   formatDate,
 } from '@/components/TaskCells';
@@ -586,6 +588,7 @@ export default function TasksView() {
     status?: MemoryStatusValue | null;
     priority?: PriorityLevel | null;
     actionDate?: string | null;
+    dueDate?: string | null;
     recurrence?: string | null;
     topic?: string;
     projectId?: number | null;
@@ -705,7 +708,6 @@ export default function TasksView() {
          dateFilter(t) &&
          projectFilter(t)))
     : filtered;
-  const overdueCount = filtered.filter(isOverdue).length;
   const noCloudUrl = !loading && error?.includes('No cloud URL');
 
   return (
@@ -724,11 +726,6 @@ export default function TasksView() {
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-lg font-semibold text-foreground">{subView === 'projects' ? 'Projects' : 'Tasks'}</h1>
           <div className="flex items-center gap-3">
-            {subView === 'tasks' && overdueCount > 0 && (
-              <span className="inline-flex items-center text-xs font-medium text-amber-400">
-                {overdueCount} overdue
-              </span>
-            )}
             {subView === 'tasks' && (
               <ActionButton
                 icon={<Plus className="h-3.5 w-3.5" />}
@@ -858,6 +855,21 @@ export default function TasksView() {
 
             {(isCreating || pendingCreates.length > 0 || displayTasks.length > 0) && (
               <div className="flex flex-col divide-y divide-border/50">
+                {/* Column header row */}
+                <div className="flex items-center gap-2 pb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/40 font-medium select-none border-b border-border/30">
+                  <div className="w-10 shrink-0" />
+                  <div className="w-12 shrink-0 text-center">Status</div>
+                  <div className="flex-1 min-w-0">Task</div>
+                  <div className="shrink-0 flex items-center gap-1">
+                    <div className="w-24 text-center">Project</div>
+                    <div className="w-6 text-center">Pri</div>
+                    <div className="w-[72px] text-center">Action</div>
+                    <div className="w-[72px] text-center">Due</div>
+                    <div className="w-[72px] text-center">Repeat</div>
+                    <div className="w-7" />
+                  </div>
+                </div>
+
                 {/* Create row */}
                 {isCreating && (
                   <div className="flex items-center gap-2 py-2.5">
@@ -877,8 +889,8 @@ export default function TasksView() {
                         className="w-full bg-transparent text-sm text-foreground border-b border-ring focus:outline-none placeholder:text-muted-foreground/30"
                       />
                     </div>
-                    <div className="shrink-0 flex items-center gap-1.5">
-                      <div className="w-24" /><div className="w-5" /><div className="w-20" /><div className="w-20" /><div className="w-7" />
+                    <div className="shrink-0 flex items-center gap-1">
+                      <div className="w-24" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
                     </div>
                   </div>
                 )}
@@ -893,8 +905,8 @@ export default function TasksView() {
                     <div className="flex-1 min-w-0">
                       <span className="block truncate text-sm text-muted-foreground italic">{topic}</span>
                     </div>
-                    <div className="shrink-0 flex items-center gap-1.5">
-                      <div className="w-24" /><div className="w-5" /><div className="w-20" /><div className="w-20" /><div className="w-7" />
+                    <div className="shrink-0 flex items-center gap-1">
+                      <div className="w-24" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
                     </div>
                   </div>
                 ))}
@@ -954,7 +966,7 @@ export default function TasksView() {
                             onClick={(e) => { e.stopPropagation(); startEditTopic(task); }}
                             title={task.topic}
                             className={cn(
-                              'text-sm cursor-text line-clamp-2',
+                              'text-sm cursor-text line-clamp-3',
                               task.status === 'completed'
                                 ? 'line-through text-muted-foreground/50'
                                 : 'text-foreground',
@@ -966,7 +978,7 @@ export default function TasksView() {
                       </div>
 
                       {/* Right-side controls */}
-                      <div className="shrink-0 flex items-center gap-1.5">
+                      <div className="shrink-0 flex items-center gap-1">
                         <ProjectCell
                           value={task.projectId}
                           projects={projects}
@@ -980,6 +992,11 @@ export default function TasksView() {
                           value={task.actionDate}
                           overdue={overdue}
                           onChange={(v) => revise(task.id, { actionDate: v })}
+                        />
+                        <DueDateCell
+                          value={task.dueDate}
+                          pastDue={isPastDue(task)}
+                          onChange={(v) => revise(task.id, { dueDate: v })}
                         />
                         <RecurrenceCell
                           value={task.recurrence}

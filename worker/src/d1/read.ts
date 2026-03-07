@@ -64,6 +64,8 @@ export async function filterMemoryIdsByDate(
     actionBefore?: string;
     completedAfter?: string;
     completedBefore?: string;
+    dueAfter?: string;
+    dueBefore?: string;
     status?: MemoryRecord['status'];
     projectId?: number;
   },
@@ -96,6 +98,14 @@ export async function filterMemoryIdsByDate(
   if (filters.completedBefore) {
     clauses.push(`completed_on IS NOT NULL AND completed_on <= ?`);
     params.push(filters.completedBefore);
+  }
+  if (filters.dueAfter) {
+    clauses.push(`due_date IS NOT NULL AND due_date >= ?`);
+    params.push(filters.dueAfter);
+  }
+  if (filters.dueBefore) {
+    clauses.push(`due_date IS NOT NULL AND due_date <= ?`);
+    params.push(filters.dueBefore);
   }
   if (filters.status !== undefined) {
     if (filters.status === 'completed') {

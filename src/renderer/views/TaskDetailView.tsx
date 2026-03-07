@@ -7,9 +7,11 @@ import {
   StatusCell,
   PriorityCell,
   DateCell,
+  DueDateCell,
   RecurrenceCell,
   ProjectCell,
   isOverdue,
+  isPastDue,
   getTodayStr,
 } from '@/components/TaskCells';
 import type { MemoryRecord, ProjectWithCounts } from '../../shared/types';
@@ -197,6 +199,11 @@ export default function TaskDetailView() {
             value={task.actionDate}
             overdue={overdue}
             onChange={(v) => revise(task.id, { actionDate: v })}
+          />
+          <DueDateCell
+            value={task.dueDate}
+            pastDue={isPastDue(task)}
+            onChange={(v) => revise(task.id, { dueDate: v })}
           />
           <RecurrenceCell
             value={task.recurrence}

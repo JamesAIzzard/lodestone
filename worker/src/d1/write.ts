@@ -22,6 +22,7 @@ export async function insertMemory(
   confidence: number,
   contextHint: string | null,
   actionDate: string | null = null,
+  dueDate: string | null = null,
   recurrence: string | null = null,
   priority: MemoryRecord['priority'] = null,
   status: MemoryRecord['status'] = null,
@@ -32,9 +33,9 @@ export async function insertMemory(
 ): Promise<number> {
   // Insert the memory row first to get its ID
   const result = await db.prepare(
-    `INSERT INTO memories (topic, body, confidence, context_hint, action_date, recurrence, priority, status, completed_on, project_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).bind(topic, body, confidence, contextHint, actionDate, recurrence, priority, status, completedOn, projectId).run();
+    `INSERT INTO memories (topic, body, confidence, context_hint, action_date, due_date, recurrence, priority, status, completed_on, project_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(topic, body, confidence, contextHint, actionDate, dueDate, recurrence, priority, status, completedOn, projectId).run();
 
   const id = result.meta.last_row_id as number;
 
@@ -67,6 +68,7 @@ export async function updateMemory(
     confidence?: number;
     contextHint?: string | null;
     actionDate?: string | null;
+    dueDate?: string | null;
     recurrence?: string | null;
     priority?: MemoryRecord['priority'];
     topic?: string;
@@ -95,6 +97,10 @@ export async function updateMemory(
   if (updates.actionDate !== undefined) {
     sets.push('action_date = ?');
     vals.push(updates.actionDate);
+  }
+  if (updates.dueDate !== undefined) {
+    sets.push('due_date = ?');
+    vals.push(updates.dueDate);
   }
   if (updates.recurrence !== undefined) {
     sets.push('recurrence = ?');

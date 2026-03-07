@@ -17,6 +17,7 @@ export function rowToRecord(row: Record<string, unknown>): MemoryRecord {
     confidence: row.confidence as number,
     contextHint: (row.context_hint as string | null) ?? null,
     actionDate: (row.action_date as string | null) ?? null,
+    dueDate: (row.due_date as string | null) ?? null,
     recurrence: (row.recurrence as string | null) ?? null,
     priority: (row.priority as MemoryRecord['priority']) ?? null,
     status: (row.status as MemoryRecord['status']) ?? null,

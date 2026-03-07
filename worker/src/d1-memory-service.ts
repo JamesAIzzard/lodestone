@@ -33,6 +33,7 @@ export interface RememberParams {
   contextHint?: string | null;
   force?: boolean;
   actionDate?: string | null;
+  dueDate?: string | null;
   recurrence?: string | null;
   priority?: PriorityLevel | null;
   status?: MemoryStatusValue | null;
@@ -41,7 +42,7 @@ export interface RememberParams {
 }
 
 export type RememberResult =
-  | { status: 'created'; id: number }
+  | { status: 'created'; id: number; warning?: string }
   | { status: 'duplicate'; existing: MemoryRecord; similarity: number };
 
 export interface RecallParams {
@@ -57,6 +58,7 @@ export interface ReviseParams {
   confidence?: number;
   contextHint?: string | null;
   actionDate?: string | null;
+  dueDate?: string | null;
   recurrence?: string | null;
   priority?: PriorityLevel | null;
   topic?: string;
@@ -68,6 +70,7 @@ export interface ReviseParams {
 export interface ReviseResult {
   completionRecordId?: number;
   nextActionDate?: string;
+  warning?: string;
 }
 
 export interface SkipResult {
@@ -128,6 +131,7 @@ export class D1MemoryService {
       contextHint = null,
       force = false,
       actionDate = null,
+      dueDate = null,
       recurrence = null,
       priority = null,
       completedOn: rawCompletedOn = null,
@@ -164,11 +168,17 @@ export class D1MemoryService {
 
     const id = await insertMemory(
       this.db, topic, body, confidence, contextHint,
-      actionDate, recurrence, priority, memStatus, completedOn,
+      actionDate, dueDate, recurrence, priority, memStatus, completedOn,
       projectId, this.vectorize, embedding,
     );
 
-    return { status: 'created', id };
+    // Non-blocking warning if action_date is after due_date
+    let warning: string | undefined;
+    if (actionDate && dueDate && actionDate > dueDate) {
+      warning = `Warning: action_date (${actionDate}) is after due_date (${dueDate}). The task is scheduled to start after its deadline.`;
+    }
+
+    return { status: 'created', id, warning };
   }
 
   /**
@@ -205,6 +215,7 @@ export class D1MemoryService {
       confidence?: number;
       contextHint?: string | null;
       actionDate?: string | null;
+      dueDate?: string | null;
       recurrence?: string | null;
       priority?: PriorityLevel | null;
       topic?: string;
@@ -256,7 +267,7 @@ export class D1MemoryService {
           completionBody,
           1.0,
           null,
-          null, null, null,
+          null, null, null, null,
           'completed',
           today,
           null, // completion records are not assigned to projects
@@ -270,15 +281,30 @@ export class D1MemoryService {
     // ── Standard revise ──────────────────────────────────────────────────
     // Re-embed if body changed
     let embedding: number[] | undefined;
+    let existing: MemoryRecord | null = null;
     if (updates.body && this.ai) {
-      const existing = await getMemory(this.db, id);
+      existing = await getMemory(this.db, id);
       if (existing) {
         embedding = await embedDocument(this.ai, updates.topic ?? existing.topic, updates.body);
       }
     }
 
     await updateMemory(this.db, id, updates, this.vectorize, embedding);
-    return {};
+
+    // Non-blocking warning if action_date > due_date after this revision
+    let warning: string | undefined;
+    if (updates.actionDate !== undefined || updates.dueDate !== undefined) {
+      if (!existing) existing = await getMemory(this.db, id);
+      if (existing) {
+        const effectiveAction = existing.actionDate;
+        const effectiveDue = existing.dueDate;
+        if (effectiveAction && effectiveDue && effectiveAction > effectiveDue) {
+          warning = `Warning: action_date (${effectiveAction}) is after due_date (${effectiveDue}). The task is scheduled to start after its deadline.`;
+        }
+      }
+    }
+
+    return { warning };
   }
 
   /**

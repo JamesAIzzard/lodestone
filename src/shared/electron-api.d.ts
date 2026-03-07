@@ -101,6 +101,7 @@ export interface ElectronAPI {
     status?: MemoryStatusValue | null;
     priority?: PriorityLevel | null;
     actionDate?: string | null;
+    dueDate?: string | null;
     recurrence?: string | null;
     topic?: string;
     projectId?: number | null;

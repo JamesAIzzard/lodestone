@@ -44,6 +44,25 @@ function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
 }
 
+/** Today's date as YYYY-MM-DD for overdue/past-due checks. */
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** True when an action_date is overdue (before today, task not done/cancelled). */
+function isActionOverdue(r: { actionDate: string | null; status: MemoryStatusValue | null; completedOn: string | null }): boolean {
+  if (!r.actionDate) return false;
+  if (r.status === 'completed' || r.completedOn || r.status === 'cancelled') return false;
+  return r.actionDate < todayStr();
+}
+
+/** True when a due_date is past due (before today, task not done/cancelled). */
+function isDuePastDue(r: { dueDate: string | null; status: MemoryStatusValue | null; completedOn: string | null }): boolean {
+  if (!r.dueDate) return false;
+  if (r.status === 'completed' || r.completedOn || r.status === 'cancelled') return false;
+  return r.dueDate < todayStr();
+}
+
 // ── Guide content (lodestone-memory server) ─────────────────────────────────
 
 const STARTUP_GUIDE = `# lodestone-memory — Startup Guide
@@ -166,6 +185,9 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
       '  action_date  \u2014 Optional date for when this memory is actionable. Accepts flexible',
       '                  expressions ("tomorrow", "next Monday", "2026-03-15"). Stored as',
       '                  ISO 8601 (YYYY-MM-DD).',
+      '  due_date     \u2014 Optional hard deadline. Accepts flexible expressions.',
+      '                  Stored as ISO 8601 (YYYY-MM-DD). A warning is emitted',
+      '                  if action_date falls after due_date.',
       '  recurrence   \u2014 Optional recurrence rule for repeating action dates. Accepted formats:',
       '                  "daily", "weekly", "biweekly", "monthly", "yearly",',
       '                  "every monday", "every weekday", "every 3 days", "every 2 weeks".',
@@ -191,13 +213,14 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
       context_hint: z.string().optional().describe('Short string recording the conversational context (not searchable)'),
       force: z.boolean().optional().describe('Skip dedup check and always create a new memory. Default: false'),
       action_date: z.string().optional().describe('Date when this memory is actionable. Flexible expressions accepted ("tomorrow", "next Monday", "2026-03-15"). Stored as ISO 8601.'),
+      due_date: z.string().optional().describe('Hard deadline date. Flexible expressions accepted ("tomorrow", "next Friday", "2026-03-15"). Stored as ISO 8601.'),
       recurrence: z.string().optional().describe('Recurrence rule: "daily", "weekly", "biweekly", "monthly", "yearly", "every monday", "every weekday", "every N days", "every N weeks". Requires action_date.'),
       priority: z.number().int().min(1).max(4).optional().describe('Urgency: 1=low, 2=medium, 3=high, 4=critical'),
       status: z.union([z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']), z.null()]).optional().describe('Lifecycle status. Omit to default to "open". Pass null for no lifecycle status. "completed" auto-fills completed_on=today. "open" clears completed_on.'),
       completed_on: z.string().optional().describe('Date completed. Flexible expressions accepted. Implies status="completed".'),
       project: z.string().optional().describe('Project name to assign to. Must match an existing project (fuzzy matched). If not found, suggestions are returned. Use lodestone_project to create/list projects. Omit to leave unassigned.'),
     },
-    async ({ topic, body, confidence, context_hint, force, action_date, recurrence, priority, status, completed_on, project }) => {
+    async ({ topic, body, confidence, context_hint, force, action_date, due_date, recurrence, priority, status, completed_on, project }) => {
       try {
         // Parse flexible action_date to ISO 8601
         let parsedActionDate: string | null = null;
@@ -205,6 +228,15 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
           parsedActionDate = parseFlexibleDate(action_date);
           if (!parsedActionDate) {
             return { content: [{ type: 'text' as const, text: `Error: Could not parse action_date "${action_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }] };
+          }
+        }
+
+        // Parse flexible due_date to ISO 8601
+        let parsedDueDate: string | null = null;
+        if (due_date) {
+          parsedDueDate = parseFlexibleDate(due_date);
+          if (!parsedDueDate) {
+            return { content: [{ type: 'text' as const, text: `Error: Could not parse due_date "${due_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }] };
           }
         }
 
@@ -244,6 +276,7 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
           contextHint: context_hint,
           force,
           actionDate: parsedActionDate,
+          dueDate: parsedDueDate,
           recurrence: parsedRecurrence,
           priority: (priority ?? null) as PriorityLevel | null,
           status: (status === undefined || (status === null && parsedActionDate) ? 'open' : status ?? null) as MemoryStatusValue | null,
@@ -258,7 +291,11 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
           if (result.existing.actionDate) {
             let actionStr = `Action: ${result.existing.actionDate}`;
             if (result.existing.recurrence) actionStr += ` (${result.existing.recurrence})`;
+            if (isActionOverdue(result.existing)) actionStr += ' \u26a0\ufe0f OVERDUE';
             meta.push(actionStr);
+          }
+          if (result.existing.dueDate) {
+            meta.push(`Due: ${result.existing.dueDate}${isDuePastDue(result.existing) ? ' \ud83d\udea8 PAST DUE' : ''}`);
           }
           if (result.existing.priority) meta.push(`Priority: ${priorityLabel(result.existing.priority)}`);
           if (result.existing.status) meta.push(`Status: ${statusLabel(result.existing.status)}`);
@@ -284,11 +321,13 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
           if (parsedRecurrence) actionStr += ` (${parsedRecurrence})`;
           extras.push(actionStr + '.');
         }
+        if (parsedDueDate) extras.push(`Due: ${parsedDueDate}.`);
         if (priority) extras.push(`Priority: ${priorityLabel(priority as PriorityLevel)}.`);
         if (status) extras.push(`Status: ${statusLabel(status as MemoryStatusValue)}.`);
         if (parsedCompletedOn) extras.push(`Completed: ${parsedCompletedOn}.`);
+        const dateWarning = result.warning ? `\n\n${result.warning}` : '';
         return {
-          content: [{ type: 'text' as const, text: `Created memory m${result.id}.${extras.length ? ' ' + extras.join(' ') : ''}${warning}` }],
+          content: [{ type: 'text' as const, text: `Created memory m${result.id}.${extras.length ? ' ' + extras.join(' ') : ''}${warning}${dateWarning}` }],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -322,6 +361,8 @@ export function registerRecallTool(server: McpServer, memory: D1MemoryService): 
       '  action_before    \u2014 Filter to memories with action_date <= this date',
       '  completed_after  \u2014 Filter to memories completed on or after this date',
       '  completed_before \u2014 Filter to memories completed on or before this date',
+      '  due_after        \u2014 Filter to memories with due_date >= this date',
+      '  due_before       \u2014 Filter to memories with due_date <= this date',
       '  status           \u2014 Filter by status: "open", "completed", "cancelled"',
       '',
       'All date filters accept flexible expressions ("today", "yesterday", "last Monday",',
@@ -339,9 +380,11 @@ export function registerRecallTool(server: McpServer, memory: D1MemoryService): 
       action_before: z.string().optional().describe('Filter: action_date <= this date. Flexible expressions accepted.'),
       completed_after: z.string().optional().describe('Filter: completed_on >= this date. Flexible expressions accepted.'),
       completed_before: z.string().optional().describe('Filter: completed_on <= this date. Flexible expressions accepted.'),
+      due_after: z.string().optional().describe('Filter: due_date >= this date. Flexible expressions accepted.'),
+      due_before: z.string().optional().describe('Filter: due_date <= this date. Flexible expressions accepted.'),
       status: z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']).optional().describe('Filter by status.'),
     },
-    async ({ query, max_results, mode, updated_after, updated_before, action_after, action_before, completed_after, completed_before, status }) => {
+    async ({ query, max_results, mode, updated_after, updated_before, action_after, action_before, completed_after, completed_before, due_after, due_before, status }) => {
       try {
         // Parse flexible date expressions to ISO 8601
         const dateFilters: Record<string, string> = {};
@@ -352,6 +395,8 @@ export function registerRecallTool(server: McpServer, memory: D1MemoryService): 
           actionBefore: action_before,
           completedAfter: completed_after,
           completedBefore: completed_before,
+          dueAfter: due_after,
+          dueBefore: due_before,
         })) {
           if (!raw) continue;
           const parsed = parseFlexibleDate(raw);
@@ -393,7 +438,11 @@ export function registerRecallTool(server: McpServer, memory: D1MemoryService): 
             if (r.actionDate) {
               let actionStr = `Action: ${r.actionDate}`;
               if (r.recurrence) actionStr += ` (${r.recurrence})`;
+              if (isActionOverdue(r)) actionStr += ' \u26a0\ufe0f OVERDUE';
               meta.push(actionStr);
+            }
+            if (r.dueDate) {
+              meta.push(`Due: ${r.dueDate}${isDuePastDue(r) ? ' \ud83d\udea8 PAST DUE' : ''}`);
             }
             if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
             if (r.status) meta.push(`Status: ${statusLabel(r.status)}`);
@@ -437,6 +486,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       '  confidence   \u2014 New confidence value 0\u20131 (optional)',
       '  context_hint \u2014 New context hint (optional, pass null to clear)',
       '  action_date  \u2014 New action date (optional, pass null to clear). Flexible expressions accepted.',
+      '  due_date     \u2014 New due date (optional, pass null to clear). Flexible expressions accepted.',
       '  recurrence   \u2014 New recurrence rule (optional, pass null to clear).',
       '                  Accepted: daily, weekly, biweekly, monthly, yearly,',
       '                  every monday, every weekday, every N days, every N weeks.',
@@ -454,6 +504,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       confidence: z.number().min(0).max(1).optional().describe('New confidence value 0\u20131'),
       context_hint: z.union([z.string(), z.null()]).optional().describe('New context hint (null to clear)'),
       action_date: z.union([z.string(), z.null()]).optional().describe('New action date (null to clear). Flexible expressions accepted.'),
+      due_date: z.union([z.string(), z.null()]).optional().describe('New due date (null to clear). Flexible expressions accepted.'),
       recurrence: z.union([z.string(), z.null()]).optional().describe('New recurrence rule (null to clear). Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.'),
       priority: z.union([z.number().int().min(1).max(4), z.null()]).optional().describe('New priority (null to clear). 1=low, 2=medium, 3=high, 4=critical.'),
       topic: z.string().optional().describe('New topic label'),
@@ -461,7 +512,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       completed_on: z.union([z.string(), z.null()]).optional().describe('New completion date (null to clear). Flexible expressions accepted.'),
       project: z.union([z.string(), z.null()]).optional().describe('Project name (null to clear assignment). Must match an existing project (fuzzy matched). Use lodestone_project to create/list projects.'),
     },
-    async ({ id: rawId, body, confidence, context_hint, action_date, recurrence, priority, topic, status, completed_on, project }) => {
+    async ({ id: rawId, body, confidence, context_hint, action_date, due_date, recurrence, priority, topic, status, completed_on, project }) => {
       try {
         const id = resolveMemoryId(rawId);
 
@@ -473,6 +524,17 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
           parsedActionDate = parseFlexibleDate(action_date);
           if (!parsedActionDate) {
             return { content: [{ type: 'text' as const, text: `Error: Could not parse action_date "${action_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }] };
+          }
+        }
+
+        // Parse flexible due_date (null clears it)
+        let parsedDueDate: string | null | undefined;
+        if (due_date === null) {
+          parsedDueDate = null;
+        } else if (due_date !== undefined) {
+          parsedDueDate = parseFlexibleDate(due_date);
+          if (!parsedDueDate) {
+            return { content: [{ type: 'text' as const, text: `Error: Could not parse due_date "${due_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }] };
           }
         }
 
@@ -514,6 +576,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
           confidence,
           contextHint: context_hint,
           actionDate: parsedActionDate,
+          dueDate: parsedDueDate,
           recurrence: parsedRecurrence,
           priority: priority as PriorityLevel | undefined,
           topic,
@@ -526,7 +589,8 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
         if (reviseResult.completionRecordId !== undefined) {
           msg += ` Completion recorded as m${reviseResult.completionRecordId}. Next occurrence: ${reviseResult.nextActionDate}.`;
         }
-        return { content: [{ type: 'text' as const, text: msg + warning }] };
+        const dateWarning = reviseResult.warning ? `\n\n${reviseResult.warning}` : '';
+        return { content: [{ type: 'text' as const, text: msg + warning + dateWarning }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
@@ -719,12 +783,16 @@ export function registerAgendaTool(server: McpServer, memory: D1MemoryService): 
 }
 
 /** Format a single agenda item as a compact markdown block. */
-function formatAgendaItem(r: { id: number; topic: string; body: string; actionDate: string | null; recurrence: string | null; priority: PriorityLevel | null; status: MemoryStatusValue | null; completedOn: string | null; confidence: number }): string {
+function formatAgendaItem(r: { id: number; topic: string; body: string; actionDate: string | null; dueDate: string | null; recurrence: string | null; priority: PriorityLevel | null; status: MemoryStatusValue | null; completedOn: string | null; confidence: number }): string {
   const meta: string[] = [];
   if (r.actionDate) {
     let actionStr = `Action: ${r.actionDate}`;
     if (r.recurrence) actionStr += ` (${r.recurrence})`;
+    if (isActionOverdue(r)) actionStr += ' \u26a0\ufe0f OVERDUE';
     meta.push(actionStr);
+  }
+  if (r.dueDate) {
+    meta.push(`Due: ${r.dueDate}${isDuePastDue(r) ? ' \ud83d\udea8 PAST DUE' : ''}`);
   }
   if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
   if (r.status) meta.push(`Status: ${statusLabel(r.status)}`);
@@ -828,7 +896,11 @@ export function registerReadTool(server: McpServer, memory: D1MemoryService): vo
             if (mem.actionDate) {
               let actionStr = `Action: ${mem.actionDate}`;
               if (mem.recurrence) actionStr += ` (${mem.recurrence})`;
+              if (isActionOverdue(mem)) actionStr += ' \u26a0\ufe0f OVERDUE';
               meta.push(actionStr);
+            }
+            if (mem.dueDate) {
+              meta.push(`Due: ${mem.dueDate}${isDuePastDue(mem) ? ' \ud83d\udea8 PAST DUE' : ''}`);
             }
             if (mem.priority) meta.push(`Priority: ${priorityLabel(mem.priority)}`);
             if (mem.status) meta.push(`Status: ${statusLabel(mem.status)}`);

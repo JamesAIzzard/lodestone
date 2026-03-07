@@ -30,6 +30,13 @@ export function isOverdue(task: MemoryRecord): boolean {
   return task.actionDate < getTodayStr();
 }
 
+export function isPastDue(task: MemoryRecord): boolean {
+  if (!task.dueDate) return false;
+  if (task.status === 'completed' || task.completedOn) return false;
+  if (task.status === 'cancelled') return false;
+  return task.dueDate < getTodayStr();
+}
+
 export function formatDate(dateStr: string | null): string {
   if (!dateStr) return '';
   const today = new Date();
@@ -281,11 +288,12 @@ export function PriorityCell({
 
   return (
     <CellDropdown
+      containerClassName="w-6"
       trigger={(toggle) => (
         <button
           onClick={toggle}
           title={value ? PRIORITY_LABELS[value] : 'No priority'}
-          className="flex items-center justify-center h-5 px-1 rounded border border-transparent hover:border-border/60 transition-colors"
+          className="flex items-center justify-center h-5 w-full rounded border border-transparent hover:border-border/60 transition-colors"
         >
           <PriorityDots level={value} />
         </button>
@@ -461,7 +469,7 @@ export function DateCell({
   onChange: (v: string | null) => void;
 }) {
   return (
-    <CellDropdown containerClassName="w-20" trigger={(toggle) => (
+    <CellDropdown containerClassName="w-[72px]" trigger={(toggle) => (
       <button
         onClick={toggle}
         className={cn(
@@ -470,6 +478,34 @@ export function DateCell({
         )}
       >
         {value ? formatDate(value) : '—'}
+      </button>
+    )}>
+      {(close) => <CalendarPicker value={value} onSelect={onChange} onClose={close} />}
+    </CellDropdown>
+  );
+}
+
+// ── DueDateCell ───────────────────────────────────────────────────────────
+
+export function DueDateCell({
+  value,
+  pastDue,
+  onChange,
+}: {
+  value: string | null;
+  pastDue: boolean;
+  onChange: (v: string | null) => void;
+}) {
+  return (
+    <CellDropdown containerClassName="w-[72px]" trigger={(toggle) => (
+      <button
+        onClick={toggle}
+        className={cn(
+          'h-5 w-full rounded px-1.5 text-[11px] border border-transparent hover:border-border/60 transition-colors tabular-nums flex items-center justify-center',
+          pastDue ? 'text-red-400' : value ? 'text-muted-foreground' : 'text-muted-foreground/30',
+        )}
+      >
+        {value ? formatDate(value) : '\u2014'}
       </button>
     )}>
       {(close) => <CalendarPicker value={value} onSelect={onChange} onClose={close} />}
@@ -533,7 +569,7 @@ export function RecurrenceCell({
 
   return (
     <CellDropdown
-      containerClassName="w-20"
+      containerClassName="w-[72px]"
       trigger={(toggle) => (
         <button
           onClick={() => { toggle(); setCustomMode(false); }}

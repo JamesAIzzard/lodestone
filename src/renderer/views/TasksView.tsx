@@ -1087,7 +1087,7 @@ export default function TasksView() {
       return;
     }
 
-    // Cross-date drop: show date popover
+    // Cross-date drop: preview at drop position, show date popover
     if (!draggedTask.actionDate) return;
     const overIndex = displayTasks.findIndex(t => t.id === overId);
 
@@ -1100,17 +1100,30 @@ export default function TasksView() {
     if (!targetDate) return;
     const targetDateTasks = displayTasks.filter(t => t.actionDate === targetDate && t.id !== draggedId);
     const insertIndex = targetDateTasks.findIndex(t => t.id === overId);
+    const resolvedInsertIndex = insertIndex === -1 ? targetDateTasks.length : insertIndex;
+
+    // Optimistically move the task to the drop position so it stays there visually
+    const previewPosition = resolvedInsertIndex + 0.5; // place it at the drop slot
+    const originalPosition = draggedTask.dayOrderPosition;
+    optimisticUpdate(draggedId, t => ({
+      ...t,
+      actionDate: targetDate,
+      dayOrderPosition: previewPosition,
+    }));
 
     // Get the Y position of the over element for popover anchoring
+    // (must read DOM after optimistic update is queued, use a short delay)
     const overElement = document.querySelector(`[data-task-id="${overId}"]`);
     const anchorY = overElement ? overElement.getBoundingClientRect().top : 200;
 
     setPendingDrop({
       taskId: draggedId,
       fromDate: draggedTask.actionDate,
+      previewDate: targetDate,
+      originalPosition,
       upperDate: upperTask?.actionDate ?? null,
       lowerDate: lowerTask?.actionDate ?? null,
-      insertIndex: insertIndex === -1 ? targetDateTasks.length : insertIndex,
+      insertIndex: resolvedInsertIndex,
       anchorY,
     });
   }
@@ -1121,19 +1134,21 @@ export default function TasksView() {
     const { taskId, fromDate } = pendingDrop;
     setPendingDrop(null);
 
-    if (date === fromDate) return; // no change
-
-    // Find the task
-    const task = displayTasks.find(t => t.id === taskId);
-    if (!task) return;
+    if (date === fromDate) {
+      // User picked the original date — revert to original position
+      optimisticUpdate(taskId, t => ({
+        ...t,
+        actionDate: fromDate,
+        dayOrderPosition: pendingDrop.originalPosition,
+      }));
+      return;
+    }
 
     // Get tasks already on the target date (excluding the moved task)
     const targetDateTasks = displayTasks.filter(t => t.actionDate === date && t.id !== taskId);
-
-    // Compute position: place at end of the target date group
     const position = targetDateTasks.length + 1;
 
-    // Optimistic update: change date + position
+    // Optimistic update: set final date + position
     optimisticUpdate(taskId, t => ({
       ...t,
       actionDate: date,
@@ -1148,6 +1163,18 @@ export default function TasksView() {
     }
     // Reload to get server-authoritative state
     loadTasks(reloadOpts());
+  }
+
+  /** Cancel cross-date drop — revert task to original position. */
+  function handleCrossDateCancel() {
+    if (!pendingDrop) return;
+    const { taskId, fromDate, originalPosition } = pendingDrop;
+    setPendingDrop(null);
+    optimisticUpdate(taskId, t => ({
+      ...t,
+      actionDate: fromDate,
+      dayOrderPosition: originalPosition,
+    }));
   }
 
   return (
@@ -1432,7 +1459,7 @@ export default function TasksView() {
                   <DragDatePopover
                     pending={pendingDrop}
                     onSelect={handleCrossDateSelect}
-                    onCancel={() => setPendingDrop(null)}
+                    onCancel={handleCrossDateCancel}
                   />
                 )}
               </div>

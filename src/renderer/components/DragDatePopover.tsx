@@ -6,8 +6,12 @@ import { cn } from '@/lib/utils';
 export interface PendingCrossDateDrop {
   /** The task being moved */
   taskId: number;
-  /** The task's original action date */
+  /** The task's original action date (for revert on cancel) */
   fromDate: string;
+  /** The date the task is temporarily previewed at (the drop target's date) */
+  previewDate: string;
+  /** The original dayOrderPosition (for revert on cancel) */
+  originalPosition: number | null;
   /** The date of the task ABOVE the drop position (null if dropped at top) */
   upperDate: string | null;
   /** The date of the task BELOW the drop position (null if dropped at bottom) */

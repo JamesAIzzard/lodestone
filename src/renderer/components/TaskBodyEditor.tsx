@@ -19,6 +19,8 @@ import { Superscript } from '@tiptap/extension-superscript';
 import { Typography } from '@tiptap/extension-typography';
 import { Selection } from '@tiptap/extensions';
 import { Markdown } from 'tiptap-markdown';
+import DragHandle from '@tiptap/extension-drag-handle-react';
+import { GripVertical } from 'lucide-react';
 
 // ── Tiptap UI components (installed as source) ─────────────────────────────
 import {
@@ -175,11 +177,14 @@ export function TaskBodyEditor({
       </Toolbar>
 
       {/* Editor content */}
-      <EditorContent
-        editor={editor}
-        role="presentation"
-        className="task-body-content"
-      />
+      <div className="task-body-content">
+        {editor && (
+          <DragHandle editor={editor} className="task-body-drag-handle" nested>
+            <GripVertical className="h-3.5 w-3.5" />
+          </DragHandle>
+        )}
+        <EditorContent editor={editor} role="presentation" />
+      </div>
     </EditorContext.Provider>
     </div>
   );

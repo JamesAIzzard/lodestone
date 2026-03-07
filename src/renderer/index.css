@@ -92,3 +92,54 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ── Scrollbars ────────────────────────────────────────────────────────── */
+
+/* Standard property (Firefox) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover,
+*:active {
+  scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
+}
+
+.dark *:hover,
+.dark *:active {
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
+/* Webkit / Chromium (Electron) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 999px;
+  transition: background-color 0.2s ease;
+}
+
+/* Show thumb on hover/scroll of the scrollable container */
+*:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.15);
+}
+
+*:active::-webkit-scrollbar-thumb {
+  background-color: rgba(0, 0, 0, 0.25);
+}
+
+.dark *:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.dark *:active::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.2);
+}

@@ -67,11 +67,15 @@
     "@radix-ui/react-popover": "^1.1.15",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tiptap/core": "^3.20.1",
+    "@tiptap/extension-collaboration": "^3.20.1",
+    "@tiptap/extension-drag-handle": "^3.20.1",
+    "@tiptap/extension-drag-handle-react": "^3.20.1",
     "@tiptap/extension-highlight": "^3.20.1",
     "@tiptap/extension-horizontal-rule": "^3.20.1",
     "@tiptap/extension-image": "^3.20.1",
     "@tiptap/extension-list": "^3.20.1",
     "@tiptap/extension-mathematics": "^3.20.1",
+    "@tiptap/extension-node-range": "^3.20.1",
     "@tiptap/extension-subscript": "^3.20.1",
     "@tiptap/extension-superscript": "^3.20.1",
     "@tiptap/extension-task-item": "^3.20.1",
@@ -82,6 +86,7 @@
     "@tiptap/pm": "^3.20.1",
     "@tiptap/react": "^3.20.1",
     "@tiptap/starter-kit": "^3.20.1",
+    "@tiptap/y-tiptap": "^3.0.2",
     "better-sqlite3": "^12.6.2",
     "chokidar": "^5.0.0",
     "class-variance-authority": "^0.7.1",
@@ -106,6 +111,8 @@
     "tree-sitter-wasms": "^0.1.13",
     "unified": "^11.0.5",
     "web-tree-sitter": "^0.20.8",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.29",
     "zod": "^4.3.6"
   }
 }

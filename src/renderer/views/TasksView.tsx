@@ -646,6 +646,7 @@ function TaskRowContent({
         <div
           data-drag-handle
           {...dragHandleProps}
+          onClick={(e) => { e.stopPropagation(); if (!isDragging) onNavigate(task.id, task); }}
           className="w-4 shrink-0 flex items-center justify-center cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-40 hover:!opacity-70 transition-opacity"
         >
           <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
@@ -823,7 +824,7 @@ export default function TasksView() {
   const [editingTopicValue, setEditingTopicValue] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [newTaskTopic, setNewTaskTopic] = useState('');
-  const [pendingCreates, setPendingCreates] = useState<{ key: number; topic: string }[]>([]);
+  const [pendingCreates, setPendingCreates] = useState<{ key: number; topic: string; index: number }[]>([]);
   const pendingKeyRef = useRef(0);
   const showCompletedRef = useRef(showCompleted);
   showCompletedRef.current = showCompleted;
@@ -998,7 +999,7 @@ export default function TasksView() {
     setIsCreating(false);
     setNewTaskTopic('');
     const key = ++pendingKeyRef.current;
-    setPendingCreates(prev => [...prev, { key, topic: trimmed }]);
+    setPendingCreates(prev => [...prev, { key, topic: trimmed, index: -1 }]);
     await window.electronAPI?.createTask(trimmed, selectedProjectIds.length === 1 ? selectedProjectIds[0] : undefined);
     setPendingCreates(prev => prev.filter(p => p.key !== key));
     loadTasks(reloadOpts());
@@ -1083,6 +1084,7 @@ export default function TasksView() {
     useSensor(KeyboardSensor),
   );
 
+
   function handleDragStart(event: DragStartEvent) {
     setActiveId(event.active.id as number);
   }
@@ -1136,25 +1138,22 @@ export default function TasksView() {
 
     // Cross-date drop: auto-pick target date and apply immediately
     if (!draggedTask.actionDate) return;
-    const overIndex = displayTasks.findIndex(t => t.id === overId);
 
-    // Determine upper/lower dates around the drop position
-    const upperTask = overIndex > 0 ? displayTasks[overIndex - 1] : null;
-    const lowerTask = displayTasks[overIndex]; // the task we dropped onto
-    const upperDate = upperTask?.actionDate ?? null;
-    const lowerDate = lowerTask?.actionDate ?? null;
+    // Use the drop target's date — when you drop onto a task, you join its date group
+    const targetDate = overTask.actionDate ?? draggedTask.actionDate;
 
-    // Auto-pick target date from the boundary
-    let targetDate: string;
-    if (upperDate && lowerDate) {
-      targetDate = pickCrossDate(upperDate, lowerDate);
-    } else {
-      targetDate = overTask.actionDate ?? draggedTask.actionDate;
+    // Determine insert position based on actual drop location, not drag direction.
+    // Compare the dragged element's translated center with the over element's center
+    // to decide whether to insert before or after the over task.
+    const translatedRect = active.rect.current.translated;
+    const overRect = over.rect;
+    let insertAfter = true; // safe default
+    if (translatedRect && overRect) {
+      const activeCenterY = translatedRect.top + translatedRect.height / 2;
+      const overCenterY = overRect.top + overRect.height / 2;
+      insertAfter = activeCenterY > overCenterY;
     }
 
-    // Compute position on the target date
-    const draggedIndex = displayTasks.findIndex(t => t.id === draggedId);
-    const movingDown = draggedIndex < overIndex;
     const targetDateTasks = displayTasks.filter(t => t.actionDate === targetDate && t.id !== draggedId);
     let position: number;
     if (targetDate === overTask.actionDate && targetDateTasks.length > 0) {
@@ -1162,14 +1161,14 @@ export default function TasksView() {
       const overIdx = targetDateTasks.findIndex(t => t.id === overId);
       if (overIdx !== -1) {
         const overPos = targetDateTasks[overIdx].dayOrderPosition ?? (overIdx + 1);
-        if (movingDown) {
-          // Dragging down → insert after the over task
+        if (insertAfter) {
+          // Dropped below the over task's center → insert after
           const nextPos = overIdx < targetDateTasks.length - 1
             ? (targetDateTasks[overIdx + 1].dayOrderPosition ?? (overIdx + 2))
             : overPos + 2;
           position = (overPos + nextPos) / 2;
         } else {
-          // Dragging up → insert before the over task
+          // Dropped above the over task's center → insert before
           const prevPos = overIdx > 0
             ? (targetDateTasks[overIdx - 1].dayOrderPosition ?? overIdx)
             : 0;
@@ -1254,11 +1253,11 @@ export default function TasksView() {
     if (!insertAt) return;
     const trimmed = insertTopic.trim();
     if (!trimmed) { setInsertAt(null); return; }
-    const { date, position, projectId } = insertAt;
+    const { index, date, position, projectId } = insertAt;
     setInsertAt(null);
     setInsertTopic('');
     const key = ++pendingKeyRef.current;
-    setPendingCreates(prev => [...prev, { key, topic: trimmed }]);
+    setPendingCreates(prev => [...prev, { key, topic: trimmed, index }]);
     const result = await window.electronAPI?.createTask(trimmed, projectId) as { success?: boolean; id?: number } | undefined;
     if (result?.success && result.id) {
       const today = getTodayStr();
@@ -1457,27 +1456,17 @@ export default function TasksView() {
                   </div>
                 )}
 
-                {/* Pending create rows */}
-                {pendingCreates.map(({ key, topic }) => (
-                  <div key={key} className="flex items-center gap-2 py-2.5 opacity-50">
-                    <div className="w-[72px] shrink-0" />
-                    <div className="w-12 shrink-0 flex items-center justify-center">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <span className="block truncate text-sm text-muted-foreground italic">{topic}</span>
-                    </div>
-                    <div className="shrink-0 flex items-center gap-1">
-                      <div className="w-32" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
-                    </div>
-                  </div>
-                ))}
-
                 <DndContext
                   sensors={sensors}
                   collisionDetection={closestCenter}
                   onDragStart={handleDragStart}
                   onDragEnd={handleDragEnd}
+                  autoScroll={{
+                    canScroll(element) {
+                      // Only auto-scroll the list's scrollable ancestor, not the window
+                      return element !== document.documentElement && element !== document.body;
+                    },
+                  }}
                 >
                   <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
                     {(() => {
@@ -1528,7 +1517,32 @@ export default function TasksView() {
                         );
                       }
 
+                      function renderPendingRow(key: number, topic: string) {
+                        return (
+                          <div key={`pending-${key}`} className="flex items-center gap-2 py-2.5 opacity-50">
+                            <div className="w-4 shrink-0" />
+                            <div className="w-[72px] shrink-0" />
+                            <div className="w-12 shrink-0 flex items-center justify-center">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <span className="block truncate text-sm text-muted-foreground italic">{topic}</span>
+                            </div>
+                            <div className="shrink-0 flex items-center gap-1">
+                              <div className="w-32" /><div className="w-6" /><div className="w-[72px]" /><div className="w-[72px]" /><div className="w-7" />
+                            </div>
+                          </div>
+                        );
+                      }
+
                       for (let i = 0; i <= displayTasks.length; i++) {
+                        // Pending creates at this position
+                        for (const pc of pendingCreates) {
+                          if ((pc.index === -1 && i === 0) || pc.index === i) {
+                            elements.push(renderPendingRow(pc.key, pc.topic));
+                          }
+                        }
+
                         // Insert zone or inline creation row at this position
                         if (insertAt?.index === i) {
                           elements.push(renderInsertRow());

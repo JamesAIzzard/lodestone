@@ -429,10 +429,12 @@ export function CalendarPicker({
   value,
   onSelect,
   onClose,
+  align = 'left',
 }: {
   value: string | null;
   onSelect: (v: string | null) => void;
   onClose: () => void;
+  align?: 'left' | 'right';
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -447,7 +449,7 @@ export function CalendarPicker({
   return (
     <div
       ref={ref}
-      className="absolute right-0 top-full mt-1 z-50 w-56 rounded-md border border-border bg-background shadow-lg p-3 select-none"
+      className={cn('absolute top-full mt-1 z-50 w-56 rounded-md border border-border bg-background shadow-lg p-3 select-none', align === 'right' ? 'right-0' : 'left-0')}
     >
       <CalendarGrid
         value={value}
@@ -508,7 +510,7 @@ export function DueDateCell({
         {value ? formatDate(value) : '\u2014'}
       </button>
     )}>
-      {(close) => <CalendarPicker value={value} onSelect={onChange} onClose={close} />}
+      {(close) => <CalendarPicker value={value} onSelect={onChange} onClose={close} align="right" />}
     </CellDropdown>
   );
 }

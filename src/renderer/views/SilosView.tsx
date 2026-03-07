@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Plus } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import ActionButton from '@/components/ActionButton';
 import SiloCard from '@/components/SiloCard';
 import AddSiloModal from '@/components/AddSiloModal';
 import type { SiloStatus } from '../../shared/types';
@@ -94,10 +94,11 @@ export default function SilosView() {
     <div className="p-6">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-lg font-semibold text-foreground">Silos</h1>
-        <Button size="sm" onClick={() => setAddOpen(true)}>
-          <Plus className="h-3.5 w-3.5" />
-          Add Silo
-        </Button>
+        <ActionButton
+          icon={<Plus className="h-3.5 w-3.5" />}
+          label="Add silo"
+          onClick={() => setAddOpen(true)}
+        />
       </div>
 
       {silos.length === 0 ? (

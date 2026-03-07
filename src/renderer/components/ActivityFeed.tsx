@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { AlertCircle, ChevronDown, Copy, FileMinus, RefreshCw, FilePlus, FolderPlus, FolderMinus } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
+import FilterBar from '@/components/FilterBar';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
 import type { SiloStatus, ActivityEvent, ActivityEventType } from '../../shared/types';
 
@@ -105,26 +106,12 @@ export default function ActivityFeed({ siloName, limit = 200 }: ActivityFeedProp
   return (
     <div>
       {/* Type filter toggles */}
-      <div className="mb-3 flex gap-1">
-        {ALL_EVENT_TYPES.map((type) => {
-          const config = eventConfig[type];
-          const active = activeTypes.has(type);
-          return (
-            <button
-              key={type}
-              onClick={() => toggleType(type)}
-              className={cn(
-                'rounded-md border px-2.5 py-1 text-xs transition-colors',
-                active
-                  ? 'border-foreground/20 bg-accent text-foreground'
-                  : 'border-border text-muted-foreground/40 hover:text-muted-foreground',
-              )}
-            >
-              {config.label}
-            </button>
-          );
-        })}
-      </div>
+      <FilterBar
+        options={ALL_EVENT_TYPES.map((type) => ({ value: type, label: eventConfig[type].label }))}
+        isActive={(v) => activeTypes.has(v as ActivityEventType)}
+        onSelect={(v) => toggleType(v as ActivityEventType)}
+        className="mb-3"
+      />
 
       {/* Event list */}
       {filtered.length === 0 ? (

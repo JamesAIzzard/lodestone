@@ -56,7 +56,7 @@ export function autoAssignColor(existingSiloCount: number): SiloColor {
   return assignable[existingSiloCount % assignable.length];
 }
 
-// ── Icon Set ────────────────────────────────────────────────────────────────
+// ── Silo Icon Set ────────────────────────────────────────────────────────────
 
 export const SILO_ICON_NAMES = [
   'file-text', 'code', 'book-open', 'database', 'folder',

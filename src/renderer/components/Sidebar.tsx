@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
 import { Database, Search, Activity, Settings, ChevronLeft, ChevronRight, BrainCircuit, Boxes, FileStack, Clock, CheckSquare } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import ActionButton from '@/components/ActionButton';
 import type { ServerStatus } from '../../shared/types';
 import logoUrl from '../../../assets/icon.png';
 
@@ -111,23 +112,14 @@ export default function Sidebar() {
 
       {/* Collapse toggle */}
       <div className={cn('px-2 pb-1', isCollapsed ? 'flex justify-center' : '')}>
-        <button
+        <ActionButton
+          icon={isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronLeft className="h-3 w-3" />}
+          label="Collapse"
+          collapsed={isCollapsed}
           onClick={toggleCollapsed}
           title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          className={cn(
-            'flex w-full items-center rounded-md p-2 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground',
-            isCollapsed ? 'justify-center' : 'gap-2',
-          )}
-        >
-          {isCollapsed ? (
-            <ChevronRight className="h-3 w-3" />
-          ) : (
-            <>
-              <ChevronLeft className="h-3 w-3" />
-              <span>Collapse</span>
-            </>
-          )}
-        </button>
+          className={cn('w-full rounded-md p-2 hover:bg-accent/50', isCollapsed ? 'justify-center' : '')}
+        />
       </div>
 
       {/* Status panel */}

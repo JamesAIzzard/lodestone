@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Search, FileText, FileCode, FileJson, BookOpen, File, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import FilterBar from '@/components/FilterBar';
+import { CellDropdown, InlineDropdown } from '@/components/TaskCells';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
 import type { SiloStatus, SearchResult, DirectoryResult, DirectoryTreeNode, ExploreParams, SearchMode, LocationHint } from '../../shared/types';
 
@@ -176,47 +178,43 @@ export default function SearchView() {
         </div>
 
         {/* Search controls */}
-        <div className="flex gap-3">
-          <select
-            value={selectedSilo}
-            onChange={(e) => setSelectedSilo(e.target.value)}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+        <div className="flex gap-2">
+          <CellDropdown
+            trigger={(toggle) => (
+              <button
+                onClick={toggle}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-xs text-foreground hover:bg-accent/30 transition-colors"
+              >
+                {selectedSilo === 'all' ? 'All Silos' : selectedSilo}
+                <ChevronDown className="h-3 w-3 text-muted-foreground" />
+              </button>
+            )}
           >
-            <option value="all">All Silos</option>
-            {silos.map((s) => (
-              <option key={s.config.name} value={s.config.name} disabled={s.watcherState === 'stopped'}>
-                {s.config.name}{s.watcherState === 'stopped' ? ' (stopped)' : ''}
-              </option>
-            ))}
-          </select>
+            {(close) => (
+              <InlineDropdown
+                options={[
+                  { value: 'all', label: 'All Silos' },
+                  ...silos.map((s) => ({
+                    value: s.config.name,
+                    label: s.watcherState === 'stopped' ? `${s.config.name} (stopped)` : s.config.name,
+                    className: s.watcherState === 'stopped' ? 'text-muted-foreground/50' : undefined,
+                  })),
+                ]}
+                onSelect={(v) => { setSelectedSilo(v); }}
+                onClose={close}
+              />
+            )}
+          </CellDropdown>
 
           {/* Mode toggle */}
-          <div className="flex rounded-md border border-input overflow-hidden">
-            <button
-              onClick={() => handleModeChange('file')}
-              className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors',
-                searchMode === 'file'
-                  ? 'bg-accent text-foreground'
-                  : 'text-muted-foreground hover:bg-accent/30',
-              )}
-            >
-              <FileText className="h-3.5 w-3.5" />
-              Files
-            </button>
-            <button
-              onClick={() => handleModeChange('directory')}
-              className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors border-l border-input',
-                searchMode === 'directory'
-                  ? 'bg-accent text-foreground'
-                  : 'text-muted-foreground hover:bg-accent/30',
-              )}
-            >
-              <Folder className="h-3.5 w-3.5" />
-              Directories
-            </button>
-          </div>
+          <FilterBar
+            options={[
+              { value: 'file', label: 'Files', icon: <FileText className="h-3.5 w-3.5" /> },
+              { value: 'directory', label: 'Directories', icon: <Folder className="h-3.5 w-3.5" /> },
+            ]}
+            isActive={(v) => v === searchMode}
+            onSelect={(v) => handleModeChange(v as ViewMode)}
+          />
 
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -234,23 +232,11 @@ export default function SearchView() {
         {/* Start path filter + depth (directory mode) + file search mode */}
         <div className="mt-2 flex items-center gap-2">
           {!isDirectoryMode && (
-            <div className="flex rounded-md border border-input overflow-hidden shrink-0">
-              {(['hybrid', 'semantic', 'bm25', 'filepath', 'regex'] as const).map((mode, i) => (
-                <button
-                  key={mode}
-                  onClick={() => setFileSearchMode(mode)}
-                  className={cn(
-                    'px-2 py-1 text-[10px] transition-colors',
-                    i > 0 && 'border-l border-input',
-                    fileSearchMode === mode
-                      ? 'bg-accent text-foreground'
-                      : 'text-muted-foreground/60 hover:bg-accent/30',
-                  )}
-                >
-                  {mode}
-                </button>
-              ))}
-            </div>
+            <FilterBar
+              options={(['hybrid', 'semantic', 'bm25', 'filepath', 'regex'] as const).map((m) => ({ value: m, label: m }))}
+              isActive={(v) => v === fileSearchMode}
+              onSelect={(v) => setFileSearchMode(v as SearchMode)}
+            />
           )}
           <div className="relative flex-1">
             <input
@@ -258,7 +244,7 @@ export default function SearchView() {
               value={startPath}
               onChange={(e) => setStartPath(e.target.value)}
               placeholder="Filter to path (optional)"
-              className="h-7 w-full rounded-md border border-input bg-background px-3 pr-7 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-2 focus:ring-ring"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 pr-7 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:ring-2 focus:ring-ring"
             />
             {startPath && (
               <button

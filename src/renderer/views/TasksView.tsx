@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Search, X, Calendar, ChevronDown, ChevronLeft, FolderOpen } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Merge, Search, X, Calendar, ChevronDown, ChevronLeft, Folder, FolderOpen } from 'lucide-react';
+import ActionButton from '@/components/ActionButton';
 import { cn } from '@/lib/utils';
 import {
   StatusCell,
@@ -13,7 +14,7 @@ import {
   getTodayStr,
   formatDate,
 } from '@/components/TaskCells';
-import { SILO_COLOR_MAP, type SiloColor } from '../../shared/silo-appearance';
+import { SILO_COLORS, SILO_COLOR_MAP, type SiloColor } from '../../shared/silo-appearance';
 import type { MemoryRecord, MemoryStatusValue, PriorityLevel, ProjectWithCounts } from '../../shared/types';
 
 type SubView = 'tasks' | 'projects';
@@ -292,9 +293,9 @@ function fuzzyScore(query: string, name: string): number {
 
 // ── Project search filter (multi-select with pills) ──────────────────────────
 
-function projectDot(color: string, size = 'h-2 w-2') {
+function projectIcon(color: string, size = 'h-3.5 w-3.5') {
   const mapping = SILO_COLOR_MAP[color as SiloColor];
-  return <span className={cn(size, 'rounded-full shrink-0', mapping?.dot ?? 'bg-muted-foreground/30')} />;
+  return <Folder className={cn(size, 'shrink-0', mapping?.text ?? 'text-muted-foreground/40')} />;
 }
 
 function ProjectSearchFilter({
@@ -377,7 +378,7 @@ function ProjectSearchFilter({
                 colorMap?.text ?? 'text-foreground',
               )}
             >
-              {projectDot(p.color, 'h-1.5 w-1.5')}
+              {projectIcon(p.color, 'h-3 w-3')}
               <span className="max-w-[100px] truncate">{p.name}</span>
               <button
                 onClick={(e) => { e.stopPropagation(); removeProject(p.id); }}
@@ -434,7 +435,7 @@ function ProjectSearchFilter({
               onMouseDown={(e) => { e.preventDefault(); addProject(p.id); }}
               className="flex items-center w-full px-3 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors gap-2"
             >
-              {projectDot(p.color)}
+              {projectIcon(p.color)}
               <span className="truncate flex-1">{p.name}</span>
               <span className="text-muted-foreground/30 tabular-nums text-[11px]">{p.openCount}</span>
             </button>
@@ -474,6 +475,7 @@ export default function TasksView() {
   const [customFrom, setCustomFrom] = useState<string | null>(null);
   const [customTo, setCustomTo] = useState<string | null>(null);
   const [subView, setSubView] = useState<SubView>('tasks');
+  const [newProjectTrigger, setNewProjectTrigger] = useState(0);
   const [projects, setProjects] = useState<ProjectWithCounts[]>([]);
   const [selectedProjectIds, setSelectedProjectIds] = useState<number[]>([]);
 
@@ -689,22 +691,7 @@ export default function TasksView() {
       {/* Sticky header */}
       <div className="sticky top-0 z-10 bg-background border-b border-border px-6 pt-6 pb-4">
         <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-1">
-            {(['tasks', 'projects'] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setSubView(tab)}
-                className={cn(
-                  'px-2.5 py-1 rounded-md text-sm font-medium transition-colors',
-                  subView === tab
-                    ? 'text-foreground bg-accent'
-                    : 'text-muted-foreground hover:text-foreground',
-                )}
-              >
-                {tab === 'tasks' ? 'Tasks' : 'Projects'}
-              </button>
-            ))}
-          </div>
+          <h1 className="text-lg font-semibold text-foreground">Tasks</h1>
           <div className="flex items-center gap-3">
             {subView === 'tasks' && overdueCount > 0 && (
               <span className="inline-flex items-center text-xs font-medium text-amber-400">
@@ -712,23 +699,33 @@ export default function TasksView() {
               </span>
             )}
             {subView === 'tasks' && (
-              <button
+              <ActionButton
+                icon={<Plus className="h-3.5 w-3.5" />}
+                label="New task"
                 onClick={() => { setIsCreating(true); setNewTaskTopic(''); }}
-                title="New task"
-                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                New task
-              </button>
+              />
             )}
-            <button
+            {subView === 'projects' && (
+              <ActionButton
+                icon={<Plus className="h-3.5 w-3.5" />}
+                label="New project"
+                onClick={() => setNewProjectTrigger(n => n + 1)}
+              />
+            )}
+            <ActionButton
+              icon={subView === 'projects'
+                ? <FolderOpen className="h-3.5 w-3.5" />
+                : <Folder className="h-3.5 w-3.5" />}
+              title="Manage projects"
+              onClick={() => setSubView(subView === 'projects' ? 'tasks' : 'projects')}
+              className={subView === 'projects' ? 'text-foreground' : undefined}
+            />
+            <ActionButton
+              icon={<RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />}
+              title="Refresh"
               onClick={() => { loadTasks(reloadOpts()); loadProjects(); }}
               disabled={loading}
-              title="Refresh"
-              className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
-            >
-              <RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
-            </button>
+            />
           </div>
         </div>
 
@@ -981,7 +978,7 @@ export default function TasksView() {
 
         {/* ── Projects sub-view ──────────────────────────────────── */}
         {subView === 'projects' && !noCloudUrl && !error && (
-          <ProjectsSubView projects={projects} onRefresh={loadProjects} />
+          <ProjectsSubView projects={projects} onRefresh={loadProjects} createTrigger={newProjectTrigger} />
         )}
       </div>
     </div>
@@ -993,13 +990,37 @@ export default function TasksView() {
 function ProjectsSubView({
   projects,
   onRefresh,
+  createTrigger = 0,
 }: {
   projects: ProjectWithCounts[];
   onRefresh: () => void;
+  createTrigger?: number;
 }) {
-  const navigate = useNavigate();
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState('');
+  const [openColorId, setOpenColorId] = useState<number | null>(null);
+  const [editingNameId, setEditingNameId] = useState<number | null>(null);
+  const [editingNameValue, setEditingNameValue] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [confirmMergeId, setConfirmMergeId] = useState<number | null>(null);
+  const [mergeTargetId, setMergeTargetId] = useState<number | null>(null);
+  const colorPopoverRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (createTrigger > 0) { setIsCreating(true); setNewName(''); }
+  }, [createTrigger]);
+
+  // Close color popover on outside click
+  useEffect(() => {
+    if (openColorId === null) return;
+    function onDown(e: MouseEvent) {
+      if (colorPopoverRef.current && !colorPopoverRef.current.contains(e.target as Node)) {
+        setOpenColorId(null);
+      }
+    }
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [openColorId]);
 
   async function handleCreate() {
     const name = newName.trim();
@@ -1010,17 +1031,39 @@ function ProjectsSubView({
     onRefresh();
   }
 
+  async function handleColorChange(id: number, color: SiloColor) {
+    setOpenColorId(null);
+    await window.electronAPI?.updateProject(id, { color });
+    onRefresh();
+  }
+
+
+  async function handleRename(project: ProjectWithCounts) {
+    setEditingNameId(null);
+    const trimmed = editingNameValue.trim();
+    if (!trimmed || trimmed === project.name) return;
+    await window.electronAPI?.updateProject(project.id, { name: trimmed });
+    onRefresh();
+  }
+
+  async function handleDelete(id: number) {
+    setConfirmDeleteId(null);
+    await window.electronAPI?.deleteProject(id);
+    onRefresh();
+  }
+
+  async function handleMerge(sourceId: number) {
+    if (!mergeTargetId) return;
+    setConfirmMergeId(null);
+    setMergeTargetId(null);
+    await window.electronAPI?.mergeProjects(sourceId, mergeTargetId);
+    onRefresh();
+  }
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4">
         <p className="text-xs text-muted-foreground">{projects.length} project{projects.length !== 1 ? 's' : ''}</p>
-        <button
-          onClick={() => { setIsCreating(true); setNewName(''); }}
-          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New project
-        </button>
       </div>
 
       {isCreating && (
@@ -1049,29 +1092,153 @@ function ProjectsSubView({
           const total = p.openCount + p.completedCount;
           const pct = total > 0 ? Math.round((p.completedCount / total) * 100) : 0;
           const colorMap = SILO_COLOR_MAP[p.color as SiloColor];
+          const isColorOpen = openColorId === p.id;
+          const isDeleting = confirmDeleteId === p.id;
+          const isMerging = confirmMergeId === p.id;
+          const mergeTargets = projects.filter(q => q.id !== p.id);
+
           return (
-            <button
-              key={p.id}
-              onClick={() => navigate(`/tasks/projects/${p.id}`)}
-              className="flex items-center gap-3 py-3 text-left group hover:bg-accent/30 -mx-2 px-2 rounded-md transition-colors"
-            >
-              {projectDot(p.color, 'h-2.5 w-2.5')}
-              <span className="flex-1 min-w-0 text-sm font-medium text-foreground truncate">
-                {p.name}
-              </span>
-              <div className="flex items-center gap-3 shrink-0">
-                {/* Progress bar */}
-                <div className="w-20 h-1.5 rounded-full bg-border/40 overflow-hidden">
-                  <div
-                    className={cn('h-full rounded-full transition-all', colorMap?.dot ?? 'bg-blue-500')}
-                    style={{ width: `${pct}%` }}
-                  />
+            <div key={p.id} className="group py-3">
+              {/* Main row */}
+              <div className="flex items-center gap-3">
+                {/* Folder icon — opens inline colour picker */}
+                <div className="relative" ref={isColorOpen ? colorPopoverRef : undefined}>
+                  <button
+                    onClick={() => setOpenColorId(isColorOpen ? null : p.id)}
+                    title="Change colour"
+                    className="p-0.5 rounded transition-colors hover:bg-accent"
+                  >
+                    <Folder className={cn('h-4 w-4 shrink-0', SILO_COLOR_MAP[p.color as SiloColor]?.text ?? 'text-blue-500')} />
+                  </button>
+                  {isColorOpen && (
+                    <div className="absolute left-0 top-6 z-20 flex items-center gap-1.5 flex-wrap p-2 rounded-lg border border-border bg-popover shadow-lg w-max">
+                      {SILO_COLORS.map((c) => {
+                        const map = SILO_COLOR_MAP[c];
+                        return (
+                          <button
+                            key={c}
+                            onClick={() => handleColorChange(p.id, c)}
+                            className={cn(
+                              'h-5 w-5 rounded-full transition-all',
+                              map.dot,
+                              p.color === c
+                                ? 'ring-2 ring-offset-2 ring-offset-background ring-foreground/40 scale-110'
+                                : 'opacity-60 hover:opacity-100',
+                            )}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-                <span className="text-[11px] tabular-nums text-muted-foreground w-16 text-right">
-                  {p.completedCount}/{total} done
-                </span>
+
+                {/* Name (inline editable) */}
+                {editingNameId === p.id ? (
+                  <input
+                    autoFocus
+                    value={editingNameValue}
+                    onChange={(e) => setEditingNameValue(e.target.value)}
+                    onBlur={() => handleRename(p)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleRename(p);
+                      if (e.key === 'Escape') { setEditingNameId(null); }
+                    }}
+                    className="flex-1 min-w-0 bg-transparent text-sm font-medium text-foreground border-b border-ring focus:outline-none"
+                  />
+                ) : (
+                  <span
+                    onClick={() => { setEditingNameId(p.id); setEditingNameValue(p.name); }}
+                    className="flex-1 min-w-0 text-sm font-medium text-foreground truncate cursor-text"
+                  >
+                    {p.name}
+                  </span>
+                )}
+
+                {/* Progress */}
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="w-20 h-1.5 rounded-full bg-border/40 overflow-hidden">
+                    <div
+                      className={cn('h-full rounded-full transition-all', colorMap?.dot ?? 'bg-blue-500')}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <span className="text-[11px] tabular-nums text-muted-foreground w-16 text-right">
+                    {p.completedCount}/{total} done
+                  </span>
+                </div>
+
+                {/* Action buttons (visible on row hover) */}
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  {mergeTargets.length > 0 && (
+                    <button
+                      onClick={() => { setConfirmMergeId(p.id); setMergeTargetId(null); setConfirmDeleteId(null); }}
+                      title="Merge into another project"
+                      className="p-1 rounded text-muted-foreground/40 hover:text-amber-400 transition-colors"
+                    >
+                      <Merge className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => { setConfirmDeleteId(p.id); setConfirmMergeId(null); }}
+                    title="Delete project"
+                    className="p-1 rounded text-muted-foreground/40 hover:text-red-400 transition-colors"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </div>
-            </button>
+
+              {/* Delete confirmation (inline expand) */}
+              {isDeleting && (
+                <div className="flex items-center gap-3 mt-2 pl-7">
+                  <span className="text-xs text-muted-foreground">
+                    Delete "{p.name}"?{total > 0 ? ` ${total} task${total !== 1 ? 's' : ''} will become unassigned.` : ''}
+                  </span>
+                  <button
+                    onClick={() => handleDelete(p.id)}
+                    className="text-xs text-red-400 hover:text-red-300 transition-colors font-medium"
+                  >
+                    Yes, delete
+                  </button>
+                  <button
+                    onClick={() => setConfirmDeleteId(null)}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+
+              {/* Merge confirmation (inline expand) */}
+              {isMerging && (
+                <div className="flex items-center gap-3 mt-2 pl-7 flex-wrap">
+                  <span className="text-xs text-muted-foreground">Merge into:</span>
+                  <select
+                    value={mergeTargetId ?? ''}
+                    onChange={(e) => setMergeTargetId(e.target.value ? parseInt(e.target.value, 10) : null)}
+                    className="h-6 rounded border border-border bg-background px-2 text-xs text-foreground"
+                  >
+                    <option value="">Select project…</option>
+                    {mergeTargets.map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => handleMerge(p.id)}
+                    disabled={!mergeTargetId}
+                    className="text-xs text-amber-400 hover:text-amber-300 transition-colors font-medium disabled:opacity-30"
+                  >
+                    Merge ({total} tasks)
+                  </button>
+                  <button
+                    onClick={() => { setConfirmMergeId(null); setMergeTargetId(null); }}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
           );
         })}
       </div>

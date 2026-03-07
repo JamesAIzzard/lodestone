@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
+import { ChevronDown } from 'lucide-react';
 import ActivityFeed from '@/components/ActivityFeed';
+import { CellDropdown, InlineDropdown } from '@/components/TaskCells';
 import type { SiloStatus } from '../../shared/types';
 
 export default function ActivityView() {
@@ -16,18 +18,28 @@ export default function ActivityView() {
 
       {/* Silo dropdown — only shown on the top-level activity view */}
       <div className="mb-4">
-        <select
-          value={siloFilter}
-          onChange={(e) => setSiloFilter(e.target.value)}
-          className="h-8 rounded-md border border-input bg-background px-3 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+        <CellDropdown
+          trigger={(toggle) => (
+            <button
+              onClick={toggle}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-xs text-foreground hover:bg-accent/30 transition-colors"
+            >
+              {siloFilter === 'all' ? 'All Silos' : siloFilter}
+              <ChevronDown className="h-3 w-3 text-muted-foreground" />
+            </button>
+          )}
         >
-          <option value="all">All Silos</option>
-          {silos.map((s) => (
-            <option key={s.config.name} value={s.config.name}>
-              {s.config.name}
-            </option>
-          ))}
-        </select>
+          {(close) => (
+            <InlineDropdown
+              options={[
+                { value: 'all', label: 'All Silos' },
+                ...silos.map((s) => ({ value: s.config.name, label: s.config.name })),
+              ]}
+              onSelect={(v) => { setSiloFilter(v); }}
+              onClose={close}
+            />
+          )}
+        </CellDropdown>
       </div>
 
       <ActivityFeed

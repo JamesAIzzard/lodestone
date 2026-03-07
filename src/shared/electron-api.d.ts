@@ -109,6 +109,8 @@ export interface ElectronAPI {
   skipTask: (id: number, reason?: string) => Promise<{ success: boolean; nextActionDate?: string; error?: string }>;
   createTask: (topic: string, projectId?: number) => Promise<{ success: boolean; id?: number; error?: string }>;
   deleteTask: (id: number) => Promise<{ success: boolean; error?: string }>;
+  updateDayOrder: (taskId: number, actionDate: string, position: number) => Promise<{ success: boolean; error?: string }>;
+  deleteDayOrder: (taskId: number) => Promise<{ success: boolean; error?: string }>;
 
   // Projects
   listProjects: (opts?: { includeArchived?: boolean }) => Promise<{ success: boolean; projects: ProjectWithCounts[]; error?: string }>;

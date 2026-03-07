@@ -1,6 +1,24 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Merge, Search, X, Calendar, ChevronDown, ChevronLeft, Folder, FolderOpen, Archive } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, Cloud, Plus, Trash2, Merge, Search, X, Calendar, ChevronDown, ChevronLeft, Folder, FolderOpen, Archive, GripVertical } from 'lucide-react';
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragStartEvent,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import DragDatePopover, { type PendingCrossDateDrop } from '@/components/DragDatePopover';
 import ActionButton from '@/components/ActionButton';
 import { cn } from '@/lib/utils';
 import {
@@ -565,6 +583,180 @@ function ArchivedProjectSearch({
   );
 }
 
+// ── Sortable task row ─────────────────────────────────────────────────────────
+
+interface TaskRowProps {
+  task: MemoryRecord;
+  stripe: number;
+  overdue: boolean;
+  isEditingTopic: boolean;
+  editingTopicValue: string;
+  isGracePeriod: boolean;
+  isSearching: boolean;
+  projects: ProjectWithCounts[];
+  showCompleted: boolean;
+  onNavigate: (id: number, task: MemoryRecord) => void;
+  onRevise: (id: number, fields: Record<string, unknown>) => void;
+  onDelete: (id: number) => void;
+  onSkip: (id: number) => void;
+  onStartEditTopic: (task: MemoryRecord) => void;
+  onTopicChange: (value: string) => void;
+  onCommitTopicEdit: (id: number, value: string) => void;
+  onCancelTopicEdit: () => void;
+}
+
+function TaskRowContent({
+  task, stripe, overdue, isEditingTopic, editingTopicValue, isGracePeriod,
+  isSearching, projects, onNavigate, onRevise, onDelete, onSkip,
+  onStartEditTopic, onTopicChange, onCommitTopicEdit, onCancelTopicEdit,
+  dragHandleProps, isDragging,
+}: TaskRowProps & { dragHandleProps?: Record<string, unknown>; isDragging?: boolean }) {
+  return (
+    <div
+      className={cn(
+        'group flex items-center gap-2 py-2.5 -mx-2 px-2 rounded transition-opacity duration-500',
+        !isDragging && 'cursor-pointer',
+        stripe === 1 && 'bg-muted/30',
+        overdue && 'border-l-2 border-l-amber-500/50',
+        isGracePeriod && 'opacity-50',
+        isDragging && 'opacity-30 border border-dashed border-border',
+      )}
+      onClick={(e) => {
+        if (isDragging) return;
+        if (!(e.target as HTMLElement).closest('button, input, [role="button"], [data-drag-handle]')) {
+          onNavigate(task.id, task);
+        }
+      }}
+    >
+      {/* Drag handle */}
+      {!isSearching && (
+        <div
+          data-drag-handle
+          {...dragHandleProps}
+          className="w-4 shrink-0 flex items-center justify-center cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-40 hover:!opacity-70 transition-opacity"
+        >
+          <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
+        </div>
+      )}
+
+      {/* UID */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onNavigate(task.id, task); }}
+        title="Open detail"
+        className="w-10 shrink-0 h-5 flex items-center justify-end text-[11px] tabular-nums text-muted-foreground/20 group-hover:text-primary/60 hover:!text-primary transition-colors cursor-pointer"
+      >
+        m{task.id}
+      </button>
+
+      {/* Action date */}
+      <DateCell
+        value={task.actionDate}
+        overdue={overdue}
+        onChange={(v) => onRevise(task.id, { actionDate: v })}
+      />
+
+      {/* Status */}
+      <StatusCell
+        value={task.status}
+        onChange={(v) => onRevise(task.id, { status: v })}
+        isRecurring={!!task.recurrence}
+        onSkip={() => onSkip(task.id)}
+      />
+
+      {/* Topic */}
+      <div className="flex-1 min-w-0">
+        {isEditingTopic ? (
+          <input
+            autoFocus
+            value={editingTopicValue}
+            onChange={(e) => onTopicChange(e.target.value)}
+            onBlur={() => onCommitTopicEdit(task.id, editingTopicValue)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') onCommitTopicEdit(task.id, editingTopicValue);
+              if (e.key === 'Escape') onCancelTopicEdit();
+            }}
+            className="w-full bg-transparent text-sm text-foreground border-b border-ring focus:outline-none"
+          />
+        ) : (
+          <span
+            onClick={(e) => { e.stopPropagation(); onStartEditTopic(task); }}
+            title={task.topic}
+            className={cn(
+              'text-sm cursor-text line-clamp-3',
+              task.status === 'completed'
+                ? 'line-through text-muted-foreground/50'
+                : 'text-foreground',
+            )}
+          >
+            {task.topic}
+          </span>
+        )}
+      </div>
+
+      {/* Right-side controls */}
+      <div className="shrink-0 flex items-center gap-1">
+        <ProjectCell
+          value={task.projectId}
+          projects={projects}
+          onChange={(v) => onRevise(task.id, { projectId: v })}
+        />
+        <PriorityCell
+          value={task.priority}
+          onChange={(v) => onRevise(task.id, { priority: v })}
+        />
+        <DueDateCell
+          value={task.dueDate}
+          pastDue={isPastDue(task)}
+          onChange={(v) => onRevise(task.id, { dueDate: v })}
+        />
+        <RecurrenceCell
+          value={task.recurrence}
+          onChange={(v) => {
+            if (v && !task.actionDate) {
+              onRevise(task.id, { recurrence: v, actionDate: getTodayStr() });
+            } else {
+              onRevise(task.id, { recurrence: v });
+            }
+          }}
+        />
+        <button
+          onClick={() => onDelete(task.id)}
+          title="Delete task"
+          className="w-7 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-red-400 transition-colors"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SortableTaskRow(props: TaskRowProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: props.task.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes} data-task-id={props.task.id}>
+      <TaskRowContent
+        {...props}
+        dragHandleProps={listeners}
+        isDragging={isDragging}
+      />
+    </div>
+  );
+}
+
 // ── Session-persistent filter helpers ────────────────────────────────────────
 
 function readSession<T>(key: string, fallback: T): T {
@@ -833,6 +1025,131 @@ export default function TasksView() {
     : filtered;
   const noCloudUrl = !loading && error?.includes('No cloud URL');
 
+  // ── Drag-to-reorder ─────────────────────────────────────────────────────
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const activeTask = activeId != null ? displayTasks.find(t => t.id === activeId) ?? null : null;
+  const taskIds = useMemo(() => displayTasks.map(t => t.id), [displayTasks]);
+  const [pendingDrop, setPendingDrop] = useState<PendingCrossDateDrop | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor),
+  );
+
+  function handleDragStart(event: DragStartEvent) {
+    setActiveId(event.active.id as number);
+  }
+
+  /** Reorder tasks within a single date group and persist positions. */
+  async function reorderSameDay(draggedId: number, overId: number, actionDate: string) {
+    const sameDateTasks = displayTasks.filter(t => t.actionDate === actionDate);
+    const sameDateTasksReordered = [...sameDateTasks];
+    const fromIdx = sameDateTasksReordered.findIndex(t => t.id === draggedId);
+    const toIdx = sameDateTasksReordered.findIndex(t => t.id === overId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const [moved] = sameDateTasksReordered.splice(fromIdx, 1);
+    sameDateTasksReordered.splice(toIdx, 0, moved);
+
+    const updates = sameDateTasksReordered.map((t, i) => ({ id: t.id, position: i + 1 }));
+
+    // Optimistic update
+    const posMap = new Map(updates.map(u => [u.id, u.position]));
+    setTasks(prev => prev.map(t => {
+      const pos = posMap.get(t.id);
+      return pos !== undefined ? { ...t, dayOrderPosition: pos } : t;
+    }));
+    setSearchResults(prev => prev?.map(t => {
+      const pos = posMap.get(t.id);
+      return pos !== undefined ? { ...t, dayOrderPosition: pos } : t;
+    }) ?? null);
+
+    await Promise.all(
+      updates.map(u => window.electronAPI?.updateDayOrder(u.id, actionDate, u.position)),
+    );
+  }
+
+  async function handleDragEnd(event: DragEndEvent) {
+    setActiveId(null);
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const draggedId = active.id as number;
+    const overId = over.id as number;
+    const draggedTask = displayTasks.find(t => t.id === draggedId);
+    const overTask = displayTasks.find(t => t.id === overId);
+    if (!draggedTask || !overTask) return;
+
+    // Same-day reorder
+    if (draggedTask.actionDate === overTask.actionDate) {
+      const actionDate = draggedTask.actionDate;
+      if (!actionDate) return;
+      await reorderSameDay(draggedId, overId, actionDate);
+      return;
+    }
+
+    // Cross-date drop: show date popover
+    if (!draggedTask.actionDate) return;
+    const overIndex = displayTasks.findIndex(t => t.id === overId);
+
+    // Determine upper/lower dates around the drop position
+    const upperTask = overIndex > 0 ? displayTasks[overIndex - 1] : null;
+    const lowerTask = displayTasks[overIndex]; // the task we dropped onto
+
+    // Compute insert index within the target date group
+    const targetDate = overTask.actionDate;
+    if (!targetDate) return;
+    const targetDateTasks = displayTasks.filter(t => t.actionDate === targetDate && t.id !== draggedId);
+    const insertIndex = targetDateTasks.findIndex(t => t.id === overId);
+
+    // Get the Y position of the over element for popover anchoring
+    const overElement = document.querySelector(`[data-task-id="${overId}"]`);
+    const anchorY = overElement ? overElement.getBoundingClientRect().top : 200;
+
+    setPendingDrop({
+      taskId: draggedId,
+      fromDate: draggedTask.actionDate,
+      upperDate: upperTask?.actionDate ?? null,
+      lowerDate: lowerTask?.actionDate ?? null,
+      insertIndex: insertIndex === -1 ? targetDateTasks.length : insertIndex,
+      anchorY,
+    });
+  }
+
+  /** Handle date selection from the cross-date popover. */
+  async function handleCrossDateSelect(date: string) {
+    if (!pendingDrop) return;
+    const { taskId, fromDate } = pendingDrop;
+    setPendingDrop(null);
+
+    if (date === fromDate) return; // no change
+
+    // Find the task
+    const task = displayTasks.find(t => t.id === taskId);
+    if (!task) return;
+
+    // Get tasks already on the target date (excluding the moved task)
+    const targetDateTasks = displayTasks.filter(t => t.actionDate === date && t.id !== taskId);
+
+    // Compute position: place at end of the target date group
+    const position = targetDateTasks.length + 1;
+
+    // Optimistic update: change date + position
+    optimisticUpdate(taskId, t => ({
+      ...t,
+      actionDate: date,
+      dayOrderPosition: position,
+      updatedAt: new Date().toISOString(),
+    }));
+
+    // Persist: update action date, then set day order on new date
+    const revResult = await window.electronAPI?.reviseTask(taskId, { actionDate: date });
+    if (revResult?.success) {
+      await window.electronAPI?.updateDayOrder(taskId, date, position);
+    }
+    // Reload to get server-authoritative state
+    loadTasks(reloadOpts());
+  }
+
   return (
     <div>
       {/* Sticky header */}
@@ -980,6 +1297,7 @@ export default function TasksView() {
               <div className="flex flex-col divide-y divide-border/50">
                 {/* Column header row */}
                 <div className="flex items-center gap-2 pb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/40 font-medium select-none border-b border-border/30">
+                  {!isSearching && <div className="w-4 shrink-0" />}
                   <div className="w-10 shrink-0" />
                   <div className="w-[72px] shrink-0 text-center">Action</div>
                   <div className="w-12 shrink-0 text-center">Status</div>
@@ -1036,134 +1354,87 @@ export default function TasksView() {
                   </div>
                 ))}
 
-                {(() => {
-                  // Build a shade map: unique sorted dates → alternating 0/1
-                  const uniqueDates: string[] = [];
-                  const seen = new Set<string>();
-                  for (const t of displayTasks) {
-                    const d = t.actionDate ?? '';
-                    if (!seen.has(d)) { seen.add(d); uniqueDates.push(d); }
-                  }
-                  const dateShade = new Map<string, number>();
-                  let shade = 0;
-                  for (const d of uniqueDates) {
-                    dateShade.set(d, shade);
-                    shade = shade === 0 ? 1 : 0;
-                  }
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragStart={handleDragStart}
+                  onDragEnd={handleDragEnd}
+                >
+                  <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
+                    {(() => {
+                      // Build a shade map: unique sorted dates → alternating 0/1
+                      const uniqueDates: string[] = [];
+                      const seen = new Set<string>();
+                      for (const t of displayTasks) {
+                        const d = t.actionDate ?? '';
+                        if (!seen.has(d)) { seen.add(d); uniqueDates.push(d); }
+                      }
+                      const dateShade = new Map<string, number>();
+                      let shade = 0;
+                      for (const d of uniqueDates) {
+                        dateShade.set(d, shade);
+                        shade = shade === 0 ? 1 : 0;
+                      }
 
-                  return displayTasks.map((task) => {
-                    const overdue = isOverdue(task);
-                    const isEditingTopic = editingTopicId === task.id;
-                    const isGracePeriod = recentlyCompleted.has(task.id);
-                    const stripe = dateShade.get(task.actionDate ?? '') ?? 0;
-
-                    return (
-                      <div
-                        key={task.id}
-                        onClick={(e) => {
-                          if (!(e.target as HTMLElement).closest('button, input, [role="button"]')) {
-                            navigate(`/tasks/${task.id}`, { state: { task } });
-                          }
-                        }}
-                        className={cn(
-                          'group flex items-center gap-2 py-2.5 -mx-2 px-2 rounded transition-opacity duration-500 cursor-pointer',
-                          stripe === 1 && 'bg-muted/30',
-                          overdue && 'border-l-2 border-l-amber-500/50',
-                          isGracePeriod && 'opacity-50',
-                        )}
-                      >
-                        {/* UID — acts as navigation button on row hover */}
-                        <button
-                          onClick={(e) => { e.stopPropagation(); navigate(`/tasks/${task.id}`, { state: { task } }); }}
-                          title="Open detail"
-                          className="w-10 shrink-0 h-5 flex items-center justify-end text-[11px] tabular-nums text-muted-foreground/20 group-hover:text-primary/60 hover:!text-primary transition-colors cursor-pointer"
-                        >
-                          m{task.id}
-                        </button>
-
-                        {/* Action date — LHS timeline */}
-                        <DateCell
-                          value={task.actionDate}
-                          overdue={overdue}
-                          onChange={(v) => revise(task.id, { actionDate: v })}
+                      return displayTasks.map((task) => (
+                        <SortableTaskRow
+                          key={task.id}
+                          task={task}
+                          stripe={dateShade.get(task.actionDate ?? '') ?? 0}
+                          overdue={isOverdue(task)}
+                          isEditingTopic={editingTopicId === task.id}
+                          editingTopicValue={editingTopicValue}
+                          isGracePeriod={recentlyCompleted.has(task.id)}
+                          isSearching={isSearching}
+                          projects={projects}
+                          showCompleted={showCompleted}
+                          onNavigate={(id, t) => navigate(`/tasks/${id}`, { state: { task: t } })}
+                          onRevise={(id, fields) => revise(id, fields)}
+                          onDelete={deleteTask}
+                          onSkip={skipTask}
+                          onStartEditTopic={startEditTopic}
+                          onTopicChange={setEditingTopicValue}
+                          onCommitTopicEdit={commitTopicEdit}
+                          onCancelTopicEdit={() => setEditingTopicId(null)}
                         />
-
-                        {/* Status */}
-                        <StatusCell
-                          value={task.status}
-                          onChange={(v) => revise(task.id, { status: v })}
-                          isRecurring={!!task.recurrence}
-                          onSkip={() => skipTask(task.id)}
+                      ));
+                    })()}
+                  </SortableContext>
+                  <DragOverlay>
+                    {activeTask && (
+                      <div className="shadow-lg scale-[1.02] bg-background rounded border border-border">
+                        <TaskRowContent
+                          task={activeTask}
+                          stripe={0}
+                          overdue={isOverdue(activeTask)}
+                          isEditingTopic={false}
+                          editingTopicValue=""
+                          isGracePeriod={false}
+                          isSearching={false}
+                          projects={projects}
+                          showCompleted={showCompleted}
+                          onNavigate={() => {}}
+                          onRevise={() => {}}
+                          onDelete={() => {}}
+                          onSkip={() => {}}
+                          onStartEditTopic={() => {}}
+                          onTopicChange={() => {}}
+                          onCommitTopicEdit={() => {}}
+                          onCancelTopicEdit={() => {}}
                         />
-
-                        {/* Topic */}
-                        <div className="flex-1 min-w-0">
-                          {isEditingTopic ? (
-                            <input
-                              autoFocus
-                              value={editingTopicValue}
-                              onChange={(e) => setEditingTopicValue(e.target.value)}
-                              onBlur={() => commitTopicEdit(task.id, editingTopicValue)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') commitTopicEdit(task.id, editingTopicValue);
-                                if (e.key === 'Escape') setEditingTopicId(null);
-                              }}
-                              className="w-full bg-transparent text-sm text-foreground border-b border-ring focus:outline-none"
-                            />
-                          ) : (
-                            <span
-                              onClick={(e) => { e.stopPropagation(); startEditTopic(task); }}
-                              title={task.topic}
-                              className={cn(
-                                'text-sm cursor-text line-clamp-3',
-                                task.status === 'completed'
-                                  ? 'line-through text-muted-foreground/50'
-                                  : 'text-foreground',
-                              )}
-                            >
-                              {task.topic}
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Right-side controls */}
-                        <div className="shrink-0 flex items-center gap-1">
-                          <ProjectCell
-                            value={task.projectId}
-                            projects={projects}
-                            onChange={(v) => revise(task.id, { projectId: v })}
-                          />
-                          <PriorityCell
-                            value={task.priority}
-                            onChange={(v) => revise(task.id, { priority: v })}
-                          />
-                          <DueDateCell
-                            value={task.dueDate}
-                            pastDue={isPastDue(task)}
-                            onChange={(v) => revise(task.id, { dueDate: v })}
-                          />
-                          <RecurrenceCell
-                            value={task.recurrence}
-                            onChange={(v) => {
-                              if (v && !task.actionDate) {
-                                revise(task.id, { recurrence: v, actionDate: getTodayStr() });
-                              } else {
-                                revise(task.id, { recurrence: v });
-                              }
-                            }}
-                          />
-                          <button
-                            onClick={() => deleteTask(task.id)}
-                            title="Delete task"
-                            className="w-7 flex items-center justify-center h-5 rounded text-muted-foreground/0 group-hover:text-muted-foreground/40 hover:!text-red-400 transition-colors"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
                       </div>
-                    );
-                  });
-                })()}
+                    )}
+                  </DragOverlay>
+                </DndContext>
+
+                {/* Cross-date drop popover */}
+                {pendingDrop && (
+                  <DragDatePopover
+                    pending={pendingDrop}
+                    onSelect={handleCrossDateSelect}
+                    onCancel={() => setPendingDrop(null)}
+                  />
+                )}
               </div>
             )}
           </>

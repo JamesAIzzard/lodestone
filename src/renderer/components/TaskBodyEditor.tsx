@@ -20,6 +20,10 @@ import { Typography } from '@tiptap/extension-typography';
 import { Selection } from '@tiptap/extensions';
 import { Markdown } from 'tiptap-markdown';
 import { Mathematics } from '@tiptap/extension-mathematics';
+import { Table } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table-row';
+import { TableCell } from '@tiptap/extension-table-cell';
+import { TableHeader } from '@tiptap/extension-table-header';
 import 'katex/dist/katex.css';
 import DragHandle from '@tiptap/extension-drag-handle-react';
 import { GripVertical } from 'lucide-react';
@@ -40,6 +44,18 @@ import { MarkButton } from '@/components/tiptap-ui/mark-button';
 import { TextAlignButton } from '@/components/tiptap-ui/text-align-button';
 import { UndoRedoButton } from '@/components/tiptap-ui/undo-redo-button';
 import { InlineMathButton, BlockMathButton } from '@/components/tiptap-ui/math-button';
+import {
+  TableButton,
+  AddColumnButton,
+  RemoveColumnButton,
+  AddRowButton,
+  RemoveRowButton,
+  DeleteTableButton,
+  MoveRowUpButton,
+  MoveRowDownButton,
+  MoveColumnLeftButton,
+  MoveColumnRightButton,
+} from '@/components/tiptap-ui/table-button';
 
 // ── Node styles ────────────────────────────────────────────────────────────
 import '@/components/tiptap-node/blockquote-node/blockquote-node.scss';
@@ -109,6 +125,10 @@ export function TaskBodyEditor({
       Mathematics.configure({
         katexOptions: { throwOnError: false },
       }),
+      Table.configure({ resizable: false }),
+      TableRow,
+      TableCell,
+      TableHeader,
     ],
     content: initialContent,
     editorProps: {
@@ -151,6 +171,16 @@ export function TaskBodyEditor({
           <ListDropdownMenu types={['bulletList', 'orderedList', 'taskList']} />
           <BlockquoteButton />
           <CodeBlockButton />
+          <TableButton />
+          <AddColumnButton />
+          <RemoveColumnButton />
+          <AddRowButton />
+          <RemoveRowButton />
+          <MoveRowUpButton />
+          <MoveRowDownButton />
+          <MoveColumnLeftButton />
+          <MoveColumnRightButton />
+          <DeleteTableButton />
         </ToolbarGroup>
 
         <ToolbarSeparator />

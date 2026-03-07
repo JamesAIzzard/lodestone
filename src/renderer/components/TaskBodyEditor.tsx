@@ -63,9 +63,25 @@ export function TaskBodyEditor({
   onChange,
   debounceMs = 800,
 }: TaskBodyEditorProps) {
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const dirtyRef = useRef(false);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const editorRef = useRef<ReturnType<typeof useEditor>>(null);
+
+  // Periodic flush: saves every debounceMs while there are unsaved changes
+  const lastContentRef = useRef(initialContent);
+  useEffect(() => {
+    intervalRef.current = setInterval(() => {
+      if (!dirtyRef.current || !editorRef.current) return;
+      dirtyRef.current = false;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const md: string = (editorRef.current.storage as any).markdown.getMarkdown();
+      lastContentRef.current = md;
+      onChangeRef.current(md);
+    }, debounceMs);
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [debounceMs]);
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -96,19 +112,13 @@ export function TaskBodyEditor({
         class: 'task-body-prose',
       },
     },
-    onUpdate({ editor }) {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = setTimeout(() => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const md: string = (editor.storage as any).markdown.getMarkdown();
-        lastContentRef.current = md;
-        onChangeRef.current(md);
-      }, debounceMs);
+    onUpdate() {
+      dirtyRef.current = true;
     },
   });
+  editorRef.current = editor;
 
   // Re-populate if the task changes (e.g. navigating between tasks)
-  const lastContentRef = useRef(initialContent);
   useEffect(() => {
     if (editor && initialContent !== lastContentRef.current) {
       lastContentRef.current = initialContent;

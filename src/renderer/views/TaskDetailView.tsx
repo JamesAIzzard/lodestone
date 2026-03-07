@@ -204,7 +204,7 @@ export default function TaskDetailView() {
             />
           </div>
           <div className="flex flex-col items-center gap-1">
-            <span className="text-[9px] uppercase tracking-wide text-muted-foreground/30 leading-none">Date</span>
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground/30 leading-none">Next action</span>
             <DateCell
               value={task.actionDate}
               overdue={overdue}

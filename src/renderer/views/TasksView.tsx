@@ -1445,7 +1445,7 @@ export default function TasksView() {
                   <div className="w-12 shrink-0 text-center">Status</div>
                   <div className="flex-1 min-w-0">Task</div>
                   <div className="shrink-0 flex items-center gap-1">
-                    <div className="w-32 text-center">Project</div>
+                    <div className="w-32 text-left pl-1.5">Project</div>
                     <div className="w-6 text-center">Pri</div>
                     <div className="w-[72px] text-center">Due</div>
                     <div className="w-[72px] text-center">Repeat</div>

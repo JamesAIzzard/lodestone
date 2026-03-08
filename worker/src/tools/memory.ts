@@ -142,7 +142,7 @@ Tasks are memories with a \`status\`. Every task must have an \`action_date\` �
 - \`status\` — "open" (default on creation)
 - \`recurrence\` — for repeating tasks: "daily", "weekly", "every monday", "every 3 days", etc.
 
-Use a short descriptive \`topic\` (e.g. "TASK - Send invoice"). Check \`lodestone_recall\` first to avoid duplicating an existing task.
+Set \`topic\` to a short line stating what the task is about (e.g. "Send invoice to Acme Corp", "Buy more fish food"). Check \`lodestone_recall\` first to avoid duplicating an existing task.
 
 ## Viewing the Agenda
 
@@ -199,7 +199,7 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
       'cosine similarity, so cross-references surface automatically during exploration.',
       '',
       'Parameters:',
-      '  topic        \u2014 Short label categorising the memory (e.g. "JAMES - THINKING STYLE")',
+      '  topic        \u2014 Short line stating what this memory or task is about (e.g. "Check fish food supply")',
       '  body         \u2014 The memory content (plain text)',
       '  confidence   \u2014 Float 0\u20131. 1.0 = reliable, lower = tentative. Default: 1.0',
       '  context_hint \u2014 Optional short string recording the conversational context',
@@ -230,7 +230,7 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
       'Returns: { id } on success, or details of a similar existing memory for review.',
     ].join('\n'),
     {
-      topic: z.string().describe('Short label categorising the memory (e.g. "LODESTONE", "JAMES - THINKING STYLE")'),
+      topic: z.string().describe('Short line stating what this memory or task is about (e.g. "Check fish food supply", "API rate limit fix")'),
       body: z.string().describe('The memory content'),
       confidence: z.number().min(0).max(1).optional().describe('Epistemic confidence 0\u20131. Default: 1.0'),
       context_hint: z.string().optional().describe('Short string recording the conversational context (not searchable)'),
@@ -516,7 +516,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       '                  Accepted: daily, weekly, biweekly, monthly, yearly,',
       '                  every monday, every weekday, every N days, every N weeks.',
       '  priority     \u2014 New priority (optional, pass null to clear). 1=low, 2=medium, 3=high, 4=critical.',
-      '  topic        \u2014 New topic label (optional).',
+      '  topic        \u2014 New topic (optional).',
       '  status       \u2014 New status (optional, pass null to clear): "open", "completed", "cancelled".',
       '                  "completed" auto-fills completed_on=today. "open" clears completed_on.',
       '  completed_on \u2014 New completion date (optional, pass null to clear). Flexible expressions accepted.',
@@ -532,7 +532,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       due_date: z.union([z.string(), z.null()]).optional().describe('New due date (null to clear). Flexible expressions accepted.'),
       recurrence: z.union([z.string(), z.null()]).optional().describe('New recurrence rule (null to clear). Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.'),
       priority: z.union([z.number().int().min(1).max(4), z.null()]).optional().describe('New priority (null to clear). 1=low, 2=medium, 3=high, 4=critical.'),
-      topic: z.string().optional().describe('New topic label'),
+      topic: z.string().optional().describe('New topic'),
       status: z.union([z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']), z.null()]).optional().describe('New status (null to clear). "completed" auto-fills completed_on. "open" clears completed_on.'),
       completed_on: z.union([z.string(), z.null()]).optional().describe('New completion date (null to clear). Flexible expressions accepted.'),
       project: z.union([z.string(), z.null()]).optional().describe('Project name (null to clear assignment). Must match an existing project (fuzzy matched). Use lodestone_project to create/list projects.'),

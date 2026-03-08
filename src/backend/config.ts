@@ -166,6 +166,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
     search: {},
     memory: {
       cloud_url: typeof memory.cloud_url === 'string' ? memory.cloud_url : undefined,
+      cloud_auth_token: typeof memory.cloud_auth_token === 'string' ? memory.cloud_auth_token : undefined,
     },
     silos: validatedSilos,
   };

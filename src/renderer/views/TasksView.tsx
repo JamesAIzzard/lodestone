@@ -313,12 +313,17 @@ export default function TasksView() {
   }
 
   /** Reorder tasks within a single date group and persist positions. */
-  async function reorderSameDay(draggedId: number, overId: number, actionDate: string) {
+  async function reorderSameDay(draggedId: number, overId: number, actionDate: string, insertAfter: boolean) {
     const sameDateTasks = displayTasks.filter(t => t.actionDate === actionDate);
     const sameDateTasksReordered = [...sameDateTasks];
     const fromIdx = sameDateTasksReordered.findIndex(t => t.id === draggedId);
-    const toIdx = sameDateTasksReordered.findIndex(t => t.id === overId);
-    if (fromIdx === -1 || toIdx === -1) return;
+    const overIdx = sameDateTasksReordered.findIndex(t => t.id === overId);
+    if (fromIdx === -1 || overIdx === -1) return;
+    // Place before or after the "over" item depending on drop position
+    let toIdx = insertAfter ? overIdx + 1 : overIdx;
+    // Removing from fromIdx shifts everything after it left by one
+    if (fromIdx < toIdx) toIdx--;
+    if (fromIdx === toIdx) return;
     const [moved] = sameDateTasksReordered.splice(fromIdx, 1);
     sameDateTasksReordered.splice(toIdx, 0, moved);
 
@@ -351,21 +356,7 @@ export default function TasksView() {
     const overTask = displayTasks.find(t => t.id === overId);
     if (!draggedTask || !overTask) return;
 
-    // Same-day reorder
-    if (draggedTask.actionDate === overTask.actionDate) {
-      const actionDate = draggedTask.actionDate;
-      if (!actionDate) return;
-      await reorderSameDay(draggedId, overId, actionDate);
-      return;
-    }
-
-    // Cross-date drop: auto-pick target date and apply immediately
-    if (!draggedTask.actionDate) return;
-
-    // Use the drop target's date — when you drop onto a task, you join its date group
-    const targetDate = overTask.actionDate ?? draggedTask.actionDate;
-
-    // Determine insert position based on actual drop location
+    // Determine whether the drop landed above or below the "over" item's center
     const translatedRect = active.rect.current.translated;
     const overRect = over.rect;
     let insertAfter = true; // safe default
@@ -374,6 +365,20 @@ export default function TasksView() {
       const overCenterY = overRect.top + overRect.height / 2;
       insertAfter = activeCenterY > overCenterY;
     }
+
+    // Same-day reorder
+    if (draggedTask.actionDate === overTask.actionDate) {
+      const actionDate = draggedTask.actionDate;
+      if (!actionDate) return;
+      await reorderSameDay(draggedId, overId, actionDate, insertAfter);
+      return;
+    }
+
+    // Cross-date drop: auto-pick target date and apply immediately
+    if (!draggedTask.actionDate) return;
+
+    // Use the drop target's date — when you drop onto a task, you join its date group
+    const targetDate = overTask.actionDate ?? draggedTask.actionDate;
 
     const targetDateTasks = displayTasks.filter(t => t.actionDate === targetDate && t.id !== draggedId);
     let position: number;

@@ -8,6 +8,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { abbreviatePath, formatBytes, formatTime, modelIdFromDisplay } from '@/lib/format';
 import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
 import ExtensionPicker from '@/components/ExtensionPicker';
 import SiloAppearancePicker from '@/components/SiloAppearancePicker';
@@ -15,29 +16,6 @@ import SiloIcon from '@/components/SiloIconComponent';
 import ActivityFeed from '@/components/ActivityFeed';
 import { SILO_COLOR_MAP, type SiloColor, type SiloIconName } from '../../shared/silo-appearance';
 import type { SiloStatus, ServerStatus } from '../../shared/types';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function abbreviatePath(p: string): string {
-  return p
-    .replace(/^[A-Z]:\\Users\\[^\\]+/, '~')
-    .replace(/^\/home\/[^/]+/, '~');
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatTime(isoString: string | null): string {
-  if (!isoString) return '—';
-  return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-function modelIdFromDisplay(display: string): string {
-  return display.split(' — ')[0].trim();
-}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useClickOutside } from '@/hooks/use-click-outside';
 import {
   BookOpen,
   ChevronDown,
@@ -102,14 +103,7 @@ export function InlineDropdown<T extends string | number>({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleMouseDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    document.addEventListener('mousedown', handleMouseDown);
-    return () => document.removeEventListener('mousedown', handleMouseDown);
-  }, [onClose]);
+  useClickOutside(ref, onClose);
 
   return (
     <div
@@ -437,14 +431,7 @@ export function CalendarPicker({
   align?: 'left' | 'right';
 }) {
   const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleMouseDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    document.addEventListener('mousedown', handleMouseDown);
-    return () => document.removeEventListener('mousedown', handleMouseDown);
-  }, [onClose]);
+  useClickOutside(ref, onClose);
 
   return (
     <div
@@ -620,14 +607,7 @@ function CustomRecurrenceInput({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleMouseDown(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    }
-    document.addEventListener('mousedown', handleMouseDown);
-    return () => document.removeEventListener('mousedown', handleMouseDown);
-  }, [onClose]);
+  useClickOutside(ref, onClose);
 
   return (
     <div

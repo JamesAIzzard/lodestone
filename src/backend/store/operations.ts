@@ -15,7 +15,7 @@ import { SCHEMA_VERSION } from './types';
 import { TermCache } from './term-cache';
 import { compressText, quantizeInt8, hashToBlob } from './compression';
 import { extractDirectoryPaths, fileBasename } from './paths';
-import { tokenise } from '../tokeniser';
+import { tokenise } from '../../shared/portable/tokeniser';
 
 // ── Batch Write Path ─────────────────────────────────────────────────────────
 

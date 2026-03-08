@@ -10,15 +10,11 @@ import {
 import { Button } from './ui/button';
 import { FolderOpen, Plus, X, HardDrive, Link, AlertTriangle, DatabaseZap } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { modelIdFromDisplay, toSlug, toModelSlug } from '@/lib/format';
 import ExtensionPicker from './ExtensionPicker';
 import SiloAppearancePicker from './SiloAppearancePicker';
 import { autoAssignColor, DEFAULT_SILO_ICON, validateSiloColor, validateSiloIcon, type SiloColor, type SiloIconName } from '../../shared/silo-appearance';
 import type { StoredSiloConfigResponse } from '../../shared/electron-api';
-
-/** Extract the raw model ID from a display string like "model-id — Display Name". */
-function modelIdFromDisplay(display: string): string {
-  return display.split(' — ')[0].trim();
-}
 
 const NEW_STEPS = ['Mode', 'Name', 'Directories', 'Extensions', 'Model', 'Storage'] as const;
 const EXISTING_STEPS = ['Mode', 'Storage', 'Name', 'Directories', 'Extensions', 'Model'] as const;
@@ -82,8 +78,8 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   // Auto-generate db_path when name or model changes (only in 'new' mode)
   useEffect(() => {
     if (name.trim() && mode === 'new') {
-      const slug = name.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
-      const modelSlug = modelPathSafeIds[model] ?? model.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
+      const slug = toSlug(name);
+      const modelSlug = modelPathSafeIds[model] ?? toModelSlug(model);
       setDbPath(`silos/${slug}_${modelSlug}.db`);
     }
   }, [name, model, mode, modelPathSafeIds]);
@@ -441,8 +437,8 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
                   <span className="flex-1 text-sm text-foreground font-mono truncate">{dbPath}</span>
                 </div>
                 <Button variant="outline" size="sm" className="shrink-0" onClick={async () => {
-                  const slug = name.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-') || 'silo';
-                  const modelSlug = modelPathSafeIds[model] ?? model.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
+                  const slug = toSlug(name) || 'silo';
+                  const modelSlug = modelPathSafeIds[model] ?? toModelSlug(model);
                   const chosen = await window.electronAPI?.saveDbFile(`${slug}_${modelSlug}.db`);
                   if (chosen) setDbPath(chosen);
                 }}>

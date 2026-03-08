@@ -12,6 +12,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { toSlug } from '@/lib/format';
 import ExtensionPicker from '@/components/ExtensionPicker';
 
 const STEPS = ['Ollama', 'Silo', 'Indexing'] as const;
@@ -89,7 +90,7 @@ export default function OnboardingView() {
     pollRef.current = setInterval(async () => {
       const silos = await window.electronAPI?.getSilos();
       if (!silos) return;
-      const slug = siloName.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+      const slug = toSlug(siloName);
       const silo = silos.find((s) => s.config.name === slug);
       if (!silo) return;
 
@@ -133,7 +134,7 @@ export default function OnboardingView() {
       setCreating(true);
       setCreateError(null);
 
-      const slug = siloName.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+      const slug = toSlug(siloName);
       const result = await window.electronAPI?.createSilo({
         name: slug,
         directories,

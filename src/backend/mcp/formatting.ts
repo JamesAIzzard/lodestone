@@ -4,7 +4,7 @@
 
 import path from 'node:path';
 import type { SearchResult, DirectoryResult, LocationHint, MemoryStatusValue, PriorityLevel } from '../../shared/types';
-import { tokenise } from '../tokeniser';
+import { tokenise } from '../../shared/portable/tokeniser';
 
 import type { PuidManager } from './puid-manager';
 
@@ -81,7 +81,6 @@ export function priorityLabel(p: PriorityLevel): string {
     case 1: return 'low';
     case 2: return 'medium';
     case 3: return 'high';
-    case 4: return 'critical';
   }
 }
 

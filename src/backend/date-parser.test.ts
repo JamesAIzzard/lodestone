@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseFlexibleDate, parseRecurrence, advanceRecurrence } from './date-parser';
+import { parseFlexibleDate, parseRecurrence, advanceRecurrence } from '../shared/portable/date-parser';
 
 // Use a fixed reference date for deterministic tests: Wednesday, 2026-03-04
 const REF = new Date(2026, 2, 4); // March 4, 2026 (Wed)

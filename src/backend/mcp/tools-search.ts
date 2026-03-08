@@ -16,6 +16,7 @@ import {
   formatBytes,
   MAX_READ_BYTES, PREVIEW_LINES,
 } from './formatting';
+import { textResponse, errorResponse, resolveDirPuid } from './response-helpers';
 
 export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid: PuidManager): void {
   server.tool(
@@ -35,14 +36,10 @@ export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid:
         deps.notifyActivity?.({ channel: 'silo', siloName: silo });
         // Resolve d-prefixed puids in startPath to absolute paths
         let resolvedStartPath = startPath;
-        if (startPath && PuidManager.isDirPuid(startPath)) {
-          const resolved = puid.resolvePuid(startPath);
-          if (resolved === startPath) {
-            return {
-              content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${startPath}". It may be from a previous session.` }],
-            };
-          }
-          resolvedStartPath = resolved;
+        if (startPath) {
+          const dirResult = resolveDirPuid(startPath, puid);
+          if (typeof dirResult !== 'string') return dirResult;
+          resolvedStartPath = dirResult;
         }
 
         const { results, warnings } = await deps.silo.search({
@@ -63,14 +60,10 @@ export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid:
           text = `${warningBlock}\n\n${text}`;
         }
 
-        return {
-          content: [{ type: 'text' as const, text }],
-        };
+        return textResponse(text);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${message}` }],
-        };
+        return errorResponse(message);
       }
     },
   );
@@ -236,9 +229,7 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
         return { content };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${message}` }],
-        };
+        return errorResponse(message);
       }
     },
   );
@@ -278,14 +269,10 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
           lines.push('No silos configured.');
         }
 
-        return {
-          content: [{ type: 'text' as const, text: lines.join('\n') }],
-        };
+        return textResponse(lines.join('\n'));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${message}` }],
-        };
+        return errorResponse(message);
       }
     },
   );
@@ -308,14 +295,10 @@ export function registerExploreTool(server: McpServer, deps: McpServerDeps, puid
         deps.notifyActivity?.({ channel: 'silo', siloName: silo });
         // Resolve d-prefixed puids in startPath to absolute paths
         let resolvedStartPath = startPath;
-        if (startPath && PuidManager.isDirPuid(startPath)) {
-          const resolved = puid.resolvePuid(startPath);
-          if (resolved === startPath) {
-            return {
-              content: [{ type: 'text' as const, text: `Error: Unknown directory reference "${startPath}". It may be from a previous session.` }],
-            };
-          }
-          resolvedStartPath = resolved;
+        if (startPath) {
+          const dirResult = resolveDirPuid(startPath, puid);
+          if (typeof dirResult !== 'string') return dirResult;
+          resolvedStartPath = dirResult;
         }
 
         // Default fullContents to true when startPath is provided
@@ -337,14 +320,10 @@ export function registerExploreTool(server: McpServer, deps: McpServerDeps, puid
           text = `${warningBlock}\n\n${text}`;
         }
 
-        return {
-          content: [{ type: 'text' as const, text }],
-        };
+        return textResponse(text);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${message}` }],
-        };
+        return errorResponse(message);
       }
     },
   );

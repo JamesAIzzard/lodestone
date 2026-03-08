@@ -1,8 +1,9 @@
 /**
  * IPC handler registration — bridges renderer ↔ main process.
  *
- * All ipcMain.handle() calls are registered here in a single function.
- * Handlers access shared state via the AppContext object.
+ * All ipcMain.handle() calls are registered here. Handlers are grouped
+ * into domain-specific registration functions for readability and all
+ * share the `cloudRequest` helper for cloud API calls.
  */
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
@@ -30,9 +31,31 @@ function getCloudHeaders(ctx: AppContext): Record<string, string> {
   return headers;
 }
 
-export function registerIpcHandlers(ctx: AppContext): void {
-  // ── Dialog & Shell ──────────────────────────────────────────────────────
+async function cloudRequest<T = Record<string, unknown>>(
+  ctx: AppContext,
+  path: string,
+  method: string = 'GET',
+  body?: unknown,
+): Promise<T & { success: boolean; error?: string }> {
+  const cloudUrl = ctx.config?.memory.cloud_url;
+  if (!cloudUrl) return { success: false, error: 'No cloud URL configured' } as any;
+  try {
+    const res = await fetch(`${cloudUrl.replace(/\/$/, '')}${path}`, {
+      method,
+      headers: getCloudHeaders(ctx),
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` } as any;
+    return await res.json();
+  } catch (err) {
+    return { success: false, error: String(err) } as any;
+  }
+}
 
+// ── Domain-grouped handler registrations ────────────────────────────────
+
+function registerDialogHandlers(ctx: AppContext): void {
   ipcMain.handle('dialog:selectDirectories', async (_event) => {
     const win = BrowserWindow.fromWebContents(_event.sender) ?? undefined;
     const result = await dialog.showOpenDialog(win as BrowserWindow, {
@@ -73,9 +96,9 @@ export function registerIpcHandlers(ctx: AppContext): void {
     const { readConfigFromDbFile } = await import('../backend/store/peek');
     return readConfigFromDbFile(dbPath);
   });
+}
 
-  // ── Silos ───────────────────────────────────────────────────────────────
-
+function registerSiloHandlers(ctx: AppContext): void {
   ipcMain.handle('silos:list', async (): Promise<SiloStatus[]> => {
     const statuses: SiloStatus[] = [];
     for (const manager of ctx.siloManagers.values()) {
@@ -207,489 +230,6 @@ export function registerIpcHandlers(ctx: AppContext): void {
     }
     allEvents.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     return allEvents.slice(0, limit);
-  });
-
-  // ── Server / Settings ───────────────────────────────────────────────────
-
-  ipcMain.handle('server:status', async (): Promise<ServerStatus> => {
-    const uptimeSeconds = Math.floor((Date.now() - ctx.startTime) / 1000);
-
-    const ollamaUrl = ctx.config?.embeddings.ollama_url ?? 'http://localhost:11434';
-    const ollamaResult = await checkOllamaConnection(ollamaUrl);
-
-    let totalFiles = 0;
-    for (const manager of ctx.siloManagers.values()) {
-      const status = await manager.getStatus();
-      totalFiles += status.indexedFileCount;
-    }
-
-    const models: string[] = getBundledModelIds().map((id) => {
-      const def = getModelDefinition(id);
-      return def ? `${id} — ${def.displayName}` : id;
-    });
-    if (ollamaResult) {
-      models.push(...ollamaResult.models);
-    }
-
-    const modelPathSafeIds = Object.fromEntries(
-      getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
-    );
-
-    // Cloud memories health check
-    const cloudUrl = ctx.config?.memory.cloud_url ?? null;
-    let cloudConnected = false;
-    if (cloudUrl) {
-      try {
-        const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/health`, {
-          signal: AbortSignal.timeout(5000),
-        });
-        cloudConnected = res.ok;
-      } catch {
-        cloudConnected = false;
-      }
-    }
-
-    return {
-      uptimeSeconds,
-      ollamaState: ollamaResult ? 'connected' : 'disconnected',
-      ollamaUrl,
-      availableModels: models,
-      defaultModel: resolveModelAlias(ctx.config?.embeddings.model ?? 'snowflake-arctic-embed-xs'),
-      totalIndexedFiles: totalFiles,
-      modelPathSafeIds,
-      cloudUrl,
-      cloudConnected,
-      cloudAuthToken: ctx.config?.memory.cloud_auth_token ?? null,
-    };
-  });
-
-  ipcMain.handle('ollama:test', async (_event, url: string): Promise<{ connected: boolean; models: string[] }> => {
-    const result = await checkOllamaConnection(url);
-    if (result) {
-      return { connected: true, models: result.models };
-    }
-    return { connected: false, models: [] };
-  });
-
-  ipcMain.handle('config:path', async (): Promise<string> => {
-    return ctx.configPath();
-  });
-
-  ipcMain.handle('data:dir', async (): Promise<string> => {
-    return ctx.getUserDataDir();
-  });
-
-  ipcMain.handle('app:version', (): string => {
-    return app.getVersion();
-  });
-
-  ipcMain.handle('cloud:setUrl', async (_event, url: string): Promise<{ success: boolean }> => {
-    if (!ctx.config) return { success: false };
-    const trimmed = url.trim();
-    ctx.config.memory.cloud_url = trimmed || undefined;
-    saveConfig(ctx.configPath(), ctx.config);
-    return { success: true };
-  });
-
-  ipcMain.handle('cloud:setAuthToken', async (_event, token: string): Promise<{ success: boolean }> => {
-    if (!ctx.config) return { success: false };
-    ctx.config.memory.cloud_auth_token = token.trim() || undefined;
-    saveConfig(ctx.configPath(), ctx.config);
-    return { success: true };
-  });
-
-  ipcMain.handle('tasks:list', async (_event, opts: { includeCompleted?: boolean; includeCancelled?: boolean; projectId?: number } = {}): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, tasks: [], error: 'No cloud URL configured' };
-    try {
-      const params = new URLSearchParams();
-      if (opts.includeCompleted) params.set('includeCompleted', 'true');
-      if (opts.includeCancelled) params.set('includeCancelled', 'true');
-      if (opts.projectId !== undefined) params.set('projectId', String(opts.projectId));
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks?${params}`, {
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        return { success: false, tasks: [], error: `${res.status}: ${await res.text()}` };
-      }
-      const data = await res.json() as { tasks: unknown[] };
-      return { success: true, tasks: data.tasks };
-    } catch (err) {
-      return { success: false, tasks: [], error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:search', async (_event, query: string): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, tasks: [], error: 'No cloud URL configured' };
-    try {
-      const params = new URLSearchParams({ q: query });
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks?${params}`, {
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        return { success: false, tasks: [], error: `${res.status}: ${await res.text()}` };
-      }
-      const data = await res.json() as { tasks: unknown[] };
-      return { success: true, tasks: data.tasks };
-    } catch (err) {
-      return { success: false, tasks: [], error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:revise', async (_event, id: number, fields: Record<string, unknown>): Promise<{ success: boolean; completionRecordId?: number; nextActionDate?: string; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${id}`, {
-        method: 'PATCH',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify(fields),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        const errBody = await res.text();
-        console.error(`[ipc] tasks:revise PATCH failed for task ${id}: ${res.status} — ${errBody}`);
-        return { success: false, error: `${res.status}: ${errBody}` };
-      }
-      const data = await res.json() as { success: boolean; completionRecordId?: number; nextActionDate?: string };
-      return data;
-    } catch (err) {
-      console.error(`[ipc] tasks:revise error for task ${id}:`, err);
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:skip', async (_event, id: number, reason?: string): Promise<{ success: boolean; nextActionDate?: string; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${id}/skip`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ reason }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        return { success: false, error: `${res.status}: ${await res.text()}` };
-      }
-      const data = await res.json() as { success: boolean; nextActionDate?: string };
-      return data;
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:create', async (_event, topic: string, projectId?: number): Promise<{ success: boolean; id?: number; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ topic, ...(projectId !== undefined && { projectId }) }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return await res.json() as { success: boolean; id?: number };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:delete', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${id}`, {
-        method: 'DELETE',
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:update-day-order', async (_event, taskId: number, actionDate: string, position: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${taskId}/day-order`, {
-        method: 'PUT',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ actionDate, position }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:delete-day-order', async (_event, taskId: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${taskId}/day-order`, {
-        method: 'DELETE',
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  // ── Projects ─────────────────────────────────────────────────────────
-
-  ipcMain.handle('projects:list', async (_event, opts?: { includeArchived?: boolean }): Promise<{ success: boolean; projects: unknown[]; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, projects: [], error: 'No cloud URL configured' };
-    try {
-      const qs = opts?.includeArchived ? '?includeArchived=true' : '';
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects${qs}`, {
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, projects: [], error: `${res.status}: ${await res.text()}` };
-      const data = await res.json() as { projects: unknown[] };
-      return { success: true, projects: data.projects };
-    } catch (err) {
-      return { success: false, projects: [], error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:create', async (_event, name: string, color?: string): Promise<{ success: boolean; id?: number; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ name, color }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        return { success: false, error: `${res.status}: ${text}` };
-      }
-      return await res.json() as { success: boolean; id?: number };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:update', async (_event, id: number, updates: { name?: string; color?: string }): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}`, {
-        method: 'PATCH',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify(updates),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:delete', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}`, {
-        method: 'DELETE',
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:merge', async (_event, sourceId: number, targetId: number): Promise<{ success: boolean; reassigned?: number; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${sourceId}/merge`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ targetId }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return await res.json() as { success: boolean; reassigned?: number };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:archive', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}/archive`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:unarchive', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}/unarchive`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  // ── Defaults ──────────────────────────────────────────────────────────
-
-  ipcMain.handle('defaults:get', async (): Promise<DefaultSettings> => {
-    if (!ctx.config) {
-      const def = createDefaultConfig();
-      return {
-        extensions: def.defaults.extensions,
-        ignore: def.defaults.ignore,
-        ignoreFiles: def.defaults.ignore_files,
-        debounce: def.defaults.debounce,
-        contextLines: def.defaults.context_lines,
-        activityLogLimit: def.defaults.activity_log_limit,
-      };
-    }
-    return {
-      extensions: ctx.config.defaults.extensions,
-      ignore: ctx.config.defaults.ignore,
-      ignoreFiles: ctx.config.defaults.ignore_files,
-      debounce: ctx.config.defaults.debounce,
-      contextLines: ctx.config.defaults.context_lines,
-      activityLogLimit: ctx.config.defaults.activity_log_limit,
-    };
-  });
-
-  ipcMain.handle(
-    'defaults:update',
-    async (_event, updates: Partial<DefaultSettings>): Promise<{ success: boolean }> => {
-      if (!ctx.config) return { success: false };
-
-      if (updates.extensions !== undefined) ctx.config.defaults.extensions = updates.extensions;
-      if (updates.ignore !== undefined) ctx.config.defaults.ignore = updates.ignore;
-      if (updates.ignoreFiles !== undefined) ctx.config.defaults.ignore_files = updates.ignoreFiles;
-      if (updates.debounce !== undefined) ctx.config.defaults.debounce = updates.debounce;
-      if (updates.contextLines !== undefined) ctx.config.defaults.context_lines = updates.contextLines;
-      if (updates.activityLogLimit !== undefined) ctx.config.defaults.activity_log_limit = updates.activityLogLimit;
-
-      saveConfig(ctx.configPath(), ctx.config);
-      return { success: true };
-    },
-  );
-
-  ipcMain.handle('defaults:reset-all', async (): Promise<{ success: boolean }> => {
-    if (!ctx.config) return { success: false };
-
-    // Stop all silo managers
-    for (const [name, manager] of ctx.siloManagers) {
-      try { await manager.stop(); } catch (err) {
-        console.error(`[main] Error stopping silo "${name}" during reset:`, err);
-      }
-      ctx.siloManagers.delete(name);
-    }
-
-    // Replace config with clean defaults and persist
-    ctx.config = createDefaultConfig();
-    saveConfig(ctx.configPath(), ctx.config);
-    console.log('[main] All settings reset to defaults');
-
-    notifySilosChanged(ctx);
-    return { success: true };
-  });
-
-
-  // ── Claude Desktop Integration ──────────────────────────────────────────
-
-  function getClaudeDesktopConfigPath(): string {
-    return path.join(app.getPath('appData'), 'Claude', 'claude_desktop_config.json');
-  }
-
-  function getMcpWrapperPath(): string {
-    return app.isPackaged
-      ? path.join(process.resourcesPath, 'mcp-wrapper.js')
-      : path.join(app.getAppPath(), 'mcp-wrapper.js');
-  }
-
-  ipcMain.handle('mcp:getClaudeDesktopStatus', async (): Promise<{
-    configPath: string;
-    hasClaudeDesktop: boolean;
-    isConfigured: boolean;
-  }> => {
-    const configPath = getClaudeDesktopConfigPath();
-    const hasClaudeDesktop = fs.existsSync(path.dirname(configPath));
-    let isConfigured = false;
-    try {
-      if (fs.existsSync(configPath)) {
-        const raw = fs.readFileSync(configPath, 'utf-8');
-        const parsed = JSON.parse(raw);
-        isConfigured = !!parsed?.mcpServers?.['lodestone-files'];
-      }
-    } catch {
-      // Malformed JSON — treat as not configured
-    }
-    return { configPath, hasClaudeDesktop, isConfigured };
-  });
-
-  ipcMain.handle('mcp:configureClaudeDesktop', async (): Promise<{
-    success: boolean;
-    configPath: string;
-    error?: string;
-  }> => {
-    const configPath = getClaudeDesktopConfigPath();
-    const wrapperPath = getMcpWrapperPath();
-    try {
-      let config: Record<string, unknown> = {};
-      if (fs.existsSync(configPath)) {
-        try {
-          config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-        } catch {
-          // Malformed JSON — start fresh
-        }
-      }
-      const mcpServers = (config.mcpServers as Record<string, unknown>) ?? {};
-      config.mcpServers = {
-        ...mcpServers,
-        'lodestone-files': { command: 'node', args: [wrapperPath] },
-      };
-      fs.mkdirSync(path.dirname(configPath), { recursive: true });
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
-      return { success: true, configPath };
-    } catch (err) {
-      return { success: false, configPath, error: err instanceof Error ? err.message : String(err) };
-    }
   });
 
   // ── Silo CRUD ───────────────────────────────────────────────────────────
@@ -971,5 +511,320 @@ export function registerIpcHandlers(ctx: AppContext): void {
       return { success: true };
     },
   );
+}
 
+function registerCloudTaskHandlers(ctx: AppContext): void {
+  ipcMain.handle('tasks:list', async (_event, opts: { includeCompleted?: boolean; includeCancelled?: boolean; projectId?: number } = {}): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
+    const params = new URLSearchParams();
+    if (opts.includeCompleted) params.set('includeCompleted', 'true');
+    if (opts.includeCancelled) params.set('includeCancelled', 'true');
+    if (opts.projectId !== undefined) params.set('projectId', String(opts.projectId));
+    const result = await cloudRequest<{ tasks: unknown[] }>(ctx, `/tasks?${params}`);
+    if (!result.success) return { success: false, tasks: [], error: result.error };
+    return { success: true, tasks: result.tasks };
+  });
+
+  ipcMain.handle('tasks:search', async (_event, query: string): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
+    const params = new URLSearchParams({ q: query });
+    const result = await cloudRequest<{ tasks: unknown[] }>(ctx, `/tasks?${params}`);
+    if (!result.success) return { success: false, tasks: [], error: result.error };
+    return { success: true, tasks: result.tasks };
+  });
+
+  ipcMain.handle('tasks:revise', async (_event, id: number, fields: Record<string, unknown>): Promise<{ success: boolean; completionRecordId?: number; nextActionDate?: string; error?: string }> => {
+    const result = await cloudRequest<{ completionRecordId?: number; nextActionDate?: string }>(ctx, `/tasks/${id}`, 'PATCH', fields);
+    if (!result.success) {
+      console.error(`[ipc] tasks:revise PATCH failed for task ${id}: ${result.error}`);
+    }
+    return result;
+  });
+
+  ipcMain.handle('tasks:skip', async (_event, id: number, reason?: string): Promise<{ success: boolean; nextActionDate?: string; error?: string }> => {
+    return cloudRequest(ctx, `/tasks/${id}/skip`, 'POST', { reason });
+  });
+
+  ipcMain.handle('tasks:create', async (_event, topic: string, projectId?: number): Promise<{ success: boolean; id?: number; error?: string }> => {
+    return cloudRequest(ctx, '/tasks', 'POST', { topic, ...(projectId !== undefined && { projectId }) });
+  });
+
+  ipcMain.handle('tasks:delete', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
+    const result = await cloudRequest(ctx, `/tasks/${id}`, 'DELETE');
+    if (!result.success) return result;
+    return { success: true };
+  });
+
+  ipcMain.handle('tasks:update-day-order', async (_event, taskId: number, actionDate: string, position: number): Promise<{ success: boolean; error?: string }> => {
+    const result = await cloudRequest(ctx, `/tasks/${taskId}/day-order`, 'PUT', { actionDate, position });
+    if (!result.success) return result;
+    return { success: true };
+  });
+
+  ipcMain.handle('tasks:delete-day-order', async (_event, taskId: number): Promise<{ success: boolean; error?: string }> => {
+    const result = await cloudRequest(ctx, `/tasks/${taskId}/day-order`, 'DELETE');
+    if (!result.success) return result;
+    return { success: true };
+  });
+}
+
+function registerCloudProjectHandlers(ctx: AppContext): void {
+  ipcMain.handle('projects:list', async (_event, opts?: { includeArchived?: boolean }): Promise<{ success: boolean; projects: unknown[]; error?: string }> => {
+    const qs = opts?.includeArchived ? '?includeArchived=true' : '';
+    const result = await cloudRequest<{ projects: unknown[] }>(ctx, `/projects${qs}`);
+    if (!result.success) return { success: false, projects: [], error: result.error };
+    return { success: true, projects: result.projects };
+  });
+
+  ipcMain.handle('projects:create', async (_event, name: string, color?: string): Promise<{ success: boolean; id?: number; error?: string }> => {
+    return cloudRequest(ctx, '/projects', 'POST', { name, color });
+  });
+
+  ipcMain.handle('projects:update', async (_event, id: number, updates: { name?: string; color?: string }): Promise<{ success: boolean; error?: string }> => {
+    const result = await cloudRequest(ctx, `/projects/${id}`, 'PATCH', updates);
+    if (!result.success) return result;
+    return { success: true };
+  });
+
+  ipcMain.handle('projects:delete', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
+    const result = await cloudRequest(ctx, `/projects/${id}`, 'DELETE');
+    if (!result.success) return result;
+    return { success: true };
+  });
+
+  ipcMain.handle('projects:merge', async (_event, sourceId: number, targetId: number): Promise<{ success: boolean; reassigned?: number; error?: string }> => {
+    return cloudRequest(ctx, `/projects/${sourceId}/merge`, 'POST', { targetId });
+  });
+
+  ipcMain.handle('projects:archive', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
+    const result = await cloudRequest(ctx, `/projects/${id}/archive`, 'POST');
+    if (!result.success) return result;
+    return { success: true };
+  });
+
+  ipcMain.handle('projects:unarchive', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
+    const result = await cloudRequest(ctx, `/projects/${id}/unarchive`, 'POST');
+    if (!result.success) return result;
+    return { success: true };
+  });
+}
+
+function registerSettingsHandlers(ctx: AppContext): void {
+  ipcMain.handle('server:status', async (): Promise<ServerStatus> => {
+    const uptimeSeconds = Math.floor((Date.now() - ctx.startTime) / 1000);
+
+    const ollamaUrl = ctx.config?.embeddings.ollama_url ?? 'http://localhost:11434';
+    const ollamaResult = await checkOllamaConnection(ollamaUrl);
+
+    let totalFiles = 0;
+    for (const manager of ctx.siloManagers.values()) {
+      const status = await manager.getStatus();
+      totalFiles += status.indexedFileCount;
+    }
+
+    const models: string[] = getBundledModelIds().map((id) => {
+      const def = getModelDefinition(id);
+      return def ? `${id} — ${def.displayName}` : id;
+    });
+    if (ollamaResult) {
+      models.push(...ollamaResult.models);
+    }
+
+    const modelPathSafeIds = Object.fromEntries(
+      getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
+    );
+
+    // Cloud memories health check
+    const cloudUrl = ctx.config?.memory.cloud_url ?? null;
+    let cloudConnected = false;
+    if (cloudUrl) {
+      try {
+        const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/health`, {
+          signal: AbortSignal.timeout(5000),
+        });
+        cloudConnected = res.ok;
+      } catch {
+        cloudConnected = false;
+      }
+    }
+
+    return {
+      uptimeSeconds,
+      ollamaState: ollamaResult ? 'connected' : 'disconnected',
+      ollamaUrl,
+      availableModels: models,
+      defaultModel: resolveModelAlias(ctx.config?.embeddings.model ?? 'snowflake-arctic-embed-xs'),
+      totalIndexedFiles: totalFiles,
+      modelPathSafeIds,
+      cloudUrl,
+      cloudConnected,
+      cloudAuthToken: ctx.config?.memory.cloud_auth_token ?? null,
+    };
+  });
+
+  ipcMain.handle('ollama:test', async (_event, url: string): Promise<{ connected: boolean; models: string[] }> => {
+    const result = await checkOllamaConnection(url);
+    if (result) {
+      return { connected: true, models: result.models };
+    }
+    return { connected: false, models: [] };
+  });
+
+  ipcMain.handle('config:path', async (): Promise<string> => {
+    return ctx.configPath();
+  });
+
+  ipcMain.handle('data:dir', async (): Promise<string> => {
+    return ctx.getUserDataDir();
+  });
+
+  ipcMain.handle('app:version', (): string => {
+    return app.getVersion();
+  });
+
+  ipcMain.handle('cloud:setUrl', async (_event, url: string): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+    const trimmed = url.trim();
+    ctx.config.memory.cloud_url = trimmed || undefined;
+    saveConfig(ctx.configPath(), ctx.config);
+    return { success: true };
+  });
+
+  ipcMain.handle('cloud:setAuthToken', async (_event, token: string): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+    ctx.config.memory.cloud_auth_token = token.trim() || undefined;
+    saveConfig(ctx.configPath(), ctx.config);
+    return { success: true };
+  });
+
+  // ── Defaults ──────────────────────────────────────────────────────────
+
+  ipcMain.handle('defaults:get', async (): Promise<DefaultSettings> => {
+    if (!ctx.config) {
+      const def = createDefaultConfig();
+      return {
+        extensions: def.defaults.extensions,
+        ignore: def.defaults.ignore,
+        ignoreFiles: def.defaults.ignore_files,
+        debounce: def.defaults.debounce,
+        contextLines: def.defaults.context_lines,
+        activityLogLimit: def.defaults.activity_log_limit,
+      };
+    }
+    return {
+      extensions: ctx.config.defaults.extensions,
+      ignore: ctx.config.defaults.ignore,
+      ignoreFiles: ctx.config.defaults.ignore_files,
+      debounce: ctx.config.defaults.debounce,
+      contextLines: ctx.config.defaults.context_lines,
+      activityLogLimit: ctx.config.defaults.activity_log_limit,
+    };
+  });
+
+  ipcMain.handle(
+    'defaults:update',
+    async (_event, updates: Partial<DefaultSettings>): Promise<{ success: boolean }> => {
+      if (!ctx.config) return { success: false };
+
+      if (updates.extensions !== undefined) ctx.config.defaults.extensions = updates.extensions;
+      if (updates.ignore !== undefined) ctx.config.defaults.ignore = updates.ignore;
+      if (updates.ignoreFiles !== undefined) ctx.config.defaults.ignore_files = updates.ignoreFiles;
+      if (updates.debounce !== undefined) ctx.config.defaults.debounce = updates.debounce;
+      if (updates.contextLines !== undefined) ctx.config.defaults.context_lines = updates.contextLines;
+      if (updates.activityLogLimit !== undefined) ctx.config.defaults.activity_log_limit = updates.activityLogLimit;
+
+      saveConfig(ctx.configPath(), ctx.config);
+      return { success: true };
+    },
+  );
+
+  ipcMain.handle('defaults:reset-all', async (): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+
+    // Stop all silo managers
+    for (const [name, manager] of ctx.siloManagers) {
+      try { await manager.stop(); } catch (err) {
+        console.error(`[main] Error stopping silo "${name}" during reset:`, err);
+      }
+      ctx.siloManagers.delete(name);
+    }
+
+    // Replace config with clean defaults and persist
+    ctx.config = createDefaultConfig();
+    saveConfig(ctx.configPath(), ctx.config);
+    console.log('[main] All settings reset to defaults');
+
+    notifySilosChanged(ctx);
+    return { success: true };
+  });
+}
+
+function registerMcpHandlers(ctx: AppContext): void {
+  function getClaudeDesktopConfigPath(): string {
+    return path.join(app.getPath('appData'), 'Claude', 'claude_desktop_config.json');
+  }
+
+  function getMcpWrapperPath(): string {
+    return app.isPackaged
+      ? path.join(process.resourcesPath, 'mcp-wrapper.js')
+      : path.join(app.getAppPath(), 'mcp-wrapper.js');
+  }
+
+  ipcMain.handle('mcp:getClaudeDesktopStatus', async (): Promise<{
+    configPath: string;
+    hasClaudeDesktop: boolean;
+    isConfigured: boolean;
+  }> => {
+    const configPath = getClaudeDesktopConfigPath();
+    const hasClaudeDesktop = fs.existsSync(path.dirname(configPath));
+    let isConfigured = false;
+    try {
+      if (fs.existsSync(configPath)) {
+        const raw = fs.readFileSync(configPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        isConfigured = !!parsed?.mcpServers?.['lodestone-files'];
+      }
+    } catch {
+      // Malformed JSON — treat as not configured
+    }
+    return { configPath, hasClaudeDesktop, isConfigured };
+  });
+
+  ipcMain.handle('mcp:configureClaudeDesktop', async (): Promise<{
+    success: boolean;
+    configPath: string;
+    error?: string;
+  }> => {
+    const configPath = getClaudeDesktopConfigPath();
+    const wrapperPath = getMcpWrapperPath();
+    try {
+      let config: Record<string, unknown> = {};
+      if (fs.existsSync(configPath)) {
+        try {
+          config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        } catch {
+          // Malformed JSON — start fresh
+        }
+      }
+      const mcpServers = (config.mcpServers as Record<string, unknown>) ?? {};
+      config.mcpServers = {
+        ...mcpServers,
+        'lodestone-files': { command: 'node', args: [wrapperPath] },
+      };
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+      return { success: true, configPath };
+    } catch (err) {
+      return { success: false, configPath, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+}
+
+// ── Public entry point ──────────────────────────────────────────────────
+
+export function registerIpcHandlers(ctx: AppContext): void {
+  registerDialogHandlers(ctx);
+  registerSiloHandlers(ctx);
+  registerCloudTaskHandlers(ctx);
+  registerCloudProjectHandlers(ctx);
+  registerSettingsHandlers(ctx);
+  registerMcpHandlers(ctx);
 }

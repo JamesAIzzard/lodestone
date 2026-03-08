@@ -8,6 +8,7 @@
 
 import type { PriorityLevel, MemoryStatusValue } from '../shared/types';
 import { tokenise } from '../tokeniser';
+import { parseFlexibleDate } from '../date-parser';
 
 // ── Date context ─────────────────────────────────────────────────────────────
 
@@ -81,7 +82,6 @@ export function priorityLabel(p: PriorityLevel): string {
     case 1: return 'low';
     case 2: return 'medium';
     case 3: return 'high';
-    case 4: return 'critical';
   }
 }
 
@@ -103,4 +103,99 @@ export function resolveMemoryId(id: number | string): number {
   if (typeof id === 'number') return id;
   if (typeof id === 'string' && /^m\d+$/i.test(id)) return parseInt(id.slice(1), 10);
   throw new Error(`Invalid memory id "${id}". Expected a number or m-prefixed id (e.g. "m5").`);
+}
+
+// ── Tool handler helpers ────────────────────────────────────────────────────
+
+/** Convenience wrapper to build a text MCP result. */
+export function textResult(text: string) {
+  return { content: [{ type: 'text' as const, text }] };
+}
+
+/** Return type of textResult — compatible with MCP tool handler signatures. */
+export type ToolResult = ReturnType<typeof textResult>;
+
+/**
+ * Wrap a tool handler callback with uniform error handling.
+ * Every tool handler previously duplicated the same try/catch → textResult pattern.
+ */
+export function withErrorHandling<TArgs>(
+  fn: (args: TArgs) => Promise<ToolResult>,
+) {
+  return async (args: TArgs): Promise<ToolResult> => {
+    try {
+      return await fn(args);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return textResult(`Error: ${message}`);
+    }
+  };
+}
+
+// ── Date field parsing ──────────────────────────────────────────────────────
+
+/**
+ * Parse a flexible date string for a named field, returning either the parsed
+ * ISO 8601 date or an error response string. Handles null/undefined pass-through.
+ */
+export function parseFlexibleDateField(
+  value: string | null | undefined,
+  fieldName: string,
+): { ok: true; parsed: string | null | undefined } | { ok: false; error: string } {
+  if (value === null) return { ok: true, parsed: null };
+  if (value === undefined) return { ok: true, parsed: undefined };
+  const parsed = parseFlexibleDate(value);
+  if (!parsed) {
+    return { ok: false, error: `Error: Could not parse ${fieldName} "${value}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` };
+  }
+  return { ok: true, parsed };
+}
+
+// ── Metadata line builder ───────────────────────────────────────────────────
+
+/** Today's date as YYYY-MM-DD. */
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** True when an action_date is overdue (before today, task not done/cancelled). */
+export function isActionOverdue(r: { actionDate: string | null; status: MemoryStatusValue | null; completedOn: string | null }): boolean {
+  if (!r.actionDate) return false;
+  if (r.status === 'completed' || r.completedOn || r.status === 'cancelled') return false;
+  return r.actionDate < todayStr();
+}
+
+/** True when a due_date is past due (before today, task not done/cancelled). */
+export function isDuePastDue(r: { dueDate: string | null; status: MemoryStatusValue | null; completedOn: string | null }): boolean {
+  if (!r.dueDate) return false;
+  if (r.status === 'completed' || r.completedOn || r.status === 'cancelled') return false;
+  return r.dueDate < todayStr();
+}
+
+/**
+ * Build the standard metadata lines (action date, due date, priority, status,
+ * completed on) for a memory/task record. Returns an array of strings.
+ */
+export function buildMetaLines(r: {
+  actionDate: string | null;
+  dueDate: string | null;
+  recurrence?: string | null;
+  priority: PriorityLevel | null;
+  status: MemoryStatusValue | null;
+  completedOn: string | null;
+}): string[] {
+  const meta: string[] = [];
+  if (r.actionDate) {
+    let actionStr = `Action: ${r.actionDate}`;
+    if (r.recurrence) actionStr += ` (${r.recurrence})`;
+    if (isActionOverdue(r)) actionStr += ' \u26a0\ufe0f OVERDUE';
+    meta.push(actionStr);
+  }
+  if (r.dueDate) {
+    meta.push(`Due: ${r.dueDate}${isDuePastDue(r) ? ' \ud83d\udea8 PAST DUE' : ''}`);
+  }
+  if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
+  if (r.status) meta.push(`Status: ${statusLabel(r.status)}`);
+  if (r.completedOn) meta.push(`Completed: ${r.completedOn}`);
+  return meta;
 }

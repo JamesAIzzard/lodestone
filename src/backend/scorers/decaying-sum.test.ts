@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { decayingSum, summariseDecay, DEFAULT_DAMPING } from './decaying-sum';
+import { decayingSum, summariseDecay, DEFAULT_DAMPING } from '../../shared/portable/decaying-sum';
 
 describe('decayingSum', () => {
   it('returns 0 for empty input', () => {

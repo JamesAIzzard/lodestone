@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { parseFlexibleDate, parseRecurrence, parseDateRange } from '../date-parser';
 import { type D1MemoryService, levenshtein as levenshteinDistance } from '../d1-memory-service';
 import type { PriorityLevel, MemoryStatusValue } from '../shared/types';
-import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, resolveMemoryId, buildDateContext, buildDatetime } from './formatting';
+import { truncateMemoryBody, memoryBodyWarning, priorityLabel, statusLabel, resolveMemoryId, buildDateContext, buildDatetime, textResult, withErrorHandling, parseFlexibleDateField, buildMetaLines, isActionOverdue, isDuePastDue } from './formatting';
 
 // ── Shared project-name resolution helper ────────────────────────────────────
 
@@ -60,28 +60,9 @@ async function resolveArchivedProjectOrError(
   return { error: textResult(`Archived project "${name}" not found.\n\n${hint}`) };
 }
 
-/** Convenience wrapper to build a text MCP result. */
-function textResult(text: string) {
-  return { content: [{ type: 'text' as const, text }] };
-}
-
 /** Today's date as YYYY-MM-DD for overdue/past-due checks. */
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
-}
-
-/** True when an action_date is overdue (before today, task not done/cancelled). */
-function isActionOverdue(r: { actionDate: string | null; status: MemoryStatusValue | null; completedOn: string | null }): boolean {
-  if (!r.actionDate) return false;
-  if (r.status === 'completed' || r.completedOn || r.status === 'cancelled') return false;
-  return r.actionDate < todayStr();
-}
-
-/** True when a due_date is past due (before today, task not done/cancelled). */
-function isDuePastDue(r: { dueDate: string | null; status: MemoryStatusValue | null; completedOn: string | null }): boolean {
-  if (!r.dueDate) return false;
-  if (r.status === 'completed' || r.completedOn || r.status === 'cancelled') return false;
-  return r.dueDate < todayStr();
 }
 
 // ── Guide content (lodestone-memory server) ─────────────────────────────────
@@ -145,7 +126,7 @@ const TASKS_GUIDE = `# Lodestone Tasks & Agenda Guide
 Create tasks with \`lodestone_task\`. Every task gets \`status: "open"\` automatically.
 - \`action_date\` — when the task is actionable (flexible: "tomorrow", "next Monday", "2026-03-15"). Defaults to today if omitted.
 - \`due_date\` — hard deadline (optional). A task with a past due_date appears as overdue in the agenda even if its action_date is in the future. A warning is emitted if action_date > due_date.
-- \`priority\` — 1=low, 2=medium, 3=high, 4=critical
+- \`priority\` — 1=low, 2=medium, 3=high
 - \`recurrence\` — for repeating tasks: "daily", "weekly", "every monday", "every 3 days", etc.
 
 Set \`topic\` to a short line stating what the task is about (e.g. "Send invoice to Acme Corp", "Buy more fish food"). Check \`lodestone_recall\` first to avoid duplicating an existing task.
@@ -228,42 +209,37 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
       force: z.boolean().optional().describe('Skip dedup check and always create a new memory. Default: false'),
       project: z.string().optional().describe('Project name to assign to. Must match an existing project (fuzzy matched). If not found, suggestions are returned. Use lodestone_project to create/list projects. Omit to leave unassigned.'),
     },
-    async ({ topic, body, confidence, context_hint, force, project }) => {
-      try {
-        // Resolve project name to ID (fuzzy match)
-        let projectId: number | null = null;
-        if (project) {
-          const resolved = await resolveProjectOrError(memory, project);
-          if ('error' in resolved) return resolved.error;
-          projectId = resolved.id;
-        }
-
-        const result = await memory.remember({
-          topic,
-          body,
-          confidence,
-          contextHint: context_hint,
-          force,
-          actionDate: null,
-          dueDate: null,
-          recurrence: null,
-          priority: null,
-          status: null,
-          completedOn: null,
-          projectId,
-        });
-
-        if (result.status === 'duplicate') {
-          return formatDuplicateResponse(result);
-        }
-
-        const warning = memoryBodyWarning(body);
-        return textResult(`Created memory m${result.id}.${warning}`);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return textResult(`Error: ${message}`);
+    withErrorHandling(async ({ topic, body, confidence, context_hint, force, project }) => {
+      // Resolve project name to ID (fuzzy match)
+      let projectId: number | null = null;
+      if (project) {
+        const resolved = await resolveProjectOrError(memory, project as string);
+        if ('error' in resolved) return resolved.error;
+        projectId = resolved.id;
       }
-    },
+
+      const result = await memory.remember({
+        topic: topic as string,
+        body: body as string,
+        confidence: confidence as number | undefined,
+        contextHint: context_hint as string | undefined,
+        force: force as boolean | undefined,
+        actionDate: null,
+        dueDate: null,
+        recurrence: null,
+        priority: null,
+        status: null,
+        completedOn: null,
+        projectId,
+      });
+
+      if (result.status === 'duplicate') {
+        return formatDuplicateResponse(result);
+      }
+
+      const warning = memoryBodyWarning(body as string);
+      return textResult(`Created memory m${result.id}.${warning}`);
+    }),
   );
 }
 
@@ -290,7 +266,7 @@ export function registerTaskTool(server: McpServer, memory: D1MemoryService): vo
       '                  in the agenda regardless of action_date. Warning emitted if action_date > due_date.',
       '                  Flexible expressions accepted.',
       '  recurrence   \u2014 Repeating schedule (optional): "daily", "weekly", "every monday", etc.',
-      '  priority     \u2014 1=low, 2=medium, 3=high, 4=critical (optional).',
+      '  priority     \u2014 1=low, 2=medium, 3=high (optional).',
       '  project      \u2014 Project to assign to (optional, fuzzy matched).',
       '  force        \u2014 Skip dedup check. Default: false.',
       '',
@@ -302,85 +278,72 @@ export function registerTaskTool(server: McpServer, memory: D1MemoryService): vo
       action_date: z.string().optional().describe('When this task is actionable. Defaults to today if omitted. Flexible expressions accepted ("tomorrow", "next Monday", "2026-03-15").'),
       due_date: z.string().optional().describe('Hard deadline. Tasks with a past due_date appear as overdue in the agenda regardless of action_date. Flexible expressions accepted. Warning emitted if action_date > due_date.'),
       recurrence: z.string().optional().describe('Recurrence rule: "daily", "weekly", "biweekly", "monthly", "yearly", "every monday", "every weekday", "every N days", "every N weeks". Requires action_date.'),
-      priority: z.number().int().min(1).max(4).optional().describe('Urgency: 1=low, 2=medium, 3=high, 4=critical'),
+      priority: z.number().int().min(1).max(3).optional().describe('Urgency: 1=low, 2=medium, 3=high'),
       project: z.string().optional().describe('Project name to assign to (fuzzy matched). Use lodestone_project to create/list projects.'),
       force: z.boolean().optional().describe('Skip dedup check and always create. Default: false'),
     },
-    async ({ topic, body, action_date, due_date, recurrence, priority, project, force }) => {
-      try {
-        // Parse flexible action_date to ISO 8601
-        let parsedActionDate: string | null = null;
-        if (action_date) {
-          parsedActionDate = parseFlexibleDate(action_date);
-          if (!parsedActionDate) {
-            return textResult(`Error: Could not parse action_date "${action_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).`);
-          }
+    withErrorHandling(async ({ topic, body, action_date, due_date, recurrence, priority, project, force }) => {
+      // Parse flexible action_date to ISO 8601
+      const actionResult = parseFlexibleDateField(action_date as string | undefined, 'action_date');
+      if (!actionResult.ok) return textResult(actionResult.error);
+      const parsedActionDate = (actionResult.parsed ?? null) as string | null;
+
+      // Parse flexible due_date to ISO 8601
+      const dueResult = parseFlexibleDateField(due_date as string | undefined, 'due_date');
+      if (!dueResult.ok) return textResult(dueResult.error);
+      const parsedDueDate = (dueResult.parsed ?? null) as string | null;
+
+      // Parse and validate recurrence rule
+      let parsedRecurrence: string | null = null;
+      if (recurrence) {
+        parsedRecurrence = parseRecurrence(recurrence as string);
+        if (!parsedRecurrence) {
+          return textResult(`Error: Could not parse recurrence "${recurrence}". Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.`);
         }
-
-        // Parse flexible due_date to ISO 8601
-        let parsedDueDate: string | null = null;
-        if (due_date) {
-          parsedDueDate = parseFlexibleDate(due_date);
-          if (!parsedDueDate) {
-            return textResult(`Error: Could not parse due_date "${due_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).`);
-          }
+        if (!parsedActionDate) {
+          return textResult(`Error: recurrence requires action_date to be set. Provide an action_date for the first occurrence.`);
         }
-
-        // Parse and validate recurrence rule
-        let parsedRecurrence: string | null = null;
-        if (recurrence) {
-          parsedRecurrence = parseRecurrence(recurrence);
-          if (!parsedRecurrence) {
-            return textResult(`Error: Could not parse recurrence "${recurrence}". Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.`);
-          }
-          if (!parsedActionDate) {
-            return textResult(`Error: recurrence requires action_date to be set. Provide an action_date for the first occurrence.`);
-          }
-        }
-
-        // Resolve project name to ID (fuzzy match)
-        let projectId: number | null = null;
-        if (project) {
-          const resolved = await resolveProjectOrError(memory, project);
-          if ('error' in resolved) return resolved.error;
-          projectId = resolved.id;
-        }
-
-        const result = await memory.remember({
-          topic,
-          body,
-          confidence: 1.0,
-          contextHint: null,
-          force,
-          actionDate: parsedActionDate,
-          dueDate: parsedDueDate,
-          recurrence: parsedRecurrence,
-          priority: (priority ?? null) as PriorityLevel | null,
-          status: 'open',
-          completedOn: null,
-          projectId,
-        });
-
-        if (result.status === 'duplicate') {
-          return formatDuplicateResponse(result);
-        }
-
-        const warning = memoryBodyWarning(body);
-        const extras: string[] = [];
-        // Show the effective action_date (service defaults to today when status is set)
-        const effectiveActionDate = parsedActionDate ?? todayStr();
-        let actionStr = `Action date: ${effectiveActionDate}`;
-        if (parsedRecurrence) actionStr += ` (${parsedRecurrence})`;
-        extras.push(actionStr + '.');
-        if (parsedDueDate) extras.push(`Due: ${parsedDueDate}.`);
-        if (priority) extras.push(`Priority: ${priorityLabel(priority as PriorityLevel)}.`);
-        const dateWarning = result.warning ? `\n\n${result.warning}` : '';
-        return textResult(`Created task m${result.id}. ${extras.join(' ')}${warning}${dateWarning}`);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return textResult(`Error: ${message}`);
       }
-    },
+
+      // Resolve project name to ID (fuzzy match)
+      let projectId: number | null = null;
+      if (project) {
+        const resolved = await resolveProjectOrError(memory, project as string);
+        if ('error' in resolved) return resolved.error;
+        projectId = resolved.id;
+      }
+
+      const result = await memory.remember({
+        topic: topic as string,
+        body: body as string,
+        confidence: 1.0,
+        contextHint: null,
+        force: force as boolean | undefined,
+        actionDate: parsedActionDate,
+        dueDate: parsedDueDate,
+        recurrence: parsedRecurrence,
+        priority: ((priority as number | undefined) ?? null) as PriorityLevel | null,
+        status: 'open',
+        completedOn: null,
+        projectId,
+      });
+
+      if (result.status === 'duplicate') {
+        return formatDuplicateResponse(result);
+      }
+
+      const warning = memoryBodyWarning(body as string);
+      const extras: string[] = [];
+      // Show the effective action_date (service defaults to today when status is set)
+      const effectiveActionDate = parsedActionDate ?? todayStr();
+      let actionStr = `Action date: ${effectiveActionDate}`;
+      if (parsedRecurrence) actionStr += ` (${parsedRecurrence})`;
+      extras.push(actionStr + '.');
+      if (parsedDueDate) extras.push(`Due: ${parsedDueDate}.`);
+      if (priority) extras.push(`Priority: ${priorityLabel(priority as PriorityLevel)}.`);
+      const dateWarning = result.warning ? `\n\n${result.warning}` : '';
+      return textResult(`Created task m${result.id}. ${extras.join(' ')}${warning}${dateWarning}`);
+    }),
   );
 }
 
@@ -388,19 +351,7 @@ export function registerTaskTool(server: McpServer, memory: D1MemoryService): vo
 function formatDuplicateResponse(result: { existing: { id: number; topic: string; body: string; confidence: number; actionDate: string | null; dueDate: string | null; recurrence: string | null; priority: PriorityLevel | null; status: MemoryStatusValue | null; completedOn: string | null }; similarity: number }) {
   const sim = Math.round(result.similarity * 100);
   const preview = truncateMemoryBody(result.existing.body);
-  const meta: string[] = [];
-  if (result.existing.actionDate) {
-    let actionStr = `Action: ${result.existing.actionDate}`;
-    if (result.existing.recurrence) actionStr += ` (${result.existing.recurrence})`;
-    if (isActionOverdue(result.existing)) actionStr += ' \u26a0\ufe0f OVERDUE';
-    meta.push(actionStr);
-  }
-  if (result.existing.dueDate) {
-    meta.push(`Due: ${result.existing.dueDate}${isDuePastDue(result.existing) ? ' \ud83d\udea8 PAST DUE' : ''}`);
-  }
-  if (result.existing.priority) meta.push(`Priority: ${priorityLabel(result.existing.priority)}`);
-  if (result.existing.status) meta.push(`Status: ${statusLabel(result.existing.status)}`);
-  if (result.existing.completedOn) meta.push(`Completed: ${result.existing.completedOn}`);
+  const meta = buildMetaLines(result.existing);
   const lines = [
     `Similar entry found (${sim}% similarity):`,
     '',
@@ -463,82 +414,63 @@ export function registerRecallTool(server: McpServer, memory: D1MemoryService): 
       status: z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']).optional().describe('Filter by status.'),
       include_archived: z.boolean().optional().describe('Include memories belonging to archived projects. Default: false'),
     },
-    async ({ query, max_results, mode, updated_after, updated_before, action_after, action_before, completed_after, completed_before, due_after, due_before, status, include_archived }) => {
-      try {
-        // Parse flexible date expressions to ISO 8601
-        const dateFilters: Record<string, string> = {};
-        for (const [key, raw] of Object.entries({
-          updatedAfter: updated_after,
-          updatedBefore: updated_before,
-          actionAfter: action_after,
-          actionBefore: action_before,
-          completedAfter: completed_after,
-          completedBefore: completed_before,
-          dueAfter: due_after,
-          dueBefore: due_before,
-        })) {
-          if (!raw) continue;
-          const parsed = parseFlexibleDate(raw);
-          if (!parsed) {
-            return { content: [{ type: 'text' as const, text: `Error: Could not parse date filter "${raw}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }] };
-          }
-          dateFilters[key] = parsed;
-        }
-
-        const results = await memory.recall({
-          query,
-          maxResults: max_results,
-          mode,
-          dateFilters: Object.keys(dateFilters).length > 0 || status !== undefined || include_archived
-            ? { ...dateFilters, ...(status !== undefined ? { status } : {}), ...(include_archived ? { includeArchived: true } : {}) }
-            : undefined,
-        });
-
-        const lines: string[] = [];
-        if (results.length === 0) {
-          lines.push('No memories found.');
-        } else {
-          for (const r of results) {
-            const pct = Math.round(r.score * 100);
-            const signalEntries = Object.entries(r.signals);
-            let scoreStr: string;
-            if (signalEntries.length <= 1) {
-              scoreStr = `${pct}% ${r.scoreLabel}`;
-            } else {
-              const breakdown = signalEntries
-                .sort(([, a], [, b]) => b - a)
-                .map(([name, val]) => `${name} ${Math.round(val * 100)}%`)
-                .join(', ');
-              scoreStr = `${pct}% ${r.scoreLabel}: ${breakdown}`;
-            }
-            lines.push(`## [m${r.id}] ${r.topic} (${scoreStr}, confidence: ${r.confidence})`);
-            lines.push(truncateMemoryBody(r.body));
-            const meta = [`Updated: ${r.updatedAt}`];
-            if (r.actionDate) {
-              let actionStr = `Action: ${r.actionDate}`;
-              if (r.recurrence) actionStr += ` (${r.recurrence})`;
-              if (isActionOverdue(r)) actionStr += ' \u26a0\ufe0f OVERDUE';
-              meta.push(actionStr);
-            }
-            if (r.dueDate) {
-              meta.push(`Due: ${r.dueDate}${isDuePastDue(r) ? ' \ud83d\udea8 PAST DUE' : ''}`);
-            }
-            if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
-            if (r.status) meta.push(`Status: ${statusLabel(r.status)}`);
-            if (r.completedOn) meta.push(`Completed: ${r.completedOn}`);
-            lines.push(`_${meta.join(' | ')}_`);
-            lines.push('');
-          }
-        }
-
-        // No silo cross-search sidebar — Worker has no silo access
-
-        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
+    withErrorHandling(async ({ query, max_results, mode, updated_after, updated_before, action_after, action_before, completed_after, completed_before, due_after, due_before, status, include_archived }) => {
+      // Parse flexible date expressions to ISO 8601
+      const dateFilters: Record<string, string> = {};
+      for (const [key, raw] of Object.entries({
+        updatedAfter: updated_after,
+        updatedBefore: updated_before,
+        actionAfter: action_after,
+        actionBefore: action_before,
+        completedAfter: completed_after,
+        completedBefore: completed_before,
+        dueAfter: due_after,
+        dueBefore: due_before,
+      })) {
+        if (!raw) continue;
+        const result = parseFlexibleDateField(raw as string, key);
+        if (!result.ok) return textResult(result.error);
+        dateFilters[key] = result.parsed as string;
       }
-    },
+
+      const results = await memory.recall({
+        query: query as string,
+        maxResults: max_results as number | undefined,
+        mode: mode as 'hybrid' | 'bm25' | 'semantic' | undefined,
+        dateFilters: Object.keys(dateFilters).length > 0 || status !== undefined || include_archived
+          ? { ...dateFilters, ...(status !== undefined ? { status } : {}), ...(include_archived ? { includeArchived: true } : {}) }
+          : undefined,
+      });
+
+      const lines: string[] = [];
+      if (results.length === 0) {
+        lines.push('No memories found.');
+      } else {
+        for (const r of results) {
+          const pct = Math.round(r.score * 100);
+          const signalEntries = Object.entries(r.signals);
+          let scoreStr: string;
+          if (signalEntries.length <= 1) {
+            scoreStr = `${pct}% ${r.scoreLabel}`;
+          } else {
+            const breakdown = signalEntries
+              .sort(([, a], [, b]) => b - a)
+              .map(([name, val]) => `${name} ${Math.round(val * 100)}%`)
+              .join(', ');
+            scoreStr = `${pct}% ${r.scoreLabel}: ${breakdown}`;
+          }
+          lines.push(`## [m${r.id}] ${r.topic} (${scoreStr}, confidence: ${r.confidence})`);
+          lines.push(truncateMemoryBody(r.body));
+          const meta = [`Updated: ${r.updatedAt}`, ...buildMetaLines(r)];
+          lines.push(`_${meta.join(' | ')}_`);
+          lines.push('');
+        }
+      }
+
+      // No silo cross-search sidebar — Worker has no silo access
+
+      return textResult(lines.join('\n'));
+    }),
   );
 }
 
@@ -570,7 +502,7 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       '  recurrence   \u2014 New recurrence rule (optional, pass null to clear).',
       '                  Accepted: daily, weekly, biweekly, monthly, yearly,',
       '                  every monday, every weekday, every N days, every N weeks.',
-      '  priority     \u2014 New priority (optional, pass null to clear). 1=low, 2=medium, 3=high, 4=critical.',
+      '  priority     \u2014 New priority (optional, pass null to clear). 1=low, 2=medium, 3=high.',
       '  topic        \u2014 New topic (optional).',
       '  status       \u2014 New status (optional, pass null to clear): "open", "completed", "cancelled".',
       '                  "completed" auto-fills completed_on=today. "open" clears completed_on.',
@@ -586,96 +518,73 @@ export function registerReviseTool(server: McpServer, memory: D1MemoryService): 
       action_date: z.union([z.string(), z.null()]).optional().describe('New action date (null to clear). Flexible expressions accepted.'),
       due_date: z.union([z.string(), z.null()]).optional().describe('New due date (null to clear). Flexible expressions accepted.'),
       recurrence: z.union([z.string(), z.null()]).optional().describe('New recurrence rule (null to clear). Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.'),
-      priority: z.union([z.number().int().min(1).max(4), z.null()]).optional().describe('New priority (null to clear). 1=low, 2=medium, 3=high, 4=critical.'),
+      priority: z.union([z.number().int().min(1).max(3), z.null()]).optional().describe('New priority (null to clear). 1=low, 2=medium, 3=high.'),
       topic: z.string().optional().describe('New topic'),
       status: z.union([z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']), z.null()]).optional().describe('New status (null to clear). "completed" auto-fills completed_on. "open" clears completed_on.'),
       completed_on: z.union([z.string(), z.null()]).optional().describe('New completion date (null to clear). Flexible expressions accepted.'),
       project: z.union([z.string(), z.null()]).optional().describe('Project name (null to clear assignment). Must match an existing project (fuzzy matched). Use lodestone_project to create/list projects.'),
     },
-    async ({ id: rawId, body, confidence, context_hint, action_date, due_date, recurrence, priority, topic, status, completed_on, project }) => {
-      try {
-        const id = resolveMemoryId(rawId);
+    withErrorHandling(async ({ id: rawId, body, confidence, context_hint, action_date, due_date, recurrence, priority, topic, status, completed_on, project }) => {
+      const id = resolveMemoryId(rawId as number | string);
 
-        // Parse flexible action_date (null clears it)
-        let parsedActionDate: string | null | undefined;
-        if (action_date === null) {
-          parsedActionDate = null;
-        } else if (action_date !== undefined) {
-          parsedActionDate = parseFlexibleDate(action_date);
-          if (!parsedActionDate) {
-            return { content: [{ type: 'text' as const, text: `Error: Could not parse action_date "${action_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }] };
-          }
-        }
+      // Parse flexible action_date (null clears it)
+      const actionResult = parseFlexibleDateField(action_date as string | null | undefined, 'action_date');
+      if (!actionResult.ok) return textResult(actionResult.error);
+      const parsedActionDate = actionResult.parsed;
 
-        // Parse flexible due_date (null clears it)
-        let parsedDueDate: string | null | undefined;
-        if (due_date === null) {
-          parsedDueDate = null;
-        } else if (due_date !== undefined) {
-          parsedDueDate = parseFlexibleDate(due_date);
-          if (!parsedDueDate) {
-            return { content: [{ type: 'text' as const, text: `Error: Could not parse due_date "${due_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }] };
-          }
-        }
+      // Parse flexible due_date (null clears it)
+      const dueResult = parseFlexibleDateField(due_date as string | null | undefined, 'due_date');
+      if (!dueResult.ok) return textResult(dueResult.error);
+      const parsedDueDate = dueResult.parsed;
 
-        // Parse recurrence rule (null clears it)
-        let parsedRecurrence: string | null | undefined;
-        if (recurrence === null) {
-          parsedRecurrence = null;
-        } else if (recurrence !== undefined) {
-          parsedRecurrence = parseRecurrence(recurrence);
-          if (!parsedRecurrence) {
-            return { content: [{ type: 'text' as const, text: `Error: Could not parse recurrence "${recurrence}". Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.` }] };
-          }
+      // Parse recurrence rule (null clears it)
+      let parsedRecurrence: string | null | undefined;
+      if (recurrence === null) {
+        parsedRecurrence = null;
+      } else if (recurrence !== undefined) {
+        parsedRecurrence = parseRecurrence(recurrence as string);
+        if (!parsedRecurrence) {
+          return textResult(`Error: Could not parse recurrence "${recurrence}". Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.`);
         }
-
-        // Parse flexible completed_on (null clears it)
-        let parsedCompletedOn: string | null | undefined;
-        if (completed_on === null) {
-          parsedCompletedOn = null;
-        } else if (completed_on !== undefined) {
-          parsedCompletedOn = parseFlexibleDate(completed_on);
-          if (!parsedCompletedOn) {
-            return { content: [{ type: 'text' as const, text: `Error: Could not parse completed_on "${completed_on}". Use ISO 8601 (YYYY-MM-DD) or relative expressions (today, yesterday).` }] };
-          }
-        }
-
-        // Resolve project name to ID (null clears it, string resolves with fuzzy match)
-        let projectId: number | null | undefined;
-        if (project === null) {
-          projectId = null;
-        } else if (project !== undefined) {
-          const resolved = await resolveProjectOrError(memory, project);
-          if ('error' in resolved) return resolved.error;
-          projectId = resolved.id;
-        }
-
-        const reviseResult = await memory.revise({
-          id,
-          body,
-          confidence,
-          contextHint: context_hint,
-          actionDate: parsedActionDate,
-          dueDate: parsedDueDate,
-          recurrence: parsedRecurrence,
-          priority: priority as PriorityLevel | undefined,
-          topic,
-          status: status as MemoryStatusValue | null | undefined,
-          completedOn: parsedCompletedOn,
-          projectId,
-        });
-        const warning = body ? memoryBodyWarning(body) : '';
-        let msg = `Memory m${id} revised.`;
-        if (reviseResult.completionRecordId !== undefined) {
-          msg += ` Completion recorded as m${reviseResult.completionRecordId}. Next occurrence: ${reviseResult.nextActionDate}.`;
-        }
-        const dateWarning = reviseResult.warning ? `\n\n${reviseResult.warning}` : '';
-        return { content: [{ type: 'text' as const, text: msg + warning + dateWarning }] };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
       }
-    },
+
+      // Parse flexible completed_on (null clears it)
+      const completedResult = parseFlexibleDateField(completed_on as string | null | undefined, 'completed_on');
+      if (!completedResult.ok) return textResult(completedResult.error);
+      const parsedCompletedOn = completedResult.parsed;
+
+      // Resolve project name to ID (null clears it, string resolves with fuzzy match)
+      let projectId: number | null | undefined;
+      if (project === null) {
+        projectId = null;
+      } else if (project !== undefined) {
+        const resolved = await resolveProjectOrError(memory, project as string);
+        if ('error' in resolved) return resolved.error;
+        projectId = resolved.id;
+      }
+
+      const reviseResult = await memory.revise({
+        id,
+        body: body as string | undefined,
+        confidence: confidence as number | undefined,
+        contextHint: context_hint as string | undefined,
+        actionDate: parsedActionDate,
+        dueDate: parsedDueDate,
+        recurrence: parsedRecurrence,
+        priority: priority as PriorityLevel | undefined,
+        topic: topic as string | undefined,
+        status: status as MemoryStatusValue | null | undefined,
+        completedOn: parsedCompletedOn,
+        projectId,
+      });
+      const warning = body ? memoryBodyWarning(body as string) : '';
+      let msg = `Memory m${id} revised.`;
+      if (reviseResult.completionRecordId !== undefined) {
+        msg += ` Completion recorded as m${reviseResult.completionRecordId}. Next occurrence: ${reviseResult.nextActionDate}.`;
+      }
+      const dateWarning = reviseResult.warning ? `\n\n${reviseResult.warning}` : '';
+      return textResult(msg + warning + dateWarning);
+    }),
   );
 }
 
@@ -704,17 +613,12 @@ export function registerForgetTool(server: McpServer, memory: D1MemoryService): 
       id: z.union([z.number().int(), z.string()]).describe('Memory id to delete (number or m-prefixed id like "m5")'),
       reason: z.string().optional().describe('Optional brief explanation of why this memory is being deleted.'),
     },
-    async ({ id: rawId, reason }) => {
-      try {
-        const id = resolveMemoryId(rawId);
-        await memory.forget(id, reason);
-        const reasonSuffix = reason ? ` Reason: ${reason}` : '';
-        return { content: [{ type: 'text' as const, text: `Memory m${id} soft-deleted.${reasonSuffix}` }] };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
-      }
-    },
+    withErrorHandling(async ({ id: rawId, reason }) => {
+      const id = resolveMemoryId(rawId as number | string);
+      await memory.forget(id, reason as string | undefined);
+      const reasonSuffix = reason ? ` Reason: ${reason}` : '';
+      return textResult(`Memory m${id} soft-deleted.${reasonSuffix}`);
+    }),
   );
 }
 
@@ -739,17 +643,12 @@ export function registerSkipTool(server: McpServer, memory: D1MemoryService): vo
       id: z.union([z.number().int(), z.string()]).describe('Memory id of the recurring memory to skip (number or m-prefixed id like "m5")'),
       reason: z.string().optional().describe('Optional explanation of why this occurrence was skipped. Appended to the memory body.'),
     },
-    async ({ id: rawId, reason }) => {
-      try {
-        const id = resolveMemoryId(rawId);
-        const result = await memory.skip(id, reason);
-        const reasonSuffix = reason ? ` Reason: ${reason}.` : '';
-        return { content: [{ type: 'text' as const, text: `Memory m${id} skipped. Next occurrence: ${result.nextActionDate}.${reasonSuffix}` }] };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
-      }
-    },
+    withErrorHandling(async ({ id: rawId, reason }) => {
+      const id = resolveMemoryId(rawId as number | string);
+      const result = await memory.skip(id, reason as string | undefined);
+      const reasonSuffix = reason ? ` Reason: ${reason}.` : '';
+      return textResult(`Memory m${id} skipped. Next occurrence: ${result.nextActionDate}.${reasonSuffix}`);
+    }),
   );
 }
 
@@ -806,78 +705,65 @@ export function registerAgendaTool(server: McpServer, memory: D1MemoryService): 
       include_completed: z.boolean().optional().describe('Include completed/cancelled items. Default: false'),
       max_results: z.number().int().min(1).max(50).optional().describe('Max items per section. Default: 20'),
     },
-    async ({ when = 'this week', include_completed = false, max_results = 20 }) => {
-      try {
-        const range = parseDateRange(when);
-        if (!range) {
-          return { content: [{ type: 'text' as const, text: `Error: Could not parse "when" value "${when}". Use keywords (today, tomorrow, this week, next week, this month, next month, overdue) or a date expression.` }] };
-        }
+    withErrorHandling(async ({ when: whenParam, include_completed: inclCompleted, max_results: maxRes }) => {
+      const when = (whenParam as string | undefined) ?? 'this week';
+      const include_completed = (inclCompleted as boolean | undefined) ?? false;
+      const max_results = (maxRes as number | undefined) ?? 20;
 
-        const result = await memory.agenda({
-          when: range,
-          includeCompleted: include_completed,
-          maxResults: max_results,
-        });
+      const range = parseDateRange(when);
+      if (!range) {
+        return textResult(`Error: Could not parse "when" value "${when}". Use keywords (today, tomorrow, this week, next week, this month, next month, overdue) or a date expression.`);
+      }
 
-        const lines: string[] = [];
-        lines.push(buildDateContext());
+      const result = await memory.agenda({
+        when: range,
+        includeCompleted: include_completed,
+        maxResults: max_results,
+      });
+
+      const lines: string[] = [];
+      lines.push(buildDateContext());
+      lines.push('');
+
+      // Overdue section
+      if (result.overdue.length > 0) {
+        lines.push(`## \u26a0\ufe0f Overdue (${result.overdue.length})`);
         lines.push('');
+        for (const r of result.overdue) {
+          lines.push(formatAgendaItem(r));
+        }
+        lines.push('> These items are overdue \u2014 consider asking the user what to do with them.');
+        lines.push('');
+      }
 
-        // Overdue section
-        if (result.overdue.length > 0) {
-          lines.push(`## \u26a0\ufe0f Overdue (${result.overdue.length})`);
+      // Upcoming section
+      if (!('overdue' in range)) {
+        const windowLabel = when.toLowerCase();
+        if (result.upcoming.length === 0) {
+          lines.push(`## \ud83d\udcc5 Upcoming (${windowLabel})`);
           lines.push('');
-          for (const r of result.overdue) {
+          lines.push('No upcoming items.');
+        } else {
+          lines.push(`## \ud83d\udcc5 Upcoming (${windowLabel}) \u2014 ${result.upcoming.length} item${result.upcoming.length === 1 ? '' : 's'}`);
+          lines.push('');
+          for (const r of result.upcoming) {
             lines.push(formatAgendaItem(r));
           }
-          lines.push('> These items are overdue \u2014 consider asking the user what to do with them.');
-          lines.push('');
         }
-
-        // Upcoming section
-        if (!('overdue' in range)) {
-          const windowLabel = when.toLowerCase();
-          if (result.upcoming.length === 0) {
-            lines.push(`## \ud83d\udcc5 Upcoming (${windowLabel})`);
-            lines.push('');
-            lines.push('No upcoming items.');
-          } else {
-            lines.push(`## \ud83d\udcc5 Upcoming (${windowLabel}) \u2014 ${result.upcoming.length} item${result.upcoming.length === 1 ? '' : 's'}`);
-            lines.push('');
-            for (const r of result.upcoming) {
-              lines.push(formatAgendaItem(r));
-            }
-          }
-        }
-
-        if (result.overdue.length === 0 && 'overdue' in range) {
-          return { content: [{ type: 'text' as const, text: `Nothing on the agenda for "${when}".` }] };
-        }
-
-        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
       }
-    },
+
+      if (result.overdue.length === 0 && 'overdue' in range) {
+        return textResult(`Nothing on the agenda for "${when}".`);
+      }
+
+      return textResult(lines.join('\n'));
+    }),
   );
 }
 
 /** Format a single agenda item as a compact markdown block. */
 function formatAgendaItem(r: { id: number; topic: string; body: string; actionDate: string | null; dueDate: string | null; recurrence: string | null; priority: PriorityLevel | null; status: MemoryStatusValue | null; completedOn: string | null; confidence: number }): string {
-  const meta: string[] = [];
-  if (r.actionDate) {
-    let actionStr = `Action: ${r.actionDate}`;
-    if (r.recurrence) actionStr += ` (${r.recurrence})`;
-    if (isActionOverdue(r)) actionStr += ' \u26a0\ufe0f OVERDUE';
-    meta.push(actionStr);
-  }
-  if (r.dueDate) {
-    meta.push(`Due: ${r.dueDate}${isDuePastDue(r) ? ' \ud83d\udea8 PAST DUE' : ''}`);
-  }
-  if (r.priority) meta.push(`Priority: ${priorityLabel(r.priority)}`);
-  if (r.status) meta.push(`Status: ${statusLabel(r.status)}`);
-  if (r.completedOn) meta.push(`Completed: ${r.completedOn}`);
+  const meta = buildMetaLines(r);
   return [
     `### [m${r.id}] ${r.topic}`,
     truncateMemoryBody(r.body),
@@ -945,73 +831,56 @@ export function registerReadTool(server: McpServer, memory: D1MemoryService): vo
         }),
       ])).describe('Array of reference IDs (e.g. "r1") or objects with id and optional line range'),
     },
-    async ({ results: refs }) => {
-      try {
-        const outputParts: string[] = [];
+    withErrorHandling(async ({ results: refs }) => {
+      const outputParts: string[] = [];
 
-        for (const ref of refs) {
-          const id = typeof ref === 'string' ? ref : ref.id;
+      for (const ref of (refs as Array<string | { id: string }>)) {
+        const id = typeof ref === 'string' ? ref : ref.id;
 
-          // Only support m-prefixed IDs in the Worker (no file/dir puids)
-          if (/^m\d+$/i.test(id)) {
-            const memId = parseInt(id.slice(1), 10);
-            const mem = await memory.getById(memId);
-            if (!mem) {
-              outputParts.push(`## ${id}: Memory not found`);
-              continue;
-            }
-
-            const lines: string[] = [];
-            lines.push(`## ${id}: ${mem.topic}`);
-
-            if (mem.deletedAt) {
-              lines.push(`\u26a0\ufe0f This memory was deleted on ${mem.deletedAt}.${mem.deletionReason ? ` Reason: ${mem.deletionReason}` : ''}`);
-              lines.push('');
-            }
-
-            lines.push(mem.body);
-            lines.push('');
-
-            // Metadata
-            const meta: string[] = [`Confidence: ${mem.confidence}`, `Created: ${mem.createdAt}`, `Updated: ${mem.updatedAt}`];
-            if (mem.actionDate) {
-              let actionStr = `Action: ${mem.actionDate}`;
-              if (mem.recurrence) actionStr += ` (${mem.recurrence})`;
-              if (isActionOverdue(mem)) actionStr += ' \u26a0\ufe0f OVERDUE';
-              meta.push(actionStr);
-            }
-            if (mem.dueDate) {
-              meta.push(`Due: ${mem.dueDate}${isDuePastDue(mem) ? ' \ud83d\udea8 PAST DUE' : ''}`);
-            }
-            if (mem.priority) meta.push(`Priority: ${priorityLabel(mem.priority)}`);
-            if (mem.status) meta.push(`Status: ${statusLabel(mem.status)}`);
-            if (mem.completedOn) meta.push(`Completed: ${mem.completedOn}`);
-            if (mem.contextHint) meta.push(`Context: ${mem.contextHint}`);
-            lines.push(`_${meta.join(' | ')}_`);
-
-            // Related memories via Vectorize KNN
-            const related = await memory.findRelated(memId, 5);
-            if (related.length > 0) {
-              lines.push('');
-              lines.push('### Related memories');
-              for (const rel of related) {
-                const sim = Math.round(rel.similarity * 100);
-                lines.push(`- [m${rel.id}] ${rel.topic} (${sim}% similar)`);
-              }
-            }
-
-            outputParts.push(lines.join('\n'));
-          } else {
-            outputParts.push(`## ${id}: Not supported on lodestone-memory (only m-prefixed memory IDs are available). Use lodestone_read on the lodestone-files server for file references.`);
+        // Only support m-prefixed IDs in the Worker (no file/dir puids)
+        if (/^m\d+$/i.test(id)) {
+          const memId = parseInt(id.slice(1), 10);
+          const mem = await memory.getById(memId);
+          if (!mem) {
+            outputParts.push(`## ${id}: Memory not found`);
+            continue;
           }
-        }
 
-        return { content: [{ type: 'text' as const, text: outputParts.join('\n\n') }] };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
+          const lines: string[] = [];
+          lines.push(`## ${id}: ${mem.topic}`);
+
+          if (mem.deletedAt) {
+            lines.push(`\u26a0\ufe0f This memory was deleted on ${mem.deletedAt}.${mem.deletionReason ? ` Reason: ${mem.deletionReason}` : ''}`);
+            lines.push('');
+          }
+
+          lines.push(mem.body);
+          lines.push('');
+
+          // Metadata
+          const meta: string[] = [`Confidence: ${mem.confidence}`, `Created: ${mem.createdAt}`, `Updated: ${mem.updatedAt}`, ...buildMetaLines(mem)];
+          if (mem.contextHint) meta.push(`Context: ${mem.contextHint}`);
+          lines.push(`_${meta.join(' | ')}_`);
+
+          // Related memories via Vectorize KNN
+          const related = await memory.findRelated(memId, 5);
+          if (related.length > 0) {
+            lines.push('');
+            lines.push('### Related memories');
+            for (const rel of related) {
+              const sim = Math.round(rel.similarity * 100);
+              lines.push(`- [m${rel.id}] ${rel.topic} (${sim}% similar)`);
+            }
+          }
+
+          outputParts.push(lines.join('\n'));
+        } else {
+          outputParts.push(`## ${id}: Not supported on lodestone-memory (only m-prefixed memory IDs are available). Use lodestone_read on the lodestone-files server for file references.`);
+        }
       }
-    },
+
+      return textResult(outputParts.join('\n\n'));
+    }),
   );
 }
 
@@ -1049,129 +918,127 @@ export function registerProjectTool(server: McpServer, memory: D1MemoryService):
       target: z.string().optional().describe('Target project name for merge action'),
       include_archived: z.boolean().optional().describe('Include archived projects in list output. Default: false'),
     },
-    async ({ action, name, new_name, color, source, target, include_archived }) => {
-      try {
-        switch (action) {
-          case 'list': {
-            const projects = await memory.getProjectsWithCounts(include_archived ?? false);
-            if (projects.length === 0) {
-              return textResult('No projects found.');
-            }
-            const lines: string[] = [`## Projects (${projects.length})`, ''];
-            for (const p of projects) {
-              const counts = `${p.openCount} open, ${p.completedCount} completed, ${p.totalCount} total`;
-              const archivedTag = p.archivedAt ? ' (archived)' : '';
-              lines.push(`- **${p.name}**${archivedTag} (${p.color}) — ${counts}`);
-            }
-            return textResult(lines.join('\n'));
+    withErrorHandling(async ({ action, name, new_name, color, source, target, include_archived }) => {
+      switch (action as string) {
+        case 'list': {
+          const projects = await memory.getProjectsWithCounts((include_archived as boolean | undefined) ?? false);
+          if (projects.length === 0) {
+            return textResult('No projects found.');
           }
-
-          case 'create': {
-            if (!name) return textResult('Error: name is required for create.');
-            // Exact match check (case-insensitive via COLLATE NOCASE)
-            const existing = await memory.getProjectByName(name);
-            if (existing) {
-              return textResult(`Project "${name}" already exists (id: ${existing.id}).`);
-            }
-            // Create the project
-            const id = await memory.createProject(name, color ?? 'blue');
-            // Fuzzy dedup: non-blocking warning about near-matches
-            const resolved = await memory.resolveProjectName(name);
-            // resolveProjectName will find exact match now (just created), so check
-            // all projects for close names (excluding the one we just created)
-            if (resolved.status === 'found') {
-              const allProjects = await memory.getProjectsWithCounts();
-              const close = allProjects
-                .filter(p => p.id !== id)
-                .map(p => ({ name: p.name, distance: levenshteinDistance(name.toLowerCase(), p.name.toLowerCase()) }))
-                .filter(s => s.distance > 0 && s.distance <= Math.max(2, Math.ceil(name.length * 0.3)))
-                .sort((a, b) => a.distance - b.distance)
-                .slice(0, 3)
-                .map(s => `  - "${s.name}"`)
-                .join('\n');
-              if (close) {
-                return textResult(
-                  `Created project "${name}" (id: ${id}, colour: ${color ?? 'blue'}).\n\n`
-                  + `⚠️ Note: similar projects already exist:\n${close}\n`
-                  + 'Consider merging if this was a typo.',
-                );
-              }
-            }
-            return textResult(`Created project "${name}" (id: ${id}, colour: ${color ?? 'blue'}).`);
+          const lines: string[] = [`## Projects (${projects.length})`, ''];
+          for (const p of projects) {
+            const counts = `${p.openCount} open, ${p.completedCount} completed, ${p.totalCount} total`;
+            const archivedTag = p.archivedAt ? ' (archived)' : '';
+            lines.push(`- **${p.name}**${archivedTag} (${p.color}) — ${counts}`);
           }
-
-          case 'rename': {
-            if (!name) return textResult('Error: name is required for rename.');
-            if (!new_name) return textResult('Error: new_name is required for rename.');
-            const resolved = await resolveProjectOrError(memory, name);
-            if ('error' in resolved) return resolved.error;
-            await memory.updateProject(resolved.id, { name: new_name });
-            return textResult(`Renamed project "${name}" to "${new_name}".`);
-          }
-
-          case 'recolor': {
-            if (!name) return textResult('Error: name is required for recolor.');
-            if (!color) return textResult('Error: color is required for recolor.');
-            const resolved = await resolveProjectOrError(memory, name);
-            if ('error' in resolved) return resolved.error;
-            await memory.updateProject(resolved.id, { color });
-            return textResult(`Changed "${name}" colour to ${color}.`);
-          }
-
-          case 'merge': {
-            if (!source) return textResult('Error: source is required for merge.');
-            if (!target) return textResult('Error: target is required for merge.');
-            const srcResolved = await resolveProjectOrError(memory, source);
-            if ('error' in srcResolved) return srcResolved.error;
-            const tgtResolved = await resolveProjectOrError(memory, target);
-            if ('error' in tgtResolved) return tgtResolved.error;
-            const reassigned = await memory.mergeProjects(srcResolved.id, tgtResolved.id);
-            return textResult(`Merged "${source}" into "${target}". ${reassigned} task${reassigned === 1 ? '' : 's'} reassigned. Source project deleted.`);
-          }
-
-          case 'delete': {
-            if (!name) return textResult('Error: name is required for delete.');
-            const resolved = await resolveProjectOrError(memory, name);
-            if ('error' in resolved) return resolved.error;
-            await memory.deleteProject(resolved.id);
-            return textResult(`Deleted project "${name}". Tasks in this project are now unassigned.`);
-          }
-
-          case 'archive': {
-            if (!name) return textResult('Error: name is required for archive.');
-            const resolved = await resolveProjectOrError(memory, name);
-            if ('error' in resolved) return resolved.error;
-            await memory.archiveProject(resolved.id);
-            return textResult(`Archived project "${name}". Its memories are now hidden from recall and agenda. Use action "unarchive" to restore.`);
-          }
-
-          case 'unarchive': {
-            if (!name) return textResult('Error: name is required for unarchive.');
-            const resolved = await resolveArchivedProjectOrError(memory, name);
-            if ('error' in resolved) return resolved.error;
-            await memory.unarchiveProject(resolved.id);
-            return textResult(`Unarchived project "${name}". Its memories are now visible in recall and agenda again.`);
-          }
-
-          case 'search': {
-            if (!name) return textResult('Error: name is required for search.');
-            const allProjects = await memory.getProjectsWithCounts();
-            if (allProjects.length === 0) return textResult('No projects found.');
-            const scored = allProjects
-              .map(p => ({ ...p, distance: levenshteinDistance(name.toLowerCase(), p.name.toLowerCase()) }))
-              .sort((a, b) => a.distance - b.distance)
-              .slice(0, 5);
-            const lines = scored.map(p => {
-              const counts = `${p.openCount} open, ${p.completedCount} completed, ${p.totalCount} total`;
-              return `- **${p.name}** (${p.color}, distance: ${p.distance}) — ${counts}`;
-            });
-            return textResult(`## Search results for "${name}"\n\n${lines.join('\n')}`);
-          }
+          return textResult(lines.join('\n'));
         }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return textResult(`Error: ${message}`);
+
+        case 'create': {
+          if (!name) return textResult('Error: name is required for create.');
+          // Exact match check (case-insensitive via COLLATE NOCASE)
+          const existing = await memory.getProjectByName(name as string);
+          if (existing) {
+            return textResult(`Project "${name}" already exists (id: ${existing.id}).`);
+          }
+          // Create the project
+          const id = await memory.createProject(name as string, (color as string | undefined) ?? 'blue');
+          // Fuzzy dedup: non-blocking warning about near-matches
+          const resolved = await memory.resolveProjectName(name as string);
+          // resolveProjectName will find exact match now (just created), so check
+          // all projects for close names (excluding the one we just created)
+          if (resolved.status === 'found') {
+            const allProjects = await memory.getProjectsWithCounts();
+            const close = allProjects
+              .filter(p => p.id !== id)
+              .map(p => ({ name: p.name, distance: levenshteinDistance((name as string).toLowerCase(), p.name.toLowerCase()) }))
+              .filter(s => s.distance > 0 && s.distance <= Math.max(2, Math.ceil((name as string).length * 0.3)))
+              .sort((a, b) => a.distance - b.distance)
+              .slice(0, 3)
+              .map(s => `  - "${s.name}"`)
+              .join('\n');
+            if (close) {
+              return textResult(
+                `Created project "${name}" (id: ${id}, colour: ${(color as string | undefined) ?? 'blue'}).\n\n`
+                + `\u26a0\ufe0f Note: similar projects already exist:\n${close}\n`
+                + 'Consider merging if this was a typo.',
+              );
+            }
+          }
+          return textResult(`Created project "${name}" (id: ${id}, colour: ${(color as string | undefined) ?? 'blue'}).`);
+        }
+
+        case 'rename': {
+          if (!name) return textResult('Error: name is required for rename.');
+          if (!new_name) return textResult('Error: new_name is required for rename.');
+          const resolved = await resolveProjectOrError(memory, name as string);
+          if ('error' in resolved) return resolved.error;
+          await memory.updateProject(resolved.id, { name: new_name as string });
+          return textResult(`Renamed project "${name}" to "${new_name}".`);
+        }
+
+        case 'recolor': {
+          if (!name) return textResult('Error: name is required for recolor.');
+          if (!color) return textResult('Error: color is required for recolor.');
+          const resolved = await resolveProjectOrError(memory, name as string);
+          if ('error' in resolved) return resolved.error;
+          await memory.updateProject(resolved.id, { color: color as string });
+          return textResult(`Changed "${name}" colour to ${color}.`);
+        }
+
+        case 'merge': {
+          if (!source) return textResult('Error: source is required for merge.');
+          if (!target) return textResult('Error: target is required for merge.');
+          const srcResolved = await resolveProjectOrError(memory, source as string);
+          if ('error' in srcResolved) return srcResolved.error;
+          const tgtResolved = await resolveProjectOrError(memory, target as string);
+          if ('error' in tgtResolved) return tgtResolved.error;
+          const reassigned = await memory.mergeProjects(srcResolved.id, tgtResolved.id);
+          return textResult(`Merged "${source}" into "${target}". ${reassigned} task${reassigned === 1 ? '' : 's'} reassigned. Source project deleted.`);
+        }
+
+        case 'delete': {
+          if (!name) return textResult('Error: name is required for delete.');
+          const resolved = await resolveProjectOrError(memory, name as string);
+          if ('error' in resolved) return resolved.error;
+          await memory.deleteProject(resolved.id);
+          return textResult(`Deleted project "${name}". Tasks in this project are now unassigned.`);
+        }
+
+        case 'archive': {
+          if (!name) return textResult('Error: name is required for archive.');
+          const resolved = await resolveProjectOrError(memory, name as string);
+          if ('error' in resolved) return resolved.error;
+          await memory.archiveProject(resolved.id);
+          return textResult(`Archived project "${name}". Its memories are now hidden from recall and agenda. Use action "unarchive" to restore.`);
+        }
+
+        case 'unarchive': {
+          if (!name) return textResult('Error: name is required for unarchive.');
+          const resolved = await resolveArchivedProjectOrError(memory, name as string);
+          if ('error' in resolved) return resolved.error;
+          await memory.unarchiveProject(resolved.id);
+          return textResult(`Unarchived project "${name}". Its memories are now visible in recall and agenda again.`);
+        }
+
+        case 'search': {
+          if (!name) return textResult('Error: name is required for search.');
+          const allProjects = await memory.getProjectsWithCounts();
+          if (allProjects.length === 0) return textResult('No projects found.');
+          const scored = allProjects
+            .map(p => ({ ...p, distance: levenshteinDistance((name as string).toLowerCase(), p.name.toLowerCase()) }))
+            .sort((a, b) => a.distance - b.distance)
+            .slice(0, 5);
+          const lines = scored.map(p => {
+            const counts = `${p.openCount} open, ${p.completedCount} completed, ${p.totalCount} total`;
+            return `- **${p.name}** (${p.color}, distance: ${p.distance}) — ${counts}`;
+          });
+          return textResult(`## Search results for "${name}"\n\n${lines.join('\n')}`);
+        }
       }
-    },
+
+      // Unreachable — zod validates the action enum
+      return textResult('Error: unknown action.');
+    }),
   );
 }

@@ -7,7 +7,7 @@
  * All scores are normalised to [0,1].
  */
 
-import { tokenise } from '../tokeniser';
+import { tokenise } from '../../shared/portable/tokeniser';
 
 // ── Signal Interface ────────────────────────────────────────────────────────
 

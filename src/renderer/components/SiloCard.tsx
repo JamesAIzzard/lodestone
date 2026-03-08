@@ -1,17 +1,12 @@
 import { useState, useCallback } from 'react';
 import { FolderOpen, Loader2, Pause, Play, AlertTriangle, Database, Copy, RefreshCw, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatBytes } from '@/lib/format';
 import { Badge } from './ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { SILO_COLOR_MAP } from '../../shared/silo-appearance';
 import SiloIcon from './SiloIconComponent';
 import type { SiloStatus, WatcherState } from '../../shared/types';
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 const stageLabels: Record<string, string> = {
   reading: 'Reading',

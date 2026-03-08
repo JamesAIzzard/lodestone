@@ -19,6 +19,15 @@ import { upsertDayOrder, deleteDayOrder, rebalanceDayOrder } from './d1/write';
 import { embedDocument } from './embedding';
 import type { MemoryStatusValue, PriorityLevel } from './shared/types';
 
+// ── JSON response helper ────────────────────────────────────────────────────
+
+function jsonResponse(data: unknown, status: number = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 // ── OAuth authorize flow ─────────────────────────────────────────────────────
 
 export async function handleDefaultRequest(
@@ -117,10 +126,7 @@ export async function handleDefaultRequest(
 
   // ── Health check (unauthenticated) ─────────────────────────────────────
   if (pathname === '/health') {
-    return new Response(
-      JSON.stringify({ status: 'ok', name: 'lodestone-memory', version: '0.1.0' }),
-      { headers: { 'Content-Type': 'application/json' } },
-    );
+    return jsonResponse({ status: 'ok', name: 'lodestone-memory', version: '0.1.0' });
   }
 
   // ── REST API routes (Bearer token auth) ────────────────────────────────
@@ -128,6 +134,29 @@ export async function handleDefaultRequest(
   const authError = authenticate(request, env);
   if (authError) return authError;
 
+  const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
+
+  const taskResponse = await handleTaskRoutes(request, url, pathname, env, memory);
+  if (taskResponse) return taskResponse;
+
+  const projectResponse = await handleProjectRoutes(request, pathname, memory);
+  if (projectResponse) return projectResponse;
+
+  const reindexResponse = await handleReindexRoute(request, url, pathname, env);
+  if (reindexResponse) return reindexResponse;
+
+  return new Response('Not Found', { status: 404 });
+}
+
+// ── Task routes ─────────────────────────────────────────────────────────────
+
+async function handleTaskRoutes(
+  request: Request,
+  url: URL,
+  pathname: string,
+  env: Env,
+  memory: D1MemoryService,
+): Promise<Response | null> {
   // List/search tasks: GET /tasks
   if (pathname === '/tasks' && request.method === 'GET') {
     const q = url.searchParams.get('q')?.trim();
@@ -136,20 +165,14 @@ export async function handleDefaultRequest(
 
     if (q) {
       try {
-        const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
         const results = await memory.recall({ query: q, maxResults: Math.min(limit, 50), mode: 'hybrid' });
         const tasks = results
           .filter((r) => r.status != null)
           .slice(0, limit)
           .map(({ score, scoreLabel, signals, ...task }) => ({ ...task, _score: score }));
-        return new Response(JSON.stringify({ tasks }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return jsonResponse({ tasks });
       } catch (err) {
-        return new Response(JSON.stringify({ error: String(err), stack: (err as Error).stack }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return jsonResponse({ error: String(err), stack: (err as Error).stack }, 500);
       }
     }
 
@@ -158,9 +181,7 @@ export async function handleDefaultRequest(
     const rawProjectId = url.searchParams.get('projectId');
     const projectId = rawProjectId ? parseInt(rawProjectId, 10) : undefined;
     const tasks = await getAllTasks(env.DB, { includeCompleted, includeCancelled, projectId }, limit);
-    return new Response(JSON.stringify({ tasks }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ tasks });
   }
 
   // Create task: POST /tasks
@@ -173,7 +194,6 @@ export async function handleDefaultRequest(
       dueDate?: string;
       projectId?: number | null;
     };
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     // Tasks always have an action_date — default to today if not provided
     const today = new Date().toISOString().slice(0, 10);
     const result = await memory.remember({
@@ -187,9 +207,7 @@ export async function handleDefaultRequest(
       force: true,
     });
     const id = result.status === 'created' ? result.id : (result as { existing: { id: number } }).existing.id;
-    return new Response(JSON.stringify({ success: true, id }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true, id });
   }
 
   // Skip task occurrence: POST /tasks/:id/skip
@@ -197,11 +215,8 @@ export async function handleDefaultRequest(
   if (taskSkipMatch && request.method === 'POST') {
     const id = parseInt(taskSkipMatch[1], 10);
     const body = (await request.json().catch(() => ({}))) as { reason?: string };
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     const result = await memory.skip(id, body.reason);
-    return new Response(JSON.stringify({ success: true, nextActionDate: result.nextActionDate }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true, nextActionDate: result.nextActionDate });
   }
 
   // Upsert day order: PUT /tasks/:id/day-order
@@ -210,10 +225,7 @@ export async function handleDefaultRequest(
     const id = parseInt(dayOrderMatch[1], 10);
     const body = (await request.json()) as { actionDate: string; position: number };
     if (!body.actionDate || typeof body.position !== 'number') {
-      return new Response(JSON.stringify({ error: 'actionDate and position are required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: 'actionDate and position are required' }, 400);
     }
     await upsertDayOrder(env.DB, id, body.actionDate, body.position);
     // Auto-rebalance if position gap is too small
@@ -233,18 +245,14 @@ export async function handleDefaultRequest(
         await rebalanceDayOrder(env.DB, body.actionDate);
       }
     }
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
   // Delete day order: DELETE /tasks/:id/day-order
   if (dayOrderMatch && request.method === 'DELETE') {
     const id = parseInt(dayOrderMatch[1], 10);
     await deleteDayOrder(env.DB, id);
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
   // Revise task: PATCH /tasks/:id
@@ -269,7 +277,6 @@ export async function handleDefaultRequest(
           await deleteDayOrder(env.DB, id, current.actionDate);
         }
       }
-      const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
       const result = await memory.revise({
         id,
         ...(payload.body !== undefined && { body: payload.body }),
@@ -281,62 +288,51 @@ export async function handleDefaultRequest(
         ...(payload.topic !== undefined && { topic: payload.topic }),
         ...(payload.projectId !== undefined && { projectId: payload.projectId }),
       });
-      return new Response(JSON.stringify({ success: true, ...result }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ success: true, ...result });
     } catch (err) {
       console.error(`[auth-handler] PATCH /tasks/${id} failed:`, err);
-      return new Response(JSON.stringify({ success: false, error: String(err), stack: (err as Error).stack }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ success: false, error: String(err), stack: (err as Error).stack }, 500);
     }
   }
 
   // Delete task: DELETE /tasks/:id
   if (taskPatchMatch && request.method === 'DELETE') {
     const id = parseInt(taskPatchMatch[1], 10);
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     await memory.forget(id, 'Deleted via Tasks GUI');
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
-  // ── Project routes ─────────────────────────────────────────────────────
+  return null;
+}
 
+// ── Project routes ──────────────────────────────────────────────────────────
+
+async function handleProjectRoutes(
+  request: Request,
+  pathname: string,
+  memory: D1MemoryService,
+): Promise<Response | null> {
   // List projects: GET /projects
   if (pathname === '/projects' && request.method === 'GET') {
+    const url = new URL(request.url);
     const includeArchived = url.searchParams.get('includeArchived') === 'true';
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     const projects = await memory.getProjectsWithCounts(includeArchived);
-    return new Response(JSON.stringify({ projects }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ projects });
   }
 
   // Create project: POST /projects
   if (pathname === '/projects' && request.method === 'POST') {
     const body = (await request.json()) as { name: string; color?: string };
     if (!body.name?.trim()) {
-      return new Response(JSON.stringify({ error: 'Project name is required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: 'Project name is required' }, 400);
     }
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     try {
       const id = await memory.createProject(body.name.trim(), body.color ?? 'blue');
-      return new Response(JSON.stringify({ success: true, id }), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ success: true, id });
     } catch (err) {
       const msg = String(err);
       if (msg.includes('UNIQUE constraint')) {
-        return new Response(JSON.stringify({ error: `Project "${body.name}" already exists` }), {
-          status: 409,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return jsonResponse({ error: `Project "${body.name}" already exists` }, 409);
       }
       throw err;
     }
@@ -348,38 +344,26 @@ export async function handleDefaultRequest(
     const sourceId = parseInt(projectMergeMatch[1], 10);
     const body = (await request.json()) as { targetId: number };
     if (!body.targetId) {
-      return new Response(JSON.stringify({ error: 'targetId is required' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonResponse({ error: 'targetId is required' }, 400);
     }
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     const reassigned = await memory.mergeProjects(sourceId, body.targetId);
-    return new Response(JSON.stringify({ success: true, reassigned }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true, reassigned });
   }
 
   // Archive project: POST /projects/:id/archive
   const projectArchiveMatch = pathname.match(/^\/projects\/(\d+)\/archive$/);
   if (projectArchiveMatch && request.method === 'POST') {
     const id = parseInt(projectArchiveMatch[1], 10);
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     await memory.archiveProject(id);
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
   // Unarchive project: POST /projects/:id/unarchive
   const projectUnarchiveMatch = pathname.match(/^\/projects\/(\d+)\/unarchive$/);
   if (projectUnarchiveMatch && request.method === 'POST') {
     const id = parseInt(projectUnarchiveMatch[1], 10);
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     await memory.unarchiveProject(id);
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
   // Update project: PATCH /projects/:id
@@ -387,81 +371,80 @@ export async function handleDefaultRequest(
   if (projectMatch && request.method === 'PATCH') {
     const id = parseInt(projectMatch[1], 10);
     const body = (await request.json()) as { name?: string; color?: string };
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     await memory.updateProject(id, body);
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
   // Delete project: DELETE /projects/:id
   if (projectMatch && request.method === 'DELETE') {
     const id = parseInt(projectMatch[1], 10);
-    const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
     await memory.deleteProject(id);
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return jsonResponse({ success: true });
   }
 
-  // ── Reindex ────────────────────────────────────────────────────────────
+  return null;
+}
 
-  if (pathname === '/reindex' && request.method === 'POST') {
-    const scope = url.searchParams.get('scope') ?? 'all';
-    const fromId = url.searchParams.get('from');
-    const toId = url.searchParams.get('to');
+// ── Reindex route ───────────────────────────────────────────────────────────
 
-    let query = `SELECT id, topic, body FROM memories WHERE deleted_at IS NULL`;
-    const binds: unknown[] = [];
-    if (fromId) { query += ` AND id >= ?`; binds.push(Number(fromId)); }
-    if (toId) { query += ` AND id <= ?`; binds.push(Number(toId)); }
-    query += ` ORDER BY id`;
+async function handleReindexRoute(
+  request: Request,
+  url: URL,
+  pathname: string,
+  env: Env,
+): Promise<Response | null> {
+  if (pathname !== '/reindex' || request.method !== 'POST') return null;
 
-    const stmt = env.DB.prepare(query);
-    const { results: rows } = binds.length > 0 ? await stmt.bind(...binds).all() : await stmt.all();
+  const scope = url.searchParams.get('scope') ?? 'all';
+  const fromId = url.searchParams.get('from');
+  const toId = url.searchParams.get('to');
 
-    let bm25Count = 0;
-    let vectorCount = 0;
+  let query = `SELECT id, topic, body FROM memories WHERE deleted_at IS NULL`;
+  const binds: unknown[] = [];
+  if (fromId) { query += ` AND id >= ?`; binds.push(Number(fromId)); }
+  if (toId) { query += ` AND id <= ?`; binds.push(Number(toId)); }
+  query += ` ORDER BY id`;
 
-    if (scope === 'all' || scope === 'bm25') {
-      await env.DB.batch([
-        env.DB.prepare('DELETE FROM memory_postings'),
-        env.DB.prepare('DELETE FROM memory_terms'),
-        env.DB.prepare('DELETE FROM memory_metadata'),
-      ]);
+  const stmt = env.DB.prepare(query);
+  const { results: rows } = binds.length > 0 ? await stmt.bind(...binds).all() : await stmt.all();
 
-      for (const row of rows) {
+  let bm25Count = 0;
+  let vectorCount = 0;
+
+  if (scope === 'all' || scope === 'bm25') {
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM memory_postings'),
+      env.DB.prepare('DELETE FROM memory_terms'),
+      env.DB.prepare('DELETE FROM memory_metadata'),
+    ]);
+
+    for (const row of rows) {
+      const r = row as Record<string, unknown>;
+      await addToInvertedIndex(env.DB, r.id as number, r.body as string);
+      bm25Count++;
+    }
+    await updateMemoryCorpusStats(env.DB);
+  }
+
+  if (scope === 'all' || scope === 'vectors') {
+    for (let i = 0; i < rows.length; i += 10) {
+      const batch = rows.slice(i, i + 10);
+      const vectors: VectorizeVector[] = [];
+
+      for (const row of batch) {
         const r = row as Record<string, unknown>;
-        await addToInvertedIndex(env.DB, r.id as number, r.body as string);
-        bm25Count++;
+        const embedding = await embedDocument(env.AI, r.topic as string, r.body as string);
+        vectors.push({ id: String(r.id), values: embedding });
+        vectorCount++;
       }
-      await updateMemoryCorpusStats(env.DB);
-    }
 
-    if (scope === 'all' || scope === 'vectors') {
-      for (let i = 0; i < rows.length; i += 10) {
-        const batch = rows.slice(i, i + 10);
-        const vectors: VectorizeVector[] = [];
-
-        for (const row of batch) {
-          const r = row as Record<string, unknown>;
-          const embedding = await embedDocument(env.AI, r.topic as string, r.body as string);
-          vectors.push({ id: String(r.id), values: embedding });
-          vectorCount++;
-        }
-
-        if (vectors.length > 0) {
-          await env.VECTORIZE.upsert(vectors);
-        }
+      if (vectors.length > 0) {
+        await env.VECTORIZE.upsert(vectors);
       }
     }
-
-    return new Response(JSON.stringify({ status: 'ok', bm25: bm25Count, vectors: vectorCount }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
   }
 
-  return new Response('Not Found', { status: 404 });
+  return jsonResponse({ status: 'ok', bm25: bm25Count, vectors: vectorCount });
 }
 
 // ── Password form HTML ───────────────────────────────────────────────────────

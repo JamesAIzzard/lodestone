@@ -2,24 +2,13 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Search, FileText, FileCode, FileJson, BookOpen, File, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fileName, dirPath, scorePercent } from '@/lib/format';
+import { readSession, writeSession } from '@/lib/session-storage';
+import { useSessionState } from '@/hooks/use-session-state';
 import FilterBar from '@/components/FilterBar';
 import { CellDropdown, InlineDropdown } from '@/components/TaskCells';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
 import type { SiloStatus, SearchResult, DirectoryResult, DirectoryTreeNode, ExploreParams, SearchMode, LocationHint } from '../../shared/types';
-
-function fileName(p: string): string {
-  return p.split(/[/\\]/).pop() ?? p;
-}
-
-function dirPath(p: string): string {
-  const parts = p.split(/[/\\]/);
-  parts.pop();
-  return parts.join('/');
-}
-
-function scorePercent(score: number): string {
-  return `${Math.round(score * 100)}%`;
-}
 
 function handleOpenFile(filePath: string) {
   window.electronAPI?.openPath(filePath);
@@ -74,20 +63,9 @@ function getFileIcon(filePath: string) {
 
 type ViewMode = 'file' | 'directory';
 
-function readSession<T>(key: string, fallback: T): T {
-  try {
-    const raw = sessionStorage.getItem(key);
-    return raw !== null ? (JSON.parse(raw) as T) : fallback;
-  } catch { return fallback; }
-}
-
-function writeSession<T>(key: string, value: T): void {
-  try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
-}
-
 export default function SearchView() {
   const [searchParams] = useSearchParams();
-  const [query, setQuery] = useState(() => readSession('search.query', ''));
+  const [query, setQuery] = useSessionState('search.query', '');
   const [selectedSilo, setSelectedSilo] = useState(() => searchParams.get('silo') ?? readSession('search.selectedSilo', 'all'));
   const [silos, setSilos] = useState<SiloStatus[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -95,19 +73,13 @@ export default function SearchView() {
   const [hasSearched, setHasSearched] = useState(false);
   const [searching, setSearching] = useState(false);
   const [expandedResults, setExpandedResults] = useState<Set<number>>(new Set());
-  const [searchMode, setSearchMode] = useState<ViewMode>(() => readSession('search.searchMode', 'file'));
-  const [fileSearchMode, setFileSearchMode] = useState<SearchMode>(() => readSession('search.fileSearchMode', 'hybrid'));
-  const [startPath, setStartPath] = useState(() => readSession('search.startPath', ''));
-  const [filePattern, setFilePattern] = useState(() => readSession('search.filePattern', ''));
-  const [depthSetting, setDepthSetting] = useState(() => readSession('search.depthSetting', 2));
+  const [searchMode, setSearchMode] = useSessionState<ViewMode>('search.searchMode', 'file');
+  const [fileSearchMode, setFileSearchMode] = useSessionState<SearchMode>('search.fileSearchMode', 'hybrid');
+  const [startPath, setStartPath] = useSessionState('search.startPath', '');
+  const [filePattern, setFilePattern] = useSessionState('search.filePattern', '');
+  const [depthSetting, setDepthSetting] = useSessionState('search.depthSetting', 2);
 
-  useEffect(() => { writeSession('search.query', query); }, [query]);
   useEffect(() => { writeSession('search.selectedSilo', selectedSilo); }, [selectedSilo]);
-  useEffect(() => { writeSession('search.searchMode', searchMode); }, [searchMode]);
-  useEffect(() => { writeSession('search.fileSearchMode', fileSearchMode); }, [fileSearchMode]);
-  useEffect(() => { writeSession('search.startPath', startPath); }, [startPath]);
-  useEffect(() => { writeSession('search.filePattern', filePattern); }, [filePattern]);
-  useEffect(() => { writeSession('search.depthSetting', depthSetting); }, [depthSetting]);
 
   useEffect(() => {
     const fetch = () => window.electronAPI?.getSilos().then(setSilos);

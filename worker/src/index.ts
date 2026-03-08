@@ -19,6 +19,7 @@ import type { Env } from './auth';
 import { D1MemoryService } from './d1-memory-service';
 import {
   registerRememberTool,
+  registerTaskTool,
   registerRecallTool,
   registerReviseTool,
   registerForgetTool,
@@ -41,6 +42,7 @@ function createServer(env: Env): McpServer {
   const memory = new D1MemoryService(env.DB, env.AI, env.VECTORIZE);
 
   registerRememberTool(server, memory);
+  registerTaskTool(server, memory);
   registerRecallTool(server, memory);
   registerReviseTool(server, memory);
   registerForgetTool(server, memory);

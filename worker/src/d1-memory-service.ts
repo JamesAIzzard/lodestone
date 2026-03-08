@@ -425,9 +425,13 @@ export class D1MemoryService {
     const today = new Date();
     const todayStr = formatDateISO(today);
 
+    const dateCmp = (a: MemoryRecord, b: MemoryRecord) =>
+      (b.priority ?? 0) - (a.priority ?? 0) ||
+      (a.actionDate ?? a.dueDate ?? '').localeCompare(b.actionDate ?? b.dueDate ?? '');
+
     // Always fetch overdue items (active only)
     const overdue = await getOverdueMemories(this.db, todayStr, maxResults);
-    overdue.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || (a.actionDate ?? '').localeCompare(b.actionDate ?? ''));
+    overdue.sort(dateCmp);
 
     // Fetch upcoming items for the requested window (unless "overdue" sentinel)
     let upcoming: MemoryRecord[] = [];
@@ -438,7 +442,10 @@ export class D1MemoryService {
       } else {
         upcoming = await getActiveUpcomingMemories(this.db, start, end, maxResults);
       }
-      upcoming.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || (a.actionDate ?? '').localeCompare(b.actionDate ?? ''));
+      // Deduplicate: items already in overdue should not also appear in upcoming
+      const overdueIds = new Set(overdue.map(m => m.id));
+      upcoming = upcoming.filter(m => !overdueIds.has(m.id));
+      upcoming.sort(dateCmp);
     }
 
     return { overdue, upcoming };

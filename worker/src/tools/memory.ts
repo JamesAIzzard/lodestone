@@ -90,27 +90,28 @@ const STARTUP_GUIDE = `# lodestone-memory — Startup Guide
 
 This is the memory server. Use it to store, search, and manage persistent memories, tasks, and reminders.
 
-Before producing any response, use \`lodestone_recall\` with a natural language query to check whether relevant memories already exist. This memory-first practice avoids redundant questions and builds on prior context. When storing something that is not actionable (like a fact or preference), pass \`status: null\`. Memories default to open status.
+Before producing any response, use \`lodestone_recall\` with a natural language query to check whether relevant memories already exist. This memory-first practice avoids redundant questions and builds on prior context.
 
 ## Key Tools
 
-- **\`lodestone_recall\`** — hybrid search over memories (semantic + keyword). Use before asking the user a question.
+- **\`lodestone_recall\`** — hybrid search over memories and tasks (semantic + keyword). Use before asking the user a question.
 - **\`lodestone_read\`** — read a memory's full body by m-id when the preview is truncated.
-- **\`lodestone_remember\`** — store a new memory (dedup-checked) or force-create with \`force: true\`.
-- **\`lodestone_revise\`** — update an existing memory by id. Use \`status: "completed"\` to complete tasks.
+- **\`lodestone_remember\`** — store a knowledge memory (fact, decision, preference) — dedup-checked.
+- **\`lodestone_task\`** — create an actionable task with dates, priority, and recurrence.
+- **\`lodestone_revise\`** — update an existing memory or task by id. Use \`status: "completed"\` to complete tasks.
 - **\`lodestone_forget\`** — soft-delete a memory that is wrong or superseded.
 - **\`lodestone_agenda\`** — view overdue + upcoming tasks for a time window.
 - **\`lodestone_skip\`** — advance a recurring task without recording a completion.
 - **\`lodestone_project\`** — manage projects (list, create, rename, recolor, merge, delete).
 - **\`lodestone_get_datetime\`** — get current date and time for timestamps.
 
-Cross-reference memories by embedding "see m42" or "related: m7, m15" in the body. Memory IDs are stable primary keys.
+Use \`lodestone_remember\` for knowledge; use \`lodestone_task\` for actionable items. Cross-reference by embedding "see m42" or "related: m7, m15" in the body.
 
 ## Detailed Guides
 
 Two further guides are available via \`lodestone_guide\`. Fetch the relevant one before undertaking that type of work.
 
-- **memory** — how to store, revise, and cross-reference memories; reminders.
+- **memory** — how to store, revise, and cross-reference memories.
 - **tasks** — creating tasks, completing, recurring tasks, overdue handling.`;
 
 const MEMORY_GUIDE = `# Lodestone Memory Guide
@@ -118,6 +119,10 @@ const MEMORY_GUIDE = `# Lodestone Memory Guide
 ## Storing and Revising Memories
 
 Before storing a new memory, use \`lodestone_recall\` to check whether a related memory already exists; update it with \`lodestone_revise\` rather than creating a duplicate. Periodically as you work on tasks or have chats, call \`lodestone_remember\` to record useful facts, decisions, or context. Keep memory bodies factual and self-contained; they will be read in a future session without the current conversation as context. Use \`lodestone_forget\` to remove anything confirmed wrong or outdated. Because lodestone search is semantic by default, conceptual phrases and natural language work as well as keywords.
+
+For actionable items with dates, priority, or recurrence, use \`lodestone_task\` instead.
+
+Memories without a status do not appear in the agenda — only tasks (items with a status) are surfaced by \`lodestone_agenda\`.
 
 ## Cross-Referencing
 
@@ -127,26 +132,29 @@ Cross-referencing by m-id is a first-class pattern: embed "see m42" or "related:
 
 Memories and tasks can optionally belong to a project. Use \`lodestone_project\` (action: "list") to see available projects. When storing or revising a memory, pass the \`project\` parameter with the exact project name. If the name doesn't match, the server returns fuzzy suggestions. Create projects first with \`lodestone_project\` (action: "create") before assigning memories to them.
 
-## Reminders
+## Converting Between Memories and Tasks
 
-Reminders are memories with an \`action_date\` and optional \`recurrence\`. They appear in \`lodestone_agenda\` output. Check the agenda at the start of a session for any critical or high-priority items due today.`;
+Use \`lodestone_revise\` to convert between the two types:
+- Memory → Task: \`lodestone_revise(id: "m5", status: "open", action_date: "tomorrow")\`
+- Task → Memory: \`lodestone_revise(id: "m5", status: null)\``;
 
 const TASKS_GUIDE = `# Lodestone Tasks & Agenda Guide
 
 ## Creating Tasks
 
-Tasks are memories with a \`status\`. Every task must have an \`action_date\` — if omitted, it defaults to today. Create with \`lodestone_remember\`:
-- \`action_date\` — when the task is actionable (flexible: "tomorrow", "next Monday", "2026-03-15"). Defaults to today.
-- \`due_date\` — hard deadline (optional). A warning is emitted if action_date > due_date.
+Create tasks with \`lodestone_task\`. Every task gets \`status: "open"\` automatically.
+- \`action_date\` — when the task is actionable (flexible: "tomorrow", "next Monday", "2026-03-15"). Defaults to today if omitted.
+- \`due_date\` — hard deadline (optional). A task with a past due_date appears as overdue in the agenda even if its action_date is in the future. A warning is emitted if action_date > due_date.
 - \`priority\` — 1=low, 2=medium, 3=high, 4=critical
-- \`status\` — "open" (default on creation)
 - \`recurrence\` — for repeating tasks: "daily", "weekly", "every monday", "every 3 days", etc.
 
 Set \`topic\` to a short line stating what the task is about (e.g. "Send invoice to Acme Corp", "Buy more fish food"). Check \`lodestone_recall\` first to avoid duplicating an existing task.
 
+Reminders are tasks — use \`lodestone_task\` with an \`action_date\` and optional \`recurrence\`.
+
 ## Viewing the Agenda
 
-Call \`lodestone_agenda\` at the start of a work session or when the user asks what needs doing. It surfaces overdue items first, then upcoming items sorted by priority then date. The \`when\` parameter accepts: "today", "tomorrow", "this week" (default), "next week", "this month", "overdue".
+Call \`lodestone_agenda\` at the start of a work session or when the user asks what needs doing. It surfaces overdue items first, then upcoming items sorted by priority then date. A task is overdue if either its \`action_date\` or its \`due_date\` is before today — so a task with a future action_date still appears as overdue if its deadline has passed. The \`when\` parameter accepts: "today", "tomorrow", "this week" (default), "next week", "this month", "overdue".
 
 ## Completing Tasks
 
@@ -164,7 +172,7 @@ Use \`lodestone_skip\` when an occurrence should be skipped without recording a 
 
 ## Assigning Tasks to Projects
 
-Tasks can belong to a project. When creating with \`lodestone_remember\`, pass \`project: "project name"\`. When updating with \`lodestone_revise\`, pass \`project: "name"\` to assign or \`project: null\` to unassign. The project name must match an existing project — if it doesn't, close matches are suggested. Use \`lodestone_project\` (action: "list") to see projects, and (action: "create") to make new ones.
+Tasks can belong to a project. When creating with \`lodestone_task\`, pass \`project: "project name"\`. When updating with \`lodestone_revise\`, pass \`project: "name"\` to assign or \`project: null\` to unassign. The project name must match an existing project — if it doesn't, close matches are suggested. Use \`lodestone_project\` (action: "list") to see projects, and (action: "create") to make new ones.
 
 ## Handling Overdue Items
 
@@ -184,6 +192,10 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
     [
       'Write a new memory or update an existing similar one.',
       '',
+      'Use this for storing facts, decisions, preferences, and knowledge \u2014 anything',
+      'that doesn\u2019t need lifecycle tracking. For actionable tasks with dates and',
+      'priority, use lodestone_task instead.',
+      '',
       'Before inserting, checks cosine similarity against existing memories.',
       'If a closely related entry is found, its details are returned so you can',
       'decide whether to update it (via lodestone_revise) or force-create a new one.',
@@ -199,91 +211,25 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
       'cosine similarity, so cross-references surface automatically during exploration.',
       '',
       'Parameters:',
-      '  topic        \u2014 Short line stating what this memory or task is about (e.g. "Check fish food supply")',
+      '  topic        \u2014 Short label categorising the memory (e.g. "JAMES - THINKING STYLE")',
       '  body         \u2014 The memory content (plain text)',
       '  confidence   \u2014 Float 0\u20131. 1.0 = reliable, lower = tentative. Default: 1.0',
       '  context_hint \u2014 Optional short string recording the conversational context',
       '  force        \u2014 Skip dedup check and always create a new memory. Default: false',
-      '  action_date  \u2014 Date for when this memory is actionable. Accepts flexible',
-      '                  expressions ("tomorrow", "next Monday", "2026-03-15"). Stored as',
-      '                  ISO 8601 (YYYY-MM-DD). Required for tasks (memories with status);',
-      '                  defaults to today if omitted when status is set.',
-      '  due_date     \u2014 Optional hard deadline. Accepts flexible expressions.',
-      '                  Stored as ISO 8601 (YYYY-MM-DD). A warning is emitted',
-      '                  if action_date falls after due_date.',
-      '  recurrence   \u2014 Optional recurrence rule for repeating action dates. Accepted formats:',
-      '                  "daily", "weekly", "biweekly", "monthly", "yearly",',
-      '                  "every monday", "every weekday", "every 3 days", "every 2 weeks".',
-      '                  Requires action_date to be set. The action_date auto-advances on orient.',
-      '  priority     \u2014 Optional urgency level: 1=low, 2=medium, 3=high, 4=critical.',
-      '  status       \u2014 Optional lifecycle status: "open", "completed", "cancelled", or null.',
-      '                  Omitting defaults to "open". Pass null for no lifecycle status (not a task).',
-      '                  Setting completed_on implies completed. Setting status="completed"',
-      '                  auto-fills completed_on with today if not provided.',
-      '                  Setting status="open" clears completed_on.',
-      '  completed_on \u2014 Optional date the memory was completed. Implies status="completed".',
-      '                  Accepts flexible expressions ("today", "yesterday", "2026-03-15").',
-      '  project      \u2014 Optional project name to assign to. Must match an existing project',
-      '                  (fuzzy matched). If not found, close matches are suggested. Use',
-      '                  lodestone_project with action "create" to create new projects first.',
+      '  project      \u2014 Optional project name to assign to (fuzzy matched).',
       '',
       'Returns: { id } on success, or details of a similar existing memory for review.',
     ].join('\n'),
     {
-      topic: z.string().describe('Short line stating what this memory or task is about (e.g. "Check fish food supply", "API rate limit fix")'),
+      topic: z.string().describe('Short label categorising the memory (e.g. "LODESTONE", "JAMES - THINKING STYLE")'),
       body: z.string().describe('The memory content'),
       confidence: z.number().min(0).max(1).optional().describe('Epistemic confidence 0\u20131. Default: 1.0'),
       context_hint: z.string().optional().describe('Short string recording the conversational context (not searchable)'),
       force: z.boolean().optional().describe('Skip dedup check and always create a new memory. Default: false'),
-      action_date: z.string().optional().describe('Date when this memory is actionable. Flexible expressions accepted ("tomorrow", "next Monday", "2026-03-15"). Stored as ISO 8601.'),
-      due_date: z.string().optional().describe('Hard deadline date. Flexible expressions accepted ("tomorrow", "next Friday", "2026-03-15"). Stored as ISO 8601.'),
-      recurrence: z.string().optional().describe('Recurrence rule: "daily", "weekly", "biweekly", "monthly", "yearly", "every monday", "every weekday", "every N days", "every N weeks". Requires action_date.'),
-      priority: z.number().int().min(1).max(4).optional().describe('Urgency: 1=low, 2=medium, 3=high, 4=critical'),
-      status: z.union([z.enum(['open', 'in_progress', 'completed', 'blocked', 'cancelled']), z.null()]).optional().describe('Lifecycle status. Omit to default to "open". Pass null for no lifecycle status. "completed" auto-fills completed_on=today. "open" clears completed_on.'),
-      completed_on: z.string().optional().describe('Date completed. Flexible expressions accepted. Implies status="completed".'),
       project: z.string().optional().describe('Project name to assign to. Must match an existing project (fuzzy matched). If not found, suggestions are returned. Use lodestone_project to create/list projects. Omit to leave unassigned.'),
     },
-    async ({ topic, body, confidence, context_hint, force, action_date, due_date, recurrence, priority, status, completed_on, project }) => {
+    async ({ topic, body, confidence, context_hint, force, project }) => {
       try {
-        // Parse flexible action_date to ISO 8601
-        let parsedActionDate: string | null = null;
-        if (action_date) {
-          parsedActionDate = parseFlexibleDate(action_date);
-          if (!parsedActionDate) {
-            return { content: [{ type: 'text' as const, text: `Error: Could not parse action_date "${action_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }] };
-          }
-        }
-
-        // Parse flexible due_date to ISO 8601
-        let parsedDueDate: string | null = null;
-        if (due_date) {
-          parsedDueDate = parseFlexibleDate(due_date);
-          if (!parsedDueDate) {
-            return { content: [{ type: 'text' as const, text: `Error: Could not parse due_date "${due_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).` }] };
-          }
-        }
-
-        // Parse and validate recurrence rule
-        let parsedRecurrence: string | null = null;
-        if (recurrence) {
-          parsedRecurrence = parseRecurrence(recurrence);
-          if (!parsedRecurrence) {
-            return { content: [{ type: 'text' as const, text: `Error: Could not parse recurrence "${recurrence}". Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.` }] };
-          }
-          if (!parsedActionDate) {
-            return { content: [{ type: 'text' as const, text: `Error: recurrence requires action_date to be set. Provide an action_date for the first occurrence.` }] };
-          }
-        }
-
-        // Parse flexible completed_on to ISO 8601
-        let parsedCompletedOn: string | null = null;
-        if (completed_on) {
-          parsedCompletedOn = parseFlexibleDate(completed_on);
-          if (!parsedCompletedOn) {
-            return { content: [{ type: 'text' as const, text: `Error: Could not parse completed_on "${completed_on}". Use ISO 8601 (YYYY-MM-DD) or relative expressions (today, yesterday).` }] };
-          }
-        }
-
         // Resolve project name to ID (fuzzy match)
         let projectId: number | null = null;
         if (project) {
@@ -298,66 +244,175 @@ export function registerRememberTool(server: McpServer, memory: D1MemoryService)
           confidence,
           contextHint: context_hint,
           force,
-          actionDate: parsedActionDate,
-          dueDate: parsedDueDate,
-          recurrence: parsedRecurrence,
-          priority: (priority ?? null) as PriorityLevel | null,
-          status: (status === undefined || (status === null && parsedActionDate) ? 'open' : status ?? null) as MemoryStatusValue | null,
-          completedOn: parsedCompletedOn,
+          actionDate: null,
+          dueDate: null,
+          recurrence: null,
+          priority: null,
+          status: null,
+          completedOn: null,
           projectId,
         });
 
         if (result.status === 'duplicate') {
-          const sim = Math.round(result.similarity * 100);
-          const preview = truncateMemoryBody(result.existing.body);
-          const meta: string[] = [];
-          if (result.existing.actionDate) {
-            let actionStr = `Action: ${result.existing.actionDate}`;
-            if (result.existing.recurrence) actionStr += ` (${result.existing.recurrence})`;
-            if (isActionOverdue(result.existing)) actionStr += ' \u26a0\ufe0f OVERDUE';
-            meta.push(actionStr);
+          return formatDuplicateResponse(result);
+        }
+
+        const warning = memoryBodyWarning(body);
+        return textResult(`Created memory m${result.id}.${warning}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return textResult(`Error: ${message}`);
+      }
+    },
+  );
+}
+
+export function registerTaskTool(server: McpServer, memory: D1MemoryService): void {
+  server.tool(
+    'lodestone_task',
+    [
+      'Create a new task with lifecycle tracking and optional scheduling.',
+      '',
+      'Tasks appear in lodestone_agenda and can be completed, skipped, or cancelled',
+      'via lodestone_revise. Use lodestone_remember instead for pure knowledge memories',
+      '(facts, decisions, preferences) that don\u2019t need lifecycle tracking.',
+      '',
+      'Before creating, checks cosine similarity against existing memories/tasks.',
+      'If a closely related entry is found, its details are returned so you can',
+      'decide whether to update it (via lodestone_revise) or force-create a new one.',
+      '',
+      'Parameters:',
+      '  topic        \u2014 Short line stating what this task is about (e.g. "Send invoice to Acme Corp")',
+      '  body         \u2014 The task description or details',
+      '  action_date  \u2014 When this task is actionable. Defaults to today if omitted.',
+      '                  Flexible expressions accepted ("tomorrow", "next Monday", "2026-03-15").',
+      '  due_date     \u2014 Hard deadline (optional). Tasks with a past due_date appear as overdue',
+      '                  in the agenda regardless of action_date. Warning emitted if action_date > due_date.',
+      '                  Flexible expressions accepted.',
+      '  recurrence   \u2014 Repeating schedule (optional): "daily", "weekly", "every monday", etc.',
+      '  priority     \u2014 1=low, 2=medium, 3=high, 4=critical (optional).',
+      '  project      \u2014 Project to assign to (optional, fuzzy matched).',
+      '  force        \u2014 Skip dedup check. Default: false.',
+      '',
+      'Returns: { id } on success, or details of a similar existing entry for review.',
+    ].join('\n'),
+    {
+      topic: z.string().describe('Short line stating what this task is about (e.g. "Send invoice to Acme Corp", "Buy more fish food")'),
+      body: z.string().describe('The task description or details'),
+      action_date: z.string().optional().describe('When this task is actionable. Defaults to today if omitted. Flexible expressions accepted ("tomorrow", "next Monday", "2026-03-15").'),
+      due_date: z.string().optional().describe('Hard deadline. Tasks with a past due_date appear as overdue in the agenda regardless of action_date. Flexible expressions accepted. Warning emitted if action_date > due_date.'),
+      recurrence: z.string().optional().describe('Recurrence rule: "daily", "weekly", "biweekly", "monthly", "yearly", "every monday", "every weekday", "every N days", "every N weeks". Requires action_date.'),
+      priority: z.number().int().min(1).max(4).optional().describe('Urgency: 1=low, 2=medium, 3=high, 4=critical'),
+      project: z.string().optional().describe('Project name to assign to (fuzzy matched). Use lodestone_project to create/list projects.'),
+      force: z.boolean().optional().describe('Skip dedup check and always create. Default: false'),
+    },
+    async ({ topic, body, action_date, due_date, recurrence, priority, project, force }) => {
+      try {
+        // Parse flexible action_date to ISO 8601
+        let parsedActionDate: string | null = null;
+        if (action_date) {
+          parsedActionDate = parseFlexibleDate(action_date);
+          if (!parsedActionDate) {
+            return textResult(`Error: Could not parse action_date "${action_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).`);
           }
-          if (result.existing.dueDate) {
-            meta.push(`Due: ${result.existing.dueDate}${isDuePastDue(result.existing) ? ' \ud83d\udea8 PAST DUE' : ''}`);
+        }
+
+        // Parse flexible due_date to ISO 8601
+        let parsedDueDate: string | null = null;
+        if (due_date) {
+          parsedDueDate = parseFlexibleDate(due_date);
+          if (!parsedDueDate) {
+            return textResult(`Error: Could not parse due_date "${due_date}". Use ISO 8601 (YYYY-MM-DD), relative expressions (tomorrow, next Monday), or natural dates (March 15).`);
           }
-          if (result.existing.priority) meta.push(`Priority: ${priorityLabel(result.existing.priority)}`);
-          if (result.existing.status) meta.push(`Status: ${statusLabel(result.existing.status)}`);
-          if (result.existing.completedOn) meta.push(`Completed: ${result.existing.completedOn}`);
-          const lines = [
-            `Similar memory found (${sim}% similarity):`,
-            '',
-            `## [m${result.existing.id}] ${result.existing.topic} (confidence: ${result.existing.confidence})`,
-            preview,
-            ...(meta.length > 0 ? [`_${meta.join(' | ')}_`] : []),
-            '',
-            'Consider:',
-            `- Use lodestone_revise(id: "m${result.existing.id}", body: "...") to update the existing memory.`,
-            '- Use lodestone_remember with force: true to create a new memory despite the similarity.',
-          ];
-          return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+        }
+
+        // Parse and validate recurrence rule
+        let parsedRecurrence: string | null = null;
+        if (recurrence) {
+          parsedRecurrence = parseRecurrence(recurrence);
+          if (!parsedRecurrence) {
+            return textResult(`Error: Could not parse recurrence "${recurrence}". Accepted: daily, weekly, biweekly, monthly, yearly, every monday, every weekday, every N days, every N weeks.`);
+          }
+          if (!parsedActionDate) {
+            return textResult(`Error: recurrence requires action_date to be set. Provide an action_date for the first occurrence.`);
+          }
+        }
+
+        // Resolve project name to ID (fuzzy match)
+        let projectId: number | null = null;
+        if (project) {
+          const resolved = await resolveProjectOrError(memory, project);
+          if ('error' in resolved) return resolved.error;
+          projectId = resolved.id;
+        }
+
+        const result = await memory.remember({
+          topic,
+          body,
+          confidence: 1.0,
+          contextHint: null,
+          force,
+          actionDate: parsedActionDate,
+          dueDate: parsedDueDate,
+          recurrence: parsedRecurrence,
+          priority: (priority ?? null) as PriorityLevel | null,
+          status: 'open',
+          completedOn: null,
+          projectId,
+        });
+
+        if (result.status === 'duplicate') {
+          return formatDuplicateResponse(result);
         }
 
         const warning = memoryBodyWarning(body);
         const extras: string[] = [];
-        if (parsedActionDate) {
-          let actionStr = `Action date: ${parsedActionDate}`;
-          if (parsedRecurrence) actionStr += ` (${parsedRecurrence})`;
-          extras.push(actionStr + '.');
-        }
+        // Show the effective action_date (service defaults to today when status is set)
+        const effectiveActionDate = parsedActionDate ?? todayStr();
+        let actionStr = `Action date: ${effectiveActionDate}`;
+        if (parsedRecurrence) actionStr += ` (${parsedRecurrence})`;
+        extras.push(actionStr + '.');
         if (parsedDueDate) extras.push(`Due: ${parsedDueDate}.`);
         if (priority) extras.push(`Priority: ${priorityLabel(priority as PriorityLevel)}.`);
-        if (status) extras.push(`Status: ${statusLabel(status as MemoryStatusValue)}.`);
-        if (parsedCompletedOn) extras.push(`Completed: ${parsedCompletedOn}.`);
         const dateWarning = result.warning ? `\n\n${result.warning}` : '';
-        return {
-          content: [{ type: 'text' as const, text: `Created memory m${result.id}.${extras.length ? ' ' + extras.join(' ') : ''}${warning}${dateWarning}` }],
-        };
+        return textResult(`Created task m${result.id}. ${extras.join(' ')}${warning}${dateWarning}`);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text' as const, text: `Error: ${message}` }] };
+        return textResult(`Error: ${message}`);
       }
     },
   );
+}
+
+/** Format a duplicate/similar-memory response for both remember and task tools. */
+function formatDuplicateResponse(result: { existing: { id: number; topic: string; body: string; confidence: number; actionDate: string | null; dueDate: string | null; recurrence: string | null; priority: PriorityLevel | null; status: MemoryStatusValue | null; completedOn: string | null }; similarity: number }) {
+  const sim = Math.round(result.similarity * 100);
+  const preview = truncateMemoryBody(result.existing.body);
+  const meta: string[] = [];
+  if (result.existing.actionDate) {
+    let actionStr = `Action: ${result.existing.actionDate}`;
+    if (result.existing.recurrence) actionStr += ` (${result.existing.recurrence})`;
+    if (isActionOverdue(result.existing)) actionStr += ' \u26a0\ufe0f OVERDUE';
+    meta.push(actionStr);
+  }
+  if (result.existing.dueDate) {
+    meta.push(`Due: ${result.existing.dueDate}${isDuePastDue(result.existing) ? ' \ud83d\udea8 PAST DUE' : ''}`);
+  }
+  if (result.existing.priority) meta.push(`Priority: ${priorityLabel(result.existing.priority)}`);
+  if (result.existing.status) meta.push(`Status: ${statusLabel(result.existing.status)}`);
+  if (result.existing.completedOn) meta.push(`Completed: ${result.existing.completedOn}`);
+  const lines = [
+    `Similar entry found (${sim}% similarity):`,
+    '',
+    `## [m${result.existing.id}] ${result.existing.topic} (confidence: ${result.existing.confidence})`,
+    preview,
+    ...(meta.length > 0 ? [`_${meta.join(' | ')}_`] : []),
+    '',
+    'Consider:',
+    `- Use lodestone_revise(id: "m${result.existing.id}", body: "...") to update the existing entry.`,
+    '- Use force: true to create a new entry despite the similarity.',
+  ];
+  return textResult(lines.join('\n'));
 }
 
 export function registerRecallTool(server: McpServer, memory: D1MemoryService): void {
@@ -727,8 +782,9 @@ export function registerAgendaTool(server: McpServer, memory: D1MemoryService): 
     [
       'Return an agenda view: overdue items + upcoming items for the requested time window.',
       '',
-      'Always surfaces overdue memories first (action_date before today, not completed/cancelled),',
-      'with a prompt to ask the user what to do about them.',
+      'Always surfaces overdue items first \u2014 a task is overdue if its action_date OR its due_date',
+      'is before today (and it is not completed/cancelled). This means a task with a future action_date',
+      'still appears as overdue if its deadline has passed.',
       'Then lists upcoming items within the requested window, sorted by priority then date.',
       'Completed and cancelled memories are excluded by default.',
       '',

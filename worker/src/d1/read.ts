@@ -146,7 +146,7 @@ export async function filterMemoryIdsByDate(
   return new Set(results.map((r) => (r as Record<string, unknown>).id as number));
 }
 
-/** Return memories with action_date before today that are not completed or cancelled.
+/** Return memories with action_date or due_date before today that are not completed or cancelled.
  *  Used by agenda to surface overdue items. Excludes memories in archived projects. */
 export async function getOverdueMemories(
   db: D1Database,
@@ -157,18 +157,21 @@ export async function getOverdueMemories(
     `SELECT m.* FROM memories m
      LEFT JOIN projects p ON m.project_id = p.id
      WHERE m.deleted_at IS NULL
-       AND m.action_date IS NOT NULL
-       AND m.action_date < ?
+       AND (
+         (m.action_date IS NOT NULL AND m.action_date < ?)
+         OR
+         (m.due_date IS NOT NULL AND m.due_date < ?)
+       )
        AND m.completed_on IS NULL
        AND (m.status IS NULL OR m.status = 'open')
        AND (m.project_id IS NULL OR p.archived_at IS NULL)
-     ORDER BY COALESCE(m.priority, 0) DESC, m.action_date ASC
+     ORDER BY COALESCE(m.priority, 0) DESC, COALESCE(m.action_date, m.due_date) ASC
      LIMIT ?`,
-  ).bind(beforeDate, maxResults).all();
+  ).bind(beforeDate, beforeDate, maxResults).all();
   return results.map((r) => rowToRecord(r as Record<string, unknown>));
 }
 
-/** Return upcoming memories (action_date in range) excluding completed and cancelled.
+/** Return upcoming memories (action_date or due_date in range) excluding completed and cancelled.
  *  Used by agenda and orient. Excludes memories in archived projects. */
 export async function getActiveUpcomingMemories(
   db: D1Database,
@@ -180,15 +183,17 @@ export async function getActiveUpcomingMemories(
     `SELECT m.* FROM memories m
      LEFT JOIN projects p ON m.project_id = p.id
      WHERE m.deleted_at IS NULL
-       AND m.action_date IS NOT NULL
-       AND m.action_date >= ?
-       AND m.action_date <= ?
+       AND (
+         (m.action_date IS NOT NULL AND m.action_date >= ? AND m.action_date <= ?)
+         OR
+         (m.due_date IS NOT NULL AND m.due_date >= ? AND m.due_date <= ?)
+       )
        AND m.completed_on IS NULL
        AND (m.status IS NULL OR m.status = 'open')
        AND (m.project_id IS NULL OR p.archived_at IS NULL)
-     ORDER BY m.action_date ASC
+     ORDER BY COALESCE(m.action_date, m.due_date) ASC
      LIMIT ?`,
-  ).bind(fromDate, toDate, maxResults).all();
+  ).bind(fromDate, toDate, fromDate, toDate, maxResults).all();
   return results.map((r) => rowToRecord(r as Record<string, unknown>));
 }
 

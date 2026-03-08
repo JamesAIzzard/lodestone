@@ -47,7 +47,8 @@ async function cloudRequest<T = Record<string, unknown>>(
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` } as any;
-    return await res.json();
+    const data = await res.json();
+    return { success: true, ...data };
   } catch (err) {
     return { success: false, error: String(err) } as any;
   }

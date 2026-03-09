@@ -24,35 +24,34 @@ export function getTodayStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export function isOverdue(task: MemoryRecord): boolean {
-  if (!task.actionDate) return false;
+export function isOverdue(task: MemoryRecord, today: string): boolean {
   if (task.status === 'completed' || task.completedOn) return false;
   if (task.status === 'cancelled' || task.status === 'blocked') return false;
-  return task.actionDate < getTodayStr();
+  return (!!task.actionDate && task.actionDate < today) ||
+         (!!task.dueDate && task.dueDate < today);
 }
 
-export function isPastDue(task: MemoryRecord): boolean {
+export function isPastDue(task: MemoryRecord, today: string): boolean {
   if (!task.dueDate) return false;
   if (task.status === 'completed' || task.completedOn) return false;
   if (task.status === 'cancelled') return false;
-  return task.dueDate < getTodayStr();
+  return task.dueDate < today;
 }
 
 export function formatDate(dateStr: string | null): string {
   if (!dateStr) return '';
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
   const d = new Date(dateStr + 'T00:00:00');
-  const diffDays = Math.round((d.getTime() - today.getTime()) / 86400000);
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Tomorrow';
-  if (diffDays === -1) return 'Yesterday';
-  const currentYear = new Date().getFullYear();
-  return d.toLocaleDateString('en-GB', {
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const datePart = d.toLocaleDateString('en-GB', {
     day: 'numeric',
     month: 'short',
-    ...(d.getFullYear() !== currentYear && { year: 'numeric' }),
+    ...(!sameYear && { year: 'numeric' }),
   });
+  if (sameYear) {
+    const day = d.toLocaleDateString('en-US', { weekday: 'short' });
+    return `${day} ${datePart}`;
+  }
+  return datePart;
 }
 
 export const STATUS_COLORS: Record<string, string> = {
@@ -458,7 +457,7 @@ export function DateCell({
   onChange: (v: string | null) => void;
 }) {
   return (
-    <CellDropdown containerClassName="w-[72px]" trigger={(toggle) => (
+    <CellDropdown containerClassName="w-[78px] shrink-0" trigger={(toggle) => (
       <button
         onClick={toggle}
         className={cn(

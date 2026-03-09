@@ -6,7 +6,7 @@ import { CalendarGrid, getTodayStr, formatDate } from '@/components/TaskCells';
 
 // ── Date utilities ────────────────────────────────────────────────────────────
 
-export type DatePreset = 'all' | 'today' | 'tomorrow' | '7d' | '30d' | 'custom';
+export type DatePreset = 'all' | 'today' | '7d' | '30d' | 'custom';
 
 export function addDays(dateStr: string, n: number): string {
   const d = new Date(dateStr + 'T00:00:00');
@@ -31,7 +31,6 @@ export function pickCrossDate(earlier: string, later: string): string {
 const DATE_PRESETS: { value: DatePreset; label: string }[] = [
   { value: 'all', label: 'All dates' },
   { value: 'today', label: 'Today' },
-  { value: 'tomorrow', label: 'Tomorrow' },
   { value: '7d', label: 'Next 7 days' },
   { value: '30d', label: 'Next 30 days' },
 ];
@@ -43,12 +42,11 @@ export function getDateRange(
 ): { start: string | null; end: string | null } {
   const today = getTodayStr();
   switch (preset) {
-    case 'all': return { start: null, end: null };
     case 'today': return { start: today, end: today };
-    case 'tomorrow': { const d = addDays(today, 1); return { start: d, end: d }; }
     case '7d': return { start: today, end: addDays(today, 6) };
     case '30d': return { start: today, end: addDays(today, 29) };
     case 'custom': return { start: customFrom, end: customTo };
+    default: return { start: null, end: null };
   }
 }
 

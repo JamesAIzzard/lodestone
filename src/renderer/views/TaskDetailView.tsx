@@ -143,7 +143,8 @@ export default function TaskDetailView() {
     );
   }
 
-  const overdue = isOverdue(task);
+  const today = getTodayStr();
+  const overdue = isOverdue(task, today);
 
   return (
     <div className="flex flex-col h-full">
@@ -215,7 +216,7 @@ export default function TaskDetailView() {
             <span className="text-[9px] uppercase tracking-wide text-muted-foreground/30 leading-none">Due</span>
             <DueDateCell
               value={task.dueDate}
-              pastDue={isPastDue(task)}
+              pastDue={isPastDue(task, today)}
               onChange={(v) => revise(task.id, { dueDate: v })}
             />
           </div>

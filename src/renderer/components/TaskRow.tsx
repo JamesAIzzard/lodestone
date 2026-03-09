@@ -23,12 +23,12 @@ export interface TaskRowProps {
   task: MemoryRecord;
   stripe: number;
   overdue: boolean;
+  today: string;
   isEditingTopic: boolean;
   editingTopicValue: string;
   isGracePeriod: boolean;
   isSearching: boolean;
   projects: ProjectWithCounts[];
-  showCompleted: boolean;
   onNavigate: (id: number, task: MemoryRecord) => void;
   onRevise: (id: number, fields: Record<string, unknown>) => void;
   onDelete: (id: number) => void;
@@ -42,7 +42,7 @@ export interface TaskRowProps {
 // ── Task row content ──────────────────────────────────────────────────────────
 
 export function TaskRowContent({
-  task, stripe, overdue, isEditingTopic, editingTopicValue, isGracePeriod,
+  task, stripe, overdue, today, isEditingTopic, editingTopicValue, isGracePeriod,
   isSearching, projects, onNavigate, onRevise, onDelete, onSkip,
   onStartEditTopic, onTopicChange, onCommitTopicEdit, onCancelTopicEdit,
   dragHandleProps, isDragging,
@@ -53,7 +53,6 @@ export function TaskRowContent({
         'group flex items-center gap-2 py-2.5 -mx-2 px-2 rounded transition-opacity duration-500',
         !isDragging && 'cursor-pointer',
         stripe === 1 && 'bg-muted/30',
-        overdue && 'border-l-2 border-l-amber-500/50',
         isGracePeriod && 'opacity-50',
         isDragging && 'opacity-30 border border-dashed border-border',
       )}
@@ -135,7 +134,7 @@ export function TaskRowContent({
         />
         <DueDateCell
           value={task.dueDate}
-          pastDue={isPastDue(task)}
+          pastDue={isPastDue(task, today)}
           onChange={(v) => onRevise(task.id, { dueDate: v })}
         />
         <RecurrenceCell
@@ -230,7 +229,7 @@ export function PendingCreateRow({ topic }: { topic: string }) {
   return (
     <div className="flex items-center gap-2 py-2.5 opacity-50">
       <div className="w-4 shrink-0" />
-      <div className="w-[72px] shrink-0" />
+      <div className="w-[78px] shrink-0" />
       <div className="w-12 shrink-0 flex items-center justify-center">
         <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
       </div>
@@ -262,7 +261,7 @@ export function InlineInsertRow({
   return (
     <div className="flex items-center gap-2 py-2.5 -mx-2 px-2 rounded bg-primary/5 border border-primary/20">
       <div className="w-4 shrink-0" />
-      <div className="w-[72px] shrink-0 text-center">
+      <div className="w-[78px] shrink-0 text-center">
         <span className="text-[11px] text-primary/60">{formatDate(date)}</span>
       </div>
       <div className="w-12 shrink-0" />

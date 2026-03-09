@@ -14,7 +14,6 @@ import {
 } from '@dnd-kit/core';
 import {
   SortableContext,
-  verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import ActionButton from '@/components/ActionButton';
 import { cn } from '@/lib/utils';
@@ -31,6 +30,58 @@ import {
 import type { MemoryRecord, MemoryStatusValue, PriorityLevel, ProjectWithCounts } from '../../shared/types';
 
 type SubView = 'tasks' | 'projects';
+
+// ── Week-bucket helpers ───────────────────────────────────────────────────────
+
+type WeekBucket = 'overdue' | 'today' | 'this-week' | 'next-week' | '2-weeks' | '3-weeks' | 'further';
+
+const WEEK_BUCKET_META: Record<WeekBucket, { label: string; borderClass: string; textClass: string }> = {
+  'overdue':   { label: 'Overdue',     borderClass: 'border-amber-500/50',   textClass: 'text-amber-500/60' },
+  'today':     { label: 'Today',       borderClass: 'border-blue-400/50',    textClass: 'text-blue-400/60' },
+  'this-week': { label: 'This week',   borderClass: 'border-blue-500/30',    textClass: 'text-blue-500/40' },
+  'next-week': { label: 'Next week',   borderClass: 'border-violet-500/35',  textClass: 'text-violet-500/45' },
+  '2-weeks':   { label: '2 weeks out', borderClass: 'border-emerald-500/30', textClass: 'text-emerald-500/40' },
+  '3-weeks':   { label: '3 weeks out', borderClass: 'border-orange-500/25',  textClass: 'text-orange-500/35' },
+  'further':   { label: 'Further out', borderClass: 'border-slate-500/20',   textClass: 'text-slate-500/30' },
+};
+
+/** Return the Monday-based start-of-week for a given Date. */
+function startOfWeek(d: Date): Date {
+  const copy = new Date(d);
+  copy.setHours(0, 0, 0, 0);
+  const day = copy.getDay(); // 0=Sun
+  const diff = day === 0 ? 6 : day - 1; // shift so Monday = 0
+  copy.setDate(copy.getDate() - diff);
+  return copy;
+}
+
+function getWeekBucket(task: MemoryRecord, todayStr: string, thisWeekStart: Date): WeekBucket {
+  if (isOverdue(task, todayStr)) return 'overdue';
+  const dateStr = task.actionDate ?? todayStr;
+  if (dateStr === todayStr) return 'today';
+  const d = new Date(dateStr + 'T00:00:00');
+  const taskWeekStart = startOfWeek(d);
+  const diffWeeks = Math.round((taskWeekStart.getTime() - thisWeekStart.getTime()) / (7 * 864e5));
+  if (diffWeeks <= 0) return 'this-week';
+  if (diffWeeks === 1) return 'next-week';
+  if (diffWeeks === 2) return '2-weeks';
+  if (diffWeeks === 3) return '3-weeks';
+  return 'further';
+}
+
+/** Map each unique action-date to an alternating 0/1 shade for row striping. */
+function buildDateShadeMap(tasks: MemoryRecord[]): Map<string, number> {
+  const map = new Map<string, number>();
+  let shade = 0;
+  for (const t of tasks) {
+    const d = t.actionDate ?? '';
+    if (!map.has(d)) {
+      map.set(d, shade);
+      shade = shade === 0 ? 1 : 0;
+    }
+  }
+  return map;
+}
 
 // ── Main view ─────────────────────────────────────────────────────────────────
 
@@ -252,18 +303,18 @@ export default function TasksView() {
     return t.projectId != null && selectedProjectIds.includes(t.projectId);
   };
 
+  const todayStr = getTodayStr();
   const filtered = tasks
     .filter(t =>
       recentlyCompleted.has(t.id) ||
       (t.status != null &&
         (showCompleted || t.status !== 'completed') &&
         (showCancelled || t.status !== 'cancelled') &&
-        dateFilter(t) &&
-        projectFilter(t))
+        (isOverdue(t, todayStr) || (dateFilter(t) && projectFilter(t))))
     )
     .sort((a, b) => {
-      const aOver = isOverdue(a);
-      const bOver = isOverdue(b);
+      const aOver = isOverdue(a, todayStr);
+      const bOver = isOverdue(b, todayStr);
       if (aOver !== bOver) return aOver ? -1 : 1;
       const aDate = a.actionDate ?? '9999-99-99';
       const bDate = b.actionDate ?? '9999-99-99';
@@ -283,8 +334,7 @@ export default function TasksView() {
         recentlyCompleted.has(t.id) ||
         ((showCompleted || t.status !== 'completed') &&
          (showCancelled || t.status !== 'cancelled') &&
-         dateFilter(t) &&
-         projectFilter(t)))
+         (isOverdue(t, todayStr) || (dateFilter(t) && projectFilter(t)))))
     : filtered;
   const noCloudUrl = !loading && error?.includes('No cloud URL');
 
@@ -640,7 +690,7 @@ export default function TasksView() {
             )}
 
             {(isCreating || pendingCreates.length > 0 || displayTasks.length > 0) && (
-              <div className="flex flex-col divide-y divide-border/50">
+              <div className="flex flex-col">
                 {/* Column header row */}
                 <div className="flex items-center gap-2 pb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground/40 font-medium select-none border-b border-border/30">
                   {!isSearching && <div className="w-4 shrink-0" />}
@@ -692,36 +742,73 @@ export default function TasksView() {
                     },
                   }}
                 >
-                  <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
+                  <SortableContext items={taskIds} strategy={() => null}>
                     {(() => {
-                      // Build a shade map: unique sorted dates → alternating 0/1
-                      const uniqueDates: string[] = [];
-                      const seen = new Set<string>();
-                      for (const t of displayTasks) {
-                        const d = t.actionDate ?? '';
-                        if (!seen.has(d)) { seen.add(d); uniqueDates.push(d); }
-                      }
-                      const dateShade = new Map<string, number>();
-                      let shade = 0;
-                      for (const d of uniqueDates) {
-                        dateShade.set(d, shade);
-                        shade = shade === 0 ? 1 : 0;
-                      }
+                      const dateShade = buildDateShadeMap(displayTasks);
+
+                      // Week-bucket classification for each task
+                      const thisWeekStart = startOfWeek(new Date());
+                      const showBuckets = !isSearching;
+                      const taskBuckets = showBuckets
+                        ? displayTasks.map(t => getWeekBucket(t, todayStr, thisWeekStart))
+                        : null;
 
                       const showInsertZones = !isSearching && !activeId && !insertAt;
+
+                      // Build flat elements, inserting week-group labels at bucket boundaries
                       const elements: React.ReactNode[] = [];
+                      let currentBucket: WeekBucket | null = null;
+                      let groupElements: React.ReactNode[] = [];
+
+                      function flushGroup() {
+                        if (groupElements.length === 0) return;
+                        if (!showBuckets || !currentBucket) {
+                          elements.push(...groupElements);
+                          groupElements = [];
+                          return;
+                        }
+                        const meta = WEEK_BUCKET_META[currentBucket];
+                        const flushed = [...groupElements];
+                        const isOverdueBucket = currentBucket === 'overdue';
+                        elements.push(
+                          <div
+                            key={`wg-${currentBucket}`}
+                            className={cn('border-l-2 border-t rounded-tl-sm mt-1.5 pl-1.5 overflow-hidden', meta.borderClass)}
+                            style={isOverdueBucket ? {
+                              backgroundImage: 'repeating-linear-gradient(-45deg, transparent, transparent 8px, rgba(245,158,11,0.04) 8px, rgba(245,158,11,0.04) 16px)',
+                            } : undefined}
+                          >
+                            {/* Week label — right-aligned above the group */}
+                            <div className="flex justify-end pr-1 pt-0.5 pb-0.5 select-none">
+                              <span className={cn('text-[9px] font-medium tracking-wider uppercase whitespace-nowrap', meta.textClass)}>
+                                {meta.label}
+                              </span>
+                            </div>
+                            {flushed}
+                          </div>
+                        );
+                        groupElements = [];
+                      }
 
                       for (let i = 0; i <= displayTasks.length; i++) {
+                        const bucket = (taskBuckets && i < displayTasks.length) ? taskBuckets[i] : null;
+
+                        // On bucket boundary, flush previous group
+                        if (bucket !== currentBucket) {
+                          flushGroup();
+                          currentBucket = bucket;
+                        }
+
                         // Pending creates at this position
                         for (const pc of pendingCreates) {
                           if ((pc.index === -1 && i === 0) || pc.index === i) {
-                            elements.push(<PendingCreateRow key={`pending-${pc.key}`} topic={pc.topic} />);
+                            groupElements.push(<PendingCreateRow key={`pending-${pc.key}`} topic={pc.topic} />);
                           }
                         }
 
                         // Insert zone or inline creation row at this position
                         if (insertAt?.index === i) {
-                          elements.push(
+                          groupElements.push(
                             <InlineInsertRow
                               key="insert-row"
                               date={insertAt.date}
@@ -732,7 +819,7 @@ export default function TasksView() {
                             />
                           );
                         } else if (showInsertZones && (i < displayTasks.length || displayTasks.length > 0)) {
-                          elements.push(
+                          groupElements.push(
                             <InsertZone key={`iz-${i}`} onInsert={(y) => handleInsertClick(i, y)} />
                           );
                         }
@@ -740,18 +827,18 @@ export default function TasksView() {
                         // Task row
                         if (i < displayTasks.length) {
                           const task = displayTasks[i];
-                          elements.push(
+                          groupElements.push(
                             <SortableTaskRow
                               key={task.id}
                               task={task}
                               stripe={dateShade.get(task.actionDate ?? '') ?? 0}
-                              overdue={isOverdue(task)}
+                              overdue={isOverdue(task, todayStr)}
+                              today={todayStr}
                               isEditingTopic={editingTopicId === task.id}
                               editingTopicValue={editingTopicValue}
                               isGracePeriod={recentlyCompleted.has(task.id)}
                               isSearching={isSearching}
                               projects={projects}
-                              showCompleted={showCompleted}
                               onNavigate={(id, t) => navigate(`/tasks/${id}`, { state: { task: t } })}
                               onRevise={(id, fields) => revise(id, fields)}
                               onDelete={deleteTask}
@@ -765,6 +852,10 @@ export default function TasksView() {
                         }
                       }
 
+                      // Flush final group (trailing insert zones land here with
+                      // currentBucket=null, so flushGroup pushes them directly)
+                      flushGroup();
+
                       return elements;
                     })()}
                   </SortableContext>
@@ -774,13 +865,13 @@ export default function TasksView() {
                         <TaskRowContent
                           task={activeTask}
                           stripe={0}
-                          overdue={isOverdue(activeTask)}
+                          overdue={isOverdue(activeTask, todayStr)}
+                          today={todayStr}
                           isEditingTopic={false}
                           editingTopicValue=""
                           isGracePeriod={false}
                           isSearching={false}
                           projects={projects}
-                          showCompleted={showCompleted}
                           onNavigate={() => {}}
                           onRevise={() => {}}
                           onDelete={() => {}}

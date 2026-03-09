@@ -773,7 +773,7 @@ export default function TasksView() {
                         elements.push(
                           <div
                             key={`wg-${currentBucket}`}
-                            className={cn('border-l-2 border-t rounded-tl-sm mt-1.5 pl-1.5 overflow-hidden', meta.borderClass)}
+                            className={cn('border-l-2 border-t rounded-tl-sm mt-1.5 pl-2', meta.borderClass)}
                             style={isOverdueBucket ? {
                               backgroundImage: 'repeating-linear-gradient(-45deg, transparent, transparent 8px, rgba(245,158,11,0.04) 8px, rgba(245,158,11,0.04) 16px)',
                             } : undefined}

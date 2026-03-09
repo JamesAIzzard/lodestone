@@ -545,7 +545,7 @@ function registerCloudTaskHandlers(ctx: AppContext): void {
   });
 
   ipcMain.handle('tasks:create', async (_event, topic: string, projectId?: number): Promise<{ success: boolean; id?: number; error?: string }> => {
-    return cloudRequest(ctx, '/tasks', 'POST', { topic, ...(projectId !== undefined && { projectId }) });
+    return cloudRequest(ctx, '/tasks', 'POST', { topic, priority: 2, ...(projectId !== undefined && { projectId }) });
   });
 
   ipcMain.handle('tasks:delete', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {

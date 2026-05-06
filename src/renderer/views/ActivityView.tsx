@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ChevronDown } from 'lucide-react';
 import ActivityFeed from '@/components/ActivityFeed';
-import { CellDropdown, InlineDropdown } from '@/components/TaskCells';
+import { CellDropdown, InlineDropdown } from '@/components/Dropdown';
 import type { SiloStatus } from '../../shared/types';
 
 export default function ActivityView() {
@@ -35,17 +35,16 @@ export default function ActivityView() {
                 { value: 'all', label: 'All Silos' },
                 ...silos.map((s) => ({ value: s.config.name, label: s.config.name })),
               ]}
-              onSelect={(v) => { setSiloFilter(v); }}
+              onSelect={(v) => {
+                setSiloFilter(v);
+              }}
               onClose={close}
             />
           )}
         </CellDropdown>
       </div>
 
-      <ActivityFeed
-        siloName={siloFilter === 'all' ? undefined : siloFilter}
-        limit={200}
-      />
+      <ActivityFeed siloName={siloFilter === 'all' ? undefined : siloFilter} limit={200} />
     </div>
   );
 }

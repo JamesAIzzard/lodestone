@@ -1,8 +1,8 @@
 /**
  * IPC handler registration — bridges renderer ↔ main process.
  *
- * All ipcMain.handle() calls are registered here in a single function.
- * Handlers access shared state via the AppContext object.
+ * All ipcMain.handle() calls are registered here. Handlers are grouped
+ * into domain-specific registration functions for readability.
  */
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
@@ -15,24 +15,35 @@ import {
   type SiloTomlConfig,
 } from '../backend/config';
 import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
-import { checkOllamaConnection } from '../backend/embedding';
 import type { SiloManager } from '../backend/silo-manager';
-import { getBundledModelIds, getModelDefinition, getModelPathSafeId, resolveModelAlias } from '../backend/model-registry';
-import { dispatchExplore, mergeDirectoryResults, dispatchSearch, mergeSearchResults } from '../backend/search-merge';
-import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams } from '../shared/types';
+import {
+  getBundledModelIds,
+  getModelDefinition,
+  getModelPathSafeId,
+  resolveModelAlias,
+} from '../backend/model-registry';
+import {
+  dispatchExplore,
+  mergeDirectoryResults,
+  dispatchSearch,
+  mergeSearchResults,
+} from '../backend/search-merge';
+import type {
+  SiloStatus,
+  SearchResult,
+  DirectoryResult,
+  ActivityEvent,
+  ServerStatus,
+  DefaultSettings,
+  ExploreParams,
+  SearchParams,
+} from '../shared/types';
 import type { AppContext } from './context';
 import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
 
-function getCloudHeaders(ctx: AppContext): Record<string, string> {
-  const token = ctx.config?.memory.cloud_auth_token;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
-  return headers;
-}
+// ── Domain-grouped handler registrations ────────────────────────────────
 
-export function registerIpcHandlers(ctx: AppContext): void {
-  // ── Dialog & Shell ──────────────────────────────────────────────────────
-
+function registerDialogHandlers(): void {
   ipcMain.handle('dialog:selectDirectories', async (_event) => {
     const win = BrowserWindow.fromWebContents(_event.sender) ?? undefined;
     const result = await dialog.showOpenDialog(win as BrowserWindow, {
@@ -73,9 +84,9 @@ export function registerIpcHandlers(ctx: AppContext): void {
     const { readConfigFromDbFile } = await import('../backend/store/peek');
     return readConfigFromDbFile(dbPath);
   });
+}
 
-  // ── Silos ───────────────────────────────────────────────────────────────
-
+function registerSiloHandlers(ctx: AppContext): void {
   ipcMain.handle('silos:list', async (): Promise<SiloStatus[]> => {
     const statuses: SiloStatus[] = [];
     for (const manager of ctx.siloManagers.values()) {
@@ -92,7 +103,8 @@ export function registerIpcHandlers(ctx: AppContext): void {
           hasIgnoreOverride: siloToml?.ignore !== undefined,
           hasFileIgnoreOverride: siloToml?.ignore_files !== undefined,
           hasExtensionOverride: siloToml?.extensions !== undefined,
-          modelOverride: cfg.model === resolveModelAlias(ctx.config?.embeddings.model ?? '') ? null : cfg.model,
+          modelOverride:
+            cfg.model === resolveModelAlias(ctx.config?.embeddings.model ?? '') ? null : cfg.model,
           dbPath: cfg.dbPath,
           description: cfg.description,
           color: cfg.color,
@@ -113,84 +125,91 @@ export function registerIpcHandlers(ctx: AppContext): void {
     return statuses;
   });
 
-  ipcMain.handle('silos:search', async (_event, params: SearchParams, siloName?: string): Promise<SearchResult[]> => {
-    // Collect searchable managers — skip stopped and model-mismatched silos
-    const ready: [string, SiloManager][] = [];
-    if (siloName) {
-      const m = ctx.siloManagers.get(siloName);
-      if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([siloName, m]);
-    } else {
-      for (const [name, m] of ctx.siloManagers) {
-        if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+  ipcMain.handle(
+    'silos:search',
+    async (_event, params: SearchParams, siloName?: string): Promise<SearchResult[]> => {
+      // Collect searchable managers — skip stopped and model-mismatched silos
+      const ready: [string, SiloManager][] = [];
+      if (siloName) {
+        const m = ctx.siloManagers.get(siloName);
+        if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([siloName, m]);
+      } else {
+        for (const [name, m] of ctx.siloManagers) {
+          if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+        }
       }
-    }
 
-    if (ready.length === 0) return [];
+      if (ready.length === 0) return [];
 
-    const limit = params.limit ?? 10;
-    const mode = params.mode ?? 'hybrid';
+      const limit = params.limit ?? 10;
+      const mode = params.mode ?? 'hybrid';
 
-    // Filepath and regex modes can search any ready silo; other modes need an embedding service
-    const searchable = mode === 'regex' || mode === 'filepath'
-      ? ready
-      : ready.filter(([, m]) => m.getEmbeddingService() !== null);
+      // Filepath and regex modes can search any ready silo; other modes need an embedding service
+      const searchable =
+        mode === 'regex' || mode === 'filepath'
+          ? ready
+          : ready.filter(([, m]) => m.getEmbeddingService() !== null);
 
-    if (searchable.length === 0) return [];
+      if (searchable.length === 0) return [];
 
-    const raw = await dispatchSearch(
-      params,
-      searchable,
-      (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
-    );
+      const raw = await dispatchSearch(
+        params,
+        searchable,
+        (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+      );
 
-    const merged = mergeSearchResults(raw, limit);
+      const merged = mergeSearchResults(raw, limit);
 
-    return merged.map((r) => ({
-      filePath: r.filePath,
-      siloName: r.siloName,
-      score: r.score,
-      scoreLabel: r.scoreLabel,
-      signals: r.signals,
-      hint: r.hint,
-      chunks: r.chunks,
-    }));
-  });
+      return merged.map((r) => ({
+        filePath: r.filePath,
+        siloName: r.siloName,
+        score: r.score,
+        scoreLabel: r.scoreLabel,
+        signals: r.signals,
+        hint: r.hint,
+        chunks: r.chunks,
+      }));
+    },
+  );
 
-  ipcMain.handle('silos:explore', async (_event, params: ExploreParams): Promise<DirectoryResult[]> => {
-    // Collect searchable managers — skip stopped and model-mismatched silos
-    const ready: [string, SiloManager][] = [];
-    if (params.silo) {
-      const m = ctx.siloManagers.get(params.silo);
-      if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([params.silo, m]);
-    } else {
-      for (const [name, m] of ctx.siloManagers) {
-        if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+  ipcMain.handle(
+    'silos:explore',
+    async (_event, params: ExploreParams): Promise<DirectoryResult[]> => {
+      // Collect searchable managers — skip stopped and model-mismatched silos
+      const ready: [string, SiloManager][] = [];
+      if (params.silo) {
+        const m = ctx.siloManagers.get(params.silo);
+        if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([params.silo, m]);
+      } else {
+        for (const [name, m] of ctx.siloManagers) {
+          if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+        }
       }
-    }
 
-    if (ready.length === 0) return [];
+      if (ready.length === 0) return [];
 
-    const raw = await dispatchExplore(params, ready);
-    const merged = mergeDirectoryResults(raw, params.maxResults ?? 10);
+      const raw = await dispatchExplore(params, ready);
+      const merged = mergeDirectoryResults(raw, params.maxResults ?? 10);
 
-    return merged.map((r) => ({
-      dirPath: r.dirPath,
-      dirName: r.dirName,
-      siloName: r.siloName,
-      score: r.score,
-      scoreSource: r.scoreSource,
-      axes: r.axes,
-      fileCount: r.fileCount,
-      subdirCount: r.subdirCount,
-      depth: r.depth,
-      children: r.children,
-      files: r.files,
-    }));
-  });
+      return merged.map((r) => ({
+        dirPath: r.dirPath,
+        dirName: r.dirName,
+        siloName: r.siloName,
+        score: r.score,
+        scoreSource: r.scoreSource,
+        axes: r.axes,
+        fileCount: r.fileCount,
+        subdirCount: r.subdirCount,
+        depth: r.depth,
+        children: r.children,
+        files: r.files,
+      }));
+    },
+  );
 
   // ── Activity ────────────────────────────────────────────────────────────
 
-  ipcMain.handle('activity:recent', async (_event, limit: number = 50): Promise<ActivityEvent[]> => {
+  ipcMain.handle('activity:recent', async (_event, limit = 50): Promise<ActivityEvent[]> => {
     const allEvents: ActivityEvent[] = [];
     for (const manager of ctx.siloManagers.values()) {
       const feed = manager.getActivityFeed(limit);
@@ -207,489 +226,6 @@ export function registerIpcHandlers(ctx: AppContext): void {
     }
     allEvents.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     return allEvents.slice(0, limit);
-  });
-
-  // ── Server / Settings ───────────────────────────────────────────────────
-
-  ipcMain.handle('server:status', async (): Promise<ServerStatus> => {
-    const uptimeSeconds = Math.floor((Date.now() - ctx.startTime) / 1000);
-
-    const ollamaUrl = ctx.config?.embeddings.ollama_url ?? 'http://localhost:11434';
-    const ollamaResult = await checkOllamaConnection(ollamaUrl);
-
-    let totalFiles = 0;
-    for (const manager of ctx.siloManagers.values()) {
-      const status = await manager.getStatus();
-      totalFiles += status.indexedFileCount;
-    }
-
-    const models: string[] = getBundledModelIds().map((id) => {
-      const def = getModelDefinition(id);
-      return def ? `${id} — ${def.displayName}` : id;
-    });
-    if (ollamaResult) {
-      models.push(...ollamaResult.models);
-    }
-
-    const modelPathSafeIds = Object.fromEntries(
-      getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
-    );
-
-    // Cloud memories health check
-    const cloudUrl = ctx.config?.memory.cloud_url ?? null;
-    let cloudConnected = false;
-    if (cloudUrl) {
-      try {
-        const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/health`, {
-          signal: AbortSignal.timeout(5000),
-        });
-        cloudConnected = res.ok;
-      } catch {
-        cloudConnected = false;
-      }
-    }
-
-    return {
-      uptimeSeconds,
-      ollamaState: ollamaResult ? 'connected' : 'disconnected',
-      ollamaUrl,
-      availableModels: models,
-      defaultModel: resolveModelAlias(ctx.config?.embeddings.model ?? 'snowflake-arctic-embed-xs'),
-      totalIndexedFiles: totalFiles,
-      modelPathSafeIds,
-      cloudUrl,
-      cloudConnected,
-      cloudAuthToken: ctx.config?.memory.cloud_auth_token ?? null,
-    };
-  });
-
-  ipcMain.handle('ollama:test', async (_event, url: string): Promise<{ connected: boolean; models: string[] }> => {
-    const result = await checkOllamaConnection(url);
-    if (result) {
-      return { connected: true, models: result.models };
-    }
-    return { connected: false, models: [] };
-  });
-
-  ipcMain.handle('config:path', async (): Promise<string> => {
-    return ctx.configPath();
-  });
-
-  ipcMain.handle('data:dir', async (): Promise<string> => {
-    return ctx.getUserDataDir();
-  });
-
-  ipcMain.handle('app:version', (): string => {
-    return app.getVersion();
-  });
-
-  ipcMain.handle('cloud:setUrl', async (_event, url: string): Promise<{ success: boolean }> => {
-    if (!ctx.config) return { success: false };
-    const trimmed = url.trim();
-    ctx.config.memory.cloud_url = trimmed || undefined;
-    saveConfig(ctx.configPath(), ctx.config);
-    return { success: true };
-  });
-
-  ipcMain.handle('cloud:setAuthToken', async (_event, token: string): Promise<{ success: boolean }> => {
-    if (!ctx.config) return { success: false };
-    ctx.config.memory.cloud_auth_token = token.trim() || undefined;
-    saveConfig(ctx.configPath(), ctx.config);
-    return { success: true };
-  });
-
-  ipcMain.handle('tasks:list', async (_event, opts: { includeCompleted?: boolean; includeCancelled?: boolean; projectId?: number } = {}): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, tasks: [], error: 'No cloud URL configured' };
-    try {
-      const params = new URLSearchParams();
-      if (opts.includeCompleted) params.set('includeCompleted', 'true');
-      if (opts.includeCancelled) params.set('includeCancelled', 'true');
-      if (opts.projectId !== undefined) params.set('projectId', String(opts.projectId));
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks?${params}`, {
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        return { success: false, tasks: [], error: `${res.status}: ${await res.text()}` };
-      }
-      const data = await res.json() as { tasks: unknown[] };
-      return { success: true, tasks: data.tasks };
-    } catch (err) {
-      return { success: false, tasks: [], error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:search', async (_event, query: string): Promise<{ success: boolean; tasks: unknown[]; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, tasks: [], error: 'No cloud URL configured' };
-    try {
-      const params = new URLSearchParams({ q: query });
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks?${params}`, {
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        return { success: false, tasks: [], error: `${res.status}: ${await res.text()}` };
-      }
-      const data = await res.json() as { tasks: unknown[] };
-      return { success: true, tasks: data.tasks };
-    } catch (err) {
-      return { success: false, tasks: [], error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:revise', async (_event, id: number, fields: Record<string, unknown>): Promise<{ success: boolean; completionRecordId?: number; nextActionDate?: string; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${id}`, {
-        method: 'PATCH',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify(fields),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        const errBody = await res.text();
-        console.error(`[ipc] tasks:revise PATCH failed for task ${id}: ${res.status} — ${errBody}`);
-        return { success: false, error: `${res.status}: ${errBody}` };
-      }
-      const data = await res.json() as { success: boolean; completionRecordId?: number; nextActionDate?: string };
-      return data;
-    } catch (err) {
-      console.error(`[ipc] tasks:revise error for task ${id}:`, err);
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:skip', async (_event, id: number, reason?: string): Promise<{ success: boolean; nextActionDate?: string; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${id}/skip`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ reason }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        return { success: false, error: `${res.status}: ${await res.text()}` };
-      }
-      const data = await res.json() as { success: boolean; nextActionDate?: string };
-      return data;
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:create', async (_event, topic: string, projectId?: number): Promise<{ success: boolean; id?: number; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ topic, ...(projectId !== undefined && { projectId }) }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return await res.json() as { success: boolean; id?: number };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:delete', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${id}`, {
-        method: 'DELETE',
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:update-day-order', async (_event, taskId: number, actionDate: string, position: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${taskId}/day-order`, {
-        method: 'PUT',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ actionDate, position }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('tasks:delete-day-order', async (_event, taskId: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/tasks/${taskId}/day-order`, {
-        method: 'DELETE',
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  // ── Projects ─────────────────────────────────────────────────────────
-
-  ipcMain.handle('projects:list', async (_event, opts?: { includeArchived?: boolean }): Promise<{ success: boolean; projects: unknown[]; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, projects: [], error: 'No cloud URL configured' };
-    try {
-      const qs = opts?.includeArchived ? '?includeArchived=true' : '';
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects${qs}`, {
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, projects: [], error: `${res.status}: ${await res.text()}` };
-      const data = await res.json() as { projects: unknown[] };
-      return { success: true, projects: data.projects };
-    } catch (err) {
-      return { success: false, projects: [], error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:create', async (_event, name: string, color?: string): Promise<{ success: boolean; id?: number; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ name, color }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        return { success: false, error: `${res.status}: ${text}` };
-      }
-      return await res.json() as { success: boolean; id?: number };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:update', async (_event, id: number, updates: { name?: string; color?: string }): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}`, {
-        method: 'PATCH',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify(updates),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:delete', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}`, {
-        method: 'DELETE',
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:merge', async (_event, sourceId: number, targetId: number): Promise<{ success: boolean; reassigned?: number; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${sourceId}/merge`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        body: JSON.stringify({ targetId }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return await res.json() as { success: boolean; reassigned?: number };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:archive', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}/archive`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  ipcMain.handle('projects:unarchive', async (_event, id: number): Promise<{ success: boolean; error?: string }> => {
-    const cloudUrl = ctx.config?.memory.cloud_url;
-    if (!cloudUrl) return { success: false, error: 'No cloud URL configured' };
-    try {
-      const res = await fetch(`${cloudUrl.replace(/\/$/, '')}/projects/${id}/unarchive`, {
-        method: 'POST',
-        headers: getCloudHeaders(ctx),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) return { success: false, error: `${res.status}: ${await res.text()}` };
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: String(err) };
-    }
-  });
-
-  // ── Defaults ──────────────────────────────────────────────────────────
-
-  ipcMain.handle('defaults:get', async (): Promise<DefaultSettings> => {
-    if (!ctx.config) {
-      const def = createDefaultConfig();
-      return {
-        extensions: def.defaults.extensions,
-        ignore: def.defaults.ignore,
-        ignoreFiles: def.defaults.ignore_files,
-        debounce: def.defaults.debounce,
-        contextLines: def.defaults.context_lines,
-        activityLogLimit: def.defaults.activity_log_limit,
-      };
-    }
-    return {
-      extensions: ctx.config.defaults.extensions,
-      ignore: ctx.config.defaults.ignore,
-      ignoreFiles: ctx.config.defaults.ignore_files,
-      debounce: ctx.config.defaults.debounce,
-      contextLines: ctx.config.defaults.context_lines,
-      activityLogLimit: ctx.config.defaults.activity_log_limit,
-    };
-  });
-
-  ipcMain.handle(
-    'defaults:update',
-    async (_event, updates: Partial<DefaultSettings>): Promise<{ success: boolean }> => {
-      if (!ctx.config) return { success: false };
-
-      if (updates.extensions !== undefined) ctx.config.defaults.extensions = updates.extensions;
-      if (updates.ignore !== undefined) ctx.config.defaults.ignore = updates.ignore;
-      if (updates.ignoreFiles !== undefined) ctx.config.defaults.ignore_files = updates.ignoreFiles;
-      if (updates.debounce !== undefined) ctx.config.defaults.debounce = updates.debounce;
-      if (updates.contextLines !== undefined) ctx.config.defaults.context_lines = updates.contextLines;
-      if (updates.activityLogLimit !== undefined) ctx.config.defaults.activity_log_limit = updates.activityLogLimit;
-
-      saveConfig(ctx.configPath(), ctx.config);
-      return { success: true };
-    },
-  );
-
-  ipcMain.handle('defaults:reset-all', async (): Promise<{ success: boolean }> => {
-    if (!ctx.config) return { success: false };
-
-    // Stop all silo managers
-    for (const [name, manager] of ctx.siloManagers) {
-      try { await manager.stop(); } catch (err) {
-        console.error(`[main] Error stopping silo "${name}" during reset:`, err);
-      }
-      ctx.siloManagers.delete(name);
-    }
-
-    // Replace config with clean defaults and persist
-    ctx.config = createDefaultConfig();
-    saveConfig(ctx.configPath(), ctx.config);
-    console.log('[main] All settings reset to defaults');
-
-    notifySilosChanged(ctx);
-    return { success: true };
-  });
-
-
-  // ── Claude Desktop Integration ──────────────────────────────────────────
-
-  function getClaudeDesktopConfigPath(): string {
-    return path.join(app.getPath('appData'), 'Claude', 'claude_desktop_config.json');
-  }
-
-  function getMcpWrapperPath(): string {
-    return app.isPackaged
-      ? path.join(process.resourcesPath, 'mcp-wrapper.js')
-      : path.join(app.getAppPath(), 'mcp-wrapper.js');
-  }
-
-  ipcMain.handle('mcp:getClaudeDesktopStatus', async (): Promise<{
-    configPath: string;
-    hasClaudeDesktop: boolean;
-    isConfigured: boolean;
-  }> => {
-    const configPath = getClaudeDesktopConfigPath();
-    const hasClaudeDesktop = fs.existsSync(path.dirname(configPath));
-    let isConfigured = false;
-    try {
-      if (fs.existsSync(configPath)) {
-        const raw = fs.readFileSync(configPath, 'utf-8');
-        const parsed = JSON.parse(raw);
-        isConfigured = !!parsed?.mcpServers?.['lodestone-files'];
-      }
-    } catch {
-      // Malformed JSON — treat as not configured
-    }
-    return { configPath, hasClaudeDesktop, isConfigured };
-  });
-
-  ipcMain.handle('mcp:configureClaudeDesktop', async (): Promise<{
-    success: boolean;
-    configPath: string;
-    error?: string;
-  }> => {
-    const configPath = getClaudeDesktopConfigPath();
-    const wrapperPath = getMcpWrapperPath();
-    try {
-      let config: Record<string, unknown> = {};
-      if (fs.existsSync(configPath)) {
-        try {
-          config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-        } catch {
-          // Malformed JSON — start fresh
-        }
-      }
-      const mcpServers = (config.mcpServers as Record<string, unknown>) ?? {};
-      config.mcpServers = {
-        ...mcpServers,
-        'lodestone-files': { command: 'node', args: [wrapperPath] },
-      };
-      fs.mkdirSync(path.dirname(configPath), { recursive: true });
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
-      return { success: true, configPath };
-    } catch (err) {
-      return { success: false, configPath, error: err instanceof Error ? err.message : String(err) };
-    }
   });
 
   // ── Silo CRUD ───────────────────────────────────────────────────────────
@@ -732,7 +268,10 @@ export function registerIpcHandlers(ctx: AppContext): void {
       notifySilosChanged(ctx);
 
       if (dbDeleteError) {
-        return { success: false, error: `Silo removed but database file could not be deleted: ${dbDeleteError}` };
+        return {
+          success: false,
+          error: `Silo removed but database file could not be deleted: ${dbDeleteError}`,
+        };
       }
       return { success: true };
     },
@@ -777,47 +316,49 @@ export function registerIpcHandlers(ctx: AppContext): void {
     },
   );
 
-  ipcMain.handle(
-    'silos:rescan',
-    (_event, name: string): { success: boolean; error?: string } => {
-      const manager = ctx.siloManagers.get(name);
-      if (!manager) return { success: false, error: `Silo "${name}" not found` };
+  ipcMain.handle('silos:rescan', (_event, name: string): { success: boolean; error?: string } => {
+    const manager = ctx.siloManagers.get(name);
+    if (!manager) return { success: false, error: `Silo "${name}" not found` };
 
-      // Fire and forget — rescan() re-walks directories and indexes changes
-      // without deleting the DB. State updates via silos:changed events.
-      manager.rescan().catch((err) => {
-        console.error(`[main] Failed to rescan silo "${name}":`, err);
-      });
+    // Fire and forget — rescan() re-walks directories and indexes changes
+    // without deleting the DB. State updates via silos:changed events.
+    manager.rescan().catch((err) => {
+      console.error(`[main] Failed to rescan silo "${name}":`, err);
+    });
 
-      return { success: true };
-    },
-  );
+    return { success: true };
+  });
 
-  ipcMain.handle(
-    'silos:rebuild',
-    (_event, name: string): { success: boolean; error?: string } => {
-      const manager = ctx.siloManagers.get(name);
-      if (!manager) return { success: false, error: `Silo "${name}" not found` };
+  ipcMain.handle('silos:rebuild', (_event, name: string): { success: boolean; error?: string } => {
+    const manager = ctx.siloManagers.get(name);
+    if (!manager) return { success: false, error: `Silo "${name}" not found` };
 
-      const embeddingService = ctx.getOrCreateEmbeddingService(manager.getConfig().model);
-      manager.updateEmbeddingService(embeddingService);
+    const embeddingService = ctx.getOrCreateEmbeddingService(manager.getConfig().model);
+    manager.updateEmbeddingService(embeddingService);
 
-      // Fire and forget — rebuild() stops current work, then queues via the
-      // IndexingQueue. The silo's watcherState updates via silos:changed events.
-      manager.rebuild().catch((err) => {
-        console.error(`[main] Failed to rebuild silo "${name}":`, err);
-      });
+    // Fire and forget — rebuild() stops current work, then queues via the
+    // IndexingQueue. The silo's watcherState updates via silos:changed events.
+    manager.rebuild().catch((err) => {
+      console.error(`[main] Failed to rebuild silo "${name}":`, err);
+    });
 
-      return { success: true };
-    },
-  );
+    return { success: true };
+  });
 
   ipcMain.handle(
     'silos:update',
     async (
       _event,
       name: string,
-      updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string },
+      updates: {
+        description?: string;
+        model?: string;
+        ignore?: string[];
+        ignoreFiles?: string[];
+        extensions?: string[];
+        color?: string;
+        icon?: string;
+      },
     ): Promise<{ success: boolean; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
       const siloToml = ctx.config.silos[name];
@@ -882,7 +423,11 @@ export function registerIpcHandlers(ctx: AppContext): void {
 
   ipcMain.handle(
     'silos:rename',
-    async (_event, oldName: string, newName: string): Promise<{ success: boolean; error?: string }> => {
+    async (
+      _event,
+      oldName: string,
+      newName: string,
+    ): Promise<{ success: boolean; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
 
       const trimmed = newName.trim();
@@ -923,14 +468,29 @@ export function registerIpcHandlers(ctx: AppContext): void {
     'silos:create',
     async (
       _event,
-      opts: { name: string; directories: string[]; extensions: string[]; dbPath: string; model: string; description?: string; color?: string; icon?: string; mode?: 'new' | 'existing' },
+      opts: {
+        name: string;
+        directories: string[];
+        extensions: string[];
+        dbPath: string;
+        model: string;
+        description?: string;
+        color?: string;
+        icon?: string;
+        mode?: 'new' | 'existing';
+      },
     ): Promise<{ success: boolean; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
 
-      const slug = opts.name.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+      const slug = opts.name
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-_]/g, '-');
       if (slug.length === 0) return { success: false, error: 'Invalid silo name' };
-      if (ctx.siloManagers.has(slug)) return { success: false, error: `Silo "${slug}" already exists` };
-      if (opts.directories.length === 0) return { success: false, error: 'At least one directory is required' };
+      if (ctx.siloManagers.has(slug))
+        return { success: false, error: `Silo "${slug}" already exists` };
+      if (opts.directories.length === 0)
+        return { success: false, error: 'At least one directory is required' };
 
       const resolvedDbPath = path.isAbsolute(opts.dbPath)
         ? opts.dbPath
@@ -971,5 +531,189 @@ export function registerIpcHandlers(ctx: AppContext): void {
       return { success: true };
     },
   );
+}
 
+function registerSettingsHandlers(ctx: AppContext): void {
+  ipcMain.handle('server:status', async (): Promise<ServerStatus> => {
+    const uptimeSeconds = Math.floor((Date.now() - ctx.startTime) / 1000);
+
+    let totalFiles = 0;
+    for (const manager of ctx.siloManagers.values()) {
+      const status = await manager.getStatus();
+      totalFiles += status.indexedFileCount;
+    }
+
+    const models: string[] = getBundledModelIds().map((id) => {
+      const def = getModelDefinition(id);
+      return def ? `${id} — ${def.displayName}` : id;
+    });
+    const modelPathSafeIds = Object.fromEntries(
+      getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
+    );
+
+    return {
+      uptimeSeconds,
+      availableModels: models,
+      defaultModel: resolveModelAlias(ctx.config?.embeddings.model ?? 'snowflake-arctic-embed-xs'),
+      totalIndexedFiles: totalFiles,
+      modelPathSafeIds,
+    };
+  });
+
+  ipcMain.handle('config:path', async (): Promise<string> => {
+    return ctx.configPath();
+  });
+
+  ipcMain.handle('data:dir', async (): Promise<string> => {
+    return ctx.getUserDataDir();
+  });
+
+  ipcMain.handle('app:version', (): string => {
+    return app.getVersion();
+  });
+
+  // ── Defaults ──────────────────────────────────────────────────────────
+
+  ipcMain.handle('defaults:get', async (): Promise<DefaultSettings> => {
+    if (!ctx.config) {
+      const def = createDefaultConfig();
+      return {
+        extensions: def.defaults.extensions,
+        ignore: def.defaults.ignore,
+        ignoreFiles: def.defaults.ignore_files,
+        debounce: def.defaults.debounce,
+        contextLines: def.defaults.context_lines,
+        activityLogLimit: def.defaults.activity_log_limit,
+      };
+    }
+    return {
+      extensions: ctx.config.defaults.extensions,
+      ignore: ctx.config.defaults.ignore,
+      ignoreFiles: ctx.config.defaults.ignore_files,
+      debounce: ctx.config.defaults.debounce,
+      contextLines: ctx.config.defaults.context_lines,
+      activityLogLimit: ctx.config.defaults.activity_log_limit,
+    };
+  });
+
+  ipcMain.handle(
+    'defaults:update',
+    async (_event, updates: Partial<DefaultSettings>): Promise<{ success: boolean }> => {
+      if (!ctx.config) return { success: false };
+
+      if (updates.extensions !== undefined) ctx.config.defaults.extensions = updates.extensions;
+      if (updates.ignore !== undefined) ctx.config.defaults.ignore = updates.ignore;
+      if (updates.ignoreFiles !== undefined) ctx.config.defaults.ignore_files = updates.ignoreFiles;
+      if (updates.debounce !== undefined) ctx.config.defaults.debounce = updates.debounce;
+      if (updates.contextLines !== undefined)
+        ctx.config.defaults.context_lines = updates.contextLines;
+      if (updates.activityLogLimit !== undefined)
+        ctx.config.defaults.activity_log_limit = updates.activityLogLimit;
+
+      saveConfig(ctx.configPath(), ctx.config);
+      return { success: true };
+    },
+  );
+
+  ipcMain.handle('defaults:reset-all', async (): Promise<{ success: boolean }> => {
+    if (!ctx.config) return { success: false };
+
+    // Stop all silo managers
+    for (const [name, manager] of ctx.siloManagers) {
+      try {
+        await manager.stop();
+      } catch (err) {
+        console.error(`[main] Error stopping silo "${name}" during reset:`, err);
+      }
+      ctx.siloManagers.delete(name);
+    }
+
+    // Replace config with clean defaults and persist
+    ctx.config = createDefaultConfig();
+    saveConfig(ctx.configPath(), ctx.config);
+    console.log('[main] All settings reset to defaults');
+
+    notifySilosChanged(ctx);
+    return { success: true };
+  });
+}
+
+function registerMcpHandlers(): void {
+  function getClaudeDesktopConfigPath(): string {
+    return path.join(app.getPath('appData'), 'Claude', 'claude_desktop_config.json');
+  }
+
+  function getMcpWrapperPath(): string {
+    return app.isPackaged
+      ? path.join(process.resourcesPath, 'mcp-wrapper.js')
+      : path.join(app.getAppPath(), 'mcp-wrapper.js');
+  }
+
+  ipcMain.handle(
+    'mcp:getClaudeDesktopStatus',
+    async (): Promise<{
+      configPath: string;
+      hasClaudeDesktop: boolean;
+      isConfigured: boolean;
+    }> => {
+      const configPath = getClaudeDesktopConfigPath();
+      const hasClaudeDesktop = fs.existsSync(path.dirname(configPath));
+      let isConfigured = false;
+      try {
+        if (fs.existsSync(configPath)) {
+          const raw = fs.readFileSync(configPath, 'utf-8');
+          const parsed = JSON.parse(raw);
+          isConfigured = !!parsed?.mcpServers?.['lodestone-files'];
+        }
+      } catch {
+        // Malformed JSON — treat as not configured
+      }
+      return { configPath, hasClaudeDesktop, isConfigured };
+    },
+  );
+
+  ipcMain.handle(
+    'mcp:configureClaudeDesktop',
+    async (): Promise<{
+      success: boolean;
+      configPath: string;
+      error?: string;
+    }> => {
+      const configPath = getClaudeDesktopConfigPath();
+      const wrapperPath = getMcpWrapperPath();
+      try {
+        let config: Record<string, unknown> = {};
+        if (fs.existsSync(configPath)) {
+          try {
+            config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+          } catch {
+            // Malformed JSON — start fresh
+          }
+        }
+        const mcpServers = (config.mcpServers as Record<string, unknown>) ?? {};
+        config.mcpServers = {
+          ...mcpServers,
+          'lodestone-files': { command: 'node', args: [wrapperPath] },
+        };
+        fs.mkdirSync(path.dirname(configPath), { recursive: true });
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+        return { success: true, configPath };
+      } catch (err) {
+        return {
+          success: false,
+          configPath,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  );
+}
+
+// ── Public entry point ──────────────────────────────────────────────────
+
+export function registerIpcHandlers(ctx: AppContext): void {
+  registerDialogHandlers();
+  registerSiloHandlers(ctx);
+  registerSettingsHandlers(ctx);
+  registerMcpHandlers();
 }

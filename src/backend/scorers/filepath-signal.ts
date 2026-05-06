@@ -14,7 +14,7 @@
 import type { Signal, SignalContext, SignalResult } from './signal';
 import { extractRelPath } from '../store/paths';
 import { levenshteinSimilarity, tokenCoverage } from './text-signals';
-import { decayingSum } from './decaying-sum';
+import { decayingSum } from '../../shared/portable/decaying-sum';
 
 /** Minimum max-segment score for a file to pass the prefilter. */
 const SEGMENT_THRESHOLD = 0.4;

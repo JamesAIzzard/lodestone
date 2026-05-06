@@ -56,7 +56,6 @@ export function createAppContext(): AppContext {
       if (!service) {
         service = createEmbeddingService({
           model: modelId,
-          ollamaUrl: ctx.config?.embeddings.ollama_url ?? 'http://localhost:11434',
           modelCacheDir: ctx.getModelCacheDir(),
         });
         ctx.embeddingServices.set(modelId, service);

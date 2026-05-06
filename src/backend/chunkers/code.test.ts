@@ -1,14 +1,10 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { chunkCodeAsync } from './code';
 import { extractCode } from '../extractors/code';
 import type { ExtractionResult } from '../pipeline-types';
 
 // Helper: extract then async-chunk in one step
-async function chunkCode(
-  filePath: string,
-  content: string,
-  maxChunkTokens: number = 8192,
-) {
+async function chunkCode(filePath: string, content: string, maxChunkTokens = 8192) {
   const extraction = extractCode(content);
   return chunkCodeAsync(filePath, extraction, maxChunkTokens);
 }
@@ -84,7 +80,7 @@ export const helper = (x: number): number => x * 2;
     expect(chunks.length).toBeGreaterThanOrEqual(5);
 
     // Find chunks by their section paths
-    const sectionPaths = chunks.map(c => c.sectionPath.join('/'));
+    const sectionPaths = chunks.map((c) => c.sectionPath.join('/'));
 
     // Each top-level definition should have its name in the sectionPath
     expect(sectionPaths).toContain('processFile');
@@ -92,7 +88,7 @@ export const helper = (x: number): number => x * 2;
     expect(sectionPaths).toContain('Config');
 
     // Verify the class chunk includes its methods
-    const classChunk = chunks.find(c => c.sectionPath.includes('FileManager'));
+    const classChunk = chunks.find((c) => c.sectionPath.includes('FileManager'));
     expect(classChunk).toBeDefined();
     expect(classChunk!.text).toContain('add(file: string)');
     expect(classChunk!.text).toContain('remove(file: string)');
@@ -112,7 +108,7 @@ function processFile(path: string): string {
     const chunks = await chunkCode('/test/jsdoc.ts', content);
 
     // The JSDoc comment should be part of the function chunk
-    const fnChunk = chunks.find(c => c.sectionPath.includes('processFile'));
+    const fnChunk = chunks.find((c) => c.sectionPath.includes('processFile'));
     expect(fnChunk).toBeDefined();
     expect(fnChunk!.text).toContain('/**');
     expect(fnChunk!.text).toContain('@param path');
@@ -153,8 +149,8 @@ function second(): void {
 
     const chunks = await chunkCode('/test/lines.ts', content);
 
-    const first = chunks.find(c => c.sectionPath.includes('first'));
-    const second = chunks.find(c => c.sectionPath.includes('second'));
+    const first = chunks.find((c) => c.sectionPath.includes('first'));
+    const second = chunks.find((c) => c.sectionPath.includes('second'));
 
     expect(first).toBeDefined();
     expect(second).toBeDefined();
@@ -170,7 +166,7 @@ function b(): number { return 2; }
 `;
 
     const chunks = await chunkCode('/test/hashes.ts', content);
-    const hashes = chunks.map(c => c.contentHash);
+    const hashes = chunks.map((c) => c.contentHash);
     const uniqueHashes = new Set(hashes);
     expect(uniqueHashes.size).toBe(hashes.length);
   });
@@ -182,7 +178,7 @@ function c() {}
 `;
 
     const chunks = await chunkCode('/test/indices.ts', content);
-    expect(chunks.map(c => c.chunkIndex)).toEqual(
+    expect(chunks.map((c) => c.chunkIndex)).toEqual(
       Array.from({ length: chunks.length }, (_, i) => i),
     );
   });
@@ -220,12 +216,12 @@ class DataManager:
     // Should have: preamble (imports), function, class
     expect(chunks.length).toBeGreaterThanOrEqual(2);
 
-    const sectionPaths = chunks.map(c => c.sectionPath.join('/'));
+    const sectionPaths = chunks.map((c) => c.sectionPath.join('/'));
     expect(sectionPaths).toContain('process_data');
     expect(sectionPaths).toContain('DataManager');
 
     // Class chunk should include all methods
-    const classChunk = chunks.find(c => c.sectionPath.includes('DataManager'));
+    const classChunk = chunks.find((c) => c.sectionPath.includes('DataManager'));
     expect(classChunk).toBeDefined();
     expect(classChunk!.text).toContain('def __init__');
     expect(classChunk!.text).toContain('def load');
@@ -242,9 +238,7 @@ def decorated_function():
 
     const chunks = await chunkCode('/test/decorators.py', content);
 
-    const decoratedChunk = chunks.find(c =>
-      c.sectionPath.includes('decorated_function'),
-    );
+    const decoratedChunk = chunks.find((c) => c.sectionPath.includes('decorated_function'));
     expect(decoratedChunk).toBeDefined();
     expect(decoratedChunk!.text).toContain('@decorator');
   });
@@ -262,7 +256,7 @@ if __name__ == "__main__":
     const chunks = await chunkCode('/test/script.py', content);
 
     // The main function should be found and chunked correctly
-    const mainFn = chunks.find(c => c.sectionPath.includes('main'));
+    const mainFn = chunks.find((c) => c.sectionPath.includes('main'));
     expect(mainFn).toBeDefined();
     expect(mainFn!.text).toContain('def main');
   });
@@ -275,8 +269,9 @@ describe('chunkCodeAsync — oversized definitions', () => {
     // Create a function that is unambiguously oversized.
     // estimateTokens = Math.ceil(text.length / 4), so maxChunkTokens=50 means
     // anything over ~200 chars must be sub-split.
-    const lines = Array.from({ length: 30 }, (_, i) =>
-      `  const result${i} = processItem(data[${i}], "${'x'.repeat(30)}");`,
+    const lines = Array.from(
+      { length: 30 },
+      (_, i) => `  const result${i} = processItem(data[${i}], "${'x'.repeat(30)}");`,
     );
     const content = `function bigFunction(): void {\n${lines.join('\n')}\n}`;
 

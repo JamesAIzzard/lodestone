@@ -16,17 +16,54 @@ import { createTwoFilesPatch } from 'diff';
 
 /** Discriminated union for the four text-editing operations. */
 export type TextEditOperation =
-  | { op: 'str_replace'; filePath: string; oldStr: string; newStr: string; dryRun?: boolean; contextLines?: number; fullDocument?: boolean }
-  | { op: 'insert_at_line'; filePath: string; line: number; content: string; dryRun?: boolean; contextLines?: number; fullDocument?: boolean }
-  | { op: 'overwrite'; filePath: string; content: string; dryRun?: boolean; contextLines?: number; fullDocument?: boolean }
-  | { op: 'append'; filePath: string; content: string; dryRun?: boolean; contextLines?: number; fullDocument?: boolean };
+  | {
+      op: 'str_replace';
+      filePath: string;
+      oldStr: string;
+      newStr: string;
+      dryRun?: boolean;
+      contextLines?: number;
+      fullDocument?: boolean;
+    }
+  | {
+      op: 'insert_at_line';
+      filePath: string;
+      line: number;
+      content: string;
+      dryRun?: boolean;
+      contextLines?: number;
+      fullDocument?: boolean;
+    }
+  | {
+      op: 'overwrite';
+      filePath: string;
+      content: string;
+      dryRun?: boolean;
+      contextLines?: number;
+      fullDocument?: boolean;
+    }
+  | {
+      op: 'append';
+      filePath: string;
+      content: string;
+      dryRun?: boolean;
+      contextLines?: number;
+      fullDocument?: boolean;
+    };
 
 /** Discriminated union for file lifecycle operations. */
 export type FileLifecycleOperation =
   | { op: 'create'; directory: string; filename: string; content: string; fullDocument?: boolean }
   | { op: 'mkdir'; directory: string; name: string; dryRun?: boolean }
   | { op: 'rename'; target: string; name: string; dryRun?: boolean }
-  | { op: 'move'; target: string; destination: string; destinationType: 'directory' | 'filepath'; onConflict?: 'error' | 'skip' | 'overwrite'; dryRun?: boolean }
+  | {
+      op: 'move';
+      target: string;
+      destination: string;
+      destinationType: 'directory' | 'filepath';
+      onConflict?: 'error' | 'skip' | 'overwrite';
+      dryRun?: boolean;
+    }
   | { op: 'delete'; target: string; dryRun?: boolean };
 
 /** Combined type for all edit operations. */
@@ -74,13 +111,16 @@ function validateUtf8(buffer: Buffer): boolean {
 /** Check that a filepath falls within at least one silo directory. */
 function isWithinSiloBoundary(filePath: string, siloDirectories: string[]): boolean {
   const normalised = path.resolve(filePath);
-  return siloDirectories.some(dir => normalised.startsWith(path.resolve(dir) + path.sep) || normalised === path.resolve(dir));
+  return siloDirectories.some(
+    (dir) =>
+      normalised.startsWith(path.resolve(dir) + path.sep) || normalised === path.resolve(dir),
+  );
 }
 
 /** Check whether a path is itself a configured silo root directory. */
 function isSiloRoot(target: string, siloDirectories: string[]): boolean {
   const resolved = path.resolve(target);
-  return siloDirectories.some(dir => path.resolve(dir) === resolved);
+  return siloDirectories.some((dir) => path.resolve(dir) === resolved);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -108,11 +148,17 @@ function generateUnifiedDiff(filePath: string, oldContent: string, newContent: s
  * Extract a window of context lines around a change site.
  * Line numbers are 0-indexed internally, displayed as 1-indexed.
  */
-function extractContext(content: string, changeStartLine: number, changeEndLine: number, contextLines: number): string {
+function extractContext(
+  content: string,
+  changeStartLine: number,
+  changeEndLine: number,
+  contextLines: number,
+): string {
   const lines = content.split('\n');
   const start = Math.max(0, changeStartLine - contextLines);
   const end = Math.min(lines.length, changeEndLine + contextLines);
-  return lines.slice(start, end)
+  return lines
+    .slice(start, end)
     .map((line, i) => `${(start + i + 1).toString().padStart(4)} | ${line}`)
     .join('\n');
 }
@@ -121,20 +167,31 @@ function extractContext(content: string, changeStartLine: number, changeEndLine:
  * Find the 0-indexed line range where oldContent and newContent first differ.
  * Returns [startLine, endLine) in the new content.
  */
-function findChangeBounds(oldContent: string, newContent: string): { startLine: number; endLine: number } {
+function findChangeBounds(
+  oldContent: string,
+  newContent: string,
+): { startLine: number; endLine: number } {
   const oldLines = oldContent.split('\n');
   const newLines = newContent.split('\n');
 
   // Find first differing line from the top
   let startLine = 0;
-  while (startLine < oldLines.length && startLine < newLines.length && oldLines[startLine] === newLines[startLine]) {
+  while (
+    startLine < oldLines.length &&
+    startLine < newLines.length &&
+    oldLines[startLine] === newLines[startLine]
+  ) {
     startLine++;
   }
 
   // Find first differing line from the bottom
   let oldEnd = oldLines.length;
   let newEnd = newLines.length;
-  while (oldEnd > startLine && newEnd > startLine && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+  while (
+    oldEnd > startLine &&
+    newEnd > startLine &&
+    oldLines[oldEnd - 1] === newLines[newEnd - 1]
+  ) {
     oldEnd--;
     newEnd--;
   }
@@ -181,7 +238,8 @@ function readAndValidate(
       ok: false,
       result: {
         success: false,
-        error: 'File is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
+        error:
+          'File is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
       },
     };
   }
@@ -201,7 +259,8 @@ function readAndValidate(
       ok: false,
       result: {
         success: false,
-        error: 'File cannot be edited: content is not valid UTF-8. Lodestone edit only supports UTF-8 encoded text files.',
+        error:
+          'File cannot be edited: content is not valid UTF-8. Lodestone edit only supports UTF-8 encoded text files.',
       },
     };
   }
@@ -235,7 +294,7 @@ function executeStrReplace(
   // Count occurrences
   let count = 0;
   let searchFrom = 0;
-  while (true) {
+  for (;;) {
     const idx = oldContent.indexOf(oldStr, searchFrom);
     if (idx === -1) break;
     count++;
@@ -255,7 +314,8 @@ function executeStrReplace(
   // Use indexOf + slice rather than String.replace to avoid JS replacement
   // pattern special characters (e.g. $ → $ in replace's replacement string).
   const matchIdx = oldContent.indexOf(oldStr);
-  const newContent = oldContent.slice(0, matchIdx) + newStr + oldContent.slice(matchIdx + oldStr.length);
+  const newContent =
+    oldContent.slice(0, matchIdx) + newStr + oldContent.slice(matchIdx + oldStr.length);
 
   if (op.dryRun) {
     return { success: true, diff: generateUnifiedDiff(op.filePath, oldContent, newContent) };
@@ -345,18 +405,18 @@ function executeAppend(
  * Produce a compact listing of a directory's contents (files and subdirectories),
  * truncated to a maximum number of entries.
  */
-function formatDirectoryListing(dirPath: string, maxEntries: number = 20): string {
+function formatDirectoryListing(dirPath: string, maxEntries = 20): string {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dirPath, { withFileTypes: true });
   } catch {
     return `${dirPath} (unreadable)`;
   }
-  const files = entries.filter(e => e.isFile()).map(e => e.name);
-  const dirs = entries.filter(e => e.isDirectory()).map(e => e.name + '/');
+  const files = entries.filter((e) => e.isFile()).map((e) => e.name);
+  const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name + '/');
   const all = [...dirs.sort(), ...files.sort()];
   const shown = all.slice(0, maxEntries);
-  const lines = shown.map(name => `  ${name}`);
+  const lines = shown.map((name) => `  ${name}`);
   if (all.length > maxEntries) {
     lines.push(`  ... and ${all.length - maxEntries} more`);
   }
@@ -373,7 +433,8 @@ function executeMkdir(
   if (!isWithinSiloBoundary(op.directory, siloDirectories)) {
     return {
       success: false,
-      error: 'Parent directory is outside all configured silo directories. lodestone_edit can only create directories within indexed silos.',
+      error:
+        'Parent directory is outside all configured silo directories. lodestone_edit can only create directories within indexed silos.',
     };
   }
 
@@ -422,7 +483,8 @@ function executeCreate(
   if (!isWithinSiloBoundary(op.directory, siloDirectories)) {
     return {
       success: false,
-      error: 'Directory is outside all configured silo directories. lodestone_edit can only create files within indexed silos.',
+      error:
+        'Directory is outside all configured silo directories. lodestone_edit can only create files within indexed silos.',
     };
   }
 
@@ -469,7 +531,8 @@ function executeRename(
   if (!isWithinSiloBoundary(op.target, siloDirectories)) {
     return {
       success: false,
-      error: 'Target is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
+      error:
+        'Target is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
     };
   }
 
@@ -520,7 +583,8 @@ function executeMove(
   if (!isWithinSiloBoundary(op.target, siloDirectories)) {
     return {
       success: false,
-      error: 'Source is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
+      error:
+        'Source is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
     };
   }
 
@@ -558,15 +622,17 @@ function executeMove(
   }
 
   // Compute final destination path
-  const finalDestination = op.destinationType === 'directory'
-    ? path.join(op.destination, path.basename(op.target))
-    : op.destination;
+  const finalDestination =
+    op.destinationType === 'directory'
+      ? path.join(op.destination, path.basename(op.target))
+      : op.destination;
 
   // Silo boundary check on destination
   if (!isWithinSiloBoundary(finalDestination, siloDirectories)) {
     return {
       success: false,
-      error: 'Destination is outside all configured silo directories. lodestone_edit can only move files within indexed silos.',
+      error:
+        'Destination is outside all configured silo directories. lodestone_edit can only move files within indexed silos.',
     };
   }
 
@@ -663,7 +729,8 @@ async function executeDelete(
   if (!isWithinSiloBoundary(op.target, siloDirectories)) {
     return {
       success: false,
-      error: 'Target is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
+      error:
+        'Target is outside all configured silo directories. lodestone_edit can only modify files within indexed silos.',
     };
   }
 
@@ -680,7 +747,8 @@ async function executeDelete(
   if (isDir && isSiloRoot(op.target, siloDirectories)) {
     return {
       success: false,
-      error: 'Cannot delete a configured silo root directory. Remove or reconfigure the silo first.',
+      error:
+        'Cannot delete a configured silo root directory. Remove or reconfigure the silo first.',
     };
   }
 

@@ -19,9 +19,14 @@ export type { McpServerDeps, McpServerHandle } from './types';
 
 import type { McpServerDeps, McpServerHandle } from './types';
 import { PuidManager } from './puid-manager';
-import { registerSearchTool, registerReadTool, registerStatusTool, registerExploreTool } from './tools-search';
+import {
+  registerSearchTool,
+  registerReadTool,
+  registerStatusTool,
+  registerExploreTool,
+} from './tools-search';
 import { registerEditTool } from './tools-edit';
-import { registerResources, registerGuideTool } from './resources';
+import { registerResources, registerGuideTool, registerDateTimeTool } from './resources';
 import { buildDatetime } from './formatting';
 
 /**
@@ -36,12 +41,16 @@ function patchWithDatetimeFooter(server: McpServer): void {
     const handler = args[lastIdx];
     if (typeof handler === 'function') {
       args[lastIdx] = async (...handlerArgs: unknown[]) => {
-        const result = await (handler as (...a: unknown[]) => Promise<{ content: Array<{ type: string; text?: string }> }>)(...handlerArgs);
+        const result = await (
+          handler as (
+            ...a: unknown[]
+          ) => Promise<{ content: Array<{ type: string; text?: string }> }>
+        )(...handlerArgs);
         const content = [...(result?.content ?? [])];
         const last = content[content.length - 1];
         if (last?.type === 'text') {
           const text = last.text ?? '';
-          const footer = `\n\n---\n💡 Save learnings with lodestone_remember (on lodestone-memory)\n🕐 ${buildDatetime()}`;
+          const footer = `\n\n---\n🕐 ${buildDatetime()}`;
           content[content.length - 1] = { type: 'text' as const, text: text + footer };
         }
         return { content };
@@ -73,6 +82,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
   );
 
   const puid = new PuidManager();
+
+  registerDateTimeTool(server);
 
   // Append current datetime to every tool response automatically
   patchWithDatetimeFooter(server);

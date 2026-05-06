@@ -1,15 +1,12 @@
 /**
  * Session-scoped puid (persistent unique ID) tracking.
  *
- * Puids are short references (r1, r2, d1, d2, m5) assigned during a session
- * to make it easy for LLMs to refer to files, directories, and memories.
+ * Puids are short references (r1, r2, d1, d2) assigned during a session
+ * to make it easy for LLMs to refer to files and directories.
  *
  * Two monotonic counters — never reset during a session:
  *   r1, r2, r3... for files (from search results and explore file listings)
  *   d1, d2, d3... for directories (from explore results)
- *
- * Memory m-prefixed IDs (m1, m5) use the database primary key directly —
- * no session-scoped counters or maps needed.
  */
 
 import { createHash } from 'node:crypto';
@@ -36,8 +33,12 @@ export interface PuidRecord {
 }
 
 const IMAGE_MIME: Record<string, string> = {
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
 };
 
 /** Strip trailing path separators for consistent map keys. */
@@ -48,9 +49,9 @@ function normaliseDirPath(p: string): string {
 export class PuidManager {
   private rCounter = 0;
   private dCounter = 0;
-  private readonly puidMap = new Map<string, PuidRecord>();     // puid → record
-  private readonly filePathToPuid = new Map<string, string>();   // absolute file path → r-puid
-  private readonly dirPathToPuid_ = new Map<string, string>();   // normalised dir path → d-puid
+  private readonly puidMap = new Map<string, PuidRecord>(); // puid → record
+  private readonly filePathToPuid = new Map<string, string>(); // absolute file path → r-puid
+  private readonly dirPathToPuid_ = new Map<string, string>(); // normalised dir path → d-puid
 
   assignFilePuid(filePath: string): string {
     const existing = this.filePathToPuid.get(filePath);
@@ -157,22 +158,6 @@ export class PuidManager {
 
   static isDirPuid(id: string): boolean {
     return /^d\d+$/.test(id);
-  }
-
-  static isMemoryPuid(id: string): boolean {
-    return /^m\d+$/.test(id);
-  }
-
-  /** Extract the memory DB primary key from an m-prefixed puid (e.g. "m5" → 5). */
-  static parseMemoryId(id: string): number {
-    return parseInt(id.slice(1), 10);
-  }
-
-  /** Resolve a memory id parameter that may be a number or m-prefixed string. */
-  static resolveMemoryIdParam(id: number | string): number {
-    if (typeof id === 'number') return id;
-    if (PuidManager.isMemoryPuid(id)) return PuidManager.parseMemoryId(id);
-    throw new Error(`Invalid memory id "${id}". Expected a number or m-prefixed id (e.g. "m5").`);
   }
 
   /** Compute SHA-256 hex digest of a file's raw bytes. */

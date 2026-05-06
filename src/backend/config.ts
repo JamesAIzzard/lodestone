@@ -9,7 +9,12 @@ import { parse, stringify } from 'smol-toml';
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveModelAlias, DEFAULT_MODEL } from './model-registry';
-import { validateSiloColor, validateSiloIcon, type SiloColor, type SiloIconName } from '../shared/silo-appearance';
+import {
+  validateSiloColor,
+  validateSiloIcon,
+  type SiloColor,
+  type SiloIconName,
+} from '../shared/silo-appearance';
 
 // ── Config Types ─────────────────────────────────────────────────────────────
 
@@ -18,11 +23,9 @@ export interface ServerConfig {
 }
 
 export interface EmbeddingsConfig {
-  /** Default embedding model: a registry key (e.g. 'snowflake-arctic-embed-xs')
-   *  or an Ollama model name. Legacy 'built-in' alias is still accepted. */
+  /** Default embedding model: a registry key (e.g. 'snowflake-arctic-embed-xs').
+   *  Legacy 'built-in' alias is still accepted. */
   model: string;
-  /** Ollama base URL — only used when the model is served via Ollama */
-  ollama_url: string;
 }
 
 export interface DefaultsConfig {
@@ -56,24 +59,14 @@ export interface SiloTomlConfig {
   icon?: string;
 }
 
-export interface SearchConfig {
-  // Reserved for future search configuration. Weights were removed in the
-  // two-axis model — all scores are now transparent [0,1] values.
-}
-
-export interface MemoryConfig {
-  /** URL of the Cloudflare Worker memory server. */
-  cloud_url?: string;
-  /** Bearer token for authenticating with the cloud Worker. */
-  cloud_auth_token?: string;
-}
+export type SearchConfig = Record<string, never>;
+// two-axis model — all scores are now transparent [0,1] values.
 
 export interface LodestoneConfig {
   server: ServerConfig;
   embeddings: EmbeddingsConfig;
   defaults: DefaultsConfig;
   search: SearchConfig;
-  memory: MemoryConfig;
   silos: Record<string, SiloTomlConfig>;
 }
 
@@ -85,16 +78,28 @@ const DEFAULT_CONFIG: LodestoneConfig = {
   },
   embeddings: {
     model: DEFAULT_MODEL,
-    ollama_url: 'http://localhost:11434',
   },
   defaults: {
     debounce: 10.0,
     extensions: [
-      '.md', '.txt',
-      '.ts', '.tsx', '.js', '.jsx',
-      '.py', '.rs', '.go', '.java',
-      '.c', '.h', '.cpp', '.hpp',
-      '.cs', '.rb', '.swift', '.kt',
+      '.md',
+      '.txt',
+      '.ts',
+      '.tsx',
+      '.js',
+      '.jsx',
+      '.py',
+      '.rs',
+      '.go',
+      '.java',
+      '.c',
+      '.h',
+      '.cpp',
+      '.hpp',
+      '.cs',
+      '.rb',
+      '.swift',
+      '.kt',
     ],
     ignore: ['.*', '_*', 'node_modules', 'dist', 'build'],
     ignore_files: ['.*', 'Thumbs.db'],
@@ -102,7 +107,6 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     activity_log_limit: 2000,
   },
   search: {},
-  memory: {},
   silos: {},
 };
 
@@ -119,7 +123,6 @@ export function loadConfig(configPath: string): LodestoneConfig {
   const server = (parsed.server ?? {}) as Partial<ServerConfig>;
   const embeddings = (parsed.embeddings ?? {}) as Partial<EmbeddingsConfig>;
   const defaults = (parsed.defaults ?? {}) as Partial<DefaultsConfig>;
-  const memory = (parsed.memory ?? {}) as Partial<MemoryConfig>;
   // search section is reserved but currently empty (weights removed in two-axis model)
   const silos = (parsed.silos ?? {}) as Record<string, unknown>;
 
@@ -136,9 +139,9 @@ export function loadConfig(configPath: string): LodestoneConfig {
     validatedSilos[name] = {
       directories: silo.directories as string[],
       db_path: silo.db_path as string,
-      extensions: Array.isArray(silo.extensions) ? silo.extensions as string[] : undefined,
-      ignore: Array.isArray(silo.ignore) ? silo.ignore as string[] : undefined,
-      ignore_files: Array.isArray(silo.ignore_files) ? silo.ignore_files as string[] : undefined,
+      extensions: Array.isArray(silo.extensions) ? (silo.extensions as string[]) : undefined,
+      ignore: Array.isArray(silo.ignore) ? (silo.ignore as string[]) : undefined,
+      ignore_files: Array.isArray(silo.ignore_files) ? (silo.ignore_files as string[]) : undefined,
       model: typeof silo.model === 'string' ? silo.model : undefined,
       stopped: silo.stopped === true ? true : undefined,
       description: typeof silo.description === 'string' ? silo.description : undefined,
@@ -152,21 +155,33 @@ export function loadConfig(configPath: string): LodestoneConfig {
       name: typeof server.name === 'string' ? server.name : DEFAULT_CONFIG.server.name,
     },
     embeddings: {
-      model: typeof embeddings.model === 'string' ? embeddings.model : DEFAULT_CONFIG.embeddings.model,
-      ollama_url: typeof embeddings.ollama_url === 'string' ? embeddings.ollama_url : DEFAULT_CONFIG.embeddings.ollama_url,
+      model:
+        typeof embeddings.model === 'string' ? embeddings.model : DEFAULT_CONFIG.embeddings.model,
     },
     defaults: {
-      debounce: typeof defaults.debounce === 'number' ? defaults.debounce : DEFAULT_CONFIG.defaults.debounce,
-      extensions: Array.isArray(defaults.extensions) ? defaults.extensions as string[] : DEFAULT_CONFIG.defaults.extensions,
-      ignore: Array.isArray(defaults.ignore) ? defaults.ignore as string[] : DEFAULT_CONFIG.defaults.ignore,
-      ignore_files: Array.isArray(defaults.ignore_files) ? defaults.ignore_files as string[] : DEFAULT_CONFIG.defaults.ignore_files,
-      context_lines: typeof defaults.context_lines === 'number' ? defaults.context_lines : DEFAULT_CONFIG.defaults.context_lines,
-      activity_log_limit: typeof defaults.activity_log_limit === 'number' ? defaults.activity_log_limit : DEFAULT_CONFIG.defaults.activity_log_limit,
+      debounce:
+        typeof defaults.debounce === 'number'
+          ? defaults.debounce
+          : DEFAULT_CONFIG.defaults.debounce,
+      extensions: Array.isArray(defaults.extensions)
+        ? (defaults.extensions as string[])
+        : DEFAULT_CONFIG.defaults.extensions,
+      ignore: Array.isArray(defaults.ignore)
+        ? (defaults.ignore as string[])
+        : DEFAULT_CONFIG.defaults.ignore,
+      ignore_files: Array.isArray(defaults.ignore_files)
+        ? (defaults.ignore_files as string[])
+        : DEFAULT_CONFIG.defaults.ignore_files,
+      context_lines:
+        typeof defaults.context_lines === 'number'
+          ? defaults.context_lines
+          : DEFAULT_CONFIG.defaults.context_lines,
+      activity_log_limit:
+        typeof defaults.activity_log_limit === 'number'
+          ? defaults.activity_log_limit
+          : DEFAULT_CONFIG.defaults.activity_log_limit,
     },
     search: {},
-    memory: {
-      cloud_url: typeof memory.cloud_url === 'string' ? memory.cloud_url : undefined,
-    },
     silos: validatedSilos,
   };
 }

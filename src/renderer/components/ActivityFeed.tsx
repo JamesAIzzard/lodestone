@@ -1,26 +1,11 @@
 import { useState, useEffect, useMemo } from 'react';
 import { AlertCircle, ChevronDown, Copy, FileMinus, RefreshCw, FilePlus, FolderPlus, FolderMinus } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { fileName, dirPath, formatTimeWithSeconds } from '@/lib/format';
 import { Badge } from '@/components/ui/badge';
 import FilterBar from '@/components/FilterBar';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
 import type { SiloStatus, ActivityEvent, ActivityEventType } from '../../shared/types';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function fileName(p: string): string {
-  return p.split(/[/\\]/).pop() ?? p;
-}
-
-function dirPath(p: string): string {
-  const parts = p.split(/[/\\]/);
-  parts.pop();
-  return parts.join('/');
-}
-
-function formatTime(isoString: string): string {
-  return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -135,7 +120,7 @@ export default function ActivityFeed({ siloName, limit = 200 }: ActivityFeedProp
               >
                 <div className="flex w-full items-center gap-3">
                   <span className="w-16 shrink-0 text-xs text-muted-foreground/50 tabular-nums">
-                    {formatTime(event.timestamp)}
+                    {formatTimeWithSeconds(event.timestamp)}
                   </span>
 
                   <span className={cn('flex w-24 shrink-0 items-center gap-1.5 text-xs', config.className)}>

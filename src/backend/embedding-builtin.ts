@@ -22,7 +22,7 @@ import {
 import type { EmbeddingService } from './embedding';
 import {
   getModelDefinition,
-  DEFAULT_MODEL,
+  MODEL_REGISTRY,
   type ModelDefinition,
 } from './model-registry';
 
@@ -37,7 +37,7 @@ export class BuiltInEmbeddingService implements EmbeddingService {
 
   /**
    * @param modelId  Registry key (e.g. 'snowflake-arctic-embed-xs').
-   *                 Falls back to DEFAULT_MODEL if the ID is not in the registry.
+   *                 Throws if the ID is not in the registry.
    * @param cacheDir Directory to store downloaded model files.
    *                 In Electron, use app.getPath('userData') + '/models'.
    */
@@ -45,7 +45,13 @@ export class BuiltInEmbeddingService implements EmbeddingService {
     private readonly modelId: string,
     private readonly cacheDir: string,
   ) {
-    const def = getModelDefinition(modelId) ?? getModelDefinition(DEFAULT_MODEL)!;
+    const def = getModelDefinition(modelId);
+    if (!def) {
+      throw new Error(
+        `Unknown embedding model "${modelId}". ` +
+          `Available models: ${Object.keys(MODEL_REGISTRY).join(', ')}.`,
+      );
+    }
     this.def = def;
     this.dimensions = def.dimensions;
     this.modelName = `${modelId} (${def.displayName})`;

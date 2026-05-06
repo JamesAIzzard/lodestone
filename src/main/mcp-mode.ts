@@ -54,10 +54,13 @@ class LineBuffer {
 class GuiPipeClient {
   private lineBuffer = new LineBuffer();
   private nextId = 1;
-  private pending = new Map<number, {
-    resolve: (result: unknown) => void;
-    reject: (err: Error) => void;
-  }>();
+  private pending = new Map<
+    number,
+    {
+      resolve: (result: unknown) => void;
+      reject: (err: Error) => void;
+    }
+  >();
 
   constructor(private socket: Socket) {
     socket.on('data', (data) => {
@@ -76,12 +79,22 @@ class GuiPipeClient {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`RPC call '${method}' timed out after ${RPC_TIMEOUT_MS / 1000}s — is the Lodestone GUI responsive?`));
+        reject(
+          new Error(
+            `RPC call '${method}' timed out after ${RPC_TIMEOUT_MS / 1000}s — is the Lodestone GUI responsive?`,
+          ),
+        );
       }, RPC_TIMEOUT_MS);
 
       this.pending.set(id, {
-        resolve: (result: unknown) => { clearTimeout(timer); resolve(result as T); },
-        reject: (err: Error) => { clearTimeout(timer); reject(err); },
+        resolve: (result: unknown) => {
+          clearTimeout(timer);
+          resolve(result as T);
+        },
+        reject: (err: Error) => {
+          clearTimeout(timer);
+          reject(err);
+        },
       });
       this.socket.write(msg);
     });
@@ -134,7 +147,7 @@ export async function startMcpMode(_ctx: AppContext): Promise<void> {
   } catch (err) {
     console.error(
       '[main] Failed to connect to Lodestone GUI. Is it running?\n' +
-      '  The MCP server requires the Lodestone GUI to be open.',
+        '  The MCP server requires the Lodestone GUI to be open.',
       err,
     );
     app.quit();
@@ -150,7 +163,9 @@ export async function startMcpMode(_ctx: AppContext): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
       wrapperSocket.destroy();
-      reject(new Error(`Connection to MCP wrapper pipe timed out after ${CONNECT_TIMEOUT_MS / 1000}s`));
+      reject(
+        new Error(`Connection to MCP wrapper pipe timed out after ${CONNECT_TIMEOUT_MS / 1000}s`),
+      );
     }, CONNECT_TIMEOUT_MS);
 
     wrapperSocket.once('connect', () => {
@@ -170,13 +185,17 @@ export async function startMcpMode(_ctx: AppContext): Promise<void> {
     input: wrapperSocket,
     output: wrapperSocket,
     silo: {
-      search: (params) => gui.call<{ results: SearchResult[]; warnings: string[] }>('search', params),
-      explore: (params) => gui.call<{ results: DirectoryResult[]; warnings: string[] }>('explore', params),
+      search: (params) =>
+        gui.call<{ results: SearchResult[]; warnings: string[] }>('search', params),
+      explore: (params) =>
+        gui.call<{ results: DirectoryResult[]; warnings: string[] }>('explore', params),
       status: () => gui.call<{ silos: SiloStatus[] }>('status'),
       edit: (params) => gui.call<EditResult>('edit', params),
       getDefaults: () => gui.call<{ contextLines: number }>('getDefaults'),
     },
-    notifyActivity: (params) => { gui.call('notify.activity', params as Record<string, unknown>).catch(() => {}); },
+    notifyActivity: (params) => {
+      gui.call('notify.activity', params as Record<string, unknown>).catch((): void => undefined);
+    },
   });
 
   // ── Shutdown ──────────────────────────────────────────────────────────
@@ -231,7 +250,13 @@ function connectToPipe(pipeName: string, timeoutMs = CONNECT_TIMEOUT_MS): Promis
       reject(new Error(`Connection to ${pipeName} timed out after ${timeoutMs / 1000}s`));
     }, timeoutMs);
 
-    socket.once('connect', () => { clearTimeout(timer); resolve(socket); });
-    socket.once('error', (err) => { clearTimeout(timer); reject(err); });
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+    socket.once('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }

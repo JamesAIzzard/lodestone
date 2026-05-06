@@ -1,4 +1,13 @@
-import type { SiloStatus, SearchResult, DirectoryResult, ActivityEvent, ServerStatus, DefaultSettings, ExploreParams, SearchParams, MemoryRecord, MemoryStatusValue, PriorityLevel, ProjectWithCounts } from './types';
+import type {
+  SiloStatus,
+  SearchResult,
+  DirectoryResult,
+  ActivityEvent,
+  ServerStatus,
+  DefaultSettings,
+  ExploreParams,
+  SearchParams,
+} from './types';
 
 /** Config snapshot stored inside a portable silo database. */
 export interface StoredSiloConfigResponse {
@@ -47,7 +56,18 @@ export interface ElectronAPI {
   wakeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   rescanSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   rebuildSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
-  updateSilo: (name: string, updates: { description?: string; model?: string; ignore?: string[]; ignoreFiles?: string[]; extensions?: string[]; color?: string; icon?: string }) => Promise<{ success: boolean; error?: string }>;
+  updateSilo: (
+    name: string,
+    updates: {
+      description?: string;
+      model?: string;
+      ignore?: string[];
+      ignoreFiles?: string[];
+      extensions?: string[];
+      color?: string;
+      icon?: string;
+    },
+  ) => Promise<{ success: boolean; error?: string }>;
   search: (params: SearchParams, siloName?: string) => Promise<SearchResult[]>;
   explore: (params: ExploreParams) => Promise<DirectoryResult[]>;
 
@@ -71,7 +91,6 @@ export interface ElectronAPI {
 
   // ── Server / Settings ──────────────────────────────────────────────────────
   getServerStatus: () => Promise<ServerStatus>;
-  testOllamaConnection: (url: string) => Promise<{ connected: boolean; models: string[] }>;
   getConfigPath: () => Promise<string>;
   getDataDir: () => Promise<string>;
 
@@ -89,37 +108,6 @@ export interface ElectronAPI {
 
   // App info
   getAppVersion: () => Promise<string>;
-
-  // Cloud memories
-  setCloudUrl: (url: string) => Promise<{ success: boolean }>;
-  setCloudAuthToken: (token: string) => Promise<{ success: boolean }>;
-
-  // Tasks
-  listTasks: (opts?: { includeCompleted?: boolean; includeCancelled?: boolean; projectId?: number }) => Promise<{ success: boolean; tasks: MemoryRecord[]; error?: string }>;
-  searchTasks: (query: string) => Promise<{ success: boolean; tasks: (MemoryRecord & { _score?: number })[]; error?: string }>;
-  reviseTask: (id: number, fields: {
-    status?: MemoryStatusValue | null;
-    priority?: PriorityLevel | null;
-    actionDate?: string | null;
-    dueDate?: string | null;
-    recurrence?: string | null;
-    topic?: string;
-    projectId?: number | null;
-  }) => Promise<{ success: boolean; completionRecordId?: number; nextActionDate?: string; error?: string }>;
-  skipTask: (id: number, reason?: string) => Promise<{ success: boolean; nextActionDate?: string; error?: string }>;
-  createTask: (topic: string, projectId?: number) => Promise<{ success: boolean; id?: number; error?: string }>;
-  deleteTask: (id: number) => Promise<{ success: boolean; error?: string }>;
-  updateDayOrder: (taskId: number, actionDate: string, position: number) => Promise<{ success: boolean; error?: string }>;
-  deleteDayOrder: (taskId: number) => Promise<{ success: boolean; error?: string }>;
-
-  // Projects
-  listProjects: (opts?: { includeArchived?: boolean }) => Promise<{ success: boolean; projects: ProjectWithCounts[]; error?: string }>;
-  createProject: (name: string, color?: string) => Promise<{ success: boolean; id?: number; error?: string }>;
-  updateProject: (id: number, updates: { name?: string; color?: string }) => Promise<{ success: boolean; error?: string }>;
-  deleteProject: (id: number) => Promise<{ success: boolean; error?: string }>;
-  mergeProjects: (sourceId: number, targetId: number) => Promise<{ success: boolean; reassigned?: number; error?: string }>;
-  archiveProject: (id: number) => Promise<{ success: boolean; error?: string }>;
-  unarchiveProject: (id: number) => Promise<{ success: boolean; error?: string }>;
 }
 
 declare global {

@@ -4,6 +4,7 @@ interface ActionButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement
   icon?: React.ReactNode;
   label?: string;
   collapsed?: boolean;
+  title?: string;
 }
 
 export default function ActionButton({

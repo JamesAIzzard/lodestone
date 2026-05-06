@@ -12,12 +12,12 @@ import type { SiloDatabase } from './store/types';
 import { globToRegex } from './store/paths';
 import type { SearchParams, LocationHint, ChunkHint } from '../shared/types';
 import type { Signal, SignalContext, SignalHint } from './scorers/signal';
-import { summariseDecay } from './scorers/decaying-sum';
+import { summariseDecay } from '../shared/portable/decaying-sum';
 import { semanticSignal } from './scorers/semantic-signal';
 import { bm25Signal } from './scorers/bm25-signal';
 import { filepathSignal } from './scorers/filepath-signal';
 import { regexSignal } from './scorers/regex-signal';
-import { tokenise } from './tokeniser';
+import { tokenise } from '../shared/portable/tokeniser';
 
 // ── Mode → Signal mapping ───────────────────────────────────────────────────
 

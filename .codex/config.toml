@@ -1,0 +1,6 @@
+[mcp_servers.lodestone-files-dev]
+args = [
+    'C:\Users\James\Documents\lodestone\mcp-wrapper.js',
+    "--dev",
+]
+command = "node"

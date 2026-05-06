@@ -78,7 +78,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Server / Settings
   getServerStatus: (): Promise<unknown> => ipcRenderer.invoke('server:status'),
-  testOllamaConnection: (url: string): Promise<unknown> => ipcRenderer.invoke('ollama:test', url),
   getConfigPath: (): Promise<string> => ipcRenderer.invoke('config:path'),
   getDataDir: (): Promise<string> => ipcRenderer.invoke('data:dir'),
 

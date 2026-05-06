@@ -91,7 +91,6 @@ export interface ElectronAPI {
 
   // ── Server / Settings ──────────────────────────────────────────────────────
   getServerStatus: () => Promise<ServerStatus>;
-  testOllamaConnection: (url: string) => Promise<{ connected: boolean; models: string[] }>;
   getConfigPath: () => Promise<string>;
   getDataDir: () => Promise<string>;
 

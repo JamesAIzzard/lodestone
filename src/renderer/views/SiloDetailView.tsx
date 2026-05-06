@@ -97,7 +97,7 @@ export default function SiloDetailView() {
 
   // Polling — active while indexing, waiting, or during stop/wake transitions
   useEffect(() => {
-    if (!silo) return;
+    if (!silo) return undefined;
     const active =
       silo.watcherState === 'indexing' || silo.watcherState === 'waiting' || isStopping || isWaking;
     if (active && !pollRef.current) {
@@ -403,6 +403,9 @@ export default function SiloDetailView() {
           {renameError && <p className="text-xs text-red-400">{renameError}</p>}
           {config.description && (
             <p className="text-sm text-muted-foreground">{config.description}</p>
+          )}
+          {silo.errorMessage && (
+            <p className="max-w-3xl text-xs text-red-400 break-words">{silo.errorMessage}</p>
           )}
         </div>
 

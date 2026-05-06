@@ -2,12 +2,9 @@
  * Embedding service abstraction layer.
  *
  * Provides a unified interface for generating vector embeddings from text,
- * with two backends: built-in (Transformers.js / ONNX via worker thread)
- * and Ollama REST API.
- *
- * Phase 3: The factory now uses the model registry to determine whether a
- * model ID refers to a bundled model or an Ollama-hosted model. The legacy
- * 'built-in' alias is resolved via resolveModelAlias() for backward compat.
+ * using bundled Transformers.js / ONNX models through a shared worker thread.
+ * The legacy 'built-in' alias is resolved via resolveModelAlias() for
+ * backward compatibility.
  */
 
 import path from 'node:path';
@@ -15,9 +12,7 @@ import { Worker } from 'node:worker_threads';
 import type { WorkerResponse } from './embedding-worker-protocol';
 import {
   getModelDefinition,
-  isBuiltInModel,
   resolveModelAlias,
-  DEFAULT_MODEL,
 } from './model-registry';
 
 // ── Interface ────────────────────────────────────────────────────────────────
@@ -34,7 +29,6 @@ export interface EmbeddingService {
   /**
    * Ensure the service is ready for use (dimensions are known, model is loaded, etc.).
    * Callers should await this before reading `dimensions`.
-   * Built-in models resolve immediately; Ollama probes the server to learn dimensions.
    */
   ensureReady(): Promise<void>;
   dispose(): Promise<void>;
@@ -230,120 +224,20 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
   }
 }
 
-// ── Ollama ───────────────────────────────────────────────────────────────────
-
-export class OllamaEmbeddingService implements EmbeddingService {
-  private _dimensions: number | null = null;
-
-  readonly maxTokens = 8192;   // nomic-embed-text supports up to 8192
-  readonly chunkTokens = 512;  // target chunk size — large maxTokens causes huge ONNX tensors
-
-  constructor(
-    private readonly baseUrl: string,
-    readonly modelName: string,
-  ) {}
-
-  get dimensions(): number {
-    if (this._dimensions === null) {
-      throw new Error('Ollama dimensions unknown — call embed() at least once first');
-    }
-    return this._dimensions;
-  }
-
-  async ensureReady(): Promise<void> {
-    if (this._dimensions === null) {
-      await this.callOllama(['.']);
-    }
-  }
-
-  async embed(text: string): Promise<number[]> {
-    const result = await this.callOllama([text]);
-    return result[0];
-  }
-
-  async embedBatch(texts: string[]): Promise<number[][]> {
-    if (texts.length === 0) return [];
-    return this.callOllama(texts);
-  }
-
-  private async callOllama(input: string[]): Promise<number[][]> {
-    const url = `${this.baseUrl}/api/embed`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: this.modelName, input }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      throw new Error(`Ollama embed failed (${response.status}): ${body}`);
-    }
-
-    const data = (await response.json()) as { embeddings: number[][] };
-    if (!Array.isArray(data.embeddings) || data.embeddings.length !== input.length) {
-      throw new Error(`Ollama returned unexpected shape: expected ${input.length} embeddings`);
-    }
-
-    // Learn dimensions from the first response
-    if (this._dimensions === null && data.embeddings.length > 0) {
-      this._dimensions = data.embeddings[0].length;
-    }
-
-    return data.embeddings;
-  }
-
-  async dispose(): Promise<void> {
-    // Nothing to clean up for the REST client
-  }
-}
-
 // ── Factory ──────────────────────────────────────────────────────────────────
 
 export interface EmbeddingServiceOptions {
   /** Model identifier: a registry key (e.g. 'snowflake-arctic-embed-xs')
-   *  or an Ollama model name. The legacy alias 'built-in' is also accepted. */
+   *  or the legacy alias 'built-in'. */
   model: string;
-  /** Ollama base URL (only used when model is not a built-in) */
-  ollamaUrl: string;
-  /** Cache directory for built-in model files */
+  /** Cache directory for bundled model files */
   modelCacheDir: string;
 }
 
 /**
- * Create the appropriate embedding service based on configuration.
- *
- * Uses the model registry to determine if the model is bundled (ONNX)
- * or external (Ollama). The legacy 'built-in' alias resolves to the
- * default model for backward compatibility with Phase 2 configs.
+ * Create the bundled ONNX embedding service for the configured model.
  */
 export function createEmbeddingService(options: EmbeddingServiceOptions): EmbeddingService {
-  // Resolve 'built-in' → actual default model key
   const modelId = resolveModelAlias(options.model);
-
-  if (isBuiltInModel(modelId)) {
-    return new WorkerEmbeddingProxy(modelId, options.modelCacheDir);
-  }
-  return new OllamaEmbeddingService(options.ollamaUrl, modelId);
-}
-
-// ── Ollama Utilities ─────────────────────────────────────────────────────────
-
-/**
- * Check if Ollama is reachable and return the list of available models.
- * Returns null if Ollama is not reachable.
- */
-export async function checkOllamaConnection(
-  baseUrl: string,
-): Promise<{ models: string[] } | null> {
-  try {
-    const response = await fetch(`${baseUrl}/api/tags`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!response.ok) return null;
-    const data = (await response.json()) as { models: Array<{ name: string }> };
-    const models = data.models.map((m) => m.name);
-    return { models };
-  } catch {
-    return null;
-  }
+  return new WorkerEmbeddingProxy(modelId, options.modelCacheDir);
 }

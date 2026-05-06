@@ -9,8 +9,8 @@
  *   - snowflake-arctic-embed-xs (default) — 384-dim, 512 tokens, ~22MB
  *   - nomic-embed-text-v1.5            — 768-dim, 8192 tokens, ~131MB
  *
- * The registry also serves as the single source of truth for which models
- * are available without Ollama, and what prefixes each model requires.
+ * The registry also serves as the single source of truth for selectable
+ * models and what prefixes each model requires.
  */
 
 // ── Model Definition ─────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ export const LEGACY_MODEL = 'all-MiniLM-L6-v2';
 
 /**
  * Look up a model's definition by its identifier.
- * Returns undefined for Ollama models (which aren't in the registry).
+ * Returns undefined for unknown model IDs.
  */
 export function getModelDefinition(modelId: string): ModelDefinition | undefined {
   return MODEL_REGISTRY[modelId];
@@ -112,14 +112,6 @@ export function getBundledModelIds(): string[] {
 }
 
 /**
- * Check if a model identifier refers to a built-in (bundled) model.
- * Ollama models are not built-in.
- */
-export function isBuiltInModel(modelId: string): boolean {
-  return MODEL_REGISTRY[modelId]?.bundled === true;
-}
-
-/**
  * Resolve the legacy 'built-in' alias to the actual default model name.
  * This handles config files from Phase 2 that use 'built-in' as the model name.
  */
@@ -131,7 +123,7 @@ export function resolveModelAlias(modelId: string): string {
 /**
  * Return the path-safe identifier for a model, used when auto-generating database filenames.
  * For known registry models, returns the deliberate `pathSafeId`.
- * For unknown models (e.g. Ollama), sanitizes the model ID to be path-safe.
+ * For malformed user-edited config values, sanitizes the model ID to be path-safe.
  */
 export function getModelPathSafeId(modelId: string): string {
   const def = MODEL_REGISTRY[modelId];

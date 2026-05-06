@@ -318,7 +318,15 @@ export class SiloManager {
   /** Initialize all subsystems and start watching. */
   async start(): Promise<void> {
     this.stopped = false;
-    this.startPromise = this.doStart();
+    this.startPromise = this.doStart().catch((err) => {
+      if (!this.stopped) {
+        this.watcherState = 'error';
+        this.errorMessage = err instanceof Error ? err.message : String(err);
+        this.reconcileProgress = undefined;
+        this.maintenanceInProgress = false;
+      }
+      throw err;
+    });
     return this.startPromise;
   }
 

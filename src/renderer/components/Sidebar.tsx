@@ -7,7 +7,6 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
-  Boxes,
   FileStack,
   Clock,
   Sun,
@@ -158,18 +157,6 @@ export default function Sidebar() {
       <div className={cn('border-t border-border py-4', isCollapsed ? 'px-2' : 'px-5')}>
         {isCollapsed ? (
           <div className="flex flex-col items-center gap-3">
-            <span
-              title={
-                status?.ollamaState === 'connected' ? 'Ollama: Connected' : 'Ollama: Disconnected'
-              }
-            >
-              <Boxes
-                className={cn(
-                  'h-3.5 w-3.5',
-                  status?.ollamaState === 'connected' ? 'text-emerald-400' : 'text-red-400',
-                )}
-              />
-            </span>
             <span title={`Indexed files: ${status?.totalIndexedFiles?.toLocaleString() ?? '-'}`}>
               <FileStack className="h-3.5 w-3.5 text-muted-foreground/60" />
             </span>
@@ -179,18 +166,6 @@ export default function Sidebar() {
           </div>
         ) : (
           <div className="flex flex-col gap-2 text-xs text-muted-foreground">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <Boxes
-                  className={cn(
-                    'h-3.5 w-3.5 shrink-0',
-                    status?.ollamaState === 'connected' ? 'text-emerald-400' : 'text-red-400',
-                  )}
-                />
-                Ollama
-              </span>
-              <span>{status?.ollamaState === 'connected' ? 'Connected' : 'Disconnected'}</span>
-            </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
                 <FileStack className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />

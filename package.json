@@ -1,12 +1,17 @@
 {
   "name": "lodestone",
   "productName": "Lodestone",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "description": "Local semantic search over your files via MCP",
   "main": ".vite/build/main.js",
   "private": true,
   "scripts": {
+    "typecheck": "tsc --noEmit",
+    "native:electron": "electron-rebuild -f -w better-sqlite3,sqlite-vec",
+    "native:node": "npm rebuild better-sqlite3 sqlite-vec",
+    "prestart": "npm run native:electron",
     "start": "electron-forge start",
+    "pretest": "npm run native:node",
     "package": "electron-forge package",
     "make": "electron-forge make",
     "publish": "electron-forge publish",

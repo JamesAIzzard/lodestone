@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Loader2, CheckCircle2, XCircle, FileCode, FolderOpen, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import {
   Dialog,
   DialogContent,
@@ -15,11 +14,6 @@ import type { ServerStatus } from '../../shared/types';
 
 export default function SettingsView() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
-  const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ connected: boolean; models: string[] } | null>(
-    null,
-  );
   const [selectedModel, setSelectedModel] = useState('');
   const [extensions, setExtensions] = useState<string[]>([]);
   const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
@@ -45,7 +39,6 @@ export default function SettingsView() {
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((s) => {
       setStatus(s);
-      setOllamaUrl(s.ollamaUrl);
       setSelectedModel(s.defaultModel);
     });
     window.electronAPI?.getDefaults().then((d) => {
@@ -59,19 +52,6 @@ export default function SettingsView() {
     window.electronAPI?.getClaudeDesktopStatus().then(setClaudeStatus);
     window.electronAPI?.getAppVersion().then(setAppVersion);
   }, []);
-
-  async function handleTestConnection() {
-    setTesting(true);
-    setTestResult(null);
-    try {
-      const result = await window.electronAPI?.testOllamaConnection(ollamaUrl);
-      setTestResult(result ?? { connected: false, models: [] });
-    } catch {
-      setTestResult({ connected: false, models: [] });
-    } finally {
-      setTesting(false);
-    }
-  }
 
   function handleExtensionsChange(updated: string[]) {
     setExtensions(updated);
@@ -135,17 +115,10 @@ export default function SettingsView() {
     if (dataDir) window.electronAPI?.openPath(dataDir);
   }
 
-  // Build model list from server status + Ollama test results
+  // Build model list from server status
   const availableModels: string[] = [];
   if (status) {
     availableModels.push(...status.availableModels);
-  }
-  if (testResult?.connected) {
-    for (const m of testResult.models) {
-      if (!availableModels.includes(m)) {
-        availableModels.push(m);
-      }
-    }
   }
   if (availableModels.length === 0) {
     availableModels.push('snowflake-arctic-embed-xs');
@@ -156,46 +129,6 @@ export default function SettingsView() {
       <h1 className="mb-8 text-lg font-semibold text-foreground">Settings</h1>
 
       <div className="flex flex-col gap-10 max-w-2xl">
-        {/* ── Ollama Connection ─────────────────────────────────── */}
-        <Section title="Ollama Connection">
-          <div className="flex items-center gap-3">
-            <input
-              type="text"
-              value={ollamaUrl}
-              onChange={(e) => setOllamaUrl(e.target.value)}
-              className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-            <Button variant="outline" size="sm" onClick={handleTestConnection} disabled={testing}>
-              {testing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {!testing && 'Test Connection'}
-            </Button>
-          </div>
-
-          {testResult?.connected && (
-            <div className="mt-3 flex items-center gap-2 text-sm text-emerald-400">
-              <CheckCircle2 className="h-4 w-4" />
-              Connected — {testResult.models.length} model{testResult.models.length !== 1 && 's'}{' '}
-              available
-            </div>
-          )}
-          {testResult && !testResult.connected && (
-            <div className="mt-3 flex items-center gap-2 text-sm text-red-400">
-              <XCircle className="h-4 w-4" />
-              Could not connect to Ollama at {ollamaUrl}
-            </div>
-          )}
-
-          {testResult?.connected && testResult.models.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {testResult.models.map((m) => (
-                <Badge key={m} variant="secondary" className="text-[10px]">
-                  {m}
-                </Badge>
-              ))}
-            </div>
-          )}
-        </Section>
-
         {/* ── Default Embedding Model ──────────────────────────── */}
         <Section
           title="Default Embedding Model"

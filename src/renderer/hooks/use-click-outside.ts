@@ -13,7 +13,7 @@ export function useClickOutside(
   onCloseRef.current = onClose;
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) return undefined;
     function handleMouseDown(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) {
         onCloseRef.current();

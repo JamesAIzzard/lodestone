@@ -227,15 +227,10 @@ export interface DefaultSettings {
   activityLogLimit: number;
 }
 
-// ── Memory ────────────────────────────────────────────────────────────────────
-// Server
-
-export type OllamaConnectionState = 'connected' | 'disconnected' | 'not-installed';
+// ── Server Status ────────────────────────────────────────────────────────────
 
 export interface ServerStatus {
   uptimeSeconds: number;
-  ollamaState: OllamaConnectionState;
-  ollamaUrl: string;
   availableModels: string[];
   defaultModel: string;
   totalIndexedFiles: number;

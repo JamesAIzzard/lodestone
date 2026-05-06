@@ -15,7 +15,6 @@ import {
   type SiloTomlConfig,
 } from '../backend/config';
 import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
-import { checkOllamaConnection } from '../backend/embedding';
 import type { SiloManager } from '../backend/silo-manager';
 import {
   getBundledModelIds,
@@ -538,9 +537,6 @@ function registerSettingsHandlers(ctx: AppContext): void {
   ipcMain.handle('server:status', async (): Promise<ServerStatus> => {
     const uptimeSeconds = Math.floor((Date.now() - ctx.startTime) / 1000);
 
-    const ollamaUrl = ctx.config?.embeddings.ollama_url ?? 'http://localhost:11434';
-    const ollamaResult = await checkOllamaConnection(ollamaUrl);
-
     let totalFiles = 0;
     for (const manager of ctx.siloManagers.values()) {
       const status = await manager.getStatus();
@@ -551,35 +547,18 @@ function registerSettingsHandlers(ctx: AppContext): void {
       const def = getModelDefinition(id);
       return def ? `${id} — ${def.displayName}` : id;
     });
-    if (ollamaResult) {
-      models.push(...ollamaResult.models);
-    }
-
     const modelPathSafeIds = Object.fromEntries(
       getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
     );
 
     return {
       uptimeSeconds,
-      ollamaState: ollamaResult ? 'connected' : 'disconnected',
-      ollamaUrl,
       availableModels: models,
       defaultModel: resolveModelAlias(ctx.config?.embeddings.model ?? 'snowflake-arctic-embed-xs'),
       totalIndexedFiles: totalFiles,
       modelPathSafeIds,
     };
   });
-
-  ipcMain.handle(
-    'ollama:test',
-    async (_event, url: string): Promise<{ connected: boolean; models: string[] }> => {
-      const result = await checkOllamaConnection(url);
-      if (result) {
-        return { connected: true, models: result.models };
-      }
-      return { connected: false, models: [] };
-    },
-  );
 
   ipcMain.handle('config:path', async (): Promise<string> => {
     return ctx.configPath();

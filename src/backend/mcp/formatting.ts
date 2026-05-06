@@ -99,6 +99,8 @@ function formatLocationHint(hint: LocationHint): string {
       return `Lines ${hint.start}\u2013${hint.end}`;
     case 'page':
       return `Page ${hint.page}`;
+    default:
+      return '';
   }
 }
 

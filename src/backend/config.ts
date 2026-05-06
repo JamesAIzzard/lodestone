@@ -23,11 +23,9 @@ export interface ServerConfig {
 }
 
 export interface EmbeddingsConfig {
-  /** Default embedding model: a registry key (e.g. 'snowflake-arctic-embed-xs')
-   *  or an Ollama model name. Legacy 'built-in' alias is still accepted. */
+  /** Default embedding model: a registry key (e.g. 'snowflake-arctic-embed-xs').
+   *  Legacy 'built-in' alias is still accepted. */
   model: string;
-  /** Ollama base URL — only used when the model is served via Ollama */
-  ollama_url: string;
 }
 
 export interface DefaultsConfig {
@@ -80,7 +78,6 @@ const DEFAULT_CONFIG: LodestoneConfig = {
   },
   embeddings: {
     model: DEFAULT_MODEL,
-    ollama_url: 'http://localhost:11434',
   },
   defaults: {
     debounce: 10.0,
@@ -160,10 +157,6 @@ export function loadConfig(configPath: string): LodestoneConfig {
     embeddings: {
       model:
         typeof embeddings.model === 'string' ? embeddings.model : DEFAULT_CONFIG.embeddings.model,
-      ollama_url:
-        typeof embeddings.ollama_url === 'string'
-          ? embeddings.ollama_url
-          : DEFAULT_CONFIG.embeddings.ollama_url,
     },
     defaults: {
       debounce:

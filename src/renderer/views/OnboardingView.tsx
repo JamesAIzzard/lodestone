@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   CheckCircle2,
@@ -6,75 +6,48 @@ import {
   XCircle,
   FolderOpen,
   X,
-  ExternalLink,
   ArrowRight,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { toSlug } from '@/lib/format';
 import ExtensionPicker from '@/components/ExtensionPicker';
 
-const STEPS = ['Ollama', 'Silo', 'Indexing'] as const;
-type Step = (typeof STEPS)[number];
+const STEPS = ['Silo', 'Indexing'] as const;
 
 export default function OnboardingView() {
   const navigate = useNavigate();
   const [stepIndex, setStepIndex] = useState(0);
   const step = STEPS[stepIndex];
 
-  // Step 1 state
-  const [ollamaChecking, setOllamaChecking] = useState(false);
-  const [ollamaConnected, setOllamaConnected] = useState<boolean | null>(null);
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [serverModels, setServerModels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState('snowflake-arctic-embed-xs');
 
-  // Step 2 state
+  // Step 1 state
   const [siloName, setSiloName] = useState('');
   const [directories, setDirectories] = useState<string[]>([]);
   const [extensions, setExtensions] = useState<string[]>(['.md', '.py']);
   const [model, setModel] = useState('');
 
-  // Step 3 state
+  // Step 2 state
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [indexDone, setIndexDone] = useState(false);
   const [indexProgress, setIndexProgress] = useState<{ current: number; total: number } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const checkOllama = useCallback(async () => {
-    setOllamaChecking(true);
-    setOllamaConnected(null);
-    try {
-      // Fetch server status to get available models and default model
-      const status = await window.electronAPI?.getServerStatus();
-      if (status) {
-        setServerModels(status.availableModels);
-        setDefaultModel(status.defaultModel);
-        setModel(status.defaultModel);
-      }
-
-      // Test Ollama connection
-      const result = await window.electronAPI?.testOllamaConnection(
-        status?.ollamaUrl ?? 'http://localhost:11434',
-      );
-      setOllamaConnected(result?.connected ?? false);
-      setOllamaModels(result?.models ?? []);
-    } catch {
-      setOllamaConnected(false);
-    } finally {
-      setOllamaChecking(false);
-    }
-  }, []);
-
-  // Auto-check on mount and load default extensions
+  // Load server model defaults and default extensions on mount
   useEffect(() => {
-    checkOllama();
+    window.electronAPI?.getServerStatus().then((status) => {
+      if (!status) return;
+      setServerModels(status.availableModels);
+      setDefaultModel(status.defaultModel);
+      setModel(status.defaultModel);
+    });
     window.electronAPI?.getDefaults().then((defaults) => {
       setExtensions(defaults.extensions);
     });
-  }, [checkOllama]);
+  }, []);
 
   // Set model to default once loaded
   useEffect(() => {
@@ -85,7 +58,7 @@ export default function OnboardingView() {
 
   // Poll indexing progress in step 3
   useEffect(() => {
-    if (step !== 'Indexing' || indexDone) return;
+    if (step !== 'Indexing' || indexDone) return undefined;
 
     pollRef.current = setInterval(async () => {
       const silos = await window.electronAPI?.getSilos();
@@ -118,8 +91,6 @@ export default function OnboardingView() {
 
   function canAdvance(): boolean {
     switch (step) {
-      case 'Ollama':
-        return !ollamaChecking && ollamaConnected !== null;
       case 'Silo':
         return siloName.trim().length > 0 && directories.length > 0 && extensions.length > 0;
       case 'Indexing':
@@ -130,7 +101,7 @@ export default function OnboardingView() {
   async function handleNext() {
     if (step === 'Silo') {
       // Create the silo via the real backend
-      setStepIndex(2); // Move to Indexing step
+      setStepIndex(1); // Move to Indexing step
       setCreating(true);
       setCreateError(null);
 
@@ -209,73 +180,7 @@ export default function OnboardingView() {
 
         {/* Step content */}
         <div className="rounded-lg border border-border bg-card p-6">
-          {/* ── Step 1: Ollama Detection (Optional) ──── */}
-          {step === 'Ollama' && (
-            <div>
-              <h2 className="text-sm font-medium text-foreground">Ollama Connection</h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Lodestone includes a built-in embedding model — it works out of the box.
-                Connecting Ollama unlocks higher-quality and specialised models.
-              </p>
-
-              <div className="mt-5 flex flex-col items-center gap-4">
-                {ollamaChecking && (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Loader2 className="h-5 w-5 animate-spin" />
-                    Checking for Ollama...
-                  </div>
-                )}
-
-                {!ollamaChecking && ollamaConnected === true && (
-                  <div className="w-full">
-                    <div className="flex items-center gap-2 text-sm text-emerald-400">
-                      <CheckCircle2 className="h-5 w-5" />
-                      Ollama detected — {ollamaModels.length} model{ollamaModels.length !== 1 ? 's' : ''} available
-                    </div>
-                    {ollamaModels.length > 0 && (
-                      <div className="mt-3 flex flex-wrap gap-1.5">
-                        {ollamaModels.map((m) => (
-                          <Badge key={m} variant="secondary" className="text-[10px]">
-                            {m}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {!ollamaChecking && ollamaConnected === false && (
-                  <div className="w-full">
-                    <div className="flex items-center gap-2 text-sm text-amber-400">
-                      <XCircle className="h-5 w-5" />
-                      Ollama not detected — using built-in model
-                    </div>
-                    <p className="mt-3 text-xs text-muted-foreground">
-                      The built-in model is ready to go. You can optionally install
-                      Ollama later for access to more powerful models.
-                    </p>
-                    <div className="mt-3 flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          window.electronAPI?.openPath('https://ollama.com')
-                        }
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                        Download Ollama
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={checkOllama}>
-                        Re-check
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ── Step 2: Create First Silo ───────────── */}
+          {/* ── Step 1: Create First Silo ───────────── */}
           {step === 'Silo' && (
             <div>
               <h2 className="text-sm font-medium text-foreground">Create Your First Silo</h2>
@@ -348,7 +253,7 @@ export default function OnboardingView() {
             </div>
           )}
 
-          {/* ── Step 3: Indexing ────────────────────── */}
+          {/* ── Step 2: Indexing ────────────────────── */}
           {step === 'Indexing' && (
             <div>
               <h2 className="text-sm font-medium text-foreground">Indexing Your Files</h2>
@@ -415,11 +320,6 @@ export default function OnboardingView() {
             {step === 'Indexing' ? (
               <>
                 Go to Dashboard
-                <ArrowRight className="h-4 w-4" />
-              </>
-            ) : step === 'Ollama' && ollamaConnected === false ? (
-              <>
-                Continue with Built-in Model
                 <ArrowRight className="h-4 w-4" />
               </>
             ) : (

@@ -1,9 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  ChevronLeft, FileText, Blocks, FolderOpen,
-  Loader2, RotateCcw, Trash2, AlertTriangle, Pause, Play,
-  HardDrive, Unplug, Pencil, Check, X,
+  ChevronLeft,
+  FileText,
+  Blocks,
+  FolderOpen,
+  Loader2,
+  RotateCcw,
+  Trash2,
+  AlertTriangle,
+  Pause,
+  Play,
+  HardDrive,
+  Unplug,
+  Pencil,
+  Check,
+  X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -30,43 +42,46 @@ export default function SiloDetailView() {
   const initializedRef = useRef<string | null>(null);
 
   // Action state
-  const [isStopping, setIsStopping]       = useState(false);
-  const [isWaking, setIsWaking]           = useState(false);
-  const [rebuilding, setRebuilding]       = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
+  const [isWaking, setIsWaking] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleting, setDeleting]           = useState(false);
-  const [deleteError, setDeleteError]     = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
 
   // Rename state
-  const [siloName, setSiloName]           = useState(name ?? '');
+  const [siloName, setSiloName] = useState(name ?? '');
   const [isEditingName, setIsEditingName] = useState(false);
-  const [editName, setEditName]           = useState('');
-  const [renameError, setRenameError]     = useState<string | null>(null);
-  const [isRenaming, setIsRenaming]       = useState(false);
+  const [editName, setEditName] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
 
   // Editable form state
   const [editDescription, setEditDescription] = useState('');
-  const [serverStatus, setServerStatus]     = useState<ServerStatus | null>(null);
-  const [selectedModel, setSelectedModel]   = useState('');
-  const [folderIgnore, setFolderIgnore]     = useState<string[]>([]);
-  const [fileIgnore, setFileIgnore]         = useState<string[]>([]);
+  const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
+  const [selectedModel, setSelectedModel] = useState('');
+  const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
+  const [fileIgnore, setFileIgnore] = useState<string[]>([]);
   const [ignoreOverridden, setIgnoreOverridden] = useState(false);
   const [defaultFolderIgnore, setDefaultFolderIgnore] = useState<string[]>([]);
-  const [defaultFileIgnore, setDefaultFileIgnore]     = useState<string[]>([]);
-  const [extensions, setExtensions]         = useState<string[]>([]);
+  const [defaultFileIgnore, setDefaultFileIgnore] = useState<string[]>([]);
+  const [extensions, setExtensions] = useState<string[]>([]);
   const [extensionOverridden, setExtensionOverridden] = useState(false);
-  const [defaultExtensions, setDefaultExtensions]     = useState<string[]>([]);
-  const [siloColor, setSiloColor]           = useState<SiloColor>('blue');
-  const [siloIcon, setSiloIcon]             = useState<SiloIconName>('database');
+  const [defaultExtensions, setDefaultExtensions] = useState<string[]>([]);
+  const [siloColor, setSiloColor] = useState<SiloColor>('blue');
+  const [siloIcon, setSiloIcon] = useState<SiloIconName>('database');
 
   // ── Data fetching ───────────────────────────────────────────────────────────
 
   function fetchSilo() {
     window.electronAPI?.getSilos().then((silos) => {
       const found = silos.find((s) => s.config.name === name);
-      if (!found) { navigate('/'); return; }
+      if (!found) {
+        navigate('/');
+        return;
+      }
       setSilo(found);
     });
   }
@@ -83,7 +98,8 @@ export default function SiloDetailView() {
   // Polling — active while indexing, waiting, or during stop/wake transitions
   useEffect(() => {
     if (!silo) return;
-    const active = silo.watcherState === 'indexing' || silo.watcherState === 'waiting' || isStopping || isWaking;
+    const active =
+      silo.watcherState === 'indexing' || silo.watcherState === 'waiting' || isStopping || isWaking;
     if (active && !pollRef.current) {
       pollRef.current = setInterval(fetchSilo, 2000);
     } else if (!active && pollRef.current) {
@@ -91,7 +107,10 @@ export default function SiloDetailView() {
       pollRef.current = null;
     }
     return () => {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     };
   }, [silo?.watcherState, isStopping, isWaking]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -131,7 +150,6 @@ export default function SiloDetailView() {
       setDefaultFileIgnore(d.ignoreFiles);
       setDefaultExtensions(d.extensions);
     });
-
   }, [silo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Handlers ────────────────────────────────────────────────────────────────
@@ -142,12 +160,18 @@ export default function SiloDetailView() {
       // Wake is long-running (startup + reconciliation). Fire-and-forget
       // so the UI can poll state transitions (waiting → indexing → ready).
       setIsWaking(true);
-      window.electronAPI?.wakeSilo(siloName).catch(() => {}).finally(() => setIsWaking(false));
+      window.electronAPI
+        ?.wakeSilo(siloName)
+        .catch((): void => undefined)
+        .finally(() => setIsWaking(false));
     } else {
       // Stop may take a moment (awaiting in-flight indexing). Fire-and-forget
       // so the badge can track the transition via polling.
       setIsStopping(true);
-      window.electronAPI?.stopSilo(siloName).catch(() => {}).finally(() => setIsStopping(false));
+      window.electronAPI
+        ?.stopSilo(siloName)
+        .catch((): void => undefined)
+        .finally(() => setIsStopping(false));
     }
     // Kick off a poll after a short delay so the backend has time to
     // update its state synchronously before we read it.
@@ -161,7 +185,10 @@ export default function SiloDetailView() {
     try {
       const result = await window.electronAPI?.renameSilo(siloName, editName.trim());
       if (result?.success) {
-        const newSlug = editName.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
+        const newSlug = editName
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9-_]/g, '-');
         // Replace history entry so Back still goes to /
         navigate(`/silos/${newSlug}`, { replace: true });
       } else {
@@ -229,7 +256,7 @@ export default function SiloDetailView() {
   async function handleIgnoreOverride() {
     setIgnoreOverridden(true);
     const folders = [...defaultFolderIgnore];
-    const files   = [...defaultFileIgnore];
+    const files = [...defaultFileIgnore];
     setFolderIgnore(folders);
     setFileIgnore(files);
     await window.electronAPI?.updateSilo(siloName, { ignore: folders, ignoreFiles: files });
@@ -288,28 +315,25 @@ export default function SiloDetailView() {
   // ── Derived values ───────────────────────────────────────────────────────────
 
   const { config } = silo;
-  const colorClasses  = SILO_COLOR_MAP[siloColor];
-  const isActive      = silo.watcherState === 'indexing';
-  const isStopped     = silo.watcherState === 'stopped';
-  const isWaiting     = silo.watcherState === 'waiting';
-  const defaultModel  = serverStatus?.defaultModel ?? 'snowflake-arctic-embed-xs';
+  const colorClasses = SILO_COLOR_MAP[siloColor];
+  const isActive = silo.watcherState === 'indexing';
+  const isStopped = silo.watcherState === 'stopped';
+  const isWaiting = silo.watcherState === 'waiting';
+  const defaultModel = serverStatus?.defaultModel ?? 'snowflake-arctic-embed-xs';
   const effectiveModel = selectedModel || config.modelOverride || defaultModel;
-  const isOverride    = effectiveModel !== defaultModel;
-  const modelOptions  = serverStatus?.availableModels ?? [];
-  const progress      = silo.reconcileProgress;
-  const progressPctRaw = progress && progress.total > 0
-    ? Math.round((progress.current / progress.total) * 100)
-    : null;
+  const isOverride = effectiveModel !== defaultModel;
+  const modelOptions = serverStatus?.availableModels ?? [];
+  const progress = silo.reconcileProgress;
+  const progressPctRaw =
+    progress && progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : null;
   const progressPct = progressPctRaw !== null ? Math.min(progressPctRaw, 99) : null;
 
   // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
     <div className="p-6">
-
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div className="mb-6 flex items-start justify-between gap-4">
-
         {/* Left: breadcrumb + title */}
         <div className="flex flex-col gap-1.5 min-w-0">
           <button
@@ -327,17 +351,35 @@ export default function SiloDetailView() {
                 <input
                   autoFocus
                   value={editName}
-                  onChange={(e) => { setEditName(e.target.value); setRenameError(null); }}
+                  onChange={(e) => {
+                    setEditName(e.target.value);
+                    setRenameError(null);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') handleRename();
-                    if (e.key === 'Escape') { setIsEditingName(false); setRenameError(null); }
+                    if (e.key === 'Escape') {
+                      setIsEditingName(false);
+                      setRenameError(null);
+                    }
                   }}
                   className="h-7 rounded border border-input bg-background px-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring w-40"
                 />
-                <button onClick={handleRename} disabled={isRenaming} className="p-1 rounded text-emerald-400 hover:bg-emerald-400/10 disabled:opacity-50" title="Save">
+                <button
+                  onClick={handleRename}
+                  disabled={isRenaming}
+                  className="p-1 rounded text-emerald-400 hover:bg-emerald-400/10 disabled:opacity-50"
+                  title="Save"
+                >
                   <Check className="h-3.5 w-3.5" />
                 </button>
-                <button onClick={() => { setIsEditingName(false); setRenameError(null); }} className="p-1 rounded text-muted-foreground hover:bg-muted" title="Cancel">
+                <button
+                  onClick={() => {
+                    setIsEditingName(false);
+                    setRenameError(null);
+                  }}
+                  className="p-1 rounded text-muted-foreground hover:bg-muted"
+                  title="Cancel"
+                >
                   <X className="h-3.5 w-3.5" />
                 </button>
               </div>
@@ -345,7 +387,10 @@ export default function SiloDetailView() {
               <div className="group flex items-center gap-1.5">
                 <h1 className="text-lg font-semibold text-foreground">{siloName}</h1>
                 <button
-                  onClick={() => { setEditName(siloName); setIsEditingName(true); }}
+                  onClick={() => {
+                    setEditName(siloName);
+                    setIsEditingName(true);
+                  }}
                   className="p-1 rounded text-muted-foreground/40 hover:text-muted-foreground hover:bg-muted opacity-0 group-hover:opacity-100 transition-opacity"
                   title="Rename silo"
                 >
@@ -364,30 +409,44 @@ export default function SiloDetailView() {
         {/* Right: status badge + action buttons */}
         <div className="flex items-center gap-2 shrink-0 pt-6">
           <Badge
-            variant={isActive ? 'default' : silo.watcherState === 'error' ? 'destructive' : 'secondary'}
+            variant={
+              isActive ? 'default' : silo.watcherState === 'error' ? 'destructive' : 'secondary'
+            }
             className="gap-1.5 whitespace-nowrap"
           >
-            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', {
-              'bg-emerald-500':            silo.watcherState === 'ready',
-              'bg-amber-500 animate-pulse': isActive,
-              'bg-red-500':                silo.watcherState === 'error',
-              'bg-blue-400':               isStopped,
-              'bg-gray-400 animate-pulse': isWaiting,
-            })} />
+            <span
+              className={cn('inline-block h-1.5 w-1.5 rounded-full', {
+                'bg-emerald-500': silo.watcherState === 'ready',
+                'bg-amber-500 animate-pulse': isActive,
+                'bg-red-500': silo.watcherState === 'error',
+                'bg-blue-400': isStopped,
+                'bg-gray-400 animate-pulse': isWaiting,
+              })}
+            />
             {isActive && progressPct !== null
-              ? (progress?.fileStage === 'compacting' ? 'Compacting…'
-                : progress?.fileStage === 'flushing' ? 'Saving…'
-                : `Indexing ${progressPct}%`)
+              ? progress?.fileStage === 'compacting'
+                ? 'Compacting…'
+                : progress?.fileStage === 'flushing'
+                  ? 'Saving…'
+                  : `Indexing ${progressPct}%`
               : silo.watcherState.charAt(0).toUpperCase() + silo.watcherState.slice(1)}
           </Badge>
 
           {silo.watcherState !== 'waiting' && !isWaking && (
             <Button variant="outline" size="sm" disabled={isStopping} onClick={handleStopToggle}>
-              {isStopping
-                ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Stopping…</>
-                : isStopped
-                  ? <><Play className="h-3.5 w-3.5" /> Wake</>
-                  : <><Pause className="h-3.5 w-3.5" /> Stop</>}
+              {isStopping ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Stopping…
+                </>
+              ) : isStopped ? (
+                <>
+                  <Play className="h-3.5 w-3.5" /> Wake
+                </>
+              ) : (
+                <>
+                  <Pause className="h-3.5 w-3.5" /> Stop
+                </>
+              )}
             </Button>
           )}
 
@@ -405,8 +464,8 @@ export default function SiloDetailView() {
           <div>
             <p className="text-sm text-foreground">Model mismatch detected</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              The index was built with a different embedding model. Search results may be inaccurate.
-              Click &ldquo;Rebuild Index&rdquo; to re-index with the current model.
+              The index was built with a different embedding model. Search results may be
+              inaccurate. Click &ldquo;Rebuild Index&rdquo; to re-index with the current model.
             </p>
           </div>
         </div>
@@ -414,10 +473,17 @@ export default function SiloDetailView() {
 
       {/* ── Stats grid ──────────────────────────────────────────────────────── */}
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Stat icon={FileText} label="Files"   value={silo.indexedFileCount.toLocaleString()} />
-        <Stat icon={Blocks}   label="Chunks"  value={silo.chunkCount.toLocaleString()} />
-        <Stat                 label="DB Size" value={isActive ? `~${formatBytes(silo.databaseSizeBytes)}` : formatBytes(silo.databaseSizeBytes)} />
-        <Stat                 label="Updated" value={formatTime(silo.lastUpdated)} />
+        <Stat icon={FileText} label="Files" value={silo.indexedFileCount.toLocaleString()} />
+        <Stat icon={Blocks} label="Chunks" value={silo.chunkCount.toLocaleString()} />
+        <Stat
+          label="DB Size"
+          value={
+            isActive
+              ? `~${formatBytes(silo.databaseSizeBytes)}`
+              : formatBytes(silo.databaseSizeBytes)
+          }
+        />
+        <Stat label="Updated" value={formatTime(silo.lastUpdated)} />
       </div>
 
       {/* Progress bar (shown while indexing) */}
@@ -433,11 +499,14 @@ export default function SiloDetailView() {
             <span>
               {progress.current.toLocaleString()} / {progress.total.toLocaleString()} files
             </span>
-            {progress.fileStage === 'embedding' && progress.embedTotal != null && progress.embedTotal > 0 && (
-              <span className="text-muted-foreground/60">
-                Embedding {progress.embedDone?.toLocaleString()}/{progress.embedTotal.toLocaleString()} chunks
-              </span>
-            )}
+            {progress.fileStage === 'embedding' &&
+              progress.embedTotal != null &&
+              progress.embedTotal > 0 && (
+                <span className="text-muted-foreground/60">
+                  Embedding {progress.embedDone?.toLocaleString()}/
+                  {progress.embedTotal.toLocaleString()} chunks
+                </span>
+              )}
           </div>
         </div>
       )}
@@ -485,14 +554,18 @@ export default function SiloDetailView() {
                   const id = modelIdFromDisplay(m);
                   return (
                     <option key={m} value={id}>
-                      {m}{id === defaultModel ? ' (default)' : ''}
+                      {m}
+                      {id === defaultModel ? ' (default)' : ''}
                     </option>
                   );
                 })}
               </select>
               {isOverride && (
                 <div className="flex items-center gap-1.5">
-                  <Badge variant="outline" className="text-[10px] text-amber-400 border-amber-500/30">
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] text-amber-400 border-amber-500/30"
+                  >
                     override
                   </Badge>
                   <button
@@ -540,7 +613,10 @@ export default function SiloDetailView() {
           <Row label="Database">
             <div className="flex items-center gap-2">
               <HardDrive className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground font-mono truncate" title={silo.resolvedDbPath}>
+              <span
+                className="text-xs text-muted-foreground font-mono truncate"
+                title={silo.resolvedDbPath}
+              >
                 {abbreviatePath(silo.resolvedDbPath)}
               </span>
               <button
@@ -572,11 +648,15 @@ export default function SiloDetailView() {
           Danger Zone
         </h2>
         <div className="flex flex-col gap-3">
-
           {/* Disconnect */}
           {!confirmDisconnect ? (
             <div className="flex items-center gap-3">
-              <Button variant="outline" size="sm" onClick={() => setConfirmDisconnect(true)} disabled={isActive}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmDisconnect(true)}
+                disabled={isActive}
+              >
                 <Unplug className="h-3.5 w-3.5" /> Disconnect
               </Button>
               <span className="text-xs text-muted-foreground">
@@ -589,14 +669,26 @@ export default function SiloDetailView() {
                 Disconnect <span className="font-semibold">{config.name}</span>?
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                This will remove the silo from Lodestone but keep the database file on disk.
-                You can reconnect it later using &ldquo;Connect existing database&rdquo; when creating a new silo.
+                This will remove the silo from Lodestone but keep the database file on disk. You can
+                reconnect it later using &ldquo;Connect existing database&rdquo; when creating a new
+                silo.
               </p>
               <div className="mt-3 flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => setConfirmDisconnect(false)} disabled={disconnecting} autoFocus>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setConfirmDisconnect(false)}
+                  disabled={disconnecting}
+                  autoFocus
+                >
                   Cancel
                 </Button>
-                <Button variant="outline" size="sm" onClick={handleDisconnect} disabled={disconnecting}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDisconnect}
+                  disabled={disconnecting}
+                >
                   <Unplug className="h-3.5 w-3.5" />
                   {disconnecting ? 'Disconnecting…' : 'Disconnect'}
                 </Button>
@@ -607,7 +699,12 @@ export default function SiloDetailView() {
           {/* Delete */}
           {!confirmDelete ? (
             <div className="flex items-center gap-3">
-              <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)} disabled={isActive}>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setConfirmDelete(true)}
+                disabled={isActive}
+              >
                 <Trash2 className="h-3.5 w-3.5" /> Delete Silo
               </Button>
               <span className="text-xs text-muted-foreground">
@@ -625,7 +722,13 @@ export default function SiloDetailView() {
               </p>
               {deleteError && <p className="mt-2 text-xs text-red-400">{deleteError}</p>}
               <div className="mt-3 flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => setConfirmDelete(false)} disabled={deleting} autoFocus>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setConfirmDelete(false)}
+                  disabled={deleting}
+                  autoFocus
+                >
                   Cancel
                 </Button>
                 <Button variant="destructive" size="sm" onClick={handleDelete} disabled={deleting}>
@@ -635,7 +738,6 @@ export default function SiloDetailView() {
               </div>
             </div>
           )}
-
         </div>
       </section>
     </div>

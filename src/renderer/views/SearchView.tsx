@@ -1,14 +1,35 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, FileText, FileCode, FileJson, BookOpen, File, Folder, ExternalLink, Loader2, ChevronRight, ChevronDown, X } from 'lucide-react';
+import {
+  Search,
+  FileText,
+  FileCode,
+  FileJson,
+  BookOpen,
+  File,
+  Folder,
+  ExternalLink,
+  Loader2,
+  ChevronRight,
+  ChevronDown,
+  X,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { fileName, dirPath, scorePercent } from '@/lib/format';
 import { readSession, writeSession } from '@/lib/session-storage';
 import { useSessionState } from '@/hooks/use-session-state';
 import FilterBar from '@/components/FilterBar';
-import { CellDropdown, InlineDropdown } from '@/components/TaskCells';
+import { CellDropdown, InlineDropdown } from '@/components/Dropdown';
 import { SILO_COLOR_MAP, DEFAULT_SILO_COLOR, type SiloColor } from '../../shared/silo-appearance';
-import type { SiloStatus, SearchResult, DirectoryResult, DirectoryTreeNode, ExploreParams, SearchMode, LocationHint } from '../../shared/types';
+import type {
+  SiloStatus,
+  SearchResult,
+  DirectoryResult,
+  DirectoryTreeNode,
+  ExploreParams,
+  SearchMode,
+  LocationHint,
+} from '../../shared/types';
 
 function handleOpenFile(filePath: string) {
   window.electronAPI?.openPath(filePath);
@@ -17,8 +38,10 @@ function handleOpenFile(filePath: string) {
 function renderLocationHint(hint: LocationHint): string {
   if (!hint) return '';
   switch (hint.type) {
-    case 'lines': return `Lines ${hint.start}\u2013${hint.end}`;
-    case 'page':  return `Page ${hint.page}`;
+    case 'lines':
+      return `Lines ${hint.start}\u2013${hint.end}`;
+    case 'page':
+      return `Page ${hint.page}`;
   }
 }
 
@@ -31,31 +54,56 @@ function isRedundantSection(sectionPath: string[] | undefined, filePath: string)
 // ── Signal colours ──────────────────────────────────────────────────────────
 
 const SIGNAL_COLORS: Record<string, { bar: string; badge: string; label: string }> = {
-  semantic:    { bar: 'bg-blue-400',   badge: 'bg-blue-500/15 text-blue-400',   label: 'semantic' },
-  bm25:        { bar: 'bg-amber-400',  badge: 'bg-amber-500/15 text-amber-400', label: 'bm25' },
-  filepath:    { bar: 'bg-cyan-400',   badge: 'bg-cyan-500/15 text-cyan-400',   label: 'filepath' },
-  regex:       { bar: 'bg-orange-400', badge: 'bg-orange-500/15 text-orange-400', label: 'regex' },
-  convergence: { bar: 'bg-purple-400', badge: 'bg-purple-500/15 text-purple-400', label: 'convergence' },
+  semantic: { bar: 'bg-blue-400', badge: 'bg-blue-500/15 text-blue-400', label: 'semantic' },
+  bm25: { bar: 'bg-amber-400', badge: 'bg-amber-500/15 text-amber-400', label: 'bm25' },
+  filepath: { bar: 'bg-cyan-400', badge: 'bg-cyan-500/15 text-cyan-400', label: 'filepath' },
+  regex: { bar: 'bg-orange-400', badge: 'bg-orange-500/15 text-orange-400', label: 'regex' },
+  convergence: {
+    bar: 'bg-purple-400',
+    badge: 'bg-purple-500/15 text-purple-400',
+    label: 'convergence',
+  },
 };
 
-const DEFAULT_SIGNAL_COLOR = { bar: 'bg-gray-400', badge: 'bg-gray-500/15 text-gray-400', label: 'score' };
+const DEFAULT_SIGNAL_COLOR = {
+  bar: 'bg-gray-400',
+  badge: 'bg-gray-500/15 text-gray-400',
+  label: 'score',
+};
 
 const DIR_BAR_COLOR = 'bg-purple-400';
 
 // ── File-type icons ───────────────────────────────────────────────────────────
 
-const CODE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.rb', '.swift', '.kt']);
+const CODE_EXTS = new Set([
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.py',
+  '.rs',
+  '.go',
+  '.java',
+  '.c',
+  '.cpp',
+  '.h',
+  '.hpp',
+  '.cs',
+  '.rb',
+  '.swift',
+  '.kt',
+]);
 const DATA_EXTS = new Set(['.json', '.yaml', '.yml', '.toml', '.xml']);
-const MD_EXTS   = new Set(['.md', '.markdown', '.mdx']);
-const ICON_CLS  = 'h-4 w-4 shrink-0 text-muted-foreground';
+const MD_EXTS = new Set(['.md', '.markdown', '.mdx']);
+const ICON_CLS = 'h-4 w-4 shrink-0 text-muted-foreground';
 
 function getFileIcon(filePath: string) {
   const ext = '.' + (filePath.split('.').pop() ?? '').toLowerCase();
-  if (MD_EXTS.has(ext))   return <FileText className={ICON_CLS} />;
+  if (MD_EXTS.has(ext)) return <FileText className={ICON_CLS} />;
   if (CODE_EXTS.has(ext)) return <FileCode className={ICON_CLS} />;
   if (DATA_EXTS.has(ext)) return <FileJson className={ICON_CLS} />;
-  if (ext === '.pdf')      return <BookOpen className={ICON_CLS} />;
-  if (ext === '.txt')      return <FileText className={ICON_CLS} />;
+  if (ext === '.pdf') return <BookOpen className={ICON_CLS} />;
+  if (ext === '.txt') return <FileText className={ICON_CLS} />;
   return <File className={ICON_CLS} />;
 }
 
@@ -66,7 +114,9 @@ type ViewMode = 'file' | 'directory';
 export default function SearchView() {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useSessionState('search.query', '');
-  const [selectedSilo, setSelectedSilo] = useState(() => searchParams.get('silo') ?? readSession('search.selectedSilo', 'all'));
+  const [selectedSilo, setSelectedSilo] = useState(
+    () => searchParams.get('silo') ?? readSession('search.selectedSilo', 'all'),
+  );
   const [silos, setSilos] = useState<SiloStatus[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
   const [directoryResults, setDirectoryResults] = useState<DirectoryResult[]>([]);
@@ -74,12 +124,17 @@ export default function SearchView() {
   const [searching, setSearching] = useState(false);
   const [expandedResults, setExpandedResults] = useState<Set<number>>(new Set());
   const [searchMode, setSearchMode] = useSessionState<ViewMode>('search.searchMode', 'file');
-  const [fileSearchMode, setFileSearchMode] = useSessionState<SearchMode>('search.fileSearchMode', 'hybrid');
+  const [fileSearchMode, setFileSearchMode] = useSessionState<SearchMode>(
+    'search.fileSearchMode',
+    'hybrid',
+  );
   const [startPath, setStartPath] = useSessionState('search.startPath', '');
   const [filePattern, setFilePattern] = useSessionState('search.filePattern', '');
   const [depthSetting, setDepthSetting] = useSessionState('search.depthSetting', 2);
 
-  useEffect(() => { writeSession('search.selectedSilo', selectedSilo); }, [selectedSilo]);
+  useEffect(() => {
+    writeSession('search.selectedSilo', selectedSilo);
+  }, [selectedSilo]);
 
   useEffect(() => {
     const fetch = () => window.electronAPI?.getSilos().then(setSilos);
@@ -94,43 +149,53 @@ export default function SearchView() {
     return map;
   }, [silos]);
 
-  const runSearch = useCallback(async (q: string, silo: string | undefined, sp?: string, mode?: SearchMode, fp?: string) => {
-    if (!q.trim()) return;
-    setHasSearched(true);
-    setSearching(true);
-    setExpandedResults(new Set());
-    try {
-      const res = await window.electronAPI?.search({
-        query: q,
-        startPath: sp || undefined,
-        filePattern: fp || undefined,
-        mode: mode ?? 'hybrid',
-      }, silo || undefined) ?? [];
-      setResults(res);
-      setDirectoryResults([]);
-    } finally {
-      setSearching(false);
-    }
-  }, []);
+  const runSearch = useCallback(
+    async (q: string, silo: string | undefined, sp?: string, mode?: SearchMode, fp?: string) => {
+      if (!q.trim()) return;
+      setHasSearched(true);
+      setSearching(true);
+      setExpandedResults(new Set());
+      try {
+        const res =
+          (await window.electronAPI?.search(
+            {
+              query: q,
+              startPath: sp || undefined,
+              filePattern: fp || undefined,
+              mode: mode ?? 'hybrid',
+            },
+            silo || undefined,
+          )) ?? [];
+        setResults(res);
+        setDirectoryResults([]);
+      } finally {
+        setSearching(false);
+      }
+    },
+    [],
+  );
 
-  const runExplore = useCallback(async (q: string, silo: string | undefined, sp?: string, depth?: number) => {
-    setHasSearched(true);
-    setSearching(true);
-    setExpandedResults(new Set());
-    try {
-      const params: ExploreParams = {
-        query: q.trim() || undefined,
-        silo,
-        startPath: sp || undefined,
-        maxDepth: depth ?? 2,
-      };
-      const res = await window.electronAPI?.explore(params) ?? [];
-      setDirectoryResults(res);
-      setResults([]);
-    } finally {
-      setSearching(false);
-    }
-  }, []);
+  const runExplore = useCallback(
+    async (q: string, silo: string | undefined, sp?: string, depth?: number) => {
+      setHasSearched(true);
+      setSearching(true);
+      setExpandedResults(new Set());
+      try {
+        const params: ExploreParams = {
+          query: q.trim() || undefined,
+          silo,
+          startPath: sp || undefined,
+          maxDepth: depth ?? 2,
+        };
+        const res = (await window.electronAPI?.explore(params)) ?? [];
+        setDirectoryResults(res);
+        setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    },
+    [],
+  );
 
   async function handleSearch() {
     if (searchMode === 'file' && !query.trim()) return;
@@ -189,11 +254,15 @@ export default function SearchView() {
                   { value: 'all', label: 'All Silos' },
                   ...silos.map((s) => ({
                     value: s.config.name,
-                    label: s.watcherState === 'stopped' ? `${s.config.name} (stopped)` : s.config.name,
-                    className: s.watcherState === 'stopped' ? 'text-muted-foreground/50' : undefined,
+                    label:
+                      s.watcherState === 'stopped' ? `${s.config.name} (stopped)` : s.config.name,
+                    className:
+                      s.watcherState === 'stopped' ? 'text-muted-foreground/50' : undefined,
                   })),
                 ]}
-                onSelect={(v) => { setSelectedSilo(v); }}
+                onSelect={(v) => {
+                  setSelectedSilo(v);
+                }}
                 onClose={close}
               />
             )}
@@ -203,7 +272,11 @@ export default function SearchView() {
           <FilterBar
             options={[
               { value: 'file', label: 'Files', icon: <FileText className="h-3.5 w-3.5" /> },
-              { value: 'directory', label: 'Directories', icon: <Folder className="h-3.5 w-3.5" /> },
+              {
+                value: 'directory',
+                label: 'Directories',
+                icon: <Folder className="h-3.5 w-3.5" />,
+              },
             ]}
             isActive={(v) => v === searchMode}
             onSelect={(v) => handleModeChange(v as ViewMode)}
@@ -216,7 +289,9 @@ export default function SearchView() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder={isDirectoryMode ? 'Explore directory structure...' : 'Search your indexed files...'}
+              placeholder={
+                isDirectoryMode ? 'Explore directory structure...' : 'Search your indexed files...'
+              }
               className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
@@ -226,7 +301,10 @@ export default function SearchView() {
         <div className="mt-2 flex items-center gap-2">
           {!isDirectoryMode && (
             <FilterBar
-              options={(['hybrid', 'semantic', 'bm25', 'filepath', 'regex'] as const).map((m) => ({ value: m, label: m }))}
+              options={(['hybrid', 'semantic', 'bm25', 'filepath', 'regex'] as const).map((m) => ({
+                value: m,
+                label: m,
+              }))}
               isActive={(v) => v === fileSearchMode}
               onSelect={(v) => setFileSearchMode(v as SearchMode)}
             />
@@ -278,7 +356,9 @@ export default function SearchView() {
                 onChange={(e) => setDepthSetting(parseInt(e.target.value, 10))}
                 className="w-16 h-1.5 accent-foreground shrink-0"
               />
-              <span className="text-[10px] text-muted-foreground/50 w-3 shrink-0">{depthSetting}</span>
+              <span className="text-[10px] text-muted-foreground/50 w-3 shrink-0">
+                {depthSetting}
+              </span>
             </>
           )}
         </div>
@@ -304,7 +384,6 @@ export default function SearchView() {
         {!searching && hasSearched && isDirectoryMode && (
           <DirectoryResultsView
             results={directoryResults}
-            silos={silos}
             siloColorMap={siloColorMap}
             expandedResults={expandedResults}
             toggleExpand={toggleExpand}
@@ -344,20 +423,20 @@ function FileResultsView({
   toggleExpand: (i: number) => void;
 }) {
   const stoppedSilos = silos.filter((s) => s.watcherState === 'stopped');
-  const stoppedSkipped = selectedSilo === 'all'
-    ? stoppedSilos
-    : stoppedSilos.filter((s) => s.config.name === selectedSilo);
-  const stoppedHint = stoppedSkipped.length > 0
-    ? `${stoppedSkipped.map((s) => s.config.name).join(', ')} ${stoppedSkipped.length === 1 ? 'is' : 'are'} stopped and ${stoppedSkipped.length === 1 ? 'was' : 'were'} not searched.`
-    : null;
+  const stoppedSkipped =
+    selectedSilo === 'all'
+      ? stoppedSilos
+      : stoppedSilos.filter((s) => s.config.name === selectedSilo);
+  const stoppedHint =
+    stoppedSkipped.length > 0
+      ? `${stoppedSkipped.map((s) => s.config.name).join(', ')} ${stoppedSkipped.length === 1 ? 'is' : 'are'} stopped and ${stoppedSkipped.length === 1 ? 'was' : 'were'} not searched.`
+      : null;
 
   if (results.length === 0) {
     return (
       <div>
         <p className="text-sm text-muted-foreground">No results found.</p>
-        {stoppedHint && (
-          <p className="mt-1 text-xs text-muted-foreground/50">{stoppedHint}</p>
-        )}
+        {stoppedHint && <p className="mt-1 text-xs text-muted-foreground/50">{stoppedHint}</p>}
       </div>
     );
   }
@@ -388,10 +467,11 @@ function FileResultsView({
                 isExpanded && 'bg-accent/20',
               )}
             >
-              {isExpanded
-                ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              }
+              {isExpanded ? (
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              )}
 
               {getFileIcon(result.filePath)}
 
@@ -400,23 +480,27 @@ function FileResultsView({
                   <span className="truncate text-sm font-medium text-foreground">
                     {fileName(result.filePath)}
                   </span>
-                  <span className={cn(
-                    'shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px]',
-                    sigColor.badge,
-                  )}>
+                  <span
+                    className={cn(
+                      'shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px]',
+                      sigColor.badge,
+                    )}
+                  >
                     {sigColor.label}
                   </span>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground/50">
                   <span className="truncate">{dirPath(result.filePath)}</span>
-                  <span className={cn(
-                    'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
-                    (() => {
-                      const c = siloColorMap.get(result.siloName) ?? DEFAULT_SILO_COLOR;
-                      const classes = SILO_COLOR_MAP[c];
-                      return `${classes.bgSoft} ${classes.text}`;
-                    })(),
-                  )}>
+                  <span
+                    className={cn(
+                      'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
+                      (() => {
+                        const c = siloColorMap.get(result.siloName) ?? DEFAULT_SILO_COLOR;
+                        const classes = SILO_COLOR_MAP[c];
+                        return `${classes.bgSoft} ${classes.text}`;
+                      })(),
+                    )}
+                  >
                     {result.siloName}
                   </span>
                 </div>
@@ -455,7 +539,9 @@ function FileResultsView({
                       const sc = SIGNAL_COLORS[name] ?? DEFAULT_SIGNAL_COLOR;
                       return (
                         <div key={name} className="flex items-center gap-2">
-                          <span className="w-16 text-[10px] text-muted-foreground/60 text-right">{sc.label}</span>
+                          <span className="w-16 text-[10px] text-muted-foreground/60 text-right">
+                            {sc.label}
+                          </span>
                           <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
                             <div
                               className={cn('h-full rounded-full', sc.bar)}
@@ -471,16 +557,18 @@ function FileResultsView({
                 </div>
 
                 {/* Hint — location + section path (shown when no multi-chunk data) */}
-                {result.hint && result.hint.locationHint && (!result.chunks || result.chunks.length === 0) && (
-                  <div className="mt-2 text-xs text-muted-foreground/60">
-                    {renderLocationHint(result.hint.locationHint)}
-                    {!isRedundantSection(result.hint.sectionPath, result.filePath) && (
-                      <span className="ml-1.5 text-muted-foreground/40">
-                        — {result.hint.sectionPath!.join(' > ')}
-                      </span>
-                    )}
-                  </div>
-                )}
+                {result.hint &&
+                  result.hint.locationHint &&
+                  (!result.chunks || result.chunks.length === 0) && (
+                    <div className="mt-2 text-xs text-muted-foreground/60">
+                      {renderLocationHint(result.hint.locationHint)}
+                      {!isRedundantSection(result.hint.sectionPath, result.filePath) && (
+                        <span className="ml-1.5 text-muted-foreground/40">
+                          — {result.hint.sectionPath!.join(' > ')}
+                        </span>
+                      )}
+                    </div>
+                  )}
 
                 {/* Multi-chunk matching regions */}
                 {result.chunks && result.chunks.length > 0 && (
@@ -489,7 +577,10 @@ function FileResultsView({
                       Matching regions
                     </span>
                     {result.chunks.map((chunk, i) => (
-                      <div key={i} className="flex items-center gap-2 text-xs text-muted-foreground/60">
+                      <div
+                        key={i}
+                        className="flex items-center gap-2 text-xs text-muted-foreground/60"
+                      >
                         <span className="shrink-0 w-8 text-right text-muted-foreground/40">
                           {chunk.relevance}%
                         </span>
@@ -516,13 +607,11 @@ function FileResultsView({
 
 function DirectoryResultsView({
   results,
-  silos,
   siloColorMap,
   expandedResults,
   toggleExpand,
 }: {
   results: DirectoryResult[];
-  silos: SiloStatus[];
   siloColorMap: Map<string, SiloColor>;
   expandedResults: Set<number>;
   toggleExpand: (i: number) => void;
@@ -552,10 +641,11 @@ function DirectoryResultsView({
                 isExpanded && 'bg-accent/20',
               )}
             >
-              {isExpanded
-                ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              }
+              {isExpanded ? (
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              )}
 
               <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
 
@@ -567,18 +657,21 @@ function DirectoryResultsView({
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground/50">
                   <span className="truncate">{result.dirPath}</span>
-                  <span className={cn(
-                    'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
-                    (() => {
-                      const c = siloColorMap.get(result.siloName) ?? DEFAULT_SILO_COLOR;
-                      const classes = SILO_COLOR_MAP[c];
-                      return `${classes.bgSoft} ${classes.text}`;
-                    })(),
-                  )}>
+                  <span
+                    className={cn(
+                      'shrink-0 rounded px-1.5 py-0.5 text-[10px]',
+                      (() => {
+                        const c = siloColorMap.get(result.siloName) ?? DEFAULT_SILO_COLOR;
+                        const classes = SILO_COLOR_MAP[c];
+                        return `${classes.bgSoft} ${classes.text}`;
+                      })(),
+                    )}
+                  >
                     {result.siloName}
                   </span>
                   <span className="text-[10px] text-muted-foreground/40">
-                    {result.fileCount} file{result.fileCount !== 1 ? 's' : ''} · {result.subdirCount} dir{result.subdirCount !== 1 ? 's' : ''}
+                    {result.fileCount} file{result.fileCount !== 1 ? 's' : ''} ·{' '}
+                    {result.subdirCount} dir{result.subdirCount !== 1 ? 's' : ''}
                   </span>
                 </div>
               </div>
@@ -599,9 +692,7 @@ function DirectoryResultsView({
             {/* Expanded: score breakdown + tree */}
             {isExpanded && (
               <div className="ml-[26px] border-l-2 border-accent/20 pl-4 pb-2 mt-1">
-                {result.children.length > 0 && (
-                  <DirectoryTree nodes={result.children} />
-                )}
+                {result.children.length > 0 && <DirectoryTree nodes={result.children} />}
               </div>
             )}
           </div>
@@ -616,21 +707,22 @@ function DirectoryResultsView({
 function DirectoryTree({ nodes }: { nodes: DirectoryTreeNode[] }) {
   return (
     <div className="space-y-0.5">
-      {nodes.map((node, i) => (
-        <DirectoryTreeNodeRow key={node.path} node={node} isLast={i === nodes.length - 1} />
+      {nodes.map((node) => (
+        <DirectoryTreeNodeRow key={node.path} node={node} />
       ))}
     </div>
   );
 }
 
-function DirectoryTreeNodeRow({ node, isLast }: { node: DirectoryTreeNode; isLast: boolean }) {
+function DirectoryTreeNodeRow({ node }: { node: DirectoryTreeNode }) {
   return (
     <div>
       <div className="flex items-center gap-1.5 py-0.5">
         <Folder className="h-3 w-3 shrink-0 text-muted-foreground/50" />
         <span className="text-xs text-muted-foreground">{node.name}/</span>
         <span className="text-[10px] text-muted-foreground/30">
-          {node.fileCount} file{node.fileCount !== 1 ? 's' : ''} · {node.subdirCount} dir{node.subdirCount !== 1 ? 's' : ''}
+          {node.fileCount} file{node.fileCount !== 1 ? 's' : ''} · {node.subdirCount} dir
+          {node.subdirCount !== 1 ? 's' : ''}
         </span>
       </div>
       {node.children.length > 0 && (
@@ -641,4 +733,3 @@ function DirectoryTreeNodeRow({ node, isLast }: { node: DirectoryTreeNode; isLas
     </div>
   );
 }
-

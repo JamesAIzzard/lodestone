@@ -22,7 +22,12 @@ import { peekFileCount } from './store/peek';
 import type { StoredSiloConfig, FlushUpsert, FlushDelete } from './store/types';
 import { prepareFile } from './pipeline';
 import { SiloWatcher, type WatcherEvent, type WatcherStoreOps } from './watcher';
-import { reconcile, type ReconcileProgressHandler, type ReconcileEventHandler, type ReconcileStoreOps } from './reconcile';
+import {
+  reconcile,
+  type ReconcileProgressHandler,
+  type ReconcileEventHandler,
+  type ReconcileStoreOps,
+} from './reconcile';
 import type { WatcherState, DirectoryTreeNode, SearchParams } from '../shared/types';
 import type { FileResult } from './search';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
@@ -226,10 +231,17 @@ export class SiloManager {
       await new Promise<void>((resolve) => {
         this.indexingQueue.enqueue(
           this.config.name,
-          () => { if (!this.stopped) this.watcherState = 'waiting'; },
-          () => { if (!this.stopped) this.watcherState = 'indexing'; },
+          () => {
+            if (!this.stopped) this.watcherState = 'waiting';
+          },
+          () => {
+            if (!this.stopped) this.watcherState = 'indexing';
+          },
           async () => {
-            if (this.stopped) { resolve(); return; }
+            if (this.stopped) {
+              resolve();
+              return;
+            }
             try {
               const result = await reconcile(
                 this.config,
@@ -243,13 +255,18 @@ export class SiloManager {
                 result.filesAdded > 0 && `+${result.filesAdded}`,
                 result.filesRemoved > 0 && `-${result.filesRemoved}`,
                 result.filesUpdated > 0 && `~${result.filesUpdated}`,
-              ].filter(Boolean).join(' ');
+              ]
+                .filter(Boolean)
+                .join(' ');
               if (changes) {
                 console.log(`[silo:${this.config.name}] ${reason} change: ${changes} files`);
               }
             } catch (err) {
               if (!this.stopped) {
-                console.error(`[silo:${this.config.name}] Re-reconciliation after ${reason} change failed:`, err);
+                console.error(
+                  `[silo:${this.config.name}] Re-reconciliation after ${reason} change failed:`,
+                  err,
+                );
               }
             }
             this.reconcileProgress = undefined;
@@ -354,10 +371,17 @@ export class SiloManager {
     await new Promise<void>((resolve) => {
       this.indexingQueue.enqueue(
         this.config.name,
-        () => { if (!this.stopped) this.watcherState = 'waiting'; },
-        () => { if (!this.stopped) this.watcherState = 'indexing'; },
+        () => {
+          if (!this.stopped) this.watcherState = 'waiting';
+        },
+        () => {
+          if (!this.stopped) this.watcherState = 'indexing';
+        },
         async () => {
-          if (this.stopped) { resolve(); return; }
+          if (this.stopped) {
+            resolve();
+            return;
+          }
           try {
             const result = await reconcile(
               this.config,
@@ -399,7 +423,7 @@ export class SiloManager {
             const sizeAfterCkpt = this.readFileSizeFromDisk();
             console.log(
               `[silo:${this.config.name}] Post-reconcile: WAL checkpoint(TRUNCATE) took ${(performance.now() - tCheckpoint).toFixed(1)}ms` +
-              ` — ${(sizeBefore / 1048576).toFixed(1)}MB → ${(sizeAfterCkpt / 1048576).toFixed(1)}MB`,
+                ` — ${(sizeBefore / 1048576).toFixed(1)}MB → ${(sizeAfterCkpt / 1048576).toFixed(1)}MB`,
             );
 
             // VACUUM reclaims free pages left by deletions/updates. Skip after
@@ -411,13 +435,16 @@ export class SiloManager {
               const sizeAfterVac = this.readFileSizeFromDisk();
               console.log(
                 `[silo:${this.config.name}] Post-reconcile: VACUUM took ${(performance.now() - tVacuum).toFixed(1)}ms` +
-                ` — ${(sizeAfterCkpt / 1048576).toFixed(1)}MB → ${(sizeAfterVac / 1048576).toFixed(1)}MB`,
+                  ` — ${(sizeAfterCkpt / 1048576).toFixed(1)}MB → ${(sizeAfterVac / 1048576).toFixed(1)}MB`,
               );
             }
 
             this.maintenanceInProgress = false;
           } catch (err) {
-            if (this.stopped) { resolve(); return; }
+            if (this.stopped) {
+              resolve();
+              return;
+            }
             console.error(`[silo:${this.config.name}] Reconciliation failed:`, err);
             this.watcherState = 'error';
             this.errorMessage = err instanceof Error ? err.message : String(err);
@@ -439,7 +466,9 @@ export class SiloManager {
     // 8. Create and start the file watcher
     this.startWatcher();
 
-    console.log(`[silo:${this.config.name}] Started (watching ${this.config.directories.join(', ')})`);
+    console.log(
+      `[silo:${this.config.name}] Started (watching ${this.config.directories.join(', ')})`,
+    );
   }
 
   /** Graceful shutdown: stop watcher, close database. */
@@ -458,7 +487,7 @@ export class SiloManager {
 
     // Wait for start() to finish so we don't tear down underneath it.
     if (this.startPromise) {
-      await this.startPromise.catch(() => {});
+      await this.startPromise.catch((): void => undefined);
       this.startPromise = null;
     }
 
@@ -466,7 +495,7 @@ export class SiloManager {
     // The task checks shouldStop (→ this.stopped) between embedding
     // batches and will exit quickly — at most one batch duration.
     if (this.watcherIndexingDone) {
-      await this.watcherIndexingDone.catch(() => {});
+      await this.watcherIndexingDone.catch((): void => undefined);
       this.watcherIndexingDone = null;
     }
 
@@ -558,8 +587,12 @@ export class SiloManager {
   }
 
   /** Load minimal status for a stopped silo without starting it. */
-  loadStoppedStatus(): void { this.loadOfflineStatus('stopped'); }
-  loadWaitingStatus(): void { this.loadOfflineStatus('waiting'); }
+  loadStoppedStatus(): void {
+    this.loadOfflineStatus('stopped');
+  }
+  loadWaitingStatus(): void {
+    this.loadOfflineStatus('waiting');
+  }
 
   private loadOfflineStatus(state: 'stopped' | 'waiting'): void {
     this.watcherState = state;
@@ -595,7 +628,10 @@ export class SiloManager {
         }
       }
     }
-    const results = await storeProxy.search(this.siloId, queryVector, { ...params, startPath: storedStartPath });
+    const results = await storeProxy.search(this.siloId, queryVector, {
+      ...params,
+      startPath: storedStartPath,
+    });
     // Resolve stored keys back to absolute file paths
     return results.map((r) => ({
       ...r,
@@ -611,7 +647,12 @@ export class SiloManager {
     if (!this.embeddingService || !this.dbOpen || this.stopped) return;
     const storedKey = makeStoredKey(absolutePath, this.config.directories);
     const stat = fs.statSync(absolutePath);
-    const prepared = await prepareFile(absolutePath, storedKey, this.embeddingService, stat.mtimeMs);
+    const prepared = await prepareFile(
+      absolutePath,
+      storedKey,
+      this.embeddingService,
+      stat.mtimeMs,
+    );
     const upsert: FlushUpsert = {
       storedKey: prepared.storedKey,
       chunks: prepared.chunks,
@@ -654,7 +695,10 @@ export class SiloManager {
   }
 
   /** Synthesise explore results for the silo's configured root directories. */
-  private async exploreRootDirectories(maxDepth: number, fullContents?: boolean): Promise<SiloDirectorySearchResult[]> {
+  private async exploreRootDirectories(
+    maxDepth: number,
+    fullContents?: boolean,
+  ): Promise<SiloDirectorySearchResult[]> {
     const results: SiloDirectorySearchResult[] = [];
 
     for (let i = 0; i < this.config.directories.length; i++) {
@@ -664,7 +708,9 @@ export class SiloManager {
       // Get counts and tree from the worker via the proxy
       const [rawChildren, rawFiles] = await Promise.all([
         storeProxy.expandTree(this.siloId, prefix, 0, maxDepth, fullContents),
-        fullContents ? storeProxy.getFilesInDirectory(this.siloId, prefix) : Promise.resolve(undefined),
+        fullContents
+          ? storeProxy.getFilesInDirectory(this.siloId, prefix)
+          : Promise.resolve(undefined),
       ]);
 
       // Count files and subdirs from the expanded tree data
@@ -677,7 +723,13 @@ export class SiloManager {
         dirName: path.basename(absPath),
         score: 1.0,
         scoreSource: 'segment' as const,
-        axes: { segment: { best: 0, bestSignal: 'levenshtein', signals: { levenshtein: 0, tokenCoverage: 0 } } },
+        axes: {
+          segment: {
+            best: 0,
+            bestSignal: 'levenshtein',
+            signals: { levenshtein: 0, tokenCoverage: 0 },
+          },
+        },
         fileCount,
         subdirCount,
         depth: 0,
@@ -710,13 +762,19 @@ export class SiloManager {
   async getStatus(): Promise<SiloManagerStatus> {
     // When the worker is blocked (stopped, waiting, or maintenance), return
     // cached stats immediately to prevent the UI from hanging.
-    if (this.watcherState === 'stopped' || this.watcherState === 'waiting' || this.maintenanceInProgress) {
+    if (
+      this.watcherState === 'stopped' ||
+      this.watcherState === 'waiting' ||
+      this.maintenanceInProgress
+    ) {
       return {
         name: this.config.name,
         indexedFileCount: this.maintenanceInProgress ? this.mtimes.size : this.cachedFileCount,
         chunkCount: this.cachedChunkCount,
         lastUpdated: this.lastUpdated,
-        databaseSizeBytes: this.maintenanceInProgress ? this.readFileSizeFromDisk() : this.cachedSizeBytes,
+        databaseSizeBytes: this.maintenanceInProgress
+          ? this.readFileSizeFromDisk()
+          : this.cachedSizeBytes,
         watcherState: this.watcherState,
         errorMessage: this.errorMessage,
         reconcileProgress: this.reconcileProgress,
@@ -743,7 +801,7 @@ export class SiloManager {
   }
 
   /** Get recent activity events. */
-  getActivityFeed(limit: number = 50): WatcherEvent[] {
+  getActivityFeed(limit = 50): WatcherEvent[] {
     return this.activityLog.slice(-limit);
   }
 
@@ -783,7 +841,8 @@ export class SiloManager {
     const id = this.siloId;
     return {
       flush: (upserts, deletes) => storeProxy.flush(id, upserts, deletes),
-      syncDirectoriesWithDisk: (diskDirPaths) => storeProxy.syncDirectoriesWithDisk(id, diskDirPaths),
+      syncDirectoriesWithDisk: (diskDirPaths) =>
+        storeProxy.syncDirectoriesWithDisk(id, diskDirPaths),
       recomputeDirectoryCounts: () => storeProxy.recomputeDirectoryCounts(id),
       checkpoint: (mode) => storeProxy.checkpoint(id, mode),
     };
@@ -849,14 +908,16 @@ export class SiloManager {
 
     // Persist to SQLite (fire-and-forget — never block the pipeline)
     if (this.dbOpen) {
-      storeProxy.logActivity(
-        this.siloId,
-        watcherEvent.timestamp.toISOString(),
-        watcherEvent.eventType,
-        watcherEvent.filePath,
-        watcherEvent.errorMessage ?? null,
-        this.config.activityLogLimit,
-      ).catch(() => {});
+      storeProxy
+        .logActivity(
+          this.siloId,
+          watcherEvent.timestamp.toISOString(),
+          watcherEvent.eventType,
+          watcherEvent.filePath,
+          watcherEvent.errorMessage ?? null,
+          this.config.activityLogLimit,
+        )
+        .catch((): void => undefined);
     }
   };
 
@@ -873,14 +934,16 @@ export class SiloManager {
 
     // Persist to SQLite (fire-and-forget — never block the watcher)
     if (this.dbOpen) {
-      storeProxy.logActivity(
-        this.siloId,
-        event.timestamp.toISOString(),
-        event.eventType,
-        event.filePath,
-        event.errorMessage ?? null,
-        this.config.activityLogLimit,
-      ).catch(() => {});
+      storeProxy
+        .logActivity(
+          this.siloId,
+          event.timestamp.toISOString(),
+          event.eventType,
+          event.filePath,
+          event.errorMessage ?? null,
+          this.config.activityLogLimit,
+        )
+        .catch((): void => undefined);
     }
 
     // Update file modification times via the store proxy (fire-and-forget)
@@ -890,7 +953,7 @@ export class SiloManager {
         const storedKey = makeStoredKey(event.filePath, this.config.directories);
         const stat = fs.statSync(event.filePath);
         this.mtimes.set(storedKey, stat.mtimeMs);
-        storeProxy.setMtime(this.siloId, storedKey, stat.mtimeMs).catch(() => {});
+        storeProxy.setMtime(this.siloId, storedKey, stat.mtimeMs).catch((): void => undefined);
       } catch {
         // File vanished between indexing and stat — rare but harmless
       }
@@ -898,7 +961,7 @@ export class SiloManager {
       try {
         const storedKey = makeStoredKey(event.filePath, this.config.directories);
         this.mtimes.delete(storedKey);
-        storeProxy.deleteMtime(this.siloId, storedKey).catch(() => {});
+        storeProxy.deleteMtime(this.siloId, storedKey).catch((): void => undefined);
       } catch {
         // Path outside configured directories — harmless
       }
@@ -920,12 +983,18 @@ export class SiloManager {
 
     // Track the in-flight task so stop() can await it before closing resources.
     let resolveIndexingDone!: () => void;
-    this.watcherIndexingDone = new Promise<void>((r) => { resolveIndexingDone = r; });
+    this.watcherIndexingDone = new Promise<void>((r) => {
+      resolveIndexingDone = r;
+    });
 
     this.cancelWatcherEnqueue = this.indexingQueue.enqueue(
       this.config.name,
-      () => { if (!this.stopped) this.watcherState = 'waiting'; },
-      () => { if (!this.stopped) this.watcherState = 'indexing'; },
+      () => {
+        if (!this.stopped) this.watcherState = 'waiting';
+      },
+      () => {
+        if (!this.stopped) this.watcherState = 'indexing';
+      },
       async () => {
         this.pendingWatcherEnqueue = false;
         this.cancelWatcherEnqueue = null;

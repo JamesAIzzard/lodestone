@@ -1,13 +1,24 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { Database, Search, Activity, Settings, ChevronLeft, ChevronRight, BrainCircuit, Boxes, FileStack, Clock, CheckSquare, Sun, Moon } from 'lucide-react';
+import {
+  Database,
+  Search,
+  Activity,
+  Settings,
+  ChevronLeft,
+  ChevronRight,
+  Boxes,
+  FileStack,
+  Clock,
+  Sun,
+  Moon,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import ActionButton from '@/components/ActionButton';
 import type { ServerStatus } from '../../shared/types';
 import logoUrl from '../../../assets/icon.png';
 
 const navItems = [
-  { to: '/tasks', label: 'Tasks', icon: CheckSquare },
   { to: '/', label: 'Silos', icon: Database },
   { to: '/search', label: 'Search', icon: Search },
   { to: '/activity', label: 'Activity', icon: Activity },
@@ -29,11 +40,10 @@ export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem('sidebar-collapsed') === 'true',
   );
-  const [forceCollapsed, setForceCollapsed] = useState(
-    () => window.innerWidth < NARROW_THRESHOLD,
-  );
+  const [forceCollapsed, setForceCollapsed] = useState(() => window.innerWidth < NARROW_THRESHOLD);
   const [isDark, setIsDark] = useState(
-    () => document.documentElement.classList.contains('dark') ||
+    () =>
+      document.documentElement.classList.contains('dark') ||
       window.matchMedia('(prefers-color-scheme: dark)').matches,
   );
 
@@ -41,12 +51,8 @@ export default function Sidebar() {
     const fetchStatus = () => window.electronAPI?.getServerStatus().then(setStatus);
     fetchStatus();
     const interval = setInterval(fetchStatus, 10_000);
-    // Allow other components (e.g. Settings) to trigger an immediate refresh
-    const handleCloudChange = () => fetchStatus();
-    window.addEventListener('cloud-url-changed', handleCloudChange);
     return () => {
       clearInterval(interval);
-      window.removeEventListener('cloud-url-changed', handleCloudChange);
     };
   }, []);
 
@@ -67,7 +73,7 @@ export default function Sidebar() {
   const isCollapsed = collapsed || forceCollapsed;
 
   const toggleCollapsed = () => {
-    setCollapsed(prev => {
+    setCollapsed((prev) => {
       const next = !prev;
       localStorage.setItem('sidebar-collapsed', String(next));
       return next;
@@ -82,7 +88,12 @@ export default function Sidebar() {
       )}
     >
       {/* App title */}
-      <div className={cn('flex h-14 shrink-0 items-center', isCollapsed ? 'justify-center px-2' : 'px-5')}>
+      <div
+        className={cn(
+          'flex h-14 shrink-0 items-center',
+          isCollapsed ? 'justify-center px-2' : 'px-5',
+        )}
+      >
         {isCollapsed ? (
           <img src={logoUrl} alt="Lodestone" className="h-7 w-7" />
         ) : (
@@ -121,18 +132,23 @@ export default function Sidebar() {
       {/* Collapse & theme toggles */}
       <div className={cn('flex items-center gap-1 px-2 pb-1', isCollapsed ? 'flex-col' : '')}>
         <ActionButton
-          icon={isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronLeft className="h-3 w-3" />}
+          icon={
+            isCollapsed ? <ChevronRight className="h-3 w-3" /> : <ChevronLeft className="h-3 w-3" />
+          }
           label="Collapse"
           collapsed={isCollapsed}
           onClick={toggleCollapsed}
           title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          className={cn('flex-1 rounded-md p-2 hover:bg-accent/50', isCollapsed ? 'justify-center' : '')}
+          className={cn(
+            'flex-1 rounded-md p-2 hover:bg-accent/50',
+            isCollapsed ? 'justify-center' : '',
+          )}
         />
         <ActionButton
           icon={isDark ? <Moon className="h-3 w-3" /> : <Sun className="h-3 w-3" />}
           label={isDark ? 'Dark' : 'Light'}
           collapsed={isCollapsed}
-          onClick={() => setIsDark(d => !d)}
+          onClick={() => setIsDark((d) => !d)}
           title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
           className={cn('rounded-md p-2 hover:bg-accent/50', isCollapsed ? 'justify-center' : '')}
         />
@@ -142,68 +158,38 @@ export default function Sidebar() {
       <div className={cn('border-t border-border py-4', isCollapsed ? 'px-2' : 'px-5')}>
         {isCollapsed ? (
           <div className="flex flex-col items-center gap-3">
-            <Boxes
-              className={cn(
-                'h-3.5 w-3.5',
-                status?.ollamaState === 'connected' ? 'text-emerald-400' : 'text-red-400',
-              )}
-              title={status?.ollamaState === 'connected' ? 'Ollama: Connected' : 'Ollama: Disconnected'}
-            />
-            <BrainCircuit
-              className={cn(
-                'h-3.5 w-3.5',
-                !status?.cloudUrl
-                  ? 'text-muted-foreground/30'
-                  : status.cloudConnected
-                    ? 'text-emerald-400'
-                    : 'text-red-400',
-              )}
+            <span
               title={
-                !status?.cloudUrl
-                  ? 'Cloud memories: not configured'
-                  : status.cloudConnected
-                    ? 'Cloud memories: connected'
-                    : 'Cloud memories: offline'
+                status?.ollamaState === 'connected' ? 'Ollama: Connected' : 'Ollama: Disconnected'
               }
-            />
-            <FileStack
-              className="h-3.5 w-3.5 text-muted-foreground/60"
-              title={`Indexed files: ${status?.totalIndexedFiles?.toLocaleString() ?? '—'}`}
-            />
-            <Clock
-              className="h-3.5 w-3.5 text-muted-foreground/60"
-              title={`Uptime: ${status ? formatUptime(status.uptimeSeconds) : '—'}`}
-            />
+            >
+              <Boxes
+                className={cn(
+                  'h-3.5 w-3.5',
+                  status?.ollamaState === 'connected' ? 'text-emerald-400' : 'text-red-400',
+                )}
+              />
+            </span>
+            <span title={`Indexed files: ${status?.totalIndexedFiles?.toLocaleString() ?? '-'}`}>
+              <FileStack className="h-3.5 w-3.5 text-muted-foreground/60" />
+            </span>
+            <span title={`Uptime: ${status ? formatUptime(status.uptimeSeconds) : '-'}`}>
+              <Clock className="h-3.5 w-3.5 text-muted-foreground/60" />
+            </span>
           </div>
         ) : (
           <div className="flex flex-col gap-2 text-xs text-muted-foreground">
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
-                <Boxes className={cn(
-                  'h-3.5 w-3.5 shrink-0',
-                  status?.ollamaState === 'connected' ? 'text-emerald-400' : 'text-red-400',
-                )} />
+                <Boxes
+                  className={cn(
+                    'h-3.5 w-3.5 shrink-0',
+                    status?.ollamaState === 'connected' ? 'text-emerald-400' : 'text-red-400',
+                  )}
+                />
                 Ollama
               </span>
               <span>{status?.ollamaState === 'connected' ? 'Connected' : 'Disconnected'}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <BrainCircuit className={cn(
-                  'h-3.5 w-3.5 shrink-0',
-                  !status?.cloudUrl
-                    ? 'text-muted-foreground/30'
-                    : status.cloudConnected
-                      ? 'text-emerald-400'
-                      : 'text-red-400',
-                )} />
-                Cloud memories
-              </span>
-              <span>
-                {status?.cloudUrl
-                  ? status.cloudConnected ? 'Connected' : 'Offline'
-                  : <span className="text-muted-foreground/50">Not configured</span>}
-              </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
@@ -223,11 +209,7 @@ export default function Sidebar() {
                 {status ? formatUptime(status.uptimeSeconds) : '—'}
               </span>
             </div>
-            {version && (
-              <div className="mt-1 text-muted-foreground/50">
-                v{version}
-              </div>
-            )}
+            {version && <div className="mt-1 text-muted-foreground/50">v{version}</div>}
           </div>
         )}
       </div>

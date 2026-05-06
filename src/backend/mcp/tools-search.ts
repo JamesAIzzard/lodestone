@@ -11,25 +11,57 @@ import { PuidManager } from './puid-manager';
 import { getProcessor } from '../pipeline';
 import { detectLineEnding } from '../edit';
 import {
-  SEARCH_DESCRIPTION, READ_DESCRIPTION, EXPLORE_DESCRIPTION,
-  formatSearchResults, formatExploreResults,
+  SEARCH_DESCRIPTION,
+  READ_DESCRIPTION,
+  EXPLORE_DESCRIPTION,
+  formatSearchResults,
+  formatExploreResults,
   formatBytes,
-  MAX_READ_BYTES, PREVIEW_LINES,
+  MAX_READ_BYTES,
+  PREVIEW_LINES,
 } from './formatting';
 import { textResponse, errorResponse, resolveDirPuid } from './response-helpers';
 
-export function registerSearchTool(server: McpServer, deps: McpServerDeps, puid: PuidManager): void {
+export function registerSearchTool(
+  server: McpServer,
+  deps: McpServerDeps,
+  puid: PuidManager,
+): void {
   server.tool(
     'lodestone_search',
     SEARCH_DESCRIPTION,
     {
       query: z.string().describe('The search query \u2014 use natural language or code snippets'),
-      silo: z.string().optional().describe('Restrict search to a specific silo name (omit to search all)'),
-      maxResults: z.number().min(1).max(50).optional().describe('Maximum results to return (default: 10)'),
-      startPath: z.string().optional().describe('Filter results to files under this directory path. Accepts d-prefixed reference IDs (e.g. "d3") from lodestone_explore.'),
-      mode: z.enum(['hybrid', 'bm25', 'semantic', 'filepath', 'regex']).optional().describe('Search mode: hybrid (default, vector + BM25 + Levenshtein filename), bm25 (keyword-only), semantic (vector-only), filepath (filename/path matching only), or regex (full-table scan with JS RegExp)'),
-      filePattern: z.string().optional().describe('Glob pattern to filter results to matching file paths (e.g. "**/*.ts")'),
-      regexFlags: z.string().optional().describe('JavaScript regex flags for regex mode (default: "i")'),
+      silo: z
+        .string()
+        .optional()
+        .describe('Restrict search to a specific silo name (omit to search all)'),
+      maxResults: z
+        .number()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe('Maximum results to return (default: 10)'),
+      startPath: z
+        .string()
+        .optional()
+        .describe(
+          'Filter results to files under this directory path. Accepts d-prefixed reference IDs (e.g. "d3") from lodestone_explore.',
+        ),
+      mode: z
+        .enum(['hybrid', 'bm25', 'semantic', 'filepath', 'regex'])
+        .optional()
+        .describe(
+          'Search mode: hybrid (default, vector + BM25 + Levenshtein filename), bm25 (keyword-only), semantic (vector-only), filepath (filename/path matching only), or regex (full-table scan with JS RegExp)',
+        ),
+      filePattern: z
+        .string()
+        .optional()
+        .describe('Glob pattern to filter results to matching file paths (e.g. "**/*.ts")'),
+      regexFlags: z
+        .string()
+        .optional()
+        .describe('JavaScript regex flags for regex mode (default: "i")'),
     },
     async ({ query, silo, maxResults, startPath, mode, filePattern, regexFlags }) => {
       try {
@@ -74,36 +106,42 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
     'lodestone_read',
     READ_DESCRIPTION,
     {
-      results: z.array(z.union([
-        z.string(),
-        z.object({
-          id: z.string(),
-          location: z.union([
-            z.object({ type: z.literal('lines'), start: z.number().int().min(1), end: z.number().int().min(1) }),
-            z.object({ type: z.literal('page'),  page: z.number().int().min(1) }),
-          ]).optional(),
-        }),
-      ])).min(1).describe('Array of reference IDs (e.g. "r1") or objects with id and optional line range'),
+      results: z
+        .array(
+          z.union([
+            z.string(),
+            z.object({
+              id: z.string(),
+              location: z
+                .union([
+                  z.object({
+                    type: z.literal('lines'),
+                    start: z.number().int().min(1),
+                    end: z.number().int().min(1),
+                  }),
+                  z.object({ type: z.literal('page'), page: z.number().int().min(1) }),
+                ])
+                .optional(),
+            }),
+          ]),
+        )
+        .min(1)
+        .describe('Array of reference IDs (e.g. "r1") or objects with id and optional line range'),
     },
     async ({ results: refs }) => {
       try {
         deps.notifyActivity?.({ channel: 'silo' });
-        const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [];
+        const content: Array<
+          { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
+        > = [];
 
         for (const entry of refs) {
           const id = typeof entry === 'string' ? entry : entry.id;
-          const location = (typeof entry === 'object' ? entry.location : undefined) as LocationHint | undefined;
+          const location = (typeof entry === 'object' ? entry.location : undefined) as
+            | LocationHint
+            | undefined;
 
-          // Memory puids are no longer handled locally — memory is on the cloud Worker
-          if (PuidManager.isMemoryPuid(id)) {
-            content.push({
-              type: 'text' as const,
-              text: `## ${id}\nError: Memory references (m-prefixed IDs) are handled by the lodestone-memory server. Use lodestone_read on lodestone-memory for memories.`,
-            });
-            continue;
-          }
-
-          // Reject directory puids — direct the LLM to use lodestone_explore
+          // Reject directory puids â€” direct the LLM to use lodestone_explore
           if (PuidManager.isDirPuid(id)) {
             const dirPath = puid.resolvePuid(id);
             content.push({
@@ -117,7 +155,10 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
           if (/^r\d+$/.test(id)) {
             const resolved = puid.resolvePuidRecord(id);
             if (resolved === undefined) {
-              content.push({ type: 'text' as const, text: `## ${id}\nError: Unknown reference "${id}". It may be from a previous session. Use lodestone_search or lodestone_explore to obtain a fresh reference.` });
+              content.push({
+                type: 'text' as const,
+                text: `## ${id}\nError: Unknown reference "${id}". It may be from a previous session. Use lodestone_search or lodestone_explore to obtain a fresh reference.`,
+              });
               continue;
             }
             if ('error' in resolved) {
@@ -131,15 +172,16 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
           const mime = PuidManager.imageMimeType(filePath);
 
           try {
-            // File size check — prevent reading excessively large files
+            // File size check â€” prevent reading excessively large files
             const stat = fs.statSync(filePath);
             const hasLocation = !!location;
 
             if (!mime && stat.size > MAX_READ_BYTES && !hasLocation) {
-              // Large text file without line range — show preview
-              const sizeStr = stat.size > 1024 * 1024
-                ? `${(stat.size / (1024 * 1024)).toFixed(1)} MB`
-                : `${(stat.size / 1024).toFixed(0)} KB`;
+              // Large text file without line range â€” show preview
+              const sizeStr =
+                stat.size > 1024 * 1024
+                  ? `${(stat.size / (1024 * 1024)).toFixed(1)} MB`
+                  : `${(stat.size / 1024).toFixed(0)} KB`;
               const preview = fs.readFileSync(filePath, 'utf-8').slice(0, MAX_READ_BYTES);
               const previewLines = preview.split('\n').slice(0, PREVIEW_LINES);
 
@@ -161,12 +203,16 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
                 ].join('\n'),
               });
             } else if (mime) {
-              // Image file — return as base64 image content block
+              // Image file â€” return as base64 image content block
               const buf = fs.readFileSync(filePath);
               content.push({ type: 'text' as const, text: `## ${id}: ${filePath}` });
-              content.push({ type: 'image' as const, data: buf.toString('base64'), mimeType: mime });
+              content.push({
+                type: 'image' as const,
+                data: buf.toString('base64'),
+                mimeType: mime,
+              });
             } else {
-              // Text/binary file — route through the registered reader (or
+              // Text/binary file â€” route through the registered reader (or
               // fall back to extractor) so binary formats return readable text.
               const processor = getProcessor(filePath);
 
@@ -178,7 +224,7 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
               } else if (processor.reader) {
                 text = processor.reader(filePath, hint);
               } else {
-                // Fallback for processors without a reader — extract body and optionally slice lines
+                // Fallback for processors without a reader â€” extract body and optionally slice lines
                 if (processor.asyncExtractor) {
                   const buffer = fs.readFileSync(filePath);
                   text = (await processor.asyncExtractor(buffer)).body;
@@ -209,7 +255,9 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
                     header += ` (lines ${hint.start}\u2013${displayEnd})`;
                     break;
                   }
-                  case 'page':  header += ` (page ${hint.page})`; break;
+                  case 'page':
+                    header += ` (page ${hint.page})`;
+                    break;
                 }
               }
               // Annotate CRLF files so the LLM knows to preserve \r\n in edits
@@ -251,7 +299,9 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
           // Show reconciliation progress when indexing
           if (silo.watcherState === 'indexing' && silo.reconcileProgress) {
             const { current, total } = silo.reconcileProgress;
-            lines.push(`State: indexing (${current.toLocaleString()} / ${total.toLocaleString()} files)`);
+            lines.push(
+              `State: indexing (${current.toLocaleString()} / ${total.toLocaleString()} files)`,
+            );
           } else {
             lines.push(`State: ${silo.watcherState}`);
           }
@@ -278,17 +328,49 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
   );
 }
 
-export function registerExploreTool(server: McpServer, deps: McpServerDeps, puid: PuidManager): void {
+export function registerExploreTool(
+  server: McpServer,
+  deps: McpServerDeps,
+  puid: PuidManager,
+): void {
   server.tool(
     'lodestone_explore',
     EXPLORE_DESCRIPTION,
     {
-      query: z.string().optional().describe('Search query for directory names and paths (omit for structural overview)'),
-      silo: z.string().optional().describe('Restrict to a specific silo name (omit to explore all)'),
-      startPath: z.string().optional().describe('Filter to directories under this path. Accepts d-prefixed reference IDs (e.g. "d3") from previous explore results.'),
-      maxDepth: z.number().min(1).max(5).optional().describe('Depth of directory tree expansion (default: 2)'),
-      maxResults: z.number().min(1).max(50).optional().describe('Maximum directory results to return (default: 20). Increase when browsing without a query to see more top-level directories.'),
-      fullContents: z.boolean().optional().describe('When true, list every file and subdirectory with reference IDs. Defaults to true when startPath is provided, false otherwise.'),
+      query: z
+        .string()
+        .optional()
+        .describe('Search query for directory names and paths (omit for structural overview)'),
+      silo: z
+        .string()
+        .optional()
+        .describe('Restrict to a specific silo name (omit to explore all)'),
+      startPath: z
+        .string()
+        .optional()
+        .describe(
+          'Filter to directories under this path. Accepts d-prefixed reference IDs (e.g. "d3") from previous explore results.',
+        ),
+      maxDepth: z
+        .number()
+        .min(1)
+        .max(5)
+        .optional()
+        .describe('Depth of directory tree expansion (default: 2)'),
+      maxResults: z
+        .number()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe(
+          'Maximum directory results to return (default: 20). Increase when browsing without a query to see more top-level directories.',
+        ),
+      fullContents: z
+        .boolean()
+        .optional()
+        .describe(
+          'When true, list every file and subdirectory with reference IDs. Defaults to true when startPath is provided, false otherwise.',
+        ),
     },
     async ({ query, silo, startPath, maxDepth, maxResults, fullContents }) => {
       try {
@@ -302,7 +384,7 @@ export function registerExploreTool(server: McpServer, deps: McpServerDeps, puid
         }
 
         // Default fullContents to true when startPath is provided
-        const effectiveFullContents = fullContents ?? (resolvedStartPath !== undefined);
+        const effectiveFullContents = fullContents ?? resolvedStartPath !== undefined;
 
         const { results, warnings } = await deps.silo.explore({
           query,

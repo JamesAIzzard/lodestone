@@ -3,7 +3,7 @@ import { extractMarkdown } from './extractors/markdown';
 import { chunkByHeading } from './chunkers/heading';
 
 // Helper: extract then chunk in one step (mirrors old chunkMarkdown API)
-function chunkMarkdown(filePath: string, content: string, maxChunkTokens: number = 8192) {
+function chunkMarkdown(filePath: string, content: string, maxChunkTokens = 8192) {
   const extraction = extractMarkdown(content);
   return chunkByHeading(filePath, extraction, maxChunkTokens);
 }
@@ -116,7 +116,7 @@ Content here.`;
     // Frontmatter is in the body, so remark parses it as pre-heading content.
     // At least one chunk must contain the heading content.
     expect(chunks.length).toBeGreaterThanOrEqual(1);
-    expect(chunks.some(c => c.text.includes('Content here'))).toBe(true);
+    expect(chunks.some((c) => c.text.includes('Content here'))).toBe(true);
   });
 
   it('returns empty array for empty files', () => {

@@ -1,8 +1,8 @@
-# Lodestone - Claude Code Instructions
+# Lodestone - Codex Instructions
 
 ## MCP Server Identity Map
 
-Claude Code shows connectors by UUID instead of name. Use this mapping:
+Codex shows connectors by UUID instead of name. Use this mapping:
 
 | MCP prefix | Component |
 |---|---|

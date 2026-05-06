@@ -2,7 +2,13 @@ import { useState, useEffect } from 'react';
 import { Loader2, CheckCircle2, XCircle, FileCode, FolderOpen, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
 import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
 import ExtensionPicker from '@/components/ExtensionPicker';
 import type { ServerStatus } from '../../shared/types';
@@ -11,7 +17,9 @@ export default function SettingsView() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ connected: boolean; models: string[] } | null>(null);
+  const [testResult, setTestResult] = useState<{ connected: boolean; models: string[] } | null>(
+    null,
+  );
   const [selectedModel, setSelectedModel] = useState('');
   const [extensions, setExtensions] = useState<string[]>([]);
   const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
@@ -21,22 +29,24 @@ export default function SettingsView() {
   const [dataDir, setDataDir] = useState('');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [claudeStatus, setClaudeStatus] = useState<{ configPath: string; hasClaudeDesktop: boolean; isConfigured: boolean } | null>(null);
+  const [claudeStatus, setClaudeStatus] = useState<{
+    configPath: string;
+    hasClaudeDesktop: boolean;
+    isConfigured: boolean;
+  } | null>(null);
   const [configuringClaude, setConfiguringClaude] = useState(false);
-  const [claudeConfigResult, setClaudeConfigResult] = useState<{ success: boolean; configPath: string; error?: string } | null>(null);
+  const [claudeConfigResult, setClaudeConfigResult] = useState<{
+    success: boolean;
+    configPath: string;
+    error?: string;
+  } | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [cloudUrl, setCloudUrl] = useState('');
-  const [cloudSaved, setCloudSaved] = useState(false);
-  const [cloudAuthToken, setCloudAuthToken] = useState('');
-  const [cloudAuthTokenSaved, setCloudAuthTokenSaved] = useState(false);
 
   useEffect(() => {
     window.electronAPI?.getServerStatus().then((s) => {
       setStatus(s);
       setOllamaUrl(s.ollamaUrl);
       setSelectedModel(s.defaultModel);
-      setCloudUrl(s.cloudUrl ?? '');
-      setCloudAuthToken(s.cloudAuthToken ?? '');
     });
     window.electronAPI?.getDefaults().then((d) => {
       setExtensions(d.extensions);
@@ -116,19 +126,6 @@ export default function SettingsView() {
     }
   }
 
-  async function handleSaveCloudUrl() {
-    await window.electronAPI?.setCloudUrl(cloudUrl);
-    setCloudSaved(true);
-    setTimeout(() => setCloudSaved(false), 3000);
-    window.dispatchEvent(new Event('cloud-url-changed'));
-  }
-
-  async function handleSaveCloudAuthToken() {
-    await window.electronAPI?.setCloudAuthToken(cloudAuthToken);
-    setCloudAuthTokenSaved(true);
-    setTimeout(() => setCloudAuthTokenSaved(false), 3000);
-  }
-
   async function handleOpenConfig() {
     const configPath = await window.electronAPI?.getConfigPath();
     if (configPath) window.electronAPI?.openPath(configPath);
@@ -168,12 +165,7 @@ export default function SettingsView() {
               onChange={(e) => setOllamaUrl(e.target.value)}
               className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
             />
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleTestConnection}
-              disabled={testing}
-            >
+            <Button variant="outline" size="sm" onClick={handleTestConnection} disabled={testing}>
               {testing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               {!testing && 'Test Connection'}
             </Button>
@@ -182,7 +174,8 @@ export default function SettingsView() {
           {testResult?.connected && (
             <div className="mt-3 flex items-center gap-2 text-sm text-emerald-400">
               <CheckCircle2 className="h-4 w-4" />
-              Connected — {testResult.models.length} model{testResult.models.length !== 1 && 's'} available
+              Connected — {testResult.models.length} model{testResult.models.length !== 1 && 's'}{' '}
+              available
             </div>
           )}
           {testResult && !testResult.connected && (
@@ -263,7 +256,9 @@ export default function SettingsView() {
               </div>
             </div>
             <div>
-              <label className="mb-1.5 block text-xs text-muted-foreground">Activity log limit</label>
+              <label className="mb-1.5 block text-xs text-muted-foreground">
+                Activity log limit
+              </label>
               <div className="flex items-center gap-3">
                 <input
                   type="number"
@@ -280,64 +275,6 @@ export default function SettingsView() {
                 Older events are pruned automatically. Takes effect on next indexing event.
               </p>
             </div>
-          </div>
-        </Section>
-
-        {/* ── Cloud Memories ───────────────────────────────────── */}
-        <Section
-          title="Cloud Memories"
-          description="Cloudflare Worker memory server URL. Dev and installed builds use separate config files automatically."
-        >
-          <div className="flex flex-col gap-5">
-            {/* Worker URL */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Worker URL</label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="text"
-                  value={cloudUrl}
-                  onChange={(e) => setCloudUrl(e.target.value)}
-                  placeholder="https://lodestone-mcp.your-account.workers.dev"
-                  className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-                <Button variant="outline" size="sm" onClick={handleSaveCloudUrl}>
-                  Save
-                </Button>
-              </div>
-              {cloudSaved && (
-                <div className="flex items-center gap-1.5 text-xs text-emerald-400">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  Saved
-                </div>
-              )}
-            </div>
-
-            {/* Auth token */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Auth Token</label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="password"
-                  value={cloudAuthToken}
-                  onChange={(e) => setCloudAuthToken(e.target.value)}
-                  placeholder="Bearer token (leave blank if not required)"
-                  className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                />
-                <Button variant="outline" size="sm" onClick={handleSaveCloudAuthToken}>
-                  Save
-                </Button>
-              </div>
-              {cloudAuthTokenSaved && (
-                <div className="flex items-center gap-1.5 text-xs text-emerald-400">
-                  <CheckCircle2 className="h-3.5 w-3.5" />
-                  Saved
-                </div>
-              )}
-            </div>
-
-            <p className="text-xs text-muted-foreground/60">
-              Leave blank to disable. The active URL is checked every 10 seconds.
-            </p>
           </div>
         </Section>
 
@@ -371,8 +308,10 @@ export default function SettingsView() {
               </Button>
               <p className="mt-2 text-xs text-muted-foreground/60">
                 Writes the <code className="text-[10px]">lodestone-files</code> entry to{' '}
-                <code className="text-[10px]">{claudeStatus?.configPath ?? 'claude_desktop_config.json'}</code>.
-                Existing MCP servers are preserved. Restart Claude Desktop after configuring.
+                <code className="text-[10px]">
+                  {claudeStatus?.configPath ?? 'claude_desktop_config.json'}
+                </code>
+                . Existing MCP servers are preserved. Restart Claude Desktop after configuring.
               </p>
             </div>
             {claudeConfigResult?.success && (
@@ -382,9 +321,7 @@ export default function SettingsView() {
               </div>
             )}
             {claudeConfigResult && !claudeConfigResult.success && (
-              <div className="text-sm text-red-400">
-                Error: {claudeConfigResult.error}
-              </div>
+              <div className="text-sm text-red-400">Error: {claudeConfigResult.error}</div>
             )}
           </div>
         </Section>
@@ -428,9 +365,7 @@ export default function SettingsView() {
               </p>
             </div>
             {appVersion && (
-              <p className="text-xs text-muted-foreground/50">
-                Lodestone v{appVersion}
-              </p>
+              <p className="text-xs text-muted-foreground/50">Lodestone v{appVersion}</p>
             )}
           </div>
         </Section>
@@ -446,21 +381,20 @@ export default function SettingsView() {
             </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            This will remove all silos and reset every setting to its default value. The database files on disk will not be deleted — you can reconnect silos afterwards.
+            This will remove all silos and reset every setting to its default value. The database
+            files on disk will not be deleted — you can reconnect silos afterwards.
           </p>
-          <p className="text-sm text-muted-foreground">
-            This action cannot be undone.
-          </p>
+          <p className="text-sm text-muted-foreground">This action cannot be undone.</p>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setShowResetConfirm(false)} disabled={resetting}>
-              Cancel
-            </Button>
             <Button
-              variant="destructive"
+              variant="outline"
               size="sm"
-              onClick={handleResetAll}
+              onClick={() => setShowResetConfirm(false)}
               disabled={resetting}
             >
+              Cancel
+            </Button>
+            <Button variant="destructive" size="sm" onClick={handleResetAll} disabled={resetting}>
               {resetting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               Reset Everything
             </Button>
@@ -483,9 +417,7 @@ function Section({
   return (
     <section>
       <h2 className="text-sm font-medium text-foreground">{title}</h2>
-      {description && (
-        <p className="mt-1 mb-3 text-xs text-muted-foreground">{description}</p>
-      )}
+      {description && <p className="mt-1 mb-3 text-xs text-muted-foreground">{description}</p>}
       {!description && <div className="mt-3" />}
       {children}
     </section>

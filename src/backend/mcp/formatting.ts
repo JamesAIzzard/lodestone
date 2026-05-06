@@ -3,23 +3,38 @@
  */
 
 import path from 'node:path';
-import type { SearchResult, DirectoryResult, LocationHint, MemoryStatusValue, PriorityLevel } from '../../shared/types';
-import { tokenise } from '../../shared/portable/tokeniser';
+import type { SearchResult, DirectoryResult, LocationHint } from '../../shared/types';
 
 import type { PuidManager } from './puid-manager';
 
 // ── Date context ─────────────────────────────────────────────────────────────
 
-const FULL_DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const FULL_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const SHORT_MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const FULL_DAY_NAMES = [
+  'Sunday',
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+];
+const FULL_MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
 
 function formatDateFull(d: Date): string {
   return `${FULL_DAY_NAMES[d.getDay()]} ${d.getDate()} ${FULL_MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
-}
-
-function formatDateShort(d: Date): string {
-  return `${FULL_DAY_NAMES[d.getDay()].slice(0, 3)} ${d.getDate()} ${SHORT_MONTH_NAMES[d.getMonth()]}`;
 }
 
 function formatTime(d: Date): string {
@@ -34,75 +49,6 @@ export function buildDatetime(): string {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return `${formatDateFull(now)}, ${formatTime(now)} (${tz})`;
 }
-
-/**
- * Build a compact date reference line to prepend to orient/agenda output.
- * Anchors the LLM on today's date, current time, and key relative offsets,
- * preventing errors when reasoning about "yesterday", "tomorrow", and overdue items.
- */
-export function buildDateContext(): string {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-
-  const tomorrow = new Date(today);
-  tomorrow.setDate(today.getDate() + 1);
-
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  return `📅 Today: ${formatDateFull(today)}, ${formatTime(now)} (${tz}) | Yesterday: ${formatDateShort(yesterday)} | Tomorrow: ${formatDateShort(tomorrow)}`;
-}
-
-// ── Memory truncation ────────────────────────────────────────────────────────
-
-/** Maximum characters to show in memory previews before truncating. */
-export const MEMORY_PREVIEW_CHARS = 200;
-
-/** Truncate a memory body for preview, appending ellipsis if needed. */
-export function truncateMemoryBody(body: string, limit: number = MEMORY_PREVIEW_CHARS): string {
-  if (body.length <= limit) return body;
-  return body.slice(0, limit) + '\u2026';
-}
-
-/** Token threshold above which a body length warning is emitted. */
-const MEMORY_BODY_WARN_TOKENS = 200;
-
-/** Return a warning string if the memory body exceeds the token threshold, otherwise empty. */
-export function memoryBodyWarning(body: string): string {
-  const count = tokenise(body).length;
-  if (count <= MEMORY_BODY_WARN_TOKENS) return '';
-  return `\n\n\u26a0\ufe0f This memory is ${count} tokens \u2014 consider splitting into smaller, atomic memories that reference each other by m-id for better search precision.`;
-}
-
-/** Map priority number to human-readable label. */
-export function priorityLabel(p: PriorityLevel): string {
-  switch (p) {
-    case 1: return 'low';
-    case 2: return 'medium';
-    case 3: return 'high';
-  }
-}
-
-/** Map status string to a display label. */
-export function statusLabel(s: MemoryStatusValue): string {
-  switch (s) {
-    case 'open': return 'open';
-    case 'completed': return 'completed \u2713';
-    case 'cancelled': return 'cancelled';
-  }
-}
-
-// ── Cross-search threshold ───────────────────────────────────────────────────
-
-/**
- * Minimum score [0,1] for a result to appear in a cross-type sidebar.
- * Applied to memory hits shown during silo search, and to silo note hits
- * shown during memory recall. Keeps sidebars signal-positive only.
- */
-
-
-// ── Read safety ──────────────────────────────────────────────────────────────
 
 /** Maximum file size in bytes for full reads via lodestone_read. */
 export const MAX_READ_BYTES = 512 * 1024; // 512 KB
@@ -149,8 +95,10 @@ function isRedundantSection(sectionPath: string[] | undefined, filePath: string)
 function formatLocationHint(hint: LocationHint): string {
   if (!hint) return '';
   switch (hint.type) {
-    case 'lines': return `Lines ${hint.start}\u2013${hint.end}`;
-    case 'page':  return `Page ${hint.page}`;
+    case 'lines':
+      return `Lines ${hint.start}\u2013${hint.end}`;
+    case 'page':
+      return `Page ${hint.page}`;
   }
 }
 
@@ -223,7 +171,11 @@ export function formatSearchResults(results: SearchResult[], puid: PuidManager):
  * When fullContents is true: flat listing with d-puids on subdirectories
  * and r-puids on files.
  */
-export function formatExploreResults(results: DirectoryResult[], fullContents: boolean, puid: PuidManager): string {
+export function formatExploreResults(
+  results: DirectoryResult[],
+  fullContents: boolean,
+  puid: PuidManager,
+): string {
   if (results.length === 0) {
     return 'No directories found.';
   }
@@ -241,7 +193,9 @@ export function formatExploreResults(results: DirectoryResult[], fullContents: b
     lines.push(`## ${dirPuid}: ${result.dirPath}${parentSuffix}`);
     const pct = Math.round(result.score * 100);
     const dirScorerLabel = result.axes[result.scoreSource]?.bestSignal ?? result.scoreSource;
-    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${result.scoreSource}, ${dirScorerLabel}) | ${result.fileCount} files \u00B7 ${result.subdirCount} subdirs`);
+    lines.push(
+      `Silo: ${result.siloName} | Score: ${pct}% (${result.scoreSource}, ${dirScorerLabel}) | ${result.fileCount} files \u00B7 ${result.subdirCount} subdirs`,
+    );
     lines.push('');
 
     if (fullContents) {
@@ -337,9 +291,6 @@ export const READ_DESCRIPTION = [
   'Note: d-prefixed IDs (d1, d2, ...) are directory references from lodestone_explore.',
   'They cannot be read \u2014 use lodestone_explore with startPath to browse directories.',
   '',
-  'Note: m-prefixed IDs (m1, m2, ...) are memory references handled by the lodestone-memory',
-  'server, not this lodestone-files server. Use lodestone_read on lodestone-memory for memories.',
-  '',
   'Examples:',
   '  \u2022 ["r1", "r3"] \u2014 read two files from the last search',
   '  \u2022 [{ id: "r2", location: { type: "lines", start: 10, end: 50 } }] \u2014 read a specific line range',
@@ -404,9 +355,6 @@ export const EDIT_DESCRIPTION = [
   'modified externally since, the edit is rejected with the current file content.',
   'The stored hash is refreshed on conflict, so you can adjust and retry immediately',
   'without a separate lodestone_read call.',
-  '',
-  'Memory references (m-prefixed IDs) are handled by the lodestone-memory server.',
-  'Use lodestone_revise / lodestone_forget on lodestone-memory to update or delete memories.',
   '',
   'Files must be within a configured silo directory. Text edits require valid UTF-8.',
 ].join('\n');

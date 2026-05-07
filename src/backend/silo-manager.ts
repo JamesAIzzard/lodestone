@@ -352,8 +352,9 @@ export class SiloManager {
     await this.loadInitialState();
     if (this.lifecycle.stopRequested) return;
     await this.runStartupReconcile();
+    if (this.lifecycle.phase() === 'error') return;
     await this.configStore.persist();
-    if (this.lifecycle.stopRequested) return;
+    if (this.lifecycle.stopRequested || this.lifecycle.phase() === 'error') return;
     this.lifecycle.transition('ready');
     this.watcherCoord.start();
     console.log(

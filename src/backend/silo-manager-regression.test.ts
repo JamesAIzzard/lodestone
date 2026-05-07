@@ -533,3 +533,21 @@ describe('SiloManager — start cancellation honoured at each yield point (Phase
     expect(t.watcher.started).toBe(false);
   });
 });
+
+describe('SiloManager — startup reconcile errors', () => {
+  it('stays in error when startup reconcile fails inside the queue task', async () => {
+    const t = makeTestSilo();
+    t.store.flush = async () => {
+      throw new Error('forced startup reconcile failure');
+    };
+
+    await t.manager.start();
+
+    const status = await t.manager.getStatus();
+    expect(status.watcherState).toBe('error');
+    expect(status.errorMessage).toContain('forced startup reconcile failure');
+    expect(t.watcher.started).toBe(false);
+
+    await t.manager.stop();
+  });
+});

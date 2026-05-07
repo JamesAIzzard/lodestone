@@ -971,134 +971,98 @@ For each individual phase:
 
 ---
 
-## Handover (post-Phase 7)
+## Handover (post-Phase 8)
 
-**Status:** Phases 1–7 of the refactor are complete. The six
-collaborator extractions (`StoreFacade`, `MtimeIndex`, `ActivityLog`,
-`SiloConfigStore`, `SiloLifecycle`, `WatcherCoordinator`) are in
+**Status:** Phases 1–8 complete. The seven collaborator extractions
+(`StoreFacade`, `MtimeIndex`, `ActivityLog`, `SiloConfigStore`,
+`SiloLifecycle`, `WatcherCoordinator`, `DirectoryExplorer`) are in
 place; `doStart` is decomposed into named phases with explicit
-cancellation surfaces; mechanical trim has landed. The Phase 1
-regression suite has stayed unchanged through every phase since it
-landed — the strongest behaviour-preservation signal we have. Tests
-green, typecheck clean.
+cancellation surfaces; the architecture doc has landed at
+[`docs/architecture/silo-manager.md`](architecture/silo-manager.md).
+The Phase 1 regression suite has stayed unchanged through every phase
+since it landed — the strongest behaviour-preservation signal we have.
+Tests green, typecheck clean.
 
-`silo-manager.ts` is 948 lines, down from 1084 at the start of the
-refactor but well short of the plan's ≤300-line Definition-of-Done
-target. The honest accounting: Phases 1–7 left the manager as a
-coordinator wiring six collaborators, but with a substantive
-public-API surface (seven `update*` methods, `search`,
-`reindexFile`, `exploreDirectories`, `getStatus`, plus the lifecycle
-entry points). The line target requires further collaborator
-extractions — see **Phase 8 trim candidates** below.
+`silo-manager.ts` is 857 lines, down from 1084 at the start. Still
+short of the plan's ≤300-line Definition-of-Done target — the
+remaining gap is the `StatusReporter`/`StatusCache` extraction (trim
+candidate #2 below, ~50–70 lines) and the public-API surface itself,
+which is structural rather than reducible. The doc-pass component of
+the DoD has landed; the line component has not.
 
-### Current architecture
+### Current state at a glance
 
-| Collaborator | File | Owns |
-|---|---|---|
-| `StoreFacade` | [`store-facade.ts`](../src/backend/store-facade.ts) | 22-method interface around the store-worker proxy; constructor-injected so tests can swap |
-| `MtimeIndex` | [`silo/mtime-index.ts`](../src/backend/silo/mtime-index.ts) | In-memory mtime cache + `MtimeSink` writer interface used by reconcile and the watcher |
-| `ActivityLog` | [`silo/activity-log.ts`](../src/backend/silo/activity-log.ts) | Bounded event buffer, listener fan-out, fire-and-forget DB persistence |
-| `SiloConfigStore` | [`silo/silo-config-store.ts`](../src/backend/silo/silo-config-store.ts) | Config blob + parametric `apply()` collapsing the 7 update methods |
-| `SiloLifecycle` | [`silo/silo-lifecycle.ts`](../src/backend/silo/silo-lifecycle.ts) | FSM (`created`/`starting`/`waiting`/`indexing`/`maintenance`/`ready`/`stopped`/`error`) + cancellation token (`stopRequested`); maps phase → `WatcherState` for IPC |
-| `WatcherCoordinator` | [`silo/watcher-coordinator.ts`](../src/backend/silo/watcher-coordinator.ts) | Live watcher, queue-dedup, scheduling, watcher-event handler |
-
-`silo-manager.ts` itself is now: constructor wiring + state-change
-bridge, the 9 `update*` methods (all delegating to `configStore.apply()`
-plus a persist or `reconcileAndRestartWatcher`), `start`/`doStart` +
-6 named phase methods + `runWalMaintenance`, `stop`/`freeze`/`wake`/
-`rebuild`/`loadOfflineStatus`, the public read API
-(`search`/`reindexFile`/`exploreDirectories`/`getStatus`/etc.), the
-two `make*StoreOps` adapter factories the manager passes to reconcile
-and the watcher, and the two reconcile callbacks
-(`onReconcileProgress`/`onReconcileEvent`).
-
-### Verifying current state
+For the live module map (collaborators, what stays in the manager,
+load-bearing invariants, test surface), see the architecture doc:
+**[`docs/architecture/silo-manager.md`](architecture/silo-manager.md)**.
+That document is now the canonical reference; this section just covers
+what's left to do.
 
 ```sh
 npm run typecheck    # clean
-npm test             # 12 test files, 206 tests, all green
+npm test             # 13 test files, 219 tests, all green
 ```
 
-The relevant suites:
+### What's left (optional)
 
-- [`silo-manager-regression.test.ts`](../src/backend/silo-manager-regression.test.ts) — the Phase 1 regression net (14 tests covering lifecycle round-trips, status caching, watcher events, rename pinning, model mismatch, `rebuild()` post-state, plus 3 Phase 6 cancellation-yield-point tests).
-- Per-collaborator suites under `src/backend/silo/`: `mtime-index.test.ts`, `activity-log.test.ts`, `silo-config-store.test.ts`, `silo-lifecycle.test.ts`, `watcher-coordinator.test.ts`.
-- [`silo-manager.test.ts`](../src/backend/silo-manager.test.ts) — pre-refactor 59-line embedding-init failure test, preserved end-to-end through every phase.
-- Test helpers in [`src/backend/test-helpers/`](../src/backend/test-helpers/): `local-store-facade.ts` (in-memory + temp-dir StoreFacade implementations), `fake-watcher.ts`, `stub-embedding.ts`.
+**Phase 8 trim candidate #2 — `StatusReporter`/`StatusCache`.** Medium
+yield, modest risk. Move `cachedFileCount` / `cachedChunkCount` /
+`cachedSizeBytes` (written across `freeze`, `rebuild`, and
+`runStartupReconcile`'s closure), `getStatus`'s cache gating, and
+`readFileSizeFromDisk` into a small status collaborator.
+**Care needed:** the cache-fill in `runStartupReconcile` happens
+*before* the `'maintenance'` transition, and `getStatus`'s cache gate
+reads `phase === 'maintenance'` — the ordering is the contract.
+Saves ~50–70 lines.
 
-### What's left
+**Phase 8 trim candidate #3 — `runReconcileInQueue` private helper.**
+Low yield, neutral risk. `runStartupReconcile` and
+`reconcileAndRestartWatcher` share a ~12-line `IndexingQueue` +
+reconcile + change-log skeleton; their closure bodies diverge in the
+middle (one runs WAL maintenance, the other restarts the watcher). A
+continuation-passing helper could factor the skeleton. Phases 6 and 7
+each audited this and concluded abstraction overhead exceeds savings —
+revisit only if #2 lands and the manager is within sight of the line
+target.
 
-**Phase 8 — documentation pass** (the originally-planned final
-phase): produce a one-page module map under `docs/architecture/`
-describing the `SiloManager` + collaborators graph. The "Target
-architecture" section of this plan is the spine. Note that the plan's
-sketches of `DirectoryExplorer` / `StatusReporter` are still present-as-
-manager-methods today (see trim candidates below) — the doc should
-reflect reality, not the sketch.
+**Do *not* extract** the reconcile callbacks (`onReconcileProgress` /
+`onReconcileEvent`). They glue the lifecycle FSM, the activity log,
+and the `reconcileProgress` field together; extracting just threads
+three references back through.
 
-**Phase 8 trim candidates** (optional — only pursue if pushing toward
-the line target is wanted, in priority order):
+### Standing constraints (preserve through any further work)
 
-1. **`DirectoryExplorer`** — highest yield, lowest risk. Extract
-   `exploreDirectories`, `exploreRootDirectories`,
-   `resolveDirectoryPaths`, and the module-level `resolveTreeNodes`
-   into `src/backend/silo/directory-explorer.ts`. Pure path-translation
-   glue (input: search params + `config.directories`; output:
-   `SiloDirectorySearchResult[]` with absolute paths). Manager
-   delegates `exploreDirectories(params)` in one line. Saves ~85 lines.
-
-2. **`StatusReporter`** / **`StatusCache`** — medium yield, modest
-   risk. Move `cachedFileCount` / `cachedChunkCount` /
-   `cachedSizeBytes` (written across `freeze`, `rebuild`, and
-   `runStartupReconcile`'s closure), `getStatus`'s cache gating, and
-   `readFileSizeFromDisk` into a small status collaborator.
-   **Care needed:** the cache-fill in `runStartupReconcile` happens
-   *before* the `'maintenance'` transition, and `getStatus`'s cache
-   gate reads `phase === 'maintenance'` — the ordering is the
-   contract. Saves ~50–70 lines.
-
-3. **`runReconcileInQueue` private helper** — low yield, neutral
-   risk. `runStartupReconcile` and `reconcileAndRestartWatcher` share
-   a ~12-line `IndexingQueue` + reconcile + change-log skeleton;
-   their closure bodies diverge in the middle (one runs WAL
-   maintenance, the other restarts the watcher). A continuation-
-   passing helper could factor the skeleton. Phase 6 and Phase 7 each
-   audited this and concluded abstraction overhead exceeds savings —
-   revisit only if (1) and (2) land and the manager is within sight
-   of the line target.
-
-4. **Do *not* extract** the reconcile callbacks
-   (`onReconcileProgress` / `onReconcileEvent`). They glue the
-   lifecycle FSM, the activity log, and the `reconcileProgress` field
-   together; extracting just threads three references back through.
-
-### Standing constraints (preserve through any Phase 8 work)
+These are also enumerated in the architecture doc; repeated here for
+the benefit of whoever picks up trim #2.
 
 - **Behaviour preservation.** Every phase since Phase 1 has kept the
-  regression suite unchanged. Any Phase 8 trim must continue to do
-  so. If you find yourself updating a regression test, stop and
-  audit — you're either on a real behaviour change (separate ticket)
-  or breaking something.
+  regression suite unchanged. Any further trim must continue to do so.
+  If you find yourself updating a regression test, stop and audit —
+  you're either on a real behaviour change (separate ticket) or
+  breaking something.
 - **Public API.** Renderer/IPC contract is the `SiloManagerStatus`
   shape and the `WatcherState` wire format. The external-`WatcherState`
   filter in the constructor (which suppresses no-op edges between
   internal phases that map to the same wire value, e.g. `'indexing'`
   ↔ `'maintenance'`) is load-bearing — preserve it.
 - **Identity.** `siloId === config.name`, recomputed on access. Pain
-  point 7a in the plan body documents the rename hazard; the
-  regression suite captures current behaviour. Don't change the
-  identity model as part of a trim — that's a separate bugfix
-  (Phase 3 "Identity constraint" note).
-- **Queue boundary in `runStartupReconcile`.** The `IndexingQueue`
-  slot spans *both* reconcile *and* WAL maintenance — the slot is
-  held until maintenance completes. Phase 6 design decision: prevents
-  inter-silo interleaving between checkpoint and VACUUM. Any Phase 8
-  trim that touches that closure must preserve the contiguous span.
+  point 7a documents the rename hazard; the regression suite captures
+  current behaviour. Don't change the identity model as part of a
+  trim — that's a separate bugfix (Phase 3 "Identity constraint" note).
+- **Queue boundary in `runStartupReconcile`.** The `IndexingQueue` slot
+  spans *both* reconcile *and* WAL maintenance — the slot is held
+  until maintenance completes. Phase 6 design decision: prevents
+  inter-silo interleaving between checkpoint and VACUUM. Any trim that
+  touches that closure must preserve the contiguous span.
 - **Reconcile cancellation contract.** Reconcile and the watcher loop
   receive `() => lifecycle.stopRequested` as their cancellation
-  callback (formerly `() => this.stopped`). The FSM phase and the
-  cancellation token are deliberately orthogonal (Phase 4 scoping
-  note) — don't compress them.
+  callback. The FSM phase and the cancellation token are deliberately
+  orthogonal (Phase 4 scoping note) — don't compress them.
+- **Status-cache ordering** (specific to trim #2). The cache-fill in
+  `runStartupReconcile` happens *before* the `'maintenance'`
+  transition, and `getStatus`'s cache gate reads
+  `phase === 'maintenance'`. A `StatusReporter` extraction must
+  preserve this ordering or the gate reads stale (zero) values.
 
 ### Outstanding follow-up tickets (not part of this refactor)
 

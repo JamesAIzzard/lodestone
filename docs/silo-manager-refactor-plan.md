@@ -1510,6 +1510,187 @@ state-machine seam removes most of the remaining tangle.
 
 ---
 
+---
+
+## Phase 4 — SiloLifecycle FSM extraction handover
+
+**Status:** complete. `npm run typecheck` clean. `npm test` shows 11 test
+files, 184 tests, all passing — 123 carried forward from Phase 3 plus
+61 new for `SiloLifecycle` in isolation. The Phase 1 regression suite
+(11 tests) did not need a single change, same as every prior phase —
+the strongest signal that the extraction is behaviour-preserving.
+
+`silo-manager.ts` went from 1037 → 1048 lines (+11). The slight
+uptick is the FSM listener-bridge in the constructor (forwarding only
+real external-WatcherState changes to `stateChangeListener`) plus
+field docs. Phase 4's headline win is *structural*, not line count:
+the boolean tangle (`_watcherState` setter/getter, `maintenanceInProgress`,
+`stopped`) is gone, every state change goes through one validated FSM,
+and cancellation is now explicit and orthogonal. Phase 7's final trim
+will collapse the now-redundant ceremony.
+
+### Files added
+
+| Path | Purpose |
+|---|---|
+| [`src/backend/silo/silo-lifecycle.ts`](../src/backend/silo/silo-lifecycle.ts) | `SiloLifecyclePhase` union, `toWatcherState` projection, and the `SiloLifecycle` class — single owner of the FSM (validated transitions + listener) and the cancellation token. |
+| [`src/backend/silo/silo-lifecycle.test.ts`](../src/backend/silo/silo-lifecycle.test.ts) | 61 unit tests covering initial state, exhaustive phase→`WatcherState` mapping, every legal transition (one test per row), the strict illegal cases (especially `* → maintenance` from non-`indexing`), same-phase no-ops, listener semantics, and the orthogonal cancellation token. |
+
+### Files changed
+
+| Path | Change |
+|---|---|
+| [`src/backend/silo-manager.ts`](../src/backend/silo-manager.ts) | Three private fields (`_watcherState`, `maintenanceInProgress`, `stopped`) + the `watcherState` setter/getter pair — all replaced by `private readonly lifecycle = new SiloLifecycle()`. Every `this.watcherState = X` write became `this.lifecycle.transition(X)`; every `this.stopped` read became `this.lifecycle.stopRequested`; every `this.stopped = true` write became `this.lifecycle.requestStop()`; the single `this.stopped = false` write at start() became `this.lifecycle.resetStopRequest()`. The `getStatus()` cache gate now reads `phase === 'maintenance'` instead of the dead flag. The constructor registers a phase-change listener that forwards only real external-`WatcherState` changes to `stateChangeListener` — so `'indexing' ↔ 'maintenance'` edges (which both project to wire `'indexing'`) stay invisible to the renderer, exactly like the pre-refactor setter's `if (newValue !== oldValue)` guard. |
+
+### Design decisions
+
+**1. Drop `'starting'` from the phase enum.** The plan's illustrative
+list included `'starting'` for "doStart in progress, before
+IndexingQueue admits". Tracing the pre-refactor code shows no
+observable state corresponds to that window — `_watcherState` stays
+at whatever priming set it to (or the literal `'ready'` default for
+unprimed managers) until the queue's `onWaiting`/`onStart` callback
+fires. Adding `'starting'` would have either been a behaviour change
+(the renderer would briefly see a new state) or pure ceremony
+(transitioned in and out without anyone seeing it). Cut it.
+
+**2. Maintenance round-trips back through `'indexing'` at the
+line-444 boundary.** The pre-refactor code had `maintenanceInProgress`
+flip to `false` *before* `_watcherState` flipped to `'ready'`,
+creating a brief window where `getStatus()` took the live path while
+the literal external state was still `'indexing'`. Modelling
+maintenance as an absorbing phase that only transitions to
+`'ready'` (collapsing the window into `'maintenance'`) would shift
+the cache gate from "live" to "cached" for that window — a
+behaviour change. The FSM instead transitions
+`'maintenance' → 'indexing'` at the old `maintenanceInProgress = false`
+site and `'indexing' → 'ready'` at the old `_watcherState = 'ready'`
+site, preserving the window exactly. The illegal-transition table
+keeps `'maintenance'` strict (only enterable from `'indexing'`),
+which is the real invariant worth enforcing.
+
+**3. Permissive transitions out of `'stopped'` and `'error'`.** The
+plan's "transitions are explicit and validated" discipline can be
+read as "lock down every edge". In practice, `rebuild()` and
+`wake()` legitimately reach `'waiting'`/`'indexing'`/`'ready'` from
+`'stopped'`, and recovery via `start()` reaches them from `'error'`.
+The strict invariant is `* → 'maintenance'` (only from `'indexing'`)
+and "`'stopped'` does not error" (`'stopped' → 'error'` is illegal).
+Other source-target pairs are open. Six illegal-transition tests pin
+this surface so the strictness is intentional, not accidental.
+
+**4. Cancellation stays orthogonal, as the plan instructed.** A
+`stop()` call sets `lifecycle.stopRequested` but does *not*
+transition the phase. Whoever called `stop()` (freeze, rebuild,
+shutdown) owns the subsequent transition. This preserves the
+pre-refactor semantics where `_watcherState` did not change inside
+`stop()` itself.
+
+### Behaviour notes pinned by the new tests
+
+The 61 SiloLifecycle tests pin three things future phases will lean on:
+
+1. **The phase→external mapping is exhaustive** — every phase has a
+   wire value, so the renderer always sees something valid even
+   during transient internal phases like `'created'` or
+   `'maintenance'`.
+2. **Same-phase transitions are no-ops, not errors.** The
+   pre-refactor setter's `if (newValue !== oldValue)` guard is
+   preserved by the FSM; idempotent transitions don't fire the
+   listener.
+3. **`stopRequested` and `phase` are independent.** A stop request
+   can be raised mid-`'indexing'` and persists across subsequent
+   transitions until `resetStopRequest()` is called by the next
+   `start()`. Reconcile and the watcher loop continue to consume a
+   `() => boolean` callback (today: `() => lifecycle.stopRequested`)
+   rather than reading the phase, so the lifecycle change doesn't
+   need to ripple into either of those modules.
+
+### What was *not* changed in Phase 4
+
+- **Reconcile signature.** The cancellation callback is still
+  `() => boolean`. The plan's Phase 6 pseudocode (using
+  `this.stopped` short-circuits) translates 1:1 to
+  `this.lifecycle.stopRequested`. No reconcile-side change required.
+- **Public manager API.** Every external caller still sees
+  `manager.currentState: WatcherState`, `manager.isStopped: boolean`,
+  `manager.getStatus()`, and `manager.onStateChange(listener)`. The
+  listener is filtered to only fire on real external transitions —
+  same as pre-refactor.
+- **The `loadOfflineStatus` priming methods.** They still exist and
+  still take `'stopped'` or `'waiting'`; they now go through
+  `lifecycle.transition(state)` which validates the source. Both
+  call sites (registerManager from `'created'`, wake from
+  `'stopped'`) are covered by the legal-transition table.
+- **The mid-reconcile error overwrite.** When reconcile throws
+  inside the IndexingQueue task, the catch handler transitions to
+  `'error'`, then `doStart` proceeds past the resolve and at line
+  ~466 unconditionally transitions to `'ready'` — overwriting the
+  error. This is a pre-existing oddity (the `if (this.stopped)`
+  early-return at line 465 wasn't checking for the error case).
+  Phase 4 preserves it. Worth a follow-up ticket if you want to
+  surface mid-reconcile errors to the renderer correctly; not
+  bundled here.
+
+### How to pick up Phase 5 — WatcherCoordinator
+
+Phase 5 extracts the watcher-event coordination triple
+(`pendingWatcherEnqueue`, `cancelWatcherEnqueue`, `watcherIndexingDone`)
+into a dedicated collaborator. The plan flagged it as medium risk
+because the queue dedup is timing-sensitive — but the FSM seam now
+in place makes the test surface cleaner: a fake watcher emits
+events, the coordinator schedules through a real `IndexingQueue`,
+and assertions read `lifecycle.phase()` instead of poking at
+internal booleans.
+
+Steps:
+
+1. Re-read the plan's "Phase 5 — Extract `WatcherCoordinator`"
+   section. The constructor signature in the plan sketch is
+   illustrative; the actual wiring should pass in the live
+   `lifecycle`, `mtimes`, `activity`, and `IndexingQueue` rather
+   than reconstructing them.
+2. Create `src/backend/silo/watcher-coordinator.ts`. Move
+   `startWatcher`, `handleWatcherEvent`, and
+   `scheduleWatcherIndexing` (plus the three coordination fields)
+   into it.
+3. The coordinator's `start()` creates the watcher via the
+   injected `SiloWatcherFactory` and wires the queue-fill /
+   event handlers. Its `drain()` (called by `stop()`) handles
+   cancelling any pending queue slot and awaiting the in-flight
+   task.
+4. Add unit tests covering: rapid `scheduleWatcherIndexing()`
+   produces exactly one queue slot; cancel-before-run frees the
+   slot; in-flight runs are awaited by `drain()`; an `'indexed'`
+   watcher event triggers exactly one `mtimes.indexed(...)` call.
+5. Run the full suite. The 11 Phase 1 regression tests *and* the
+   four collaborator suites (`MtimeIndex`, `ActivityLog`,
+   `SiloConfigStore`, `SiloLifecycle`) must all stay green.
+
+Signs Phase 5 is going well:
+- The watcher-event regression tests stay untouched.
+- `silo-manager.ts` shrinks meaningfully — Phase 5 is the first
+  phase since 2a where structural extraction also produces a real
+  line reduction (the watcher-coordination block is ~80 lines).
+- The new collaborator's tests catch dedup races deterministically
+  (vitest fake timers + explicit Promise gates, per the plan).
+
+Signs Phase 5 is going badly:
+- A regression test fails — pause and audit the dedup logic; the
+  three-field triple is the historical bug breeding ground (see the
+  pain points list).
+- The coordinator starts depending on `dbOpen` or other manager-
+  internal state — that's a flag the abstraction is leaking.
+  Coordinator should know about queue + watcher + lifecycle, no
+  more.
+
+After Phase 5 lands, Phase 6 (the `doStart` named-phase
+refactoring) becomes the largest visible win in the manager —
+the 148-line god method finally collapses into 5–7 named phase
+methods, each individually testable.
+
+---
+
 ## Out of scope (named explicitly)
 
 These came up during the audit but belong in their own work, not this

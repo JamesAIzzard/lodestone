@@ -28,6 +28,18 @@ import {
   dispatchSearch,
   mergeSearchResults,
 } from '../backend/search-merge';
+import {
+  configureClaudeDesktop,
+  configureCodexDesktop,
+  getClaudeDesktopConfigPath as resolveClaudeDesktopConfigPath,
+  getClaudeDesktopStatus,
+  getCodexDesktopConfigPath as resolveCodexDesktopConfigPath,
+  getCodexDesktopStatus,
+  getMcpWrapperPath as resolveMcpWrapperPath,
+  type McpClientConfigureResult,
+  type McpClientId,
+  type McpClientStatus,
+} from './mcp-client-config';
 import type {
   SiloStatus,
   SearchResult,
@@ -639,14 +651,53 @@ function registerSettingsHandlers(ctx: AppContext): void {
 }
 
 function registerMcpHandlers(): void {
+  function getClientConfigPath(clientId: McpClientId): string {
+    return clientId === 'claude-desktop'
+      ? resolveClaudeDesktopConfigPath(app.getPath('appData'))
+      : resolveCodexDesktopConfigPath(app.getPath('home'));
+  }
+
+  function getClientStatus(clientId: McpClientId): McpClientStatus {
+    const configPath = getClientConfigPath(clientId);
+    return clientId === 'claude-desktop'
+      ? getClaudeDesktopStatus(configPath)
+      : getCodexDesktopStatus(configPath);
+  }
+
+  function configureClient(clientId: McpClientId): McpClientConfigureResult {
+    const configPath = getClientConfigPath(clientId);
+    const wrapperPath = resolveMcpWrapperPath({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    });
+
+    return clientId === 'claude-desktop'
+      ? configureClaudeDesktop(configPath, wrapperPath)
+      : configureCodexDesktop(configPath, wrapperPath);
+  }
+
+  ipcMain.handle(
+    'mcp:getClientStatus',
+    async (_event, clientId: McpClientId): Promise<McpClientStatus> => getClientStatus(clientId),
+  );
+
+  ipcMain.handle(
+    'mcp:configureClient',
+    async (_event, clientId: McpClientId): Promise<McpClientConfigureResult> =>
+      configureClient(clientId),
+  );
+
   function getClaudeDesktopConfigPath(): string {
-    return path.join(app.getPath('appData'), 'Claude', 'claude_desktop_config.json');
+    return getClientConfigPath('claude-desktop');
   }
 
   function getMcpWrapperPath(): string {
-    return app.isPackaged
-      ? path.join(process.resourcesPath, 'mcp-wrapper.js')
-      : path.join(app.getAppPath(), 'mcp-wrapper.js');
+    return resolveMcpWrapperPath({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      appPath: app.getAppPath(),
+    });
   }
 
   ipcMain.handle(

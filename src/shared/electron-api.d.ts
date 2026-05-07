@@ -28,6 +28,20 @@ export interface StoredSiloConfigResponse {
   } | null;
 }
 
+export type McpClientId = 'claude-desktop' | 'codex-desktop';
+
+export interface McpClientStatus {
+  configPath: string;
+  hasClient: boolean;
+  isConfigured: boolean;
+}
+
+export interface McpClientConfigureResult {
+  success: boolean;
+  configPath: string;
+  error?: string;
+}
+
 export interface ElectronAPI {
   // ── Dialogs & Shell ────────────────────────────────────────────────────────
   selectDirectories: () => Promise<string[]>;
@@ -94,7 +108,9 @@ export interface ElectronAPI {
   getConfigPath: () => Promise<string>;
   getDataDir: () => Promise<string>;
 
-  // ── Claude Desktop Integration ────────────────────────────────────────────
+  // ── MCP Client Integration ────────────────────────────────────────────────
+  getMcpClientStatus: (clientId: McpClientId) => Promise<McpClientStatus>;
+  configureMcpClient: (clientId: McpClientId) => Promise<McpClientConfigureResult>;
   getClaudeDesktopStatus: () => Promise<{
     configPath: string;
     hasClaudeDesktop: boolean;

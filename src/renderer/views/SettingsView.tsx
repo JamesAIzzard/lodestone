@@ -11,6 +11,31 @@ import {
 import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
 import ExtensionPicker from '@/components/ExtensionPicker';
 import type { ServerStatus } from '../../shared/types';
+import type {
+  McpClientConfigureResult,
+  McpClientId,
+  McpClientStatus,
+} from '../../shared/electron-api';
+
+const MCP_CLIENTS: Array<{
+  id: McpClientId;
+  label: string;
+  fallbackConfigName: string;
+  restartLabel: string;
+}> = [
+  {
+    id: 'claude-desktop',
+    label: 'Claude Desktop',
+    fallbackConfigName: 'claude_desktop_config.json',
+    restartLabel: 'Claude Desktop',
+  },
+  {
+    id: 'codex-desktop',
+    label: 'Codex Desktop',
+    fallbackConfigName: 'config.toml',
+    restartLabel: 'Codex Desktop',
+  },
+];
 
 export default function SettingsView() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -23,17 +48,13 @@ export default function SettingsView() {
   const [dataDir, setDataDir] = useState('');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [claudeStatus, setClaudeStatus] = useState<{
-    configPath: string;
-    hasClaudeDesktop: boolean;
-    isConfigured: boolean;
-  } | null>(null);
-  const [configuringClaude, setConfiguringClaude] = useState(false);
-  const [claudeConfigResult, setClaudeConfigResult] = useState<{
-    success: boolean;
-    configPath: string;
-    error?: string;
-  } | null>(null);
+  const [selectedMcpClient, setSelectedMcpClient] = useState<McpClientId>('claude-desktop');
+  const [mcpClientStatuses, setMcpClientStatuses] = useState<
+    Partial<Record<McpClientId, McpClientStatus>>
+  >({});
+  const [configuringMcpClient, setConfiguringMcpClient] = useState(false);
+  const [mcpClientConfigResult, setMcpClientConfigResult] =
+    useState<McpClientConfigureResult | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
 
   useEffect(() => {
@@ -49,7 +70,14 @@ export default function SettingsView() {
       setActivityLogLimit(d.activityLogLimit);
     });
     window.electronAPI?.getDataDir().then((dir) => setDataDir(dir));
-    window.electronAPI?.getClaudeDesktopStatus().then(setClaudeStatus);
+    for (const client of MCP_CLIENTS) {
+      window.electronAPI?.getMcpClientStatus(client.id).then((clientStatus) => {
+        setMcpClientStatuses((current) => ({
+          ...current,
+          [client.id]: clientStatus,
+        }));
+      });
+    }
     window.electronAPI?.getAppVersion().then(setAppVersion);
   }, []);
 
@@ -91,18 +119,25 @@ export default function SettingsView() {
     }
   }
 
-  async function handleConfigureClaude() {
-    setConfiguringClaude(true);
-    setClaudeConfigResult(null);
+  async function handleConfigureMcpClient() {
+    setConfiguringMcpClient(true);
+    setMcpClientConfigResult(null);
     try {
-      const result = await window.electronAPI?.configureClaudeDesktop();
-      setClaudeConfigResult(result ?? { success: false, configPath: '', error: 'Unknown error' });
+      const result = await window.electronAPI?.configureMcpClient(selectedMcpClient);
+      setMcpClientConfigResult(
+        result ?? { success: false, configPath: '', error: 'Unknown error' },
+      );
       if (result?.success) {
-        const status = await window.electronAPI?.getClaudeDesktopStatus();
-        setClaudeStatus(status ?? null);
+        const status = await window.electronAPI?.getMcpClientStatus(selectedMcpClient);
+        if (status) {
+          setMcpClientStatuses((current) => ({
+            ...current,
+            [selectedMcpClient]: status,
+          }));
+        }
       }
     } finally {
-      setConfiguringClaude(false);
+      setConfiguringMcpClient(false);
     }
   }
 
@@ -123,6 +158,10 @@ export default function SettingsView() {
   if (availableModels.length === 0) {
     availableModels.push('snowflake-arctic-embed-xs');
   }
+
+  const selectedMcpClientInfo =
+    MCP_CLIENTS.find((client) => client.id === selectedMcpClient) ?? MCP_CLIENTS[0];
+  const selectedMcpClientStatus = mcpClientStatuses[selectedMcpClient] ?? null;
 
   return (
     <div className="p-6">
@@ -211,19 +250,37 @@ export default function SettingsView() {
           </div>
         </Section>
 
-        {/* ── Claude Desktop Integration ───────────────────────── */}
+        {/* ── MCP Client Integration ────────────────────────────── */}
         <Section
-          title="Claude Desktop Integration"
-          description="Automatically register Lodestone as an MCP server in Claude Desktop."
+          title="LLM Client Integration"
+          description="Register Lodestone as a local MCP server for supported desktop clients."
         >
           <div className="flex flex-col gap-3">
-            {claudeStatus?.isConfigured && (
+            <div>
+              <label className="mb-1.5 block text-xs text-muted-foreground">Client</label>
+              <select
+                value={selectedMcpClient}
+                onChange={(event) => {
+                  setSelectedMcpClient(event.target.value as McpClientId);
+                  setMcpClientConfigResult(null);
+                }}
+                className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {MCP_CLIENTS.map((client) => (
+                  <option key={client.id} value={client.id}>
+                    {client.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {selectedMcpClientStatus?.isConfigured && (
               <div className="flex items-center gap-2 text-sm text-emerald-400">
                 <CheckCircle2 className="h-4 w-4" />
                 MCP server is configured
               </div>
             )}
-            {claudeStatus && !claudeStatus.isConfigured && (
+            {selectedMcpClientStatus && !selectedMcpClientStatus.isConfigured && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <XCircle className="h-4 w-4" />
                 Not yet configured
@@ -233,28 +290,31 @@ export default function SettingsView() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleConfigureClaude}
-                disabled={configuringClaude}
+                onClick={handleConfigureMcpClient}
+                disabled={configuringMcpClient}
               >
-                {configuringClaude && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                {claudeStatus?.isConfigured ? 'Reconfigure' : 'Configure Claude Desktop'}
+                {configuringMcpClient && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {selectedMcpClientStatus?.isConfigured
+                  ? `Reconfigure ${selectedMcpClientInfo.label}`
+                  : `Configure ${selectedMcpClientInfo.label}`}
               </Button>
               <p className="mt-2 text-xs text-muted-foreground/60">
                 Writes the <code className="text-[10px]">lodestone-files</code> entry to{' '}
                 <code className="text-[10px]">
-                  {claudeStatus?.configPath ?? 'claude_desktop_config.json'}
+                  {selectedMcpClientStatus?.configPath ?? selectedMcpClientInfo.fallbackConfigName}
                 </code>
-                . Existing MCP servers are preserved. Restart Claude Desktop after configuring.
+                . Existing MCP servers are preserved. Restart {selectedMcpClientInfo.restartLabel}{' '}
+                after configuring.
               </p>
             </div>
-            {claudeConfigResult?.success && (
+            {mcpClientConfigResult?.success && (
               <div className="flex items-center gap-2 text-sm text-emerald-400">
                 <CheckCircle2 className="h-4 w-4" />
-                Configured — restart Claude Desktop to apply
+                Configured — restart {selectedMcpClientInfo.restartLabel} to apply
               </div>
             )}
-            {claudeConfigResult && !claudeConfigResult.success && (
-              <div className="text-sm text-red-400">Error: {claudeConfigResult.error}</div>
+            {mcpClientConfigResult && !mcpClientConfigResult.success && (
+              <div className="text-sm text-red-400">Error: {mcpClientConfigResult.error}</div>
             )}
           </div>
         </Section>

@@ -31,7 +31,7 @@ import {
   type ReconcileResult,
   type ReconcileStoreOps,
 } from './reconcile';
-import type { WatcherState, DirectoryTreeNode, SearchParams } from '../shared/types';
+import type { WatcherState, SearchParams } from '../shared/types';
 import type { FileResult } from './search';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
@@ -43,6 +43,7 @@ import {
   WatcherCoordinator,
   type ReconcileProgressSnapshot,
 } from './silo/watcher-coordinator';
+import { DirectoryExplorer } from './silo/directory-explorer';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -95,6 +96,8 @@ export class SiloManager {
   private readonly configStore: SiloConfigStore;
   /** Owns the live file watcher, the queue-dedup triple, and the watcher-event handler. */
   private readonly watcherCoord: WatcherCoordinator;
+  /** Owns directory exploration: empty-query roots + abs-path/stored-key translation. */
+  private readonly explorer: DirectoryExplorer;
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
   private cachedSizeBytes = 0;
@@ -120,6 +123,11 @@ export class SiloManager {
       () => this.config.name,
       MAX_ACTIVITY_EVENTS,
       () => this.config.activityLogLimit,
+    );
+    this.explorer = new DirectoryExplorer(
+      config.name,
+      this.store,
+      () => this.config.directories,
     );
     this.watcherCoord = new WatcherCoordinator({
       lifecycle: this.lifecycle,
@@ -687,92 +695,7 @@ export class SiloManager {
    */
   async exploreDirectories(params: DirectorySearchParams): Promise<SiloDirectorySearchResult[]> {
     if (!this.dbOpen) return [];
-    const isEmptyQuery = !params.query || params.query.trim().length === 0;
-    // Empty query with no startPath → return the silo's configured root directories directly
-    if (isEmptyQuery && !params.startPath) {
-      return this.exploreRootDirectories(params.maxDepth ?? 2, params.fullContents);
-    }
-    // Convert absolute startPath → stored key for DB queries
-    const resolvedParams = { ...params };
-    if (params.startPath) {
-      const key = makeStoredDirKey(params.startPath, this.config.directories);
-      if (key) {
-        resolvedParams.startPath = key;
-      } else {
-        // startPath may be a silo root or already a stored key
-        const rootIdx = this.config.directories.indexOf(params.startPath);
-        if (rootIdx >= 0) {
-          resolvedParams.startPath = `${rootIdx}:`;
-        }
-        // Otherwise pass through as-is (may already be a stored key)
-      }
-    }
-    const raw = await this.store.directorySearch(this.siloId, resolvedParams);
-    return this.resolveDirectoryPaths(raw);
-  }
-
-  /** Synthesise explore results for the silo's configured root directories. */
-  private async exploreRootDirectories(
-    maxDepth: number,
-    fullContents?: boolean,
-  ): Promise<SiloDirectorySearchResult[]> {
-    const results: SiloDirectorySearchResult[] = [];
-
-    for (let i = 0; i < this.config.directories.length; i++) {
-      const absPath = this.config.directories[i];
-      const prefix = `${i}:`;
-
-      // Get counts and tree from the worker via the proxy
-      const [rawChildren, rawFiles] = await Promise.all([
-        this.store.expandTree(this.siloId, prefix, 0, maxDepth, fullContents),
-        fullContents
-          ? this.store.getFilesInDirectory(this.siloId, prefix)
-          : Promise.resolve(undefined),
-      ]);
-
-      // Count files and subdirs from the expanded tree data
-      // For the root, we use the tree results to derive counts
-      const fileCount = rawFiles?.length ?? 0;
-      const subdirCount = rawChildren.length;
-
-      results.push({
-        dirPath: absPath,
-        dirName: path.basename(absPath),
-        score: 1.0,
-        scoreSource: 'segment' as const,
-        axes: {
-          segment: {
-            best: 0,
-            bestSignal: 'levenshtein',
-            signals: { levenshtein: 0, tokenCoverage: 0 },
-          },
-        },
-        fileCount,
-        subdirCount,
-        depth: 0,
-        children: resolveTreeNodes(rawChildren, this.config.directories),
-        files: rawFiles?.map((f: { filePath: string; fileName: string }) => ({
-          filePath: resolveStoredKey(f.filePath, this.config.directories),
-          fileName: f.fileName,
-        })),
-      });
-    }
-
-    return results;
-  }
-
-  /** Resolve stored-key dir paths in explore results back to absolute filesystem paths. */
-  private resolveDirectoryPaths(results: SiloDirectorySearchResult[]): SiloDirectorySearchResult[] {
-    const dirs = this.config.directories;
-    return results.map((r) => ({
-      ...r,
-      dirPath: resolveStoredKey(r.dirPath, dirs),
-      children: resolveTreeNodes(r.children, dirs),
-      files: r.files?.map((f) => ({
-        filePath: resolveStoredKey(f.filePath, dirs),
-        fileName: f.fileName,
-      })),
-    }));
+    return this.explorer.explore(params);
   }
 
   /** Get the current status of this silo. */
@@ -932,17 +855,3 @@ export class SiloManager {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Recursively resolve stored-key paths in a directory tree to absolute paths. */
-function resolveTreeNodes(nodes: DirectoryTreeNode[], directories: string[]): DirectoryTreeNode[] {
-  return nodes.map((n) => ({
-    ...n,
-    path: resolveStoredKey(n.path, directories),
-    children: resolveTreeNodes(n.children, directories),
-    files: n.files?.map((f) => ({
-      filePath: resolveStoredKey(f.filePath, directories),
-      fileName: f.fileName,
-    })),
-  }));
-}

@@ -16,12 +16,18 @@ import path from 'node:path';
 import type { ResolvedSiloConfig } from './config';
 import { validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import type { EmbeddingService } from './embedding';
-import * as storeProxy from './store-proxy';
+import { type StoreFacade, proxyStoreFacade } from './store-facade';
 import { makeStoredKey, makeStoredDirKey, resolveStoredKey } from './store/paths';
 import { peekFileCount } from './store/peek';
 import type { StoredSiloConfig, FlushUpsert, FlushDelete } from './store/types';
 import { prepareFile } from './pipeline';
-import { SiloWatcher, type WatcherEvent, type WatcherStoreOps } from './watcher';
+import {
+  type SiloWatcherLike,
+  type SiloWatcherFactory,
+  type WatcherEvent,
+  type WatcherStoreOps,
+  defaultSiloWatcherFactory,
+} from './watcher';
 import {
   reconcile,
   type ReconcileProgressHandler,
@@ -68,7 +74,7 @@ export class SiloManager {
   private embeddingService: EmbeddingService | null = null;
   /** True when this silo has an open database in the store worker. */
   private dbOpen = false;
-  private watcher: SiloWatcher | null = null;
+  private watcher: SiloWatcherLike | null = null;
   private lastUpdated: Date | null = null;
   private activityLog: WatcherEvent[] = [];
   private _watcherState: WatcherState = 'ready';
@@ -130,6 +136,8 @@ export class SiloManager {
     private sharedEmbeddingService: EmbeddingService,
     private readonly userDataDir: string,
     private readonly indexingQueue: IndexingQueue,
+    private readonly store: StoreFacade = proxyStoreFacade,
+    private readonly watcherFactory: SiloWatcherFactory = defaultSiloWatcherFactory,
   ) {}
 
   /** The silo ID used for all store proxy calls. */
@@ -162,7 +170,7 @@ export class SiloManager {
 
     // Re-check mismatch against stored meta
     if (this.dbOpen) {
-      const meta = await storeProxy.loadMeta(this.siloId);
+      const meta = await this.store.loadMeta(this.siloId);
       if (meta) {
         this.modelMismatch = meta.model !== model;
       } else {
@@ -310,7 +318,7 @@ export class SiloManager {
       color: this.config.color,
       icon: this.config.icon,
     };
-    await storeProxy.saveConfigBlob(this.siloId, blob);
+    await this.store.saveConfigBlob(this.siloId, blob);
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -337,12 +345,12 @@ export class SiloManager {
 
     // 2. Open or create the SQLite database via the store worker
     const dbPath = this.resolveDbPath();
-    await storeProxy.open(this.siloId, dbPath, this.embeddingService.dimensions);
+    await this.store.open(this.siloId, dbPath, this.embeddingService.dimensions);
     this.dbOpen = true;
     console.log(`[silo:${this.config.name}] Opened database at ${dbPath}`);
 
     // 3. Check meta for model mismatch
-    const meta = await storeProxy.loadMeta(this.siloId);
+    const meta = await this.store.loadMeta(this.siloId);
     if (meta) {
       if (meta.model !== this.config.model) {
         this.modelMismatch = true;
@@ -352,16 +360,16 @@ export class SiloManager {
       }
     } else {
       // First run or fresh DB — write meta now
-      await storeProxy.saveMeta(this.siloId, this.config.model, this.embeddingService.dimensions);
+      await this.store.saveMeta(this.siloId, this.config.model, this.embeddingService.dimensions);
       this.modelMismatch = false;
     }
 
     // 4. Load file modification times for offline change detection
-    this.mtimes = await storeProxy.loadMtimes(this.siloId);
+    this.mtimes = await this.store.loadMtimes(this.siloId);
 
     // 4b. Seed the in-memory activity log from persisted history
     try {
-      const rows = await storeProxy.loadActivity(this.siloId, MAX_ACTIVITY_EVENTS);
+      const rows = await this.store.loadActivity(this.siloId, MAX_ACTIVITY_EVENTS);
       this.activityLog = rows.map((r) => ({
         timestamp: new Date(r.timestamp),
         siloName: this.config.name,
@@ -409,7 +417,7 @@ export class SiloManager {
             }
             // Cache chunk count before maintenance so getStatus() can respond
             // without hitting the worker (which will be blocked by VACUUM).
-            this.cachedChunkCount = await storeProxy.getChunkCount(this.siloId);
+            this.cachedChunkCount = await this.store.getChunkCount(this.siloId);
             this.maintenanceInProgress = true;
 
             // Show compacting stage in the UI during maintenance
@@ -427,7 +435,7 @@ export class SiloManager {
 
             // Checkpoint and truncate the WAL after reconciliation.
             const tCheckpoint = performance.now();
-            await storeProxy.checkpoint(this.siloId, 'TRUNCATE');
+            await this.store.checkpoint(this.siloId, 'TRUNCATE');
             const sizeAfterCkpt = this.readFileSizeFromDisk();
             console.log(
               `[silo:${this.config.name}] Post-reconcile: WAL checkpoint(TRUNCATE) took ${(performance.now() - tCheckpoint).toFixed(1)}ms` +
@@ -439,7 +447,7 @@ export class SiloManager {
             // pages to reclaim, so VACUUM just rewrites the entire DB for nothing.
             if (result.filesRemoved > 0 || result.filesUpdated > 0) {
               const tVacuum = performance.now();
-              await storeProxy.vacuum(this.siloId);
+              await this.store.vacuum(this.siloId);
               const sizeAfterVac = this.readFileSizeFromDisk();
               console.log(
                 `[silo:${this.config.name}] Post-reconcile: VACUUM took ${(performance.now() - tVacuum).toFixed(1)}ms` +
@@ -514,8 +522,8 @@ export class SiloManager {
 
     if (this.dbOpen) {
       try {
-        await storeProxy.checkpoint(this.siloId, 'TRUNCATE');
-        await storeProxy.close(this.siloId);
+        await this.store.checkpoint(this.siloId, 'TRUNCATE');
+        await this.store.close(this.siloId);
       } catch {
         // Already closed or failed — harmless
       }
@@ -534,7 +542,7 @@ export class SiloManager {
   async freeze(): Promise<void> {
     // Cache stats before releasing resources
     this.cachedFileCount = this.mtimes.size;
-    this.cachedChunkCount = this.dbOpen ? await storeProxy.getChunkCount(this.siloId) : 0;
+    this.cachedChunkCount = this.dbOpen ? await this.store.getChunkCount(this.siloId) : 0;
     this.cachedSizeBytes = this.readFileSizeFromDisk();
     // stop() handles cancelling any pending watcher queue slot and
     // awaiting in-flight indexing before closing resources.
@@ -636,7 +644,7 @@ export class SiloManager {
         }
       }
     }
-    const results = await storeProxy.search(this.siloId, queryVector, {
+    const results = await this.store.search(this.siloId, queryVector, {
       ...params,
       startPath: storedStartPath,
     });
@@ -667,7 +675,7 @@ export class SiloManager {
       embeddings: prepared.embeddings,
       mtimeMs: prepared.mtimeMs,
     };
-    await storeProxy.flush(this.siloId, [upsert], []);
+    await this.store.flush(this.siloId, [upsert], []);
     // Update in-memory mtime
     this.mtimes.set(storedKey, stat.mtimeMs);
   }
@@ -698,7 +706,7 @@ export class SiloManager {
         // Otherwise pass through as-is (may already be a stored key)
       }
     }
-    const raw = await storeProxy.directorySearch(this.siloId, resolvedParams);
+    const raw = await this.store.directorySearch(this.siloId, resolvedParams);
     return this.resolveDirectoryPaths(raw);
   }
 
@@ -715,9 +723,9 @@ export class SiloManager {
 
       // Get counts and tree from the worker via the proxy
       const [rawChildren, rawFiles] = await Promise.all([
-        storeProxy.expandTree(this.siloId, prefix, 0, maxDepth, fullContents),
+        this.store.expandTree(this.siloId, prefix, 0, maxDepth, fullContents),
         fullContents
-          ? storeProxy.getFilesInDirectory(this.siloId, prefix)
+          ? this.store.getFilesInDirectory(this.siloId, prefix)
           : Promise.resolve(undefined),
       ]);
 
@@ -791,7 +799,7 @@ export class SiloManager {
       };
     }
 
-    const chunks = this.dbOpen ? await storeProxy.getChunkCount(this.siloId) : 0;
+    const chunks = this.dbOpen ? await this.store.getChunkCount(this.siloId) : 0;
     const dbSize = this.readFileSizeFromDisk();
 
     return {
@@ -836,9 +844,9 @@ export class SiloManager {
   private makeWatcherStoreOps(): WatcherStoreOps {
     const id = this.siloId;
     return {
-      flush: (upserts, deletes) => storeProxy.flush(id, upserts, deletes),
-      insertDirEntry: (dirPath) => storeProxy.insertDirEntry(id, dirPath),
-      deleteDirEntry: (dirPath) => storeProxy.deleteDirEntry(id, dirPath),
+      flush: (upserts, deletes) => this.store.flush(id, upserts, deletes),
+      insertDirEntry: (dirPath) => this.store.insertDirEntry(id, dirPath),
+      deleteDirEntry: (dirPath) => this.store.deleteDirEntry(id, dirPath),
     };
   }
 
@@ -848,18 +856,22 @@ export class SiloManager {
   private makeReconcileStoreOps(): ReconcileStoreOps {
     const id = this.siloId;
     return {
-      flush: (upserts, deletes) => storeProxy.flush(id, upserts, deletes),
+      flush: (upserts, deletes) => this.store.flush(id, upserts, deletes),
       syncDirectoriesWithDisk: (diskDirPaths) =>
-        storeProxy.syncDirectoriesWithDisk(id, diskDirPaths),
-      recomputeDirectoryCounts: () => storeProxy.recomputeDirectoryCounts(id),
-      checkpoint: (mode) => storeProxy.checkpoint(id, mode),
+        this.store.syncDirectoriesWithDisk(id, diskDirPaths),
+      recomputeDirectoryCounts: () => this.store.recomputeDirectoryCounts(id),
+      checkpoint: (mode) => this.store.checkpoint(id, mode),
     };
   }
 
   /** Create the watcher and start it. Shared by doStart() and reconcileAndRestartWatcher(). */
   private startWatcher(): void {
     if (!this.embeddingService) return;
-    this.watcher = new SiloWatcher(this.config, this.embeddingService, this.makeWatcherStoreOps());
+    this.watcher = this.watcherFactory(
+      this.config,
+      this.embeddingService,
+      this.makeWatcherStoreOps(),
+    );
     this.watcher.setQueueFilledHandler(() => this.scheduleWatcherIndexing());
     this.watcher.on((event) => this.handleWatcherEvent(event));
     this.watcher.start();
@@ -916,7 +928,7 @@ export class SiloManager {
 
     // Persist to SQLite (fire-and-forget — never block the pipeline)
     if (this.dbOpen) {
-      storeProxy
+      this.store
         .logActivity(
           this.siloId,
           watcherEvent.timestamp.toISOString(),
@@ -942,7 +954,7 @@ export class SiloManager {
 
     // Persist to SQLite (fire-and-forget — never block the watcher)
     if (this.dbOpen) {
-      storeProxy
+      this.store
         .logActivity(
           this.siloId,
           event.timestamp.toISOString(),
@@ -961,7 +973,7 @@ export class SiloManager {
         const storedKey = makeStoredKey(event.filePath, this.config.directories);
         const stat = fs.statSync(event.filePath);
         this.mtimes.set(storedKey, stat.mtimeMs);
-        storeProxy.setMtime(this.siloId, storedKey, stat.mtimeMs).catch((): void => undefined);
+        this.store.setMtime(this.siloId, storedKey, stat.mtimeMs).catch((): void => undefined);
       } catch {
         // File vanished between indexing and stat — rare but harmless
       }
@@ -969,7 +981,7 @@ export class SiloManager {
       try {
         const storedKey = makeStoredKey(event.filePath, this.config.directories);
         this.mtimes.delete(storedKey);
-        storeProxy.deleteMtime(this.siloId, storedKey).catch((): void => undefined);
+        this.store.deleteMtime(this.siloId, storedKey).catch((): void => undefined);
       } catch {
         // Path outside configured directories — harmless
       }

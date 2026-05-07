@@ -45,9 +45,44 @@ export interface WatcherStoreOps {
 // Re-export for the silo-manager's progress callback signature.
 export type { IndexLoopProgress };
 
+/**
+ * The subset of `SiloWatcher` consumed by `SiloManager`.
+ *
+ * Defined as an interface so tests can substitute a controllable
+ * fake watcher without spinning up `chokidar` or piercing private
+ * methods on `SiloWatcher` directly. `SiloManager.handleWatcherEvent`
+ * remains private — tests drive it via the listener registered on
+ * `on()`.
+ */
+export interface SiloWatcherLike {
+  on(handler: WatcherEventHandler): void;
+  setQueueFilledHandler(fn: () => void): void;
+  start(): void;
+  stop(): Promise<void>;
+  runQueue(
+    onProgress?: (progress: IndexLoopProgress) => void,
+    shouldStop?: () => boolean,
+  ): Promise<void>;
+  readonly queueLength: number;
+}
+
+/**
+ * Factory for constructing a watcher implementation. Production wires
+ * the real `SiloWatcher` constructor; tests inject a fake.
+ */
+export type SiloWatcherFactory = (
+  config: ResolvedSiloConfig,
+  embeddingService: EmbeddingService,
+  storeOps: WatcherStoreOps,
+) => SiloWatcherLike;
+
+/** Default factory — constructs the real chokidar-backed `SiloWatcher`. */
+export const defaultSiloWatcherFactory: SiloWatcherFactory = (config, embedding, ops) =>
+  new SiloWatcher(config, embedding, ops);
+
 // ── SiloWatcher ──────────────────────────────────────────────────────────────
 
-export class SiloWatcher {
+export class SiloWatcher implements SiloWatcherLike {
   private watcher: FSWatcher | null = null;
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private processing = false;

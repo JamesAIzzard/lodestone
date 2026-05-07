@@ -14,12 +14,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ResolvedSiloConfig } from './config';
-import { validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import type { EmbeddingService } from './embedding';
 import { type StoreFacade, proxyStoreFacade } from './store-facade';
 import { makeStoredKey, makeStoredDirKey, resolveStoredKey } from './store/paths';
 import { peekFileCount } from './store/peek';
-import type { StoredSiloConfig, FlushUpsert, FlushDelete } from './store/types';
+import type { FlushUpsert, FlushDelete } from './store/types';
 import { prepareFile } from './pipeline';
 import {
   type SiloWatcherLike,
@@ -40,6 +39,7 @@ import type { DirectorySearchParams, SiloDirectorySearchResult } from './directo
 import { IndexingQueue } from './indexing-queue';
 import { MtimeIndex } from './silo/mtime-index';
 import { ActivityLog } from './silo/activity-log';
+import { SiloConfigStore } from './silo/silo-config-store';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -94,6 +94,7 @@ export class SiloManager {
   };
   private readonly mtimes: MtimeIndex;
   private readonly activity: ActivityLog;
+  private readonly configStore: SiloConfigStore;
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
   private cachedSizeBytes = 0;
@@ -130,16 +131,17 @@ export class SiloManager {
   private watcherIndexingDone: Promise<void> | null = null;
 
   constructor(
-    private config: ResolvedSiloConfig,
+    config: ResolvedSiloConfig,
     private sharedEmbeddingService: EmbeddingService,
     private readonly userDataDir: string,
     private readonly indexingQueue: IndexingQueue,
     private readonly store: StoreFacade = proxyStoreFacade,
     private readonly watcherFactory: SiloWatcherFactory = defaultSiloWatcherFactory,
   ) {
-    this.mtimes = new MtimeIndex(this.config.name, this.store);
+    this.configStore = new SiloConfigStore(config, this.store, () => this.dbOpen);
+    this.mtimes = new MtimeIndex(config.name, this.store);
     this.activity = new ActivityLog(
-      this.config.name,
+      config.name,
       this.store,
       () => this.config.name,
       MAX_ACTIVITY_EVENTS,
@@ -147,9 +149,14 @@ export class SiloManager {
     );
   }
 
+  /** Live config snapshot. Reads delegate to the configStore collaborator. */
+  private get config(): ResolvedSiloConfig {
+    return this.configStore.current;
+  }
+
   /** The silo ID used for all store proxy calls. */
   private get siloId(): string {
-    return this.config.name;
+    return this.configStore.siloId;
   }
 
   /** Register a listener for watcher events. Only one listener is supported. */
@@ -173,7 +180,7 @@ export class SiloManager {
    * The user must rebuild the index for the new model to take effect.
    */
   async updateModel(model: string): Promise<void> {
-    this.config = { ...this.config, model };
+    this.configStore.apply({ model });
 
     // Re-check mismatch against stored meta
     if (this.dbOpen) {
@@ -185,19 +192,19 @@ export class SiloManager {
         this.modelMismatch = true;
       }
     }
-    await this.persistConfigBlob();
+    await this.configStore.persist();
   }
 
   /** Update the silo description and persist to DB config blob. */
   async updateDescription(description: string): Promise<void> {
-    this.config = { ...this.config, description };
-    await this.persistConfigBlob();
+    this.configStore.apply({ description });
+    await this.configStore.persist();
   }
 
   /** Update the silo display name and persist to DB config blob. */
   async updateName(name: string): Promise<void> {
-    this.config = { ...this.config, name };
-    await this.persistConfigBlob();
+    this.configStore.apply({ name });
+    await this.configStore.persist();
   }
 
   /**
@@ -215,7 +222,7 @@ export class SiloManager {
    * Update ignore patterns, re-reconcile to remove now-ignored files, and restart the watcher.
    */
   async updateIgnorePatterns(ignore: string[], ignoreFiles: string[]): Promise<void> {
-    this.config = { ...this.config, ignore, ignoreFiles };
+    this.configStore.apply({ ignore, ignoreFiles });
     await this.reconcileAndRestartWatcher('ignore pattern');
   }
 
@@ -223,7 +230,7 @@ export class SiloManager {
    * Update file extensions, re-reconcile to index/remove files, and restart the watcher.
    */
   async updateExtensions(extensions: string[]): Promise<void> {
-    this.config = { ...this.config, extensions };
+    this.configStore.apply({ extensions });
     await this.reconcileAndRestartWatcher('extension');
   }
 
@@ -291,7 +298,7 @@ export class SiloManager {
       });
 
       if (!this.stopped) {
-        await this.persistConfigBlob();
+        await this.configStore.persist();
         this.watcherState = 'ready';
         this.startWatcher();
         console.log(`[silo:${this.config.name}] Watcher restarted after ${reason} change`);
@@ -301,31 +308,14 @@ export class SiloManager {
 
   /** Update the silo colour and persist to DB config blob. */
   async updateColor(color: string): Promise<void> {
-    this.config = { ...this.config, color: validateSiloColor(color) };
-    await this.persistConfigBlob();
+    this.configStore.apply({ color });
+    await this.configStore.persist();
   }
 
   /** Update the silo icon and persist to DB config blob. */
   async updateIcon(icon: string): Promise<void> {
-    this.config = { ...this.config, icon: validateSiloIcon(icon) };
-    await this.persistConfigBlob();
-  }
-
-  /** Build and persist the current config as a JSON blob in the database. */
-  private async persistConfigBlob(): Promise<void> {
-    if (!this.dbOpen) return;
-    const blob: StoredSiloConfig = {
-      name: this.config.name,
-      description: this.config.description || undefined,
-      directories: this.config.directories,
-      extensions: this.config.extensions,
-      ignore: this.config.ignore,
-      ignoreFiles: this.config.ignoreFiles,
-      model: this.config.model,
-      color: this.config.color,
-      icon: this.config.icon,
-    };
-    await this.store.saveConfigBlob(this.siloId, blob);
+    this.configStore.apply({ icon });
+    await this.configStore.persist();
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -469,7 +459,7 @@ export class SiloManager {
     });
 
     // 6. Persist config blob for portable reconnection
-    await this.persistConfigBlob();
+    await this.configStore.persist();
 
     // 7. Bail if stop() was called during reconciliation
     if (this.stopped) return;

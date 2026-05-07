@@ -1343,6 +1343,173 @@ populated.
 
 ---
 
+---
+
+## Phase 3 — SiloConfigStore extraction handover
+
+**Status:** complete. `npm run typecheck` clean. `npm test` shows 10 test
+files, 123 tests, all passing — 103 carried forward from Phase 2b plus
+20 new for `SiloConfigStore` in isolation. The Phase 1 regression suite
+(11 tests) did not need a single change, including the rename baseline,
+which is the strongest signal that the extraction is behaviour-
+preserving.
+
+`silo-manager.ts` is down from 1047 → 1037 lines. The deduction is
+modest because the persist-only `update*` methods kept their public
+shape (and most of them are now 2-line stubs); the *real* win is
+structural — every config mutation now flows through one collaborator
+with a single, parametric `apply` surface, and the `persistConfigBlob`
+blob-construction logic moved out of the manager entirely.
+
+### Files added
+
+| Path | Purpose |
+|---|---|
+| [`src/backend/silo/silo-config-store.ts`](../src/backend/silo/silo-config-store.ts) | `SiloConfigStore` class + `ConfigPatch` interface. Single owner of the live `ResolvedSiloConfig` and the per-silo config blob persistence. |
+| [`src/backend/silo/silo-config-store.test.ts`](../src/backend/silo/silo-config-store.test.ts) | 20 unit tests covering reader surface, `apply` (validation + multi-field + auto-persist regression), `persist` (blob shape, empty-description coercion, canPersist gate, rename baseline), and store-error propagation. |
+
+### Files changed
+
+| Path | Change |
+|---|---|
+| [`src/backend/silo-manager.ts`](../src/backend/silo-manager.ts) | `private config: ResolvedSiloConfig` (parameter property) → `private readonly configStore: SiloConfigStore` initialised in the constructor body. `private get config()` getter delegates to `configStore.current`. `private get siloId()` delegates to `configStore.siloId`. The seven `update*` methods reduced to `apply` + `persist` / `apply` + `reconcileAndRestartWatcher` two-liners (or three-liners where pre/post logic stays — `updateModel`'s mismatch check). The 14-line `persistConfigBlob` private helper deleted; its three call sites swapped to `this.configStore.persist()`. Imports of `validateSiloColor` / `validateSiloIcon` / `StoredSiloConfig` removed (now consumed only by the collaborator). |
+
+### Design decision: parametric `apply` over per-field setters
+
+The plan offered two shapes for the persist-vs-reconcile branching:
+
+  - (1) Discriminated `UpdateResult` returned from a single `update()`
+    method, manager dispatches.
+  - (2) Two methods on the store (`updateAndPersist`,
+    `updateAndReconcile`) that the manager calls explicitly.
+
+Sketching both showed a third option that fit better: a single
+`apply(patch: ConfigPatch)` for *in-memory* mutation plus an explicit
+`persist()`. The manager composes them per-method.
+
+  - **Persist-only paths** (`updateModel` / `updateDescription` /
+    `updateName` / `updateColor` / `updateIcon`): manager calls
+    `configStore.apply({ ... })` then `await configStore.persist()`.
+    `updateModel` keeps its meta-mismatch check between those two
+    calls, where it lived before.
+  - **Reconcile-required paths** (`updateIgnorePatterns` /
+    `updateExtensions`): manager calls `configStore.apply({ ... })`
+    then `await this.reconcileAndRestartWatcher(reason)`. The
+    helper itself calls `configStore.persist()` once reconcile
+    finishes — same ordering as before.
+
+Validation lives inside `apply` (color/icon dispatch through
+`validateSiloColor` / `validateSiloIcon`), so no caller has to remember
+to validate. Other fields pass through verbatim. The unit tests pin
+both behaviours.
+
+This shape ended up the clear winner because it (a) preserves
+`updateModel`'s pre/post-mutation orchestration without contortion,
+(b) keeps validation in one place, and (c) leaves the manager's public
+API identical, which kept the regression suite untouched.
+
+### Behaviour notes pinned by the new tests
+
+Three pre-refactor surprises that the `SiloConfigStore` tests now
+explicitly preserve:
+
+1. **Empty `description` becomes `undefined` in the persisted blob.**
+   The pre-refactor code used `description: this.config.description ||
+   undefined`, so the empty string never round-tripped through the
+   stored JSON. Pinned in the persist test.
+
+2. **`validateSiloColor` / `validateSiloIcon` silently fall back to
+   the defaults** for unknown values rather than throwing. Pinned in
+   the apply tests for both colour and icon. (This is the surprise
+   that bit the Phase 1 regression suite when `'book'` was used
+   instead of `'book-open'`.)
+
+3. **`persist()` writes the blob against `current.name`, not against
+   a captured-at-construction id.** The store still has the silo open
+   under the *old* slug after `apply({ name: 'new' })`, so the next
+   `persist()` triggers the "is not open" rejection that the Phase 1
+   rename baseline pins. The unit-level test asserts the call shape
+   (`saveConfigBlob('new-slug', ...)`) without needing a live store —
+   the manager-level regression test exercises the actual rejection.
+
+### What was *not* changed in Phase 3
+
+- **The rename baseline** (pain point 7a). `siloId` continues to track
+  `current.name` live; the regression test still confirms `updateName`
+  rejects with "is not open" today. Option (B) — immutable `siloId`
+  independent of `config.name` — remains out of scope per the plan.
+- **`reconcileAndRestartWatcher` itself.** The helper was already
+  invoking `persistConfigBlob` after reconcile; it now invokes
+  `configStore.persist()` instead. Same ordering, same behaviour.
+- **Public manager API.** Every external caller (`main/lifecycle.ts`,
+  `main/ipc-handlers.ts`, `mcp-server.ts`) still sees the same
+  `updateX(...)` method signatures. No call sites updated.
+
+### How to pick up Phase 4 — SiloLifecycle FSM
+
+Phase 4 is the biggest *internal* change of the refactor (the plan
+flagged it as medium risk for that reason). The Phase 1 regression
+suite + the three collaborator unit suites give the strongest
+behaviour-preservation net the refactor will have until the FSM tests
+themselves land.
+
+Critical scoping reminder from the plan: **`stopped: boolean` is doing
+two jobs** — phase indicator *and* cancellation token — and the FSM
+cannot subsume both. Keep them orthogonal: `lifecycle.phase()` for the
+FSM, `lifecycle.requestStop()` / `lifecycle.stopRequested` for the
+cancellation signal. Reconcile and the watcher loop continue to take
+`() => boolean` cancellation callbacks, just plumbed through the new
+class.
+
+Steps:
+
+1. Re-read the plan's "Phase 4 — Introduce `SiloLifecycle` FSM"
+   section end to end. The phase graph and the explicit transitions
+   list (`created → waiting`, `stopped → waiting`, `created →
+   stopped`, `<any-running-phase> → stopped`) are load-bearing — get
+   them wrong and waking a frozen silo throws under transition
+   validation.
+2. Create `src/backend/silo/silo-lifecycle.ts`. One class containing
+   both the FSM and the cancellation token (they share a listener
+   path when stop is requested mid-indexing).
+3. Replace `_watcherState` and `maintenanceInProgress` with FSM reads
+   and `transition()` calls. Replace direct `this.stopped` reads with
+   `this.lifecycle.stopRequested`; replace `this.stopped = true`
+   writes with `this.lifecycle.requestStop()`.
+4. Map FSM phase → external `WatcherState` for IPC. The renderer
+   keeps seeing the same shape it does today.
+5. Add unit tests covering: every legal transition succeeds; illegal
+   transitions throw; listeners fire exactly once per transition;
+   the FSM-phase-to-`WatcherState` mapping is exhaustive;
+   `requestStop()` is visible to a `() => stopRequested` callback
+   immediately and survives subsequent transitions.
+6. Run the full suite. The 11 Phase 1 regression tests *and* the
+   collaborator suites for `MtimeIndex`, `ActivityLog`, and
+   `SiloConfigStore` must all stay green.
+
+Signs Phase 4 is going well:
+- Regression tests don't need to change.
+- `silo-manager.ts` shrinks further as state-bag fields collapse into
+  the FSM.
+- The FSM unit tests catch any phase-graph mistakes before they reach
+  the manager.
+
+Signs Phase 4 is going badly:
+- A regression test starts failing — the change is leaking outside the
+  extraction. Pause and audit.
+- Adding ad-hoc `if (this.lifecycle.phase() === 'X')` guards
+  everywhere in the manager — that's the boolean tangle reasserting
+  itself in a different syntax. Push the lifecycle awareness *into*
+  the FSM (e.g. via `transition('foo')` validation) rather than
+  spreading it back across the coordinator.
+
+After Phase 4, the manager's state is finally explicit and testable
+in isolation. Phases 5–7 (`WatcherCoordinator`, `doStart` named
+phases, final trim) become smaller mechanical steps because the
+state-machine seam removes most of the remaining tangle.
+
+---
+
 ## Out of scope (named explicitly)
 
 These came up during the audit but belong in their own work, not this

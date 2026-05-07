@@ -5,10 +5,8 @@
  * and configuration for one silo. The Electron main process interacts
  * with this class for all silo operations.
  *
- * V2: The silo manager no longer holds a direct database handle.
- * All SQLite operations are routed asynchronously through the store
- * proxy to the store worker thread. This eliminates UI freezes from
- * database I/O on the main thread.
+ * SQLite operations route asynchronously through the store proxy to the
+ * store worker thread, keeping database I/O off the main process.
  */
 
 import fs from 'node:fs';
@@ -18,7 +16,7 @@ import type { EmbeddingService } from './embedding';
 import { type StoreFacade, proxyStoreFacade } from './store-facade';
 import { makeStoredKey, makeStoredDirKey, resolveStoredKey } from './store/paths';
 import { peekFileCount } from './store/peek';
-import type { FlushUpsert, FlushDelete } from './store/types';
+import type { FlushUpsert } from './store/types';
 import { prepareFile } from './pipeline';
 import {
   type SiloWatcherFactory,
@@ -82,10 +80,9 @@ export class SiloManager {
   /** True when this silo has an open database in the store worker. */
   private dbOpen = false;
   /**
-   * Lifecycle FSM + cancellation token. Replaces the pre-refactor triple
-   * of `_watcherState`, `maintenanceInProgress`, and `stopped` booleans.
-   * Phase reads/writes go through `lifecycle.phase()` / `transition()`;
-   * cancellation reads via `lifecycle.stopRequested`.
+   * Lifecycle FSM + cancellation token. Phase reads/writes go through
+   * `lifecycle.phase()` / `transition()`; cancellation reads via
+   * `lifecycle.stopRequested`.
    */
   private readonly lifecycle = new SiloLifecycle();
   private stateChangeListener?: () => void;
@@ -96,13 +93,7 @@ export class SiloManager {
   private readonly mtimes: MtimeIndex;
   private readonly activity: ActivityLog;
   private readonly configStore: SiloConfigStore;
-  /**
-   * Owns the live file watcher, the queue-dedup triple, and the
-   * watcher-event handler. Replaces pre-refactor `watcher`,
-   * `pendingWatcherEnqueue`, `cancelWatcherEnqueue`, `watcherIndexingDone`
-   * fields and the `startWatcher` / `handleWatcherEvent` /
-   * `scheduleWatcherIndexing` private methods.
-   */
+  /** Owns the live file watcher, the queue-dedup triple, and the watcher-event handler. */
   private readonly watcherCoord: WatcherCoordinator;
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
@@ -336,9 +327,7 @@ export class SiloManager {
     this.lifecycle.resetStopRequest();
     this.startPromise = this.doStart().catch((err) => {
       if (!this.lifecycle.stopRequested) {
-        // Transition to 'error' from any phase the manager was in when the
-        // throw landed. The maintenance flag (formerly reset here) is
-        // subsumed by the FSM — a 'maintenance → error' transition is legal.
+        // Transition to 'error' from whatever phase the throw landed in.
         this.lifecycle.transition('error');
         this.errorMessage = err instanceof Error ? err.message : String(err);
         this.reconcileProgress = undefined;
@@ -459,10 +448,9 @@ export class SiloManager {
 
             await this.runWalMaintenance(result);
 
-            // Transition out of 'maintenance' back to 'indexing' to preserve
-            // the pre-refactor window: between maintenance ending and
-            // step 7's 'ready' transition, getStatus() returns live data
-            // (the worker is no longer blocked).
+            // Back to 'indexing' so getStatus() returns live data during
+            // the gap before the 'ready' transition — the worker is no
+            // longer blocked by VACUUM.
             this.lifecycle.transition('indexing');
           } catch (err) {
             if (this.lifecycle.stopRequested) {

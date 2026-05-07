@@ -1691,6 +1691,216 @@ methods, each individually testable.
 
 ---
 
+---
+
+## Phase 5 — WatcherCoordinator extraction handover
+
+**Status:** complete. `npm run typecheck` clean. `npm test` shows 12 test
+files, 203 tests, all passing — 184 carried forward from Phase 4 plus 19
+new for `WatcherCoordinator` in isolation. The Phase 1 regression suite
+(11 tests) did not need a single change, same as every prior phase — the
+strongest signal that the extraction is behaviour-preserving.
+
+`silo-manager.ts` is down from 1048 → 936 lines (−112). This is the
+biggest line reduction since 2a, because the watcher coordination block
+(start + handleEvent + scheduleIndexing + the dedup triple + stop()'s
+drain logic) genuinely *moved* rather than collapsing duplicates.
+
+### Files added
+
+| Path | Purpose |
+|---|---|
+| [`src/backend/silo/watcher-coordinator.ts`](../src/backend/silo/watcher-coordinator.ts) | `WatcherCoordinator` class + `WatcherCoordinatorDeps` and `ReconcileProgressSnapshot` interfaces. Single owner of the live `SiloWatcher`, the IndexingQueue dedup triple, and the watcher event handler. |
+| [`src/backend/silo/watcher-coordinator.test.ts`](../src/backend/silo/watcher-coordinator.test.ts) | 19 unit tests across 6 groups — start/dispose lifecycle, handleEvent side effects, scheduleIndexing dedup + cancelPending, awaitInFlight + lifecycle transitions, onProgress fan-out, and stopRequested suppression. |
+
+### Files changed
+
+| Path | Change |
+|---|---|
+| [`src/backend/silo-manager.ts`](../src/backend/silo-manager.ts) | Four private fields removed (`watcher`, `pendingWatcherEnqueue`, `cancelWatcherEnqueue`, `watcherIndexingDone`) and replaced with `private readonly watcherCoord: WatcherCoordinator`. Three private methods deleted (`startWatcher`, `handleWatcherEvent`, `scheduleWatcherIndexing`). The `reconcileProgress` field now uses the imported `ReconcileProgressSnapshot` type instead of an inline shape. `stop()`'s pending-cancel + indexingDone-await + watcher.stop() block collapsed to `coord.cancelPending() / await coord.awaitInFlight() / await coord.disposeWatcher()`. `reconcileAndRestartWatcher`'s inline `await this.watcher.stop(); this.watcher = null;` collapsed to `await this.watcherCoord.disposeWatcher()`. Both `startWatcher()` call sites (doStart step 8, reconcileAndRestartWatcher) became `this.watcherCoord.start()`. The `SiloWatcherLike` import dropped (the manager no longer holds a watcher field). |
+
+### Design decisions
+
+**1. Three drain primitives instead of one `drain()`.** The plan's sketch
+described a single `drain()` method that "cancels any pending queue slot
+and returns when in-flight indexing is done". In practice the manager's
+`stop()` interleaves the cancel with `await this.startPromise` —
+the cancel happens *first* (to free the IndexingQueue for other silos
+while we wait for our own start to settle), then the startPromise wait,
+then the await-in-flight, then the watcher stop. Compressing into a
+single `drain()` would force the cancel to happen after the startPromise
+wait, which is a behaviour change (other silos would block while this
+silo's startPromise resolves).
+
+The coordinator therefore exposes three primitives that the manager
+composes:
+
+  - `cancelPending(): void` — synchronous; clears the dedup triple if a
+    queue slot is queued-but-not-running.
+  - `awaitInFlight(): Promise<void>` — awaits the in-flight runQueue task;
+    no-op when idle.
+  - `disposeWatcher(): Promise<void>` — stops + nulls the watcher;
+    idempotent.
+
+`SiloManager.stop()` calls them as:
+`requestStop → cancelPending → await startPromise → awaitInFlight →
+disposeWatcher → close db`. Same order as before; the four operations
+are now one-line delegations.
+
+**2. `errorMessage` and `reconcileProgress` stay on the manager.**
+The pre-refactor code clears `errorMessage = undefined` inside
+scheduleWatcherIndexing's success branch (when transitioning to
+`'ready'`), and writes `reconcileProgress` from three places (doStart's
+reconcile, reconcileAndRestartWatcher's reconcile, the watcher run).
+Moving either field into the coordinator would have spread its writers
+across two collaborators.
+
+The coordinator instead exposes two callbacks in its deps:
+`onProgress(snapshot | undefined)` and `onIdle()`. The manager passes
+in tiny one-line setters that update its private fields. This keeps the
+fields' single ownership intact (manager) while letting the coordinator
+fire the writes at the right moments.
+
+**3. `reconcileAndRestartWatcher` deliberately does *not* cancel
+pending or await in-flight.** The pre-refactor code in this helper just
+called `await this.watcher.stop(); this.watcher = null;` — it did not
+touch the IndexingQueue dedup triple. Any pending watcher-driven slot
+would still run when its turn came up, hit the `if (this.watcher) ...`
+guard inside the task body, find the watcher null, and skip the body
+(while still firing the lifecycle transitions and resolving
+`indexingDone`). This is wasteful but harmless.
+
+The new code preserves it: `reconcileAndRestartWatcher` calls only
+`await this.watcherCoord.disposeWatcher()`. If we ever want to clean up
+the wasted slot, that's a separate ticket — the current behaviour is
+load-bearing in the regression test for `updateIgnorePatterns`.
+
+**4. `getConfig`/`getEmbedding`/`makeStoreOps` are getters, not values.**
+Config can mutate (updateName, updateExtensions, updateIgnorePatterns —
+even though the rename baseline is broken, the *fields* still mutate).
+The embedding service is set during `start()` and cleared during
+`stop()`. The store-ops closure captures `siloId`, which today tracks
+`config.name` live. Passing values at construction would freeze them at
+the moment of `new SiloManager(...)`; passing getters lets each call
+re-read the live state. Same pattern as Phase 2b's ActivityLog
+(`getName: () => this.config.name`).
+
+### Behaviour notes pinned by the new tests
+
+The 19 WatcherCoordinator tests pin five things future phases will
+lean on:
+
+1. **Vanished-file robustness.** An `'indexed'` event for a file that
+   no longer exists on disk (statSync throws) still appends to the
+   activity feed; the mtime is silently not updated. Pinned in the
+   "vanished file is harmless" test.
+
+2. **Error events bypass mtimes.** A `'error'` event (extraction or
+   parse failure from the watcher pipeline) goes to the activity feed
+   only — `mtimes` is not touched, neither inserted nor cleared. The
+   pre-refactor code's "if/else if" ladder over `eventType` only
+   handled `'indexed'` and `'deleted'`; the new code preserves that.
+
+3. **runQueue throws are caught and logged.** When the watcher's
+   `runQueue` rejects, the coordinator logs but does not propagate.
+   The lifecycle still transitions to `'ready'` and `onIdle` still
+   fires — the cleanup path is not skipped on errors. This is the
+   pre-refactor invariant ("ensures we always reach the state-recovery
+   below") now testable in isolation.
+
+4. **stopRequested suppresses the run body and the ready transition.**
+   When `lifecycle.requestStop()` is called between `scheduleIndexing`
+   firing and the slot starting, the slot still runs (cancelling it
+   would have happened separately via `cancelPending`) but skips the
+   `runQueue` invocation, skips the `onWaiting`/`onStart` transitions,
+   and skips the `onIdle` callback. This preserves the pre-refactor
+   "if (!this.stopped)" guards everywhere.
+
+5. **`onIdle` only fires when the watcher's queue is empty after run.**
+   The "set ready only if truly idle" branch — preserved exactly. Tests
+   set `watcher.queueLength = 5` and assert the lifecycle stays at
+   `'indexing'` and `onIdle` is not called. This is the path that lets
+   `runQueue`'s mid-run `onQueueFilled` re-fire schedule another turn
+   without prematurely flipping to ready.
+
+### What was *not* changed in Phase 5
+
+- **Public manager API.** `start`, `stop`, `freeze`, `wake`, `rebuild`,
+  `loadStoppedStatus`, `loadWaitingStatus`, `getStatus`, the seven
+  `update*` methods, `search`, `reindexFile`, `exploreDirectories`,
+  `hasModelMismatch`, `getConfig`, `getEmbeddingService`,
+  `getActivityFeed`, `onEvent` — all unchanged. The renderer/IPC
+  contract is untouched.
+
+- **`reconcileAndRestartWatcher` orchestration.** Still in the manager —
+  it's a sequence of `disposeWatcher → reconcile-via-queue →
+  configStore.persist → transition('ready') → coord.start()`, mixing
+  watcher-, queue-, configStore-, and lifecycle-level concerns. Pulling
+  it into the coordinator would re-tangle responsibilities. Phase 6's
+  `doStart` named-phase pass is a better place to revisit this if it
+  shrinks to 1–2 lines per concern.
+
+- **The mid-reconcile error overwrite oddity.** Phase 4 flagged this:
+  when reconcile throws inside doStart's IndexingQueue task, the catch
+  transitions to `'error'`, then doStart proceeds past the resolve and
+  unconditionally transitions to `'ready'` — overwriting the error.
+  Phase 5 doesn't touch this. Still a follow-up ticket.
+
+- **Cancellation contract.** Reconcile and `runQueue` continue to
+  receive a `() => boolean` callback (today `() => lifecycle.stopRequested`).
+  No ripple beyond the two collaborator boundaries.
+
+### How to pick up Phase 6 — doStart named phases
+
+Phase 6 collapses the 148-line `doStart` (now somewhat smaller — the
+70-line IndexingQueue closure for reconcile is the largest remaining
+sub-block) into 5–7 named phase methods. With Phases 2–5 done, the
+collaborators (`mtimes`, `activity`, `configStore`, `lifecycle`,
+`watcherCoord`) are all in place — Phase 6 is mostly *naming and
+re-grouping*, not new structural work.
+
+Steps:
+
+1. Re-read the plan's "Phase 6 — Refactor `doStart` into named phases"
+   section. The pseudocode there is now closer to reality than when it
+   was written — every `this.X` reference has a collaborator behind it.
+2. Extract:
+   - `initEmbedding()` (current step 1)
+   - `openDatabase()` (current step 2)
+   - `checkAndPersistMeta()` (current step 3)
+   - `loadInitialState()` (current step 4: mtimes + activity)
+   - `runStartupReconcile()` (current step 5 — the 70-line IndexingQueue closure)
+   - `runWalMaintenance()` (current step 5b: checkpoint + optional VACUUM)
+3. The `if (this.lifecycle.stopRequested) return;` short-circuits stay
+   between phase methods, just as in the plan's pseudocode. The
+   pre-existing oddity from Phase 4 (error overwrite via the ready
+   transition) is still in scope only if you decide to file it as part
+   of Phase 6's tests; otherwise it stays a separate ticket.
+4. **Add tests:** every short-circuit point honours cancellation
+   (today untested). Use the same harness as the Phase 1 regression
+   suite — drive `manager.stop()` mid-`start()` at each yield point
+   and assert the lifecycle ends at `'stopped'` (or `'created'` if
+   the bail happens before the first transition).
+
+Signs Phase 6 is going well:
+- The 148-line method shrinks to ~30 lines of named-phase calls.
+- Each named phase is under 25 lines and individually testable.
+- No regression test needs updating.
+
+Signs Phase 6 is going badly:
+- A regression test fails — the change leaked. Pause and audit which
+  short-circuit was lost.
+- A phase method needs to read or write more than two `this.*` fields
+  — pull the orchestration logic back to `doStart` and keep the phase
+  method narrow.
+
+After Phase 6, Phase 7 (final trim) is the bookend: remove now-redundant
+private fields, audit imports, update the existing
+`silo-manager.test.ts` to the post-refactor API, and verify the size
+target (`silo-manager.ts` ≤ 300 lines per the Definition of Done).
+
+---
+
 ## Out of scope (named explicitly)
 
 These came up during the audit but belong in their own work, not this

@@ -21,7 +21,6 @@ import { peekFileCount } from './store/peek';
 import type { FlushUpsert, FlushDelete } from './store/types';
 import { prepareFile } from './pipeline';
 import {
-  type SiloWatcherLike,
   type SiloWatcherFactory,
   type WatcherEvent,
   type WatcherStoreOps,
@@ -41,6 +40,10 @@ import { MtimeIndex } from './silo/mtime-index';
 import { ActivityLog } from './silo/activity-log';
 import { SiloConfigStore } from './silo/silo-config-store';
 import { SiloLifecycle } from './silo/silo-lifecycle';
+import {
+  WatcherCoordinator,
+  type ReconcileProgressSnapshot,
+} from './silo/watcher-coordinator';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -77,7 +80,6 @@ export class SiloManager {
   private embeddingService: EmbeddingService | null = null;
   /** True when this silo has an open database in the store worker. */
   private dbOpen = false;
-  private watcher: SiloWatcherLike | null = null;
   /**
    * Lifecycle FSM + cancellation token. Replaces the pre-refactor triple
    * of `_watcherState`, `maintenanceInProgress`, and `stopped` booleans.
@@ -89,21 +91,18 @@ export class SiloManager {
   /** Last external WatcherState fired to `stateChangeListener` — used to filter no-op edges. */
   private lastFiredWatcherState: WatcherState;
   private errorMessage?: string;
-  private reconcileProgress?: {
-    current: number;
-    total: number;
-    batchChunks?: number;
-    batchChunkLimit?: number;
-    filePath?: string;
-    fileSize?: number;
-    fileStage?: string;
-    elapsedMs?: number;
-    embedDone?: number;
-    embedTotal?: number;
-  };
+  private reconcileProgress?: ReconcileProgressSnapshot;
   private readonly mtimes: MtimeIndex;
   private readonly activity: ActivityLog;
   private readonly configStore: SiloConfigStore;
+  /**
+   * Owns the live file watcher, the queue-dedup triple, and the
+   * watcher-event handler. Replaces pre-refactor `watcher`,
+   * `pendingWatcherEnqueue`, `cancelWatcherEnqueue`, `watcherIndexingDone`
+   * fields and the `startWatcher` / `handleWatcherEvent` /
+   * `scheduleWatcherIndexing` private methods.
+   */
+  private readonly watcherCoord: WatcherCoordinator;
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
   private cachedSizeBytes = 0;
@@ -112,13 +111,6 @@ export class SiloManager {
 
   /** Tracks the in-flight start() so stop() can wait for it to settle. */
   private startPromise: Promise<void> | null = null;
-
-  /** Prevents duplicate enqueue for live watcher runs. */
-  private pendingWatcherEnqueue = false;
-  /** Cancel function for a pending live-watcher queue slot. */
-  private cancelWatcherEnqueue: (() => void) | null = null;
-  /** Resolves when the current watcher IndexingQueue task finishes. */
-  private watcherIndexingDone: Promise<void> | null = null;
 
   constructor(
     config: ResolvedSiloConfig,
@@ -137,6 +129,22 @@ export class SiloManager {
       MAX_ACTIVITY_EVENTS,
       () => this.config.activityLogLimit,
     );
+    this.watcherCoord = new WatcherCoordinator({
+      lifecycle: this.lifecycle,
+      mtimes: this.mtimes,
+      activity: this.activity,
+      indexingQueue: this.indexingQueue,
+      watcherFactory: this.watcherFactory,
+      getConfig: () => this.config,
+      getEmbedding: () => this.embeddingService,
+      makeStoreOps: () => this.makeWatcherStoreOps(),
+      onProgress: (progress) => {
+        this.reconcileProgress = progress;
+      },
+      onIdle: () => {
+        this.errorMessage = undefined;
+      },
+    });
     // Forward only external-WatcherState changes to the registered listener.
     // Internal phase edges that map to the same wire value (e.g.
     // 'indexing' ↔ 'maintenance') are not visible to the renderer, so
@@ -249,10 +257,7 @@ export class SiloManager {
    * then restart the watcher. Used after config changes that affect which files are indexed.
    */
   private async reconcileAndRestartWatcher(reason: string): Promise<void> {
-    if (this.watcher) {
-      await this.watcher.stop();
-      this.watcher = null;
-    }
+    await this.watcherCoord.disposeWatcher();
 
     if (this.embeddingService && this.dbOpen && !this.lifecycle.stopRequested) {
       await new Promise<void>((resolve) => {
@@ -305,7 +310,7 @@ export class SiloManager {
       if (!this.lifecycle.stopRequested) {
         await this.configStore.persist();
         this.lifecycle.transition('ready');
-        this.startWatcher();
+        this.watcherCoord.start();
         console.log(`[silo:${this.config.name}] Watcher restarted after ${reason} change`);
       }
     }
@@ -476,7 +481,7 @@ export class SiloManager {
     this.lifecycle.transition('ready');
 
     // 8. Create and start the file watcher
-    this.startWatcher();
+    this.watcherCoord.start();
 
     console.log(
       `[silo:${this.config.name}] Started (watching ${this.config.directories.join(', ')})`,
@@ -489,13 +494,7 @@ export class SiloManager {
 
     // Cancel any queued-but-not-yet-running watcher enqueue so it doesn't
     // block the IndexingQueue for other silos while we're shutting down.
-    if (this.cancelWatcherEnqueue) {
-      this.cancelWatcherEnqueue();
-      this.cancelWatcherEnqueue = null;
-      this.pendingWatcherEnqueue = false;
-      // Task was still queued (never started), so there's nothing to await.
-      this.watcherIndexingDone = null;
-    }
+    this.watcherCoord.cancelPending();
 
     // Wait for start() to finish so we don't tear down underneath it.
     if (this.startPromise) {
@@ -506,15 +505,9 @@ export class SiloManager {
     // Wait for any in-flight watcher indexing task to wind down.
     // The task checks shouldStop (→ this.lifecycle.stopRequested) between
     // embedding batches and will exit quickly — at most one batch duration.
-    if (this.watcherIndexingDone) {
-      await this.watcherIndexingDone.catch((): void => undefined);
-      this.watcherIndexingDone = null;
-    }
+    await this.watcherCoord.awaitInFlight();
 
-    if (this.watcher) {
-      await this.watcher.stop();
-      this.watcher = null;
-    }
+    await this.watcherCoord.disposeWatcher();
 
     if (this.dbOpen) {
       try {
@@ -858,19 +851,6 @@ export class SiloManager {
     };
   }
 
-  /** Create the watcher and start it. Shared by doStart() and reconcileAndRestartWatcher(). */
-  private startWatcher(): void {
-    if (!this.embeddingService) return;
-    this.watcher = this.watcherFactory(
-      this.config,
-      this.embeddingService,
-      this.makeWatcherStoreOps(),
-    );
-    this.watcher.setQueueFilledHandler(() => this.scheduleWatcherIndexing());
-    this.watcher.on((event) => this.handleWatcherEvent(event));
-    this.watcher.start();
-  }
-
   private onReconcileProgress: ReconcileProgressHandler = (progress) => {
     if (progress.phase === 'done') {
       this.reconcileProgress = undefined;
@@ -913,98 +893,6 @@ export class SiloManager {
       errorMessage: event.errorMessage,
     });
   };
-
-  private handleWatcherEvent(event: WatcherEvent): void {
-    this.activity.append(event);
-
-    // Update file modification times via MtimeIndex (fire-and-forget — never block the watcher).
-    // event.filePath is an absolute path from the watcher — convert to stored key.
-    if (event.eventType === 'indexed') {
-      try {
-        const storedKey = makeStoredKey(event.filePath, this.config.directories);
-        const stat = fs.statSync(event.filePath);
-        this.mtimes.indexed(storedKey, stat.mtimeMs).catch((): void => undefined);
-      } catch {
-        // File vanished between indexing and stat — rare but harmless
-      }
-    } else if (event.eventType === 'deleted') {
-      try {
-        const storedKey = makeStoredKey(event.filePath, this.config.directories);
-        this.mtimes.deleted(storedKey).catch((): void => undefined);
-      } catch {
-        // Path outside configured directories — harmless
-      }
-    }
-
-    // File-level errors (extraction failures, parse errors, etc.) are logged to
-    // the activity feed only — they don't change the silo's overall state.
-    // State transitions (indexing ↔ ready) are managed by scheduleWatcherIndexing().
-  }
-
-  /**
-   * Request a turn on the global IndexingQueue to drain the watcher's file queue.
-   * Deduplicates: if a turn is already queued, does nothing — items accumulate in
-   * the watcher's internal queue and will be processed when the turn arrives.
-   */
-  private scheduleWatcherIndexing(): void {
-    if (this.pendingWatcherEnqueue) return;
-    this.pendingWatcherEnqueue = true;
-
-    // Track the in-flight task so stop() can await it before closing resources.
-    let resolveIndexingDone!: () => void;
-    this.watcherIndexingDone = new Promise<void>((r) => {
-      resolveIndexingDone = r;
-    });
-
-    this.cancelWatcherEnqueue = this.indexingQueue.enqueue(
-      this.config.name,
-      () => {
-        if (!this.lifecycle.stopRequested) this.lifecycle.transition('waiting');
-      },
-      () => {
-        if (!this.lifecycle.stopRequested) this.lifecycle.transition('indexing');
-      },
-      async () => {
-        this.pendingWatcherEnqueue = false;
-        this.cancelWatcherEnqueue = null;
-        try {
-          if (this.watcher && !this.lifecycle.stopRequested) {
-            await this.watcher.runQueue(
-              (progress) => {
-                this.reconcileProgress = {
-                  current: progress.current,
-                  total: progress.total,
-                  filePath: progress.filePath,
-                  fileSize: progress.fileSize,
-                  fileStage: progress.fileStage,
-                  batchChunks: progress.batchChunks,
-                  batchChunkLimit: progress.batchChunkLimit,
-                  embedDone: progress.embedDone,
-                  embedTotal: progress.embedTotal,
-                };
-              },
-              () => this.lifecycle.stopRequested,
-            );
-          }
-        } catch (err) {
-          // Log but don't propagate — ensures we always reach the state-recovery below
-          console.error(`[silo:${this.config.name}] Watcher runQueue error:`, err);
-        }
-        this.reconcileProgress = undefined;
-        this.watcherIndexingDone = null;
-        resolveIndexingDone();
-        // runQueue() re-fires onQueueFilled if items arrived mid-run,
-        // which schedules another turn. Set ready only if truly idle.
-        if (
-          !this.lifecycle.stopRequested &&
-          (!this.watcher || this.watcher.queueLength === 0)
-        ) {
-          this.lifecycle.transition('ready');
-          this.errorMessage = undefined;
-        }
-      },
-    );
-  }
 
   private resolveDbPath(): string {
     if (path.isAbsolute(this.config.dbPath)) {

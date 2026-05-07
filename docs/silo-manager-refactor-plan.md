@@ -1201,6 +1201,148 @@ into the extraction.
 
 ---
 
+## Phase 2b — ActivityLog extraction handover
+
+**Status:** complete. `npm run typecheck` clean. `npm test` shows 9 test
+files, 103 tests, all passing — 89 carried forward from Phase 2a plus 14
+new for `ActivityLog` in isolation. The Phase 1 regression suite (11
+tests) did not need a single change, same as Phase 2a — the strongest
+signal that the extraction is behaviour-preserving.
+
+`silo-manager.ts` is down from 1084 → 1047 lines. The deduction is
+smaller than Phase 2a's because the duplicated activity-log blocks
+collapsed into single-line `this.activity.append(...)` calls (the larger
+gain shows up as eliminated *duplication*, not just shrinkage).
+
+### Files added
+
+| Path | Purpose |
+|---|---|
+| [`src/backend/silo/activity-log.ts`](../src/backend/silo/activity-log.ts) | `ActivityLog` class — single owner of the bounded buffer, the listener, `lastUpdated`, and the fire-and-forget DB write. |
+| [`src/backend/silo/activity-log.test.ts`](../src/backend/silo/activity-log.test.ts) | 14 unit tests covering reader surface, append behaviour, listener registration + exception handling, store-error robustness, and `loadFromStore` round-trip. |
+
+### Files changed
+
+| Path | Change |
+|---|---|
+| [`src/backend/silo-manager.ts`](../src/backend/silo-manager.ts) | Three private fields removed (`activityLog: WatcherEvent[]`, `eventListener?`, `lastUpdated: Date \| null`) and replaced with a single `private readonly activity: ActivityLog` initialised in the constructor. `onEvent`, `getActivityFeed`, and the two `getStatus` `lastUpdated` reads delegate to `activity`. The two duplicated 20-line blocks in `onReconcileEvent` and `handleWatcherEvent` collapsed to single `this.activity.append(...)` calls. The `loadActivity` block in `doStart` step 4b shrank to one `await this.activity.loadFromStore()`. |
+
+### One deliberate scope deviation: dropping the `dbOpen` gate
+
+The pre-refactor code had `if (this.dbOpen) { store.logActivity(...) }`
+inside both duplicated blocks. The plan flagged a question — preserve
+the gate (option A) or drop it (option B)?
+
+**Investigation showed the gate is dead code under the current
+teardown ordering.** The full call-graph trace:
+
+- `onReconcileEvent` fires only inside `reconcile()`, which is awaited
+  inline inside `doStart` after `dbOpen = true` at
+  [`silo-manager.ts:356`](../src/backend/silo-manager.ts).
+- `handleWatcherEvent` fires only when `SiloWatcher.runQueue()` calls
+  `emit()`. `runQueue()` is invoked exclusively from the IndexingQueue
+  task at [`silo-manager.ts:974`](../src/backend/silo-manager.ts),
+  gated by `if (this.watcher && !this.stopped)` at
+  [`:973`](../src/backend/silo-manager.ts).
+- `stop()` sets `this.stopped = true` *first*
+  ([`:488`](../src/backend/silo-manager.ts)), then awaits
+  `startPromise` and `watcherIndexingDone` (drains in-flight reconcile
+  / `runQueue`), then awaits `watcher.stop()` (chokidar close, no
+  more native emissions), then sets `dbOpen = false`
+  ([`:526`](../src/backend/silo-manager.ts)) *last*.
+
+So between "any emitter could still reach this code" and "dbOpen
+flips to false", every emitter is awaited. The gate cannot evaluate
+to false in practice.
+
+The new `ActivityLog` therefore has no lifecycle awareness — the
+collaborator is a clean value class, no `dbOpen` knowledge needed. If
+a future `stop()` reorder ever broke the invariant, the worker's
+"is not open" rejection is swallowed by `.catch(() => undefined)` —
+same observable outcome as the old gate (silent no-op).
+
+This is a deliberate deviation from the plan's "preserve current
+behaviour" discipline. Justified because the "behaviour" we'd be
+preserving was not actually reachable.
+
+### One small hardening: listener exceptions are caught
+
+The plan's test list called for "listener exception doesn't break
+append". The pre-refactor code did *not* catch listener throws — they
+would have propagated up through `chokidar`'s emit or `reconcile`'s
+event callback. The production listener
+([`main/activity.ts:19`](../src/main/activity.ts), forwarding to the
+renderer) doesn't throw, so this is observably a no-op in production.
+But the new collaborator catches and logs them, hardening against any
+future listener that might.
+
+If you do want to investigate the rename baseline (pain point 7a) or
+move toward (B) immutable-`siloId` later, the `ActivityLog`
+implementation captures `siloId` at construction the same way
+`MtimeIndex` does — the rename baseline still throws "is not open" on
+the next store call, just as Phase 1 pinned it.
+
+### Things to keep an eye on in Phase 3+
+
+The Phase 2b deviation sets a precedent worth being explicit about:
+**before defaulting to "preserve current behaviour", verify the
+behaviour is reachable.** Refactor discipline is meant to prevent
+silent change, not to enshrine dead code. When extracting a
+collaborator, trace the call graph for any defensive guard the
+previous code held — if the scenario can't occur, the new collaborator
+should be cleaner without it. (If it *can* occur, then yes, preserve
+and ticket — the original discipline applies.)
+
+The same reasoning will likely come up in Phase 3 (`SiloConfigStore`)
+around the seven update methods — check whether each `validate*`
+fallback is reachable, whether each `persistConfigBlob` ordering
+constraint can race, before propagating the existing patterns into
+the new class.
+
+### How to pick up Phase 3 — SiloConfigStore
+
+Same shape as the previous extractions, but the surface is wider —
+seven update methods plus `persistConfigBlob`. The plan's
+"Identity constraint" note (default to option A — preserve mutable
+`siloId === config.name`) still stands; the Phase 1 rename regression
+test will keep it honest.
+
+Steps:
+
+1. Read the seven `update*` methods end to end —
+   [`updateModel` at silo-manager.ts:175](../src/backend/silo-manager.ts)
+   through `updateIcon` at `:312`, with `updateColor`/`updateIcon` at
+   `:303–312` separated from the rest by the `persistConfigBlob`
+   helper. Note the two paths: persist-only
+   (`updateModel`/`updateDescription`/`updateName`/`updateColor`/
+   `updateIcon`) vs reconcile-and-restart
+   (`updateIgnorePatterns`/`updateExtensions`/`rescan`).
+2. Create `src/backend/silo/silo-config-store.ts` with the parametric
+   `update<K>(field, value)` method described in the plan. Two
+   options for the persist-vs-reconcile branching:
+   - Return a discriminated `UpdateResult` from `update()` and let
+     the manager dispatch.
+   - Have two methods on the store (`updateAndPersist`,
+     `updateAndReconcile`) that the manager calls explicitly.
+   The first is cleaner; the second is more explicit. Pick after
+   sketching one.
+3. Add unit tests for the config store in isolation — validation
+   round-trips (preserve `validateSiloIcon` silent-fallback per the
+   Phase 1 surprise), persistence is awaited, the rename baseline
+   is *not* changed by the extraction.
+4. Run the full suite. Phase 1 regression tests must stay green
+   (especially the rename test, which exercises this exact code path).
+   If a regression test starts failing, pause and reconsider — same
+   discipline as Phase 2.
+
+After Phase 3, `silo-manager.ts` should be roughly 800–900 lines —
+more headroom than 2a/2b because seven methods collapse into a
+parametric one. After that, Phase 4 (FSM) is the largest *internal*
+shift and benefits from the regression net being maximally
+populated.
+
+---
+
 ## Out of scope (named explicitly)
 
 These came up during the audit but belong in their own work, not this

@@ -39,6 +39,7 @@ import type { FileResult } from './search';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
 import { MtimeIndex } from './silo/mtime-index';
+import { ActivityLog } from './silo/activity-log';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -76,8 +77,6 @@ export class SiloManager {
   /** True when this silo has an open database in the store worker. */
   private dbOpen = false;
   private watcher: SiloWatcherLike | null = null;
-  private lastUpdated: Date | null = null;
-  private activityLog: WatcherEvent[] = [];
   private _watcherState: WatcherState = 'ready';
   private stateChangeListener?: () => void;
   private errorMessage?: string;
@@ -94,6 +93,7 @@ export class SiloManager {
     embedTotal?: number;
   };
   private readonly mtimes: MtimeIndex;
+  private readonly activity: ActivityLog;
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
   private cachedSizeBytes = 0;
@@ -122,9 +122,6 @@ export class SiloManager {
   /** Tracks the in-flight start() so stop() can wait for it to settle. */
   private startPromise: Promise<void> | null = null;
 
-  /** External listener for watcher events (used by main process for renderer forwarding). */
-  private eventListener?: (event: WatcherEvent) => void;
-
   /** Prevents duplicate enqueue for live watcher runs. */
   private pendingWatcherEnqueue = false;
   /** Cancel function for a pending live-watcher queue slot. */
@@ -141,6 +138,13 @@ export class SiloManager {
     private readonly watcherFactory: SiloWatcherFactory = defaultSiloWatcherFactory,
   ) {
     this.mtimes = new MtimeIndex(this.config.name, this.store);
+    this.activity = new ActivityLog(
+      this.config.name,
+      this.store,
+      () => this.config.name,
+      MAX_ACTIVITY_EVENTS,
+      () => this.config.activityLogLimit,
+    );
   }
 
   /** The silo ID used for all store proxy calls. */
@@ -150,7 +154,7 @@ export class SiloManager {
 
   /** Register a listener for watcher events. Only one listener is supported. */
   onEvent(listener: (event: WatcherEvent) => void): void {
-    this.eventListener = listener;
+    this.activity.setListener(listener);
   }
 
   /** Register a listener for watcher state transitions. Only one listener is supported. */
@@ -371,18 +375,7 @@ export class SiloManager {
     await this.mtimes.loadFromStore();
 
     // 4b. Seed the in-memory activity log from persisted history
-    try {
-      const rows = await this.store.loadActivity(this.siloId, MAX_ACTIVITY_EVENTS);
-      this.activityLog = rows.map((r) => ({
-        timestamp: new Date(r.timestamp),
-        siloName: this.config.name,
-        filePath: r.file_path,
-        eventType: r.event_type as WatcherEvent['eventType'],
-        errorMessage: r.error_message ?? undefined,
-      }));
-    } catch {
-      // First run — activity_log table may not exist yet in very old DBs
-    }
+    await this.activity.loadFromStore();
 
     // 5. Run startup reconciliation via the global IndexingQueue so that
     //    only one silo embeds/indexes at a time.
@@ -790,7 +783,7 @@ export class SiloManager {
         name: this.config.name,
         indexedFileCount: this.maintenanceInProgress ? this.mtimes.size : this.cachedFileCount,
         chunkCount: this.cachedChunkCount,
-        lastUpdated: this.lastUpdated,
+        lastUpdated: this.activity.lastUpdated,
         databaseSizeBytes: this.maintenanceInProgress
           ? this.readFileSizeFromDisk()
           : this.cachedSizeBytes,
@@ -809,7 +802,7 @@ export class SiloManager {
       name: this.config.name,
       indexedFileCount: this.mtimes.size,
       chunkCount: chunks,
-      lastUpdated: this.lastUpdated,
+      lastUpdated: this.activity.lastUpdated,
       databaseSizeBytes: dbSize,
       watcherState: this.watcherState,
       errorMessage: this.errorMessage,
@@ -821,7 +814,7 @@ export class SiloManager {
 
   /** Get recent activity events. */
   getActivityFeed(limit = 50): WatcherEvent[] {
-    return this.activityLog.slice(-limit);
+    return this.activity.recent(limit);
   }
 
   /** Whether the index was built with a different model than currently configured. */
@@ -914,60 +907,17 @@ export class SiloManager {
     // Don't touch watcherState (stays 'indexing') or mtimes
     // (reconcile() manages those itself). Individual file errors
     // during reconciliation shouldn't mark the whole silo as errored.
-    const watcherEvent: WatcherEvent = {
+    this.activity.append({
       timestamp: new Date(),
       siloName: this.config.name,
       filePath: event.filePath,
       eventType: event.eventType,
       errorMessage: event.errorMessage,
-    };
-
-    this.activityLog.push(watcherEvent);
-    if (this.activityLog.length > MAX_ACTIVITY_EVENTS) {
-      this.activityLog = this.activityLog.slice(-MAX_ACTIVITY_EVENTS);
-    }
-    this.lastUpdated = watcherEvent.timestamp;
-    this.eventListener?.(watcherEvent);
-
-    // Persist to SQLite (fire-and-forget — never block the pipeline)
-    if (this.dbOpen) {
-      this.store
-        .logActivity(
-          this.siloId,
-          watcherEvent.timestamp.toISOString(),
-          watcherEvent.eventType,
-          watcherEvent.filePath,
-          watcherEvent.errorMessage ?? null,
-          this.config.activityLogLimit,
-        )
-        .catch((): void => undefined);
-    }
+    });
   };
 
   private handleWatcherEvent(event: WatcherEvent): void {
-    this.activityLog.push(event);
-    if (this.activityLog.length > MAX_ACTIVITY_EVENTS) {
-      this.activityLog = this.activityLog.slice(-MAX_ACTIVITY_EVENTS);
-    }
-
-    this.lastUpdated = event.timestamp;
-
-    // Notify external listener (main process → renderer forwarding)
-    this.eventListener?.(event);
-
-    // Persist to SQLite (fire-and-forget — never block the watcher)
-    if (this.dbOpen) {
-      this.store
-        .logActivity(
-          this.siloId,
-          event.timestamp.toISOString(),
-          event.eventType,
-          event.filePath,
-          event.errorMessage ?? null,
-          this.config.activityLogLimit,
-        )
-        .catch((): void => undefined);
-    }
+    this.activity.append(event);
 
     // Update file modification times via MtimeIndex (fire-and-forget — never block the watcher).
     // event.filePath is an absolute path from the watcher — convert to stored key.

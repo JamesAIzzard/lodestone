@@ -1066,17 +1066,12 @@ the benefit of whoever picks up trim #2.
 
 ### Outstanding follow-up tickets (not part of this refactor)
 
-- **Mid-reconcile error overwrite:** when reconcile throws inside
-  `doStart`'s queue task, the catch transitions to `'error'`, but
-  `doStart` proceeds and unconditionally transitions to `'ready'`,
-  overwriting the error. File a renderer-error-surfacing ticket if
-  this is observed in the wild.
-- **Identity rename hazard** (pain point 7a): the regression suite
-  pins current behaviour; if a real bug surfaces, file a rename-
-  through-worker-close+reopen vs immutable-id ticket.
-- **Reconcile event-loop starvation** noted in `MEMORY.md`: separate
-  ticket (worker-thread move).
-- See the **Out of scope** section below for the rest.
+Consolidated in
+[`silo-manager-followups.md`](silo-manager-followups.md). That doc is
+the canonical going-forward list — trim candidates, behaviour issues
+flagged for separate tickets, adjacent code noticed during the audit.
+The "Out of scope" section below preserves the original audit-time
+record.
 
 ---
 

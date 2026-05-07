@@ -56,6 +56,8 @@ interface TestSiloOptions {
   reuseStore?: LocalStoreFacade;
   /** Provide a pre-built embedding service (e.g. failing one). */
   embedding?: ReturnType<typeof createStubEmbedding>;
+  /** Share an IndexingQueue across silos (used to force queueing during cancellation tests). */
+  queue?: IndexingQueue;
 }
 
 let cleanups: Array<() => void> = [];
@@ -103,7 +105,7 @@ function makeTestSilo(opts: TestSiloOptions = {}): TestSilo {
 
   const store = opts.reuseStore ?? createTempDirStoreFacade();
   const watcher = new FakeSiloWatcher();
-  const queue = new IndexingQueue();
+  const queue = opts.queue ?? new IndexingQueue();
   const embedding = opts.embedding ?? createStubEmbedding({ dimensions: 4 });
 
   const manager = new SiloManager(
@@ -410,5 +412,124 @@ describe('SiloManager — updateName rename behaviour (regression baseline)', ()
     // which is a no-op in the facade. Then we close 'old-slug' directly.
     await t.manager.stop();
     await t.store.close('old-slug');
+  });
+});
+
+/**
+ * Phase 6 — cancellation pins for the named-phase doStart.
+ *
+ * `doStart` has two explicit `if (stopRequested) return;` short-circuits
+ * (between loadInitialState and runStartupReconcile, and between
+ * configStore.persist and transition('ready')) plus one inside
+ * runStartupReconcile's queue closure (top of the task body, before
+ * reconcile is invoked). Each of these pre-existed in the pre-Phase-6
+ * code path; Phase 6 just renamed the surrounding sequence and exposed
+ * them. These tests pin that every short-circuit cleanly aborts the
+ * remaining startup steps — no watcher started, no reconcile-driven
+ * activity events, DB closed by stop().
+ */
+describe('SiloManager — start cancellation honoured at each yield point (Phase 6)', () => {
+  it('stop() called immediately bails before runStartupReconcile is entered', async () => {
+    const t = makeTestSilo();
+
+    // start() schedules doStart; stop() is invoked synchronously before
+    // any of doStart's awaits resolve. By the time doStart's microtasks
+    // run, stopRequested is already true. doStart progresses through the
+    // four prelude phases (initEmbedding/openDatabase/checkAndPersistMeta/
+    // loadInitialState — all cheap against the local facade) and then
+    // hits the explicit short-circuit after loadInitialState, returning
+    // without ever entering runStartupReconcile.
+    const startP = t.manager.start();
+    const stopP = t.manager.stop();
+    await Promise.all([startP.catch(() => {}), stopP]);
+
+    // runStartupReconcile was not entered — no reconcile-driven events
+    // landed in the activity feed.
+    expect(t.manager.getActivityFeed().length).toBe(0);
+    // The watcher start (step 8) sits past the second short-circuit; it
+    // was not reached.
+    expect(t.watcher.started).toBe(false);
+    // openDatabase did run before the short-circuit; stop() then closed it.
+    expect(t.store.openSiloIds()).not.toContain('test-silo');
+  });
+
+  it('stop() while runStartupReconcile is queued bails inside the task closure', async () => {
+    // Saturate the IndexingQueue with a hung task so our manager's
+    // startup-reconcile slot enqueues but cannot run. While it sits in
+    // the queue, request stop. When the queue eventually admits our
+    // task, the closure's first line (`if (stopRequested) { resolve(); return; }`)
+    // fires — reconcile never runs. doStart then proceeds through
+    // configStore.persist, hits YP5, and returns.
+    const sharedQueue = new IndexingQueue();
+    let releaseBusy!: () => void;
+    let busyAdmitted!: () => void;
+    const busyAdmittedP = new Promise<void>((r) => { busyAdmitted = r; });
+    sharedQueue.enqueue(
+      'busy',
+      () => { /* onWaiting */ },
+      () => busyAdmitted(),
+      () => new Promise<void>((r) => { releaseBusy = r; }),
+    );
+    await busyAdmittedP;
+
+    const t = makeTestSilo({ queue: sharedQueue });
+    const startP = t.manager.start();
+
+    // Wait for our manager's startup-reconcile slot to be queued —
+    // observable via the lifecycle's 'waiting' transition (fired by the
+    // queue's onWaiting callback when our task is admitted but blocked
+    // behind the busy task).
+    while (t.manager.currentState !== 'waiting') {
+      await new Promise((r) => setImmediate(r));
+    }
+
+    // Stop sets stopRequested and awaits startPromise.
+    const stopP = t.manager.stop();
+
+    // Release the busy task. The queue admits ours next; the closure
+    // sees stopRequested=true and bails before reconcile.
+    releaseBusy();
+    await Promise.all([startP.catch(() => {}), stopP]);
+
+    // Reconcile did not run — activity feed empty.
+    expect(t.manager.getActivityFeed().length).toBe(0);
+    // YP5 fired after the closure resolved — watcher never started.
+    expect(t.watcher.started).toBe(false);
+  });
+
+  it('stop() while configStore.persist is in flight bails before transition(\'ready\')', async () => {
+    const t = makeTestSilo();
+
+    // Gate saveConfigBlob so configStore.persist hangs at the moment it
+    // executes inside doStart. Reconcile completes first (the queue task
+    // resolves cleanly), then doStart awaits persist — which now hangs.
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((r) => { releaseSave = r; });
+    let persistEntered!: () => void;
+    const persistEnteredP = new Promise<void>((r) => { persistEntered = r; });
+    const originalSave = t.store.saveConfigBlob.bind(t.store);
+    t.store.saveConfigBlob = async (siloId, blob) => {
+      persistEntered();
+      await saveGate;
+      return originalSave(siloId, blob);
+    };
+
+    const startP = t.manager.start();
+    // Wait until persist actually begins — guarantees reconcile is done.
+    await persistEnteredP;
+
+    // Stop now. stopRequested is set; stop() awaits startPromise.
+    const stopP = t.manager.stop();
+
+    // Release persist. doStart resumes, hits YP5 (stopRequested=true),
+    // returns without transitioning to 'ready' or starting the watcher.
+    releaseSave();
+    await Promise.all([startP.catch(() => {}), stopP]);
+
+    // Reconcile DID run before the bail — the activity feed has at least
+    // one reconcile-driven event for the indexed file.
+    expect(t.manager.getActivityFeed().length).toBeGreaterThan(0);
+    // YP5 fired — watcher never started.
+    expect(t.watcher.started).toBe(false);
   });
 });

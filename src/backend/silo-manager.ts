@@ -30,6 +30,7 @@ import {
   reconcile,
   type ReconcileProgressHandler,
   type ReconcileEventHandler,
+  type ReconcileResult,
   type ReconcileStoreOps,
 } from './reconcile';
 import type { WatcherState, DirectoryTreeNode, SearchParams } from '../shared/types';
@@ -348,17 +349,37 @@ export class SiloManager {
   }
 
   private async doStart(): Promise<void> {
-    // 1. Use the shared embedding service and ensure it's ready
+    await this.initEmbedding();
+    await this.openDatabase();
+    await this.checkAndPersistMeta();
+    await this.loadInitialState();
+    if (this.lifecycle.stopRequested) return;
+    await this.runStartupReconcile();
+    await this.configStore.persist();
+    if (this.lifecycle.stopRequested) return;
+    this.lifecycle.transition('ready');
+    this.watcherCoord.start();
+    console.log(
+      `[silo:${this.config.name}] Started (watching ${this.config.directories.join(', ')})`,
+    );
+  }
+
+  /** Step 1 — point at the shared embedding service and wait for it to load. */
+  private async initEmbedding(): Promise<void> {
     this.embeddingService = this.sharedEmbeddingService;
     await this.embeddingService.ensureReady();
+  }
 
-    // 2. Open or create the SQLite database via the store worker
+  /** Step 2 — open (or create) the SQLite database via the store worker. */
+  private async openDatabase(): Promise<void> {
     const dbPath = this.resolveDbPath();
-    await this.store.open(this.siloId, dbPath, this.embeddingService.dimensions);
+    await this.store.open(this.siloId, dbPath, this.embeddingService!.dimensions);
     this.dbOpen = true;
     console.log(`[silo:${this.config.name}] Opened database at ${dbPath}`);
+  }
 
-    // 3. Check meta for model mismatch
+  /** Step 3 — check the meta row for model mismatch; write meta on first run. */
+  private async checkAndPersistMeta(): Promise<void> {
     const meta = await this.store.loadMeta(this.siloId);
     if (meta) {
       if (meta.model !== this.config.model) {
@@ -369,19 +390,26 @@ export class SiloManager {
       }
     } else {
       // First run or fresh DB — write meta now
-      await this.store.saveMeta(this.siloId, this.config.model, this.embeddingService.dimensions);
+      await this.store.saveMeta(this.siloId, this.config.model, this.embeddingService!.dimensions);
       this.modelMismatch = false;
     }
+  }
 
-    // 4. Load file modification times for offline change detection
+  /** Step 4 — load mtimes (for offline change detection) and the activity log. */
+  private async loadInitialState(): Promise<void> {
     await this.mtimes.loadFromStore();
-
-    // 4b. Seed the in-memory activity log from persisted history
     await this.activity.loadFromStore();
+  }
 
-    // 5. Run startup reconciliation via the global IndexingQueue so that
-    //    only one silo embeds/indexes at a time.
-    if (this.lifecycle.stopRequested) return;
+  /**
+   * Step 5 — reconcile the index against disk via the global IndexingQueue
+   * (only one silo embeds at a time), then run WAL maintenance while the
+   * queue slot is still held. The queue boundary spans both reconcile and
+   * maintenance so that other silos don't slip in between checkpoint and
+   * VACUUM. {@link runWalMaintenance} is called from the closure rather
+   * than at the doStart level to preserve that boundary.
+   */
+  private async runStartupReconcile(): Promise<void> {
     await new Promise<void>((resolve) => {
       this.indexingQueue.enqueue(
         this.config.name,
@@ -429,29 +457,7 @@ export class SiloManager {
             // potentially expensive WAL checkpoint blocks the event loop.
             await new Promise<void>((r) => setImmediate(r));
 
-            const sizeBefore = this.readFileSizeFromDisk();
-
-            // Checkpoint and truncate the WAL after reconciliation.
-            const tCheckpoint = performance.now();
-            await this.store.checkpoint(this.siloId, 'TRUNCATE');
-            const sizeAfterCkpt = this.readFileSizeFromDisk();
-            console.log(
-              `[silo:${this.config.name}] Post-reconcile: WAL checkpoint(TRUNCATE) took ${(performance.now() - tCheckpoint).toFixed(1)}ms` +
-                ` — ${(sizeBefore / 1048576).toFixed(1)}MB → ${(sizeAfterCkpt / 1048576).toFixed(1)}MB`,
-            );
-
-            // VACUUM reclaims free pages left by deletions/updates. Skip after
-            // pure-insert reconciliations (initial index) — there are no free
-            // pages to reclaim, so VACUUM just rewrites the entire DB for nothing.
-            if (result.filesRemoved > 0 || result.filesUpdated > 0) {
-              const tVacuum = performance.now();
-              await this.store.vacuum(this.siloId);
-              const sizeAfterVac = this.readFileSizeFromDisk();
-              console.log(
-                `[silo:${this.config.name}] Post-reconcile: VACUUM took ${(performance.now() - tVacuum).toFixed(1)}ms` +
-                  ` — ${(sizeAfterCkpt / 1048576).toFixed(1)}MB → ${(sizeAfterVac / 1048576).toFixed(1)}MB`,
-              );
-            }
+            await this.runWalMaintenance(result);
 
             // Transition out of 'maintenance' back to 'indexing' to preserve
             // the pre-refactor window: between maintenance ending and
@@ -472,20 +478,38 @@ export class SiloManager {
         },
       );
     });
+  }
 
-    // 6. Persist config blob for portable reconnection
-    await this.configStore.persist();
+  /**
+   * Step 5b — checkpoint the WAL (TRUNCATE) and conditionally VACUUM. Runs
+   * inside the IndexingQueue slot held by {@link runStartupReconcile}; the
+   * caller is responsible for the surrounding 'maintenance' / 'indexing'
+   * transitions and for clearing reconcileProgress on completion.
+   *
+   * VACUUM is skipped after pure-insert reconciliations (initial index) —
+   * there are no free pages to reclaim, so VACUUM just rewrites the entire
+   * DB for nothing.
+   */
+  private async runWalMaintenance(result: ReconcileResult): Promise<void> {
+    const sizeBefore = this.readFileSizeFromDisk();
 
-    // 7. Bail if stop() was called during reconciliation
-    if (this.lifecycle.stopRequested) return;
-    this.lifecycle.transition('ready');
-
-    // 8. Create and start the file watcher
-    this.watcherCoord.start();
-
+    const tCheckpoint = performance.now();
+    await this.store.checkpoint(this.siloId, 'TRUNCATE');
+    const sizeAfterCkpt = this.readFileSizeFromDisk();
     console.log(
-      `[silo:${this.config.name}] Started (watching ${this.config.directories.join(', ')})`,
+      `[silo:${this.config.name}] Post-reconcile: WAL checkpoint(TRUNCATE) took ${(performance.now() - tCheckpoint).toFixed(1)}ms` +
+        ` — ${(sizeBefore / 1048576).toFixed(1)}MB → ${(sizeAfterCkpt / 1048576).toFixed(1)}MB`,
     );
+
+    if (result.filesRemoved > 0 || result.filesUpdated > 0) {
+      const tVacuum = performance.now();
+      await this.store.vacuum(this.siloId);
+      const sizeAfterVac = this.readFileSizeFromDisk();
+      console.log(
+        `[silo:${this.config.name}] Post-reconcile: VACUUM took ${(performance.now() - tVacuum).toFixed(1)}ms` +
+          ` — ${(sizeAfterCkpt / 1048576).toFixed(1)}MB → ${(sizeAfterVac / 1048576).toFixed(1)}MB`,
+      );
+    }
   }
 
   /** Graceful shutdown: stop watcher, close database. */

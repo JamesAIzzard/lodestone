@@ -1072,6 +1072,135 @@ The signs that Phase 2 is going badly:
 
 ---
 
+---
+
+## Phase 2a — MtimeIndex extraction handover
+
+**Status:** complete. `npm run typecheck` clean. `npm test` shows 8 test
+files, 89 tests, all passing — 79 carried forward from Phase 1 plus 10
+new for `MtimeIndex` in isolation. The Phase 1 regression suite did not
+need a single change, which is the strongest signal that the
+extraction is behaviour-preserving.
+
+### Files added
+
+| Path | Purpose |
+|---|---|
+| [`src/backend/silo/mtime-index.ts`](../src/backend/silo/mtime-index.ts) | `MtimeReader`, `MtimeSink`, `MtimeView` interfaces and the `MtimeIndex` class. Single owner of the in-memory mtime cache + DB write-through. |
+| [`src/backend/silo/mtime-index.test.ts`](../src/backend/silo/mtime-index.test.ts) | 10 unit tests for the class in isolation, using the in-memory `LocalStoreFacade`. |
+
+New folder `src/backend/silo/` introduced. Future collaborators
+(`activity-log.ts`, `silo-config-store.ts`, `silo-lifecycle.ts`,
+`watcher-coordinator.ts`) live here too.
+
+### Files changed
+
+| Path | Change |
+|---|---|
+| [`src/backend/reconcile.ts`](../src/backend/reconcile.ts) | Signature change: `mtimes: Map<string, number>` → `mtimes: MtimeView`. Two write sites updated: `mtimes.set(...)` → `mtimes.recordIndexed(...)` (after each batch flush in `onBatchFlushed`); `mtimes.delete(...)` → `mtimes.recordDeleted(...)` (after the bulk-delete flush). Reads (`keys()`, `get()`, `has()`) unchanged — `MtimeView` exposes the same Map-like surface. JSDoc updated. |
+| [`src/backend/silo-manager.ts`](../src/backend/silo-manager.ts) | `private mtimes = new Map<...>()` → `private readonly mtimes: MtimeIndex` initialised in the constructor body. Bulk load `this.mtimes = await this.store.loadMtimes(...)` → `await this.mtimes.loadFromStore()`. `reindexFile`'s post-flush mtime sync uses `recordIndexed` (in-memory only — flush wrote DB). `handleWatcherEvent` collapses two-step "in-memory + fire-and-forget DB" into single fire-and-forget calls to `mtimes.indexed(...)` / `mtimes.deleted(...)`. Reads (`size`, `clear()`) unchanged. |
+
+### Deviation from the plan
+
+The plan I wrote during Phase 1's review rounds described the sink as
+"Each call updates both the in-memory map and the DB". That formulation
+turned out to be incompatible with the existing pipeline boundary:
+[`pipeline.ts:onBatchFlushed`](../src/backend/pipeline.ts) is a *sync*
+callback. Making it async would ripple into every consumer of the
+indexing pipeline.
+
+So `MtimeIndex` exposes **two write paths**:
+
+1. **Sync `recordIndexed` / `recordDeleted`** (the `MtimeSink`
+   interface) — in-memory only. Used where the caller has already
+   arranged for the DB write — reconcile's `onBatchFlushed` callback
+   (the flush already persisted via the upsert) and `reindexFile`
+   (same).
+2. **Async `indexed` / `deleted`** — in-memory + DB write-through.
+   Used by `handleWatcherEvent`, which has no flush in flight and
+   needs the DB call to happen.
+
+The existing call-site behaviour is preserved exactly: every site
+that *was* doing "in-memory + flush-already-wrote-DB" now uses
+`record*`, and every site that *was* doing "in-memory + own
+`setMtime`/`deleteMtime`" now uses the async pair.
+
+Net effect: the four-pattern smell from pain point #5 collapses to two
+patterns, distinguished by whether the caller has already arranged a
+DB write. That distinction is now in the type system (sync vs async)
+rather than ad-hoc per-site copy-paste.
+
+### What was *not* changed in Phase 2a
+
+- **`updateName` rename baseline.** Still throws "is not open" on the
+  next store call after rename — the regression test confirms the
+  baseline holds. `MtimeIndex` captures `siloId` at construction; if
+  `updateName` is ever fixed to actually rename through the store,
+  `MtimeIndex` will need a follow-up.
+- **`reconcile`'s `walkDirectory` is still synchronous.** The
+  event-loop stall noted in `MEMORY.md` is unchanged. Out of scope.
+- **`pipeline.ts:onBatchFlushed` sync contract.** The deviation note
+  above documents why this stays sync in Phase 2a. Could be
+  re-evaluated in a later phase if multiple callers need async
+  flush-completion hooks.
+
+### How to pick up Phase 2b — ActivityLog
+
+Same shape as 2a but smaller. The duplicated 20-line activity-log
+blocks are at:
+
+- [`silo-manager.ts:910–929`](../src/backend/silo-manager.ts) inside
+  `onReconcileEvent`
+- [`silo-manager.ts:933–955`](../src/backend/silo-manager.ts) inside
+  `handleWatcherEvent`
+
+Both: push to `this.activityLog`, cap at 200, set `lastUpdated`, fire
+`eventListener?.(...)`, fire-and-forget `this.store.logActivity(...)`.
+
+Plan target shape:
+
+```ts
+class ActivityLog {
+  constructor(private siloId: string, private store: StoreFacade,
+              private cap: number, private logLimit: number) {}
+  async loadFromStore(): Promise<void>;
+  recent(limit: number): ReadonlyArray<WatcherEvent>;
+  append(event: WatcherEvent): void;  // sync — does cap + listener + fire-and-forget DB
+  setListener(fn: (e: WatcherEvent) => void): void;
+}
+```
+
+Steps:
+
+1. Create `src/backend/silo/activity-log.ts`. Mostly mechanical given
+   the Phase 2a template.
+2. Replace the two duplicated blocks in `silo-manager.ts` with single
+   `this.activity.append(event)` calls.
+3. Move the `loadActivity` bulk read from `doStart` into
+   `activity.loadFromStore()`.
+4. Add `mtime-index.test.ts`-style unit tests covering: cap
+   enforcement, listener fires once per append, listener exception
+   doesn't break append, store-write error is swallowed.
+5. Run `npm test`. The 11 regression tests in
+   `silo-manager-regression.test.ts` must stay green — they exercise
+   the activity-feed surface end-to-end.
+
+After Phase 2b lands, the next phase (3 — `SiloConfigStore`) is the
+last extraction before the structural rewrites of `doStart` and the
+watcher coordinator. By that point `silo-manager.ts` should be down by
+roughly 200–300 lines from the starting 1084.
+
+### Things to keep an eye on in Phase 3+
+
+The Phase 2a deviation (sync vs async write paths) sets a precedent:
+**collaborator interfaces should respect the existing async boundaries
+of the call sites that consume them**, not the other way around. If a
+future collaborator needs to fight the boundary, that's a flag the
+boundary itself should be re-examined as its own change — not bundled
+into the extraction.
+
+---
+
 ## Out of scope (named explicitly)
 
 These came up during the audit but belong in their own work, not this

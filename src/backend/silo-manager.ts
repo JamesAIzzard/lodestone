@@ -38,6 +38,7 @@ import type { WatcherState, DirectoryTreeNode, SearchParams } from '../shared/ty
 import type { FileResult } from './search';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
+import { MtimeIndex } from './silo/mtime-index';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -92,7 +93,7 @@ export class SiloManager {
     embedDone?: number;
     embedTotal?: number;
   };
-  private mtimes = new Map<string, number>();
+  private readonly mtimes: MtimeIndex;
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
   private cachedSizeBytes = 0;
@@ -138,7 +139,9 @@ export class SiloManager {
     private readonly indexingQueue: IndexingQueue,
     private readonly store: StoreFacade = proxyStoreFacade,
     private readonly watcherFactory: SiloWatcherFactory = defaultSiloWatcherFactory,
-  ) {}
+  ) {
+    this.mtimes = new MtimeIndex(this.config.name, this.store);
+  }
 
   /** The silo ID used for all store proxy calls. */
   private get siloId(): string {
@@ -365,7 +368,7 @@ export class SiloManager {
     }
 
     // 4. Load file modification times for offline change detection
-    this.mtimes = await this.store.loadMtimes(this.siloId);
+    await this.mtimes.loadFromStore();
 
     // 4b. Seed the in-memory activity log from persisted history
     try {
@@ -676,8 +679,8 @@ export class SiloManager {
       mtimeMs: prepared.mtimeMs,
     };
     await this.store.flush(this.siloId, [upsert], []);
-    // Update in-memory mtime
-    this.mtimes.set(storedKey, stat.mtimeMs);
+    // Flush persisted the new mtime via the upsert; sync the in-memory cache.
+    this.mtimes.recordIndexed(storedKey, stat.mtimeMs);
   }
 
   /**
@@ -966,22 +969,20 @@ export class SiloManager {
         .catch((): void => undefined);
     }
 
-    // Update file modification times via the store proxy (fire-and-forget)
-    // event.filePath is an absolute path from the watcher — convert to stored key
+    // Update file modification times via MtimeIndex (fire-and-forget — never block the watcher).
+    // event.filePath is an absolute path from the watcher — convert to stored key.
     if (event.eventType === 'indexed') {
       try {
         const storedKey = makeStoredKey(event.filePath, this.config.directories);
         const stat = fs.statSync(event.filePath);
-        this.mtimes.set(storedKey, stat.mtimeMs);
-        this.store.setMtime(this.siloId, storedKey, stat.mtimeMs).catch((): void => undefined);
+        this.mtimes.indexed(storedKey, stat.mtimeMs).catch((): void => undefined);
       } catch {
         // File vanished between indexing and stat — rare but harmless
       }
     } else if (event.eventType === 'deleted') {
       try {
         const storedKey = makeStoredKey(event.filePath, this.config.directories);
-        this.mtimes.delete(storedKey);
-        this.store.deleteMtime(this.siloId, storedKey).catch((): void => undefined);
+        this.mtimes.deleted(storedKey).catch((): void => undefined);
       } catch {
         // Path outside configured directories — harmless
       }

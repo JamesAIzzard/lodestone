@@ -20,6 +20,7 @@ import type { EmbeddingService } from './embedding';
 import type { ResolvedSiloConfig } from './config';
 import type { ActivityEventType } from '../shared/types';
 import { matchesAnyPattern } from './pattern-match';
+import type { MtimeView } from './silo/mtime-index';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -100,15 +101,19 @@ function ms(start: number): string {
  * - Files in mtimes but not on disk → remove (deleted files)
  * - Files where disk mtime differs from stored mtime → re-index (offline edits)
  *
- * The mtimes map is mutated in place: entries are added after successful
- * indexing and removed after successful deletion. The caller is responsible
- * for persisting the updated map to disk.
+ * `mtimes` is an `MtimeView` (read + sync-write). Reads run up-front
+ * to compute the delta. Writes happen via `recordIndexed` /
+ * `recordDeleted` *only after* the corresponding flush has completed
+ * successfully — preserving the "in-memory mirror follows DB" invariant
+ * that previous in-place Map mutation provided implicitly. The DB
+ * itself is updated by the flush (mtimes are part of each upsert; deletes
+ * carry `deleteMtime: true`), so the sink methods are in-memory only.
  */
 export async function reconcile(
   config: ResolvedSiloConfig,
   embeddingService: EmbeddingService,
   storeOps: ReconcileStoreOps,
-  mtimes: Map<string, number>,
+  mtimes: MtimeView,
   onProgress?: ReconcileProgressHandler,
   onEvent?: ReconcileEventHandler,
   /** Return true to abort reconciliation early (e.g. silo stop/delete). */
@@ -215,7 +220,7 @@ export async function reconcile(
 
       onBatchFlushed: (files) => {
         for (const f of files) {
-          if (f.mtimeMs !== undefined) mtimes.set(f.storedKey, f.mtimeMs);
+          if (f.mtimeMs !== undefined) mtimes.recordIndexed(f.storedKey, f.mtimeMs);
           const isUpdate = indexedKeys.has(f.storedKey);
           if (isUpdate) filesUpdated++; else filesAdded++;
           onEvent?.({ filePath: f.absPath, eventType: isUpdate ? 'reindexed' : 'indexed' });
@@ -255,7 +260,7 @@ export async function reconcile(
 
     // Update in-memory state after successful flush
     for (const storedKey of filesToRemove) {
-      mtimes.delete(storedKey);
+      mtimes.recordDeleted(storedKey);
       filesRemoved++;
       onEvent?.({
         filePath: resolveStoredKey(storedKey, config.directories),

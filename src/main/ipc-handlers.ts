@@ -116,7 +116,7 @@ function registerSiloHandlers(ctx: AppContext): void {
           hasIgnoredFilePatternsOverride: siloToml?.ignored_file_patterns !== undefined,
           hasIndexedFileExtensionsOverride: siloToml?.indexed_file_extensions !== undefined,
           embeddingModelOverride:
-            cfg.embeddingModelKey === (ctx.config?.embeddings.default_model_key ?? '')
+            cfg.embeddingModelKey === (ctx.config?.default_model_key ?? '')
               ? null
               : cfg.embeddingModelKey,
           indexDbPath: cfg.indexDbPath,
@@ -400,7 +400,7 @@ function registerSiloHandlers(ctx: AppContext): void {
       }
 
       if (updates.embeddingModelKey !== undefined) {
-        const defaultModel = ctx.config.embeddings.default_model_key;
+        const defaultModel = ctx.config.default_model_key;
         siloToml.embedding_model_key =
           updates.embeddingModelKey !== defaultModel ? updates.embeddingModelKey : undefined;
         await manager?.updateEmbeddingModel(updates.embeddingModelKey);
@@ -540,7 +540,7 @@ function registerSiloHandlers(ctx: AppContext): void {
         index_db_path: opts.indexDbPath,
         indexed_file_extensions:
           opts.indexedFileExtensions.length > 0 ? opts.indexedFileExtensions : undefined,
-        embedding_model_key: model !== ctx.config.embeddings.default_model_key ? model : undefined,
+        embedding_model_key: model !== ctx.config.default_model_key ? model : undefined,
         content_description: opts.contentDescription?.trim() || undefined,
         accent_color: color,
         icon_name: icon ?? undefined,
@@ -580,7 +580,7 @@ function registerSettingsHandlers(ctx: AppContext): void {
     return {
       uptimeSeconds,
       availableModels: models,
-      defaultModel: ctx.config?.embeddings.default_model_key ?? DEFAULT_MODEL,
+      defaultModel: ctx.config?.default_model_key ?? DEFAULT_MODEL,
       totalIndexedFiles: totalFiles,
       modelPathSafeIds,
     };

@@ -25,14 +25,6 @@ import {
 import { DEFAULT_INDEX_EXTENSIONS } from '../shared/file-types';
 
 
-export interface ServerConfig {
-  name: string;
-}
-
-export interface EmbeddingsConfig {
-  default_model_key: string;
-}
-
 export interface DefaultsConfig {
   indexed_file_extensions: string[];
   ignored_folder_patterns: string[];
@@ -55,26 +47,16 @@ export interface SiloTomlConfig {
   icon_name?: string;
 }
 
-export type SearchConfig = Record<string, never>;
-// two-axis model — all scores are now transparent [0,1] values.
-
 export interface LodestoneConfig {
-  server: ServerConfig;
-  embeddings: EmbeddingsConfig;
+  server_name: string;
+  default_model_key: string;
   defaults: DefaultsConfig;
-  search: SearchConfig;
   silos: Record<string, SiloTomlConfig>;
 }
 
-// ── Defaults ─────────────────────────────────────────────────────────────────
-
 const DEFAULT_CONFIG: LodestoneConfig = {
-  server: {
-    name: 'lodestone',
-  },
-  embeddings: {
-    default_model_key: DEFAULT_MODEL,
-  },
+  server_name: 'lodestone',
+  default_model_key: DEFAULT_MODEL,
   defaults: {
     indexed_file_extensions: DEFAULT_INDEX_EXTENSIONS,
     ignored_folder_patterns: DEFAULT_IGNORE_DIRS,
@@ -83,7 +65,6 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     edit_context_lines: DEFAULT_CONTEXT_LINES,
     max_activity_log_entries: DEFAULT_ACTIVITY_LOG_LIMIT,
   },
-  search: {},
   silos: {},
 };
 
@@ -97,10 +78,7 @@ export function loadConfig(configPath: string): LodestoneConfig {
   const raw = fs.readFileSync(configPath, 'utf-8');
   const parsed = parse(raw) as Record<string, unknown>;
 
-  const server = (parsed.server ?? {}) as Partial<ServerConfig>;
-  const embeddings = (parsed.embeddings ?? {}) as Partial<EmbeddingsConfig>;
   const defaults = (parsed.defaults ?? {}) as Partial<DefaultsConfig>;
-  // search section is reserved but currently empty (weights removed in two-axis model)
   const silos = (parsed.silos ?? {}) as Record<string, unknown>;
 
   // Validate silos — each must have indexed directories and an index database path.
@@ -136,15 +114,12 @@ export function loadConfig(configPath: string): LodestoneConfig {
   }
 
   return {
-    server: {
-      name: typeof server.name === 'string' ? server.name : DEFAULT_CONFIG.server.name,
-    },
-    embeddings: {
-      default_model_key:
-        typeof embeddings.default_model_key === 'string'
-          ? embeddings.default_model_key
-          : DEFAULT_CONFIG.embeddings.default_model_key,
-    },
+    server_name:
+      typeof parsed.server_name === 'string' ? parsed.server_name : DEFAULT_CONFIG.server_name,
+    default_model_key:
+      typeof parsed.default_model_key === 'string'
+        ? parsed.default_model_key
+        : DEFAULT_CONFIG.default_model_key,
     defaults: {
       indexed_file_extensions: Array.isArray(defaults.indexed_file_extensions)
         ? (defaults.indexed_file_extensions as string[])
@@ -168,7 +143,6 @@ export function loadConfig(configPath: string): LodestoneConfig {
           ? defaults.max_activity_log_entries
           : DEFAULT_CONFIG.defaults.max_activity_log_entries,
     },
-    search: {},
     silos: validatedSilos,
   };
 }
@@ -244,7 +218,7 @@ export function resolveSiloConfig(
     ignoredFolderPatterns:
       silo.ignored_folder_patterns ?? config.defaults.ignored_folder_patterns,
     ignoredFilePatterns: silo.ignored_file_patterns ?? config.defaults.ignored_file_patterns,
-    embeddingModelKey: silo.embedding_model_key ?? config.embeddings.default_model_key,
+    embeddingModelKey: silo.embedding_model_key ?? config.default_model_key,
     fileChangeDelaySeconds: config.defaults.file_change_delay_seconds,
     maxActivityLogEntries: config.defaults.max_activity_log_entries,
     isStopped: silo.is_stopped === true,

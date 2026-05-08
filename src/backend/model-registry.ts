@@ -50,7 +50,7 @@ export interface ModelDefinition {
 /**
  * All known built-in embedding models, keyed by their config identifier.
  *
- * The key is what appears in config.toml (`embeddings.default_model_key` or `silos.*.embedding_model_key`)
+ * The key is what appears in config.toml (`default_model_key` or `silos.*.embedding_model_key`)
  * and in `meta.json` for mismatch detection. It must be stable across versions.
  */
 export const MODEL_REGISTRY: Record<string, ModelDefinition> = {

@@ -429,7 +429,7 @@ export class InternalApi {
           hasIgnoredFilePatternsOverride: siloToml?.ignored_file_patterns !== undefined,
           hasIndexedFileExtensionsOverride: siloToml?.indexed_file_extensions !== undefined,
           embeddingModelOverride:
-            cfg.embeddingModelKey === (this.ctx.config?.embeddings.default_model_key ?? '')
+            cfg.embeddingModelKey === (this.ctx.config?.default_model_key ?? '')
               ? null
               : cfg.embeddingModelKey,
           indexDbPath: cfg.indexDbPath,

@@ -15,7 +15,7 @@ describe('config defaults', () => {
   it('uses explicit default keys for configurable app behavior', () => {
     const config = createDefaultConfig();
 
-    expect(config.embeddings.default_model_key).toBeTypeOf('string');
+    expect(config.default_model_key).toBeTypeOf('string');
     expect(config.defaults.file_change_delay_seconds).toBe(10);
     expect(config.defaults.ignored_folder_patterns).toEqual([
       '.*',
@@ -32,7 +32,6 @@ describe('config defaults', () => {
   it('loads the clearer default keys from TOML', () => {
     const config = loadConfig(
       writeTempConfig(`
-[embeddings]
 default_model_key = "snowflake-arctic-embed-xs"
 
 [defaults]
@@ -45,7 +44,7 @@ max_activity_log_entries = 1234
 `),
     );
 
-    expect(config.embeddings.default_model_key).toBe('snowflake-arctic-embed-xs');
+    expect(config.default_model_key).toBe('snowflake-arctic-embed-xs');
     expect(config.defaults.indexed_file_extensions).toEqual(['.md', '.txt']);
     expect(config.defaults.ignored_folder_patterns).toEqual(['node_modules']);
     expect(config.defaults.ignored_file_patterns).toEqual(['Thumbs.db']);
@@ -57,7 +56,6 @@ max_activity_log_entries = 1234
   it('loads clearer per-silo keys from TOML', () => {
     const config = loadConfig(
       writeTempConfig(`
-[embeddings]
 default_model_key = "snowflake-arctic-embed-xs"
 
 [silos.docs]

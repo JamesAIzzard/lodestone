@@ -1,112 +1,39 @@
-/**
- * Electron main process entry point.
- *
- * This file is a thin orchestrator: it bootstraps the app, creates the
- * shared AppContext, and dispatches to either GUI mode or headless MCP mode.
- * All substantial logic lives in the extracted modules under src/main/.
- */
-
 import { app } from 'electron';
 import started from 'electron-squirrel-startup';
-import { createAppContext } from './main/context';
+import { createAppContext, type AppContext } from './main/context';
 import { createWindow } from './main/window';
 import { createTray } from './main/tray';
 import { initializeBackend, shutdownBackend } from './main/lifecycle';
 import { registerIpcHandlers } from './main/ipc-handlers';
-import { startMcpMode } from './main/mcp-mode';
+import { startMcpBridgeProcess } from './main/mcp-bridge';
 import { detectExistingDataDir, runFirstRunSetup } from './main/portable';
 import { lodestoneConfigFileExists, getDefaultLodestoneConfigPath } from './backend/config';
 
-// Handle creating/removing shortcuts on Windows when installing/uninstalling.
+const MCP_BRIDGE_ARG = '--mcp-bridge';
+const SHUTDOWN_TIMEOUT_MS = 5000;
+
 if (started) {
   app.quit();
 }
 
-// ── Bootstrap ────────────────────────────────────────────────────────────────
+const mcpBridgeProcess = isMcpBridgeProcess();
 
-const isMcpMode = process.argv.includes('--mcp');
-
-// In dev builds (app.isPackaged === false) use a distinct app name so the
-// userData directory, single-instance lock, and named pipe don't collide
-// with a simultaneously-running installed build.
-app.setName(app.isPackaged ? 'Lodestone' : 'Lodestone-Dev');
-
-// In MCP mode stdout is reserved for JSON-RPC. Redirect console.log to stderr.
-if (isMcpMode) {
-  console.log = (...args: unknown[]) => console.error(...args);
-}
+configureAppIdentity();
+if (mcpBridgeProcess) redirectLogsAwayFromMcpProtocol();
 
 const ctx = createAppContext();
 
-// ── Single-Instance Lock (GUI only) ──────────────────────────────────────────
-// Prevent duplicate GUI instances. MCP mode is exempt — it coexists with the
-// GUI and its lifecycle is managed by the MCP client + parent PID polling.
-
-if (!isMcpMode) {
-  const gotLock = app.requestSingleInstanceLock();
-
-  if (!gotLock) {
-    console.log('[main] Another GUI instance is already running — exiting');
-    app.quit();
-  } else {
-    app.on('second-instance', () => {
-      if (ctx.mainWindow) {
-        if (ctx.mainWindow.isMinimized()) ctx.mainWindow.restore();
-        ctx.mainWindow.show();
-        ctx.mainWindow.focus();
-      }
-    });
-  }
+if (!mcpBridgeProcess) {
+  registerGuiSingleInstanceBehavior(ctx);
 }
 
-// ── App Lifecycle ────────────────────────────────────────────────────────────
-
 app.on('ready', async () => {
-  // ── Portable / first-run data directory resolution ────────────────────────
-  // Must happen before any call to ctx.getUserDataDir() / app.getPath('userData').
-  // Skipped in MCP mode (no UI available) and in dev builds (app.isPackaged = false).
-  if (!isMcpMode && app.isPackaged) {
-    const existing = detectExistingDataDir();
-    if (existing) {
-      // Found a portable or custom data dir — redirect userData before backend starts
-      app.setPath('userData', existing);
-    } else if (!lodestoneConfigFileExists(getDefaultLodestoneConfigPath(app.getPath('userData')))) {
-      // No portable dir and no AppData config → true first run
-      const chosen = await runFirstRunSetup();
-      if (chosen !== app.getPath('userData')) {
-        app.setPath('userData', chosen);
-      }
-    }
-  }
-
-  if (isMcpMode) {
-    startMcpMode(ctx).catch((err) => {
-      console.error('[main] MCP mode failed:', err);
-      app.quit();
-    });
+  if (mcpBridgeProcess) {
+    await startMcpBridge(ctx);
     return;
   }
 
-  // Normal GUI mode
-  registerIpcHandlers(ctx);
-  createWindow(ctx);
-  createTray(ctx);
-
-  // Defer backend init until the renderer has loaded so that heavy
-  // reconciliation / ONNX embedding work doesn't starve the event loop.
-  ctx.mainWindow!.webContents.once('did-finish-load', async () => {
-    try {
-      await initializeBackend(ctx);
-
-      // Start the internal API pipe server so MCP processes can connect.
-      // Must happen after initializeBackend so silos are registered.
-      const { InternalApi } = await import('./main/internal-api');
-      ctx.internalApi = new InternalApi(ctx);
-      ctx.internalApi.start();
-    } catch (err) {
-      console.error('[main] Backend initialization error:', err);
-    }
-  });
+  await startGui(ctx);
 });
 
 app.on('before-quit', () => {
@@ -114,46 +41,135 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', (event) => {
-  // Prevent re-entrant quit loop: once async shutdown has started, let the
-  // process exit without re-entering the shutdown sequence.
-  if (ctx.shuttingDown) return;
+  if (!needsBackendShutdown(ctx)) return;
 
-  if (ctx.siloManagers.size > 0 || ctx.embeddingServices.size > 0) {
-    ctx.shuttingDown = true;
-    event.preventDefault();
+  ctx.shuttingDown = true;
+  event.preventDefault();
 
-    // Race shutdown against a hard timeout so a stuck silo can't keep the
-    // process alive forever.
-    const SHUTDOWN_TIMEOUT_MS = 5000;
-    const timeout = new Promise<void>((resolve) => {
-      setTimeout(() => {
-        console.warn('[main] Shutdown timed out after 5 s — force-quitting');
-        resolve();
-      }, SHUTDOWN_TIMEOUT_MS).unref();
-    });
+  ctx.internalApi?.stop();
+  ctx.internalApi = null;
 
-    // Stop the internal API pipe server before shutting down backends
-    ctx.internalApi?.stop();
-    ctx.internalApi = null;
-
-    Promise.race([shutdownBackend(ctx), timeout]).finally(() => app.quit());
-  }
+  Promise.race([shutdownBackend(ctx), quitAfterShutdownTimeout()]).finally(() => app.quit());
 });
 
 app.on('window-all-closed', () => {
-  if (isMcpMode) return;
-  if (process.platform === 'darwin') {
-    // macOS: app stays in dock
-  }
-  // Otherwise: app stays in tray
+  if (mcpBridgeProcess) return;
+  keepGuiProcessRunningInTray();
 });
 
 app.on('activate', () => {
-  if (isMcpMode) return;
-  if (ctx.mainWindow) {
-    ctx.mainWindow.show();
-    ctx.mainWindow.focus();
-  } else {
-    createWindow(ctx);
-  }
+  if (mcpBridgeProcess) return;
+  showOrCreateMainWindow(ctx);
 });
+
+function isMcpBridgeProcess(): boolean {
+  return process.argv.includes(MCP_BRIDGE_ARG);
+}
+
+function configureAppIdentity(): void {
+  app.setName(app.isPackaged ? 'Lodestone' : 'Lodestone-Dev');
+}
+
+function redirectLogsAwayFromMcpProtocol(): void {
+  console.log = (...args: unknown[]) => console.error(...args);
+}
+
+function registerGuiSingleInstanceBehavior(ctx: AppContext): void {
+  if (app.requestSingleInstanceLock()) {
+    app.on('second-instance', () => showMainWindow(ctx));
+    return;
+  }
+
+  console.log('[main] Another GUI instance is already running; exiting');
+  app.quit();
+}
+
+async function startMcpBridge(ctx: AppContext): Promise<void> {
+  try {
+    await startMcpBridgeProcess(ctx);
+  } catch (err) {
+    console.error('[main] MCP bridge process failed:', err);
+    app.quit();
+  }
+}
+
+async function startGui(ctx: AppContext): Promise<void> {
+  await resolvePackagedGuiDataDirectory();
+
+  registerIpcHandlers(ctx);
+  createWindow(ctx);
+  createTray(ctx);
+  startBackendAfterRendererLoads(ctx);
+}
+
+async function resolvePackagedGuiDataDirectory(): Promise<void> {
+  if (!app.isPackaged) return;
+
+  const existing = detectExistingDataDir();
+  if (existing) {
+    app.setPath('userData', existing);
+    return;
+  }
+
+  if (lodestoneConfigFileExists(getDefaultLodestoneConfigPath(app.getPath('userData')))) {
+    return;
+  }
+
+  const chosen = await runFirstRunSetup();
+  if (chosen !== app.getPath('userData')) {
+    app.setPath('userData', chosen);
+  }
+}
+
+function startBackendAfterRendererLoads(ctx: AppContext): void {
+  if (!ctx.mainWindow) throw new Error('Main window was not created');
+
+  ctx.mainWindow.webContents.once('did-finish-load', async () => {
+    try {
+      await initializeBackend(ctx);
+      await startGuiInternalApi(ctx);
+    } catch (err) {
+      console.error('[main] Backend initialization error:', err);
+    }
+  });
+}
+
+async function startGuiInternalApi(ctx: AppContext): Promise<void> {
+  const { InternalApi } = await import('./main/internal-api');
+  ctx.internalApi = new InternalApi(ctx);
+  ctx.internalApi.start();
+}
+
+function needsBackendShutdown(ctx: AppContext): boolean {
+  return !ctx.shuttingDown && (ctx.siloManagers.size > 0 || ctx.embeddingServices.size > 0);
+}
+
+function quitAfterShutdownTimeout(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      console.warn('[main] Shutdown timed out after 5 s; force-quitting');
+      resolve();
+    }, SHUTDOWN_TIMEOUT_MS).unref();
+  });
+}
+
+function keepGuiProcessRunningInTray(): void {
+  return;
+}
+
+function showOrCreateMainWindow(ctx: AppContext): void {
+  if (ctx.mainWindow) {
+    showMainWindow(ctx);
+    return;
+  }
+
+  createWindow(ctx);
+}
+
+function showMainWindow(ctx: AppContext): void {
+  if (!ctx.mainWindow) return;
+
+  if (ctx.mainWindow.isMinimized()) ctx.mainWindow.restore();
+  ctx.mainWindow.show();
+  ctx.mainWindow.focus();
+}

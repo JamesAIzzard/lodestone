@@ -749,7 +749,7 @@ export class SiloManager {
     return this.config;
   }
 
-  /** Get the embedding service (used by MCP mode for search dispatch). */
+  /** Get the embedding service (used by MCP requests for search dispatch). */
   getEmbeddingService(): EmbeddingService | null {
     return this.embeddingService;
   }

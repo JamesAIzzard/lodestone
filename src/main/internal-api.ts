@@ -1,9 +1,9 @@
 /**
- * Internal API — GUI-side named pipe server for MCP process communication.
+ * Internal API — GUI-side named pipe server for MCP bridge communication.
  *
- * The GUI process creates a named pipe server that MCP processes connect to.
+ * The GUI process creates a named pipe server that MCP bridge processes connect to.
  * All search and status queries from MCP go through this pipe, so the MCP
- * process never opens databases or reads config directly.
+ * bridge process never opens databases or reads config directly.
  *
  * Protocol: newline-delimited JSON over \\.\pipe\lodestone-gui
  * - Requests  (MCP → GUI): { id, method, params? }

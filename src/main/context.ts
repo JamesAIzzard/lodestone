@@ -1,7 +1,7 @@
 /**
  * AppContext — shared mutable state for the Electron main process.
  *
- * All extracted modules (window, tray, lifecycle, IPC handlers, MCP mode)
+ * All extracted modules (window, tray, lifecycle, IPC handlers, MCP bridge)
  * receive this context object instead of accessing module-level variables.
  * The context is created once in main.ts and passed to each module's
  * registration/setup function.

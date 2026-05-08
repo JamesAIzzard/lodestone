@@ -10,7 +10,7 @@
 import { app, type BrowserWindow, type Tray } from 'electron';
 import path from 'node:path';
 import type { LodestoneConfig } from '../backend/config';
-import { getDefaultConfigPath } from '../backend/config';
+import { getDefaultLodestoneConfigPath } from '../backend/config';
 import { createEmbeddingService, type EmbeddingService } from '../backend/embedding';
 import type { SiloManager } from '../backend/silo-manager';
 import { IndexingQueue } from '../backend/indexing-queue';
@@ -71,7 +71,7 @@ export function createAppContext(): AppContext {
     },
 
     configPath(): string {
-      return getDefaultConfigPath(ctx.getUserDataDir());
+      return getDefaultLodestoneConfigPath(ctx.getUserDataDir());
     },
   };
 

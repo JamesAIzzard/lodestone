@@ -9,9 +9,9 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  saveConfig,
-  createDefaultConfig,
-  resolveSiloConfig,
+  saveLodestoneConfig,
+  createDefaultLodestoneConfig,
+  resolveSiloRuntimeConfig,
   type SiloTomlConfig,
 } from '../backend/config';
 import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
@@ -276,7 +276,7 @@ function registerSiloHandlers(ctx: AppContext): void {
       }
 
       delete ctx.config.silos[name];
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" deleted from config`);
 
       notifySilosChanged(ctx);
@@ -307,7 +307,7 @@ function registerSiloHandlers(ctx: AppContext): void {
       ctx.siloManagers.delete(name);
 
       delete ctx.config.silos[name];
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" disconnected (database preserved on disk)`);
 
       notifySilosChanged(ctx);
@@ -347,9 +347,7 @@ function registerSiloHandlers(ctx: AppContext): void {
     const manager = ctx.siloManagers.get(name);
     if (!manager) return { success: false, error: `Silo "${name}" not found` };
 
-    const embeddingService = ctx.getOrCreateEmbeddingService(
-      manager.getConfig().embeddingModelKey,
-    );
+    const embeddingService = ctx.getOrCreateEmbeddingService(manager.getConfig().embeddingModelKey);
     manager.updateEmbeddingService(embeddingService);
 
     // Fire and forget — rebuild() stops current work, then queues via the
@@ -428,19 +426,19 @@ function registerSiloHandlers(ctx: AppContext): void {
           updates.ignoredFolderPatterns !== undefined ||
           updates.ignoredFilePatterns !== undefined
         ) {
-          const resolved = resolveSiloConfig(name, siloToml, ctx.config);
+          const resolved = resolveSiloRuntimeConfig(name, siloToml, ctx.config);
           await manager.updateIgnoredPatterns(
             resolved.ignoredFolderPatterns,
             resolved.ignoredFilePatterns,
           );
         }
         if (updates.indexedFileExtensions !== undefined) {
-          const resolved = resolveSiloConfig(name, siloToml, ctx.config);
+          const resolved = resolveSiloRuntimeConfig(name, siloToml, ctx.config);
           await manager.updateIndexedFileExtensions(resolved.indexedFileExtensions);
         }
       }
 
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" updated`);
       return { success: true };
     },
@@ -481,7 +479,7 @@ function registerSiloHandlers(ctx: AppContext): void {
       // Update the manager's internal config name to match the new slug
       await manager.updateName(newSlug);
 
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${oldName}" renamed to "${trimmed}" (slug: "${newSlug}")`);
 
       notifySilosChanged(ctx);
@@ -547,7 +545,7 @@ function registerSiloHandlers(ctx: AppContext): void {
       };
 
       ctx.config.silos[slug] = siloToml;
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Saved new silo "${slug}" to config`);
 
       registerManager(ctx, slug, siloToml);
@@ -602,7 +600,7 @@ function registerSettingsHandlers(ctx: AppContext): void {
 
   ipcMain.handle('defaults:get', async (): Promise<DefaultSettings> => {
     if (!ctx.config) {
-      const def = createDefaultConfig();
+      const def = createDefaultLodestoneConfig();
       return {
         indexedFileExtensions: def.defaults.indexed_file_extensions,
         ignoredFolderPatterns: def.defaults.ignored_folder_patterns,
@@ -641,7 +639,7 @@ function registerSettingsHandlers(ctx: AppContext): void {
       if (updates.maxActivityLogEntries !== undefined)
         ctx.config.defaults.max_activity_log_entries = updates.maxActivityLogEntries;
 
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       return { success: true };
     },
   );
@@ -660,8 +658,8 @@ function registerSettingsHandlers(ctx: AppContext): void {
     }
 
     // Replace config with clean defaults and persist
-    ctx.config = createDefaultConfig();
-    saveConfig(ctx.configPath(), ctx.config);
+    ctx.config = createDefaultLodestoneConfig();
+    saveLodestoneConfig(ctx.configPath(), ctx.config);
     console.log('[main] All settings reset to defaults');
 
     notifySilosChanged(ctx);

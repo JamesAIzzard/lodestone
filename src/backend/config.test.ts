@@ -2,18 +2,22 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createDefaultConfig, loadConfig, resolveSiloConfig } from './config';
+import {
+  createDefaultLodestoneConfig,
+  loadLodestoneConfig,
+  resolveSiloRuntimeConfig,
+} from './config';
 import { DEFAULT_INDEX_EXTENSIONS } from '../shared/file-types';
 
 describe('config defaults', () => {
   it('uses the shared file type registry for default extensions', () => {
-    expect(createDefaultConfig().defaults.indexed_file_extensions).toEqual(
+    expect(createDefaultLodestoneConfig().defaults.indexed_file_extensions).toEqual(
       DEFAULT_INDEX_EXTENSIONS,
     );
   });
 
   it('uses explicit default keys for configurable app behavior', () => {
-    const config = createDefaultConfig();
+    const config = createDefaultLodestoneConfig();
 
     expect(config.default_model_key).toBeTypeOf('string');
     expect(config.defaults.file_change_delay_seconds).toBe(10);
@@ -30,7 +34,7 @@ describe('config defaults', () => {
   });
 
   it('loads the clearer default keys from TOML', () => {
-    const config = loadConfig(
+    const config = loadLodestoneConfig(
       writeTempConfig(`
 default_model_key = "snowflake-arctic-embed-xs"
 
@@ -54,7 +58,7 @@ max_activity_log_entries = 1234
   });
 
   it('loads clearer per-silo keys from TOML', () => {
-    const config = loadConfig(
+    const config = loadLodestoneConfig(
       writeTempConfig(`
 default_model_key = "snowflake-arctic-embed-xs"
 
@@ -85,7 +89,7 @@ icon_name = "book-open"
       icon_name: 'book-open',
     });
 
-    expect(resolveSiloConfig('docs', config.silos.docs, config)).toMatchObject({
+    expect(resolveSiloRuntimeConfig('docs', config.silos.docs, config)).toMatchObject({
       name: 'docs',
       indexedDirectories: ['C:\\docs'],
       indexDbPath: 'docs.db',

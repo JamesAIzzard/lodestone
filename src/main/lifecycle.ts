@@ -3,11 +3,11 @@
  */
 
 import {
-  loadConfig,
-  saveConfig,
-  createDefaultConfig,
-  configExists,
-  resolveSiloConfig,
+  loadLodestoneConfig,
+  saveLodestoneConfig,
+  createDefaultLodestoneConfig,
+  lodestoneConfigFileExists,
+  resolveSiloRuntimeConfig,
 } from '../backend/config';
 import { SiloManager } from '../backend/silo-manager';
 import type { AppContext } from './context';
@@ -28,17 +28,17 @@ export function notifySilosChanged(ctx: AppContext): void {
 export function loadOrInitConfig(ctx: AppContext): void {
   const configPath = ctx.configPath();
 
-  if (configExists(configPath)) {
+  if (lodestoneConfigFileExists(configPath)) {
     try {
-      ctx.config = loadConfig(configPath);
+      ctx.config = loadLodestoneConfig(configPath);
       console.log(`[main] Loaded config from ${configPath}`);
     } catch (err) {
       console.error('[main] Failed to load config:', err);
-      ctx.config = createDefaultConfig();
+      ctx.config = createDefaultLodestoneConfig();
     }
   } else {
-    ctx.config = createDefaultConfig();
-    saveConfig(configPath, ctx.config);
+    ctx.config = createDefaultLodestoneConfig();
+    saveLodestoneConfig(configPath, ctx.config);
     console.log(`[main] Created default config at ${configPath}`);
   }
 }
@@ -64,7 +64,7 @@ export function registerManager(
   name: string,
   siloToml: import('../backend/config').SiloTomlConfig,
 ): SiloManager {
-  const resolved = resolveSiloConfig(name, siloToml, ctx.config!);
+  const resolved = resolveSiloRuntimeConfig(name, siloToml, ctx.config!);
   const embeddingService = ctx.getOrCreateEmbeddingService(resolved.embeddingModelKey);
   const manager = new SiloManager(
     resolved,
@@ -111,7 +111,7 @@ export async function stopSilo(
     const siloToml = ctx.config.silos[name];
     if (siloToml) {
       siloToml.is_stopped = true;
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
     }
   }
 
@@ -131,7 +131,7 @@ export async function wakeSilo(
     const siloToml = ctx.config.silos[name];
     if (siloToml) {
       delete siloToml.is_stopped;
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
     }
   }
 

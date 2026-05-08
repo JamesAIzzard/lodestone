@@ -15,7 +15,7 @@ import { initializeBackend, shutdownBackend } from './main/lifecycle';
 import { registerIpcHandlers } from './main/ipc-handlers';
 import { startMcpMode } from './main/mcp-mode';
 import { detectExistingDataDir, runFirstRunSetup } from './main/portable';
-import { configExists, getDefaultConfigPath } from './backend/config';
+import { lodestoneConfigFileExists, getDefaultLodestoneConfigPath } from './backend/config';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -70,7 +70,7 @@ app.on('ready', async () => {
     if (existing) {
       // Found a portable or custom data dir — redirect userData before backend starts
       app.setPath('userData', existing);
-    } else if (!configExists(getDefaultConfigPath(app.getPath('userData')))) {
+    } else if (!lodestoneConfigFileExists(getDefaultLodestoneConfigPath(app.getPath('userData')))) {
       // No portable dir and no AppData config → true first run
       const chosen = await runFirstRunSetup();
       if (chosen !== app.getPath('userData')) {

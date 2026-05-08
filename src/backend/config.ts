@@ -1,10 +1,3 @@
-/**
- * TOML configuration file parsing and persistence.
- *
- * The config file defines the server settings, embedding defaults,
- * and per-silo directory/extension/model configuration.
- */
-
 import { parse, stringify } from 'smol-toml';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,7 +16,6 @@ import {
   DEFAULT_IGNORE_FILES,
 } from '../shared/app-defaults';
 import { DEFAULT_INDEX_EXTENSIONS } from '../shared/file-types';
-
 
 export interface DefaultsConfig {
   indexed_file_extensions: string[];
@@ -54,137 +46,6 @@ export interface LodestoneConfig {
   silos: Record<string, SiloTomlConfig>;
 }
 
-const DEFAULT_CONFIG: LodestoneConfig = {
-  server_name: 'lodestone',
-  default_model_key: DEFAULT_MODEL,
-  defaults: {
-    indexed_file_extensions: DEFAULT_INDEX_EXTENSIONS,
-    ignored_folder_patterns: DEFAULT_IGNORE_DIRS,
-    ignored_file_patterns: DEFAULT_IGNORE_FILES,
-    file_change_delay_seconds: DEFAULT_FILE_CHANGE_DELAY_SECONDS,
-    edit_context_lines: DEFAULT_CONTEXT_LINES,
-    max_activity_log_entries: DEFAULT_ACTIVITY_LOG_LIMIT,
-  },
-  silos: {},
-};
-
-// ── Load / Save ──────────────────────────────────────────────────────────────
-
-/**
- * Load and parse the TOML configuration file.
- * Returns a typed config object with defaults applied for missing fields.
- */
-export function loadConfig(configPath: string): LodestoneConfig {
-  const raw = fs.readFileSync(configPath, 'utf-8');
-  const parsed = parse(raw) as Record<string, unknown>;
-
-  const defaults = (parsed.defaults ?? {}) as Partial<DefaultsConfig>;
-  const silos = (parsed.silos ?? {}) as Record<string, unknown>;
-
-  // Validate silos — each must have indexed directories and an index database path.
-  const validatedSilos: Record<string, SiloTomlConfig> = {};
-  for (const [name, raw] of Object.entries(silos)) {
-    const silo = raw as Record<string, unknown>;
-    if (!Array.isArray(silo.indexed_directories) || silo.indexed_directories.length === 0) {
-      throw new Error(`Silo "${name}" must have at least one indexed directory`);
-    }
-    if (typeof silo.index_db_path !== 'string' || silo.index_db_path.length === 0) {
-      throw new Error(`Silo "${name}" must have an index_db_path`);
-    }
-    validatedSilos[name] = {
-      indexed_directories: silo.indexed_directories as string[],
-      index_db_path: silo.index_db_path as string,
-      indexed_file_extensions: Array.isArray(silo.indexed_file_extensions)
-        ? (silo.indexed_file_extensions as string[])
-        : undefined,
-      ignored_folder_patterns: Array.isArray(silo.ignored_folder_patterns)
-        ? (silo.ignored_folder_patterns as string[])
-        : undefined,
-      ignored_file_patterns: Array.isArray(silo.ignored_file_patterns)
-        ? (silo.ignored_file_patterns as string[])
-        : undefined,
-      embedding_model_key:
-        typeof silo.embedding_model_key === 'string' ? silo.embedding_model_key : undefined,
-      is_stopped: silo.is_stopped === true ? true : undefined,
-      content_description:
-        typeof silo.content_description === 'string' ? silo.content_description : undefined,
-      accent_color: typeof silo.accent_color === 'string' ? silo.accent_color : undefined,
-      icon_name: typeof silo.icon_name === 'string' ? silo.icon_name : undefined,
-    };
-  }
-
-  return {
-    server_name:
-      typeof parsed.server_name === 'string' ? parsed.server_name : DEFAULT_CONFIG.server_name,
-    default_model_key:
-      typeof parsed.default_model_key === 'string'
-        ? parsed.default_model_key
-        : DEFAULT_CONFIG.default_model_key,
-    defaults: {
-      indexed_file_extensions: Array.isArray(defaults.indexed_file_extensions)
-        ? (defaults.indexed_file_extensions as string[])
-        : DEFAULT_CONFIG.defaults.indexed_file_extensions,
-      ignored_folder_patterns: Array.isArray(defaults.ignored_folder_patterns)
-        ? (defaults.ignored_folder_patterns as string[])
-        : DEFAULT_CONFIG.defaults.ignored_folder_patterns,
-      ignored_file_patterns: Array.isArray(defaults.ignored_file_patterns)
-        ? (defaults.ignored_file_patterns as string[])
-        : DEFAULT_CONFIG.defaults.ignored_file_patterns,
-      file_change_delay_seconds:
-        typeof defaults.file_change_delay_seconds === 'number'
-          ? defaults.file_change_delay_seconds
-          : DEFAULT_CONFIG.defaults.file_change_delay_seconds,
-      edit_context_lines:
-        typeof defaults.edit_context_lines === 'number'
-          ? defaults.edit_context_lines
-          : DEFAULT_CONFIG.defaults.edit_context_lines,
-      max_activity_log_entries:
-        typeof defaults.max_activity_log_entries === 'number'
-          ? defaults.max_activity_log_entries
-          : DEFAULT_CONFIG.defaults.max_activity_log_entries,
-    },
-    silos: validatedSilos,
-  };
-}
-
-/**
- * Save the configuration to a TOML file.
- * Creates parent directories if they don't exist.
- */
-export function saveConfig(configPath: string, config: LodestoneConfig): void {
-  const dir = path.dirname(configPath);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(configPath, stringify(config), 'utf-8');
-}
-
-/**
- * Return a fresh default config with no silos defined.
- */
-export function createDefaultConfig(): LodestoneConfig {
-  return structuredClone(DEFAULT_CONFIG);
-}
-
-// ── Config Path ──────────────────────────────────────────────────────────────
-
-/**
- * Return the default config file path for the current platform.
- * Pass `userDataDir` explicitly so this module doesn't depend on Electron.
- * In Electron, call with app.getPath('userData').
- */
-export function getDefaultConfigPath(userDataDir: string): string {
-  return path.join(userDataDir, 'config.toml');
-}
-
-/**
- * Check whether a config file exists at the given path.
- */
-export function configExists(configPath: string): boolean {
-  return fs.existsSync(configPath);
-}
-
-// ── Resolved Silo Config ─────────────────────────────────────────────────────
-
-/** A silo config with all defaults resolved (no optional fields). */
 export interface ResolvedSiloConfig {
   name: string;
   indexedDirectories: string[];
@@ -201,11 +62,52 @@ export interface ResolvedSiloConfig {
   iconName: SiloIconName;
 }
 
-/**
- * Resolve a silo's effective configuration by merging silo-level
- * overrides with the global defaults.
- */
-export function resolveSiloConfig(
+const DEFAULT_CONFIG: LodestoneConfig = {
+  server_name: 'lodestone',
+  default_model_key: DEFAULT_MODEL,
+  defaults: {
+    indexed_file_extensions: DEFAULT_INDEX_EXTENSIONS,
+    ignored_folder_patterns: DEFAULT_IGNORE_DIRS,
+    ignored_file_patterns: DEFAULT_IGNORE_FILES,
+    file_change_delay_seconds: DEFAULT_FILE_CHANGE_DELAY_SECONDS,
+    edit_context_lines: DEFAULT_CONTEXT_LINES,
+    max_activity_log_entries: DEFAULT_ACTIVITY_LOG_LIMIT,
+  },
+  silos: {},
+};
+
+type TomlObject = Record<string, unknown>;
+
+export function loadLodestoneConfig(configPath: string): LodestoneConfig {
+  const parsed = readTomlObject(configPath);
+
+  return {
+    server_name: stringField(parsed.server_name, DEFAULT_CONFIG.server_name),
+    default_model_key: stringField(parsed.default_model_key, DEFAULT_CONFIG.default_model_key),
+    defaults: parseDefaultsConfig(parsed.defaults),
+    silos: parseSilosConfig(parsed.silos),
+  };
+}
+
+export function saveLodestoneConfig(configPath: string, config: LodestoneConfig): void {
+  const dir = path.dirname(configPath);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(configPath, stringify(config), 'utf-8');
+}
+
+export function createDefaultLodestoneConfig(): LodestoneConfig {
+  return structuredClone(DEFAULT_CONFIG);
+}
+
+export function getDefaultLodestoneConfigPath(userDataDir: string): string {
+  return path.join(userDataDir, 'config.toml');
+}
+
+export function lodestoneConfigFileExists(configPath: string): boolean {
+  return fs.existsSync(configPath);
+}
+
+export function resolveSiloRuntimeConfig(
   siloName: string,
   silo: SiloTomlConfig,
   config: LodestoneConfig,
@@ -215,8 +117,7 @@ export function resolveSiloConfig(
     indexedDirectories: silo.indexed_directories,
     indexDbPath: silo.index_db_path,
     indexedFileExtensions: silo.indexed_file_extensions ?? config.defaults.indexed_file_extensions,
-    ignoredFolderPatterns:
-      silo.ignored_folder_patterns ?? config.defaults.ignored_folder_patterns,
+    ignoredFolderPatterns: silo.ignored_folder_patterns ?? config.defaults.ignored_folder_patterns,
     ignoredFilePatterns: silo.ignored_file_patterns ?? config.defaults.ignored_file_patterns,
     embeddingModelKey: silo.embedding_model_key ?? config.default_model_key,
     fileChangeDelaySeconds: config.defaults.file_change_delay_seconds,
@@ -226,4 +127,100 @@ export function resolveSiloConfig(
     accentColor: validateSiloColor(silo.accent_color),
     iconName: validateSiloIcon(silo.icon_name),
   };
+}
+
+function readTomlObject(configPath: string): TomlObject {
+  const raw = fs.readFileSync(configPath, 'utf-8');
+  return parse(raw) as TomlObject;
+}
+
+function parseDefaultsConfig(rawDefaults: unknown): DefaultsConfig {
+  const defaults = objectField(rawDefaults);
+
+  return {
+    indexed_file_extensions: stringArrayField(
+      defaults.indexed_file_extensions,
+      DEFAULT_CONFIG.defaults.indexed_file_extensions,
+    ),
+    ignored_folder_patterns: stringArrayField(
+      defaults.ignored_folder_patterns,
+      DEFAULT_CONFIG.defaults.ignored_folder_patterns,
+    ),
+    ignored_file_patterns: stringArrayField(
+      defaults.ignored_file_patterns,
+      DEFAULT_CONFIG.defaults.ignored_file_patterns,
+    ),
+    file_change_delay_seconds: numberField(
+      defaults.file_change_delay_seconds,
+      DEFAULT_CONFIG.defaults.file_change_delay_seconds,
+    ),
+    edit_context_lines: numberField(
+      defaults.edit_context_lines,
+      DEFAULT_CONFIG.defaults.edit_context_lines,
+    ),
+    max_activity_log_entries: numberField(
+      defaults.max_activity_log_entries,
+      DEFAULT_CONFIG.defaults.max_activity_log_entries,
+    ),
+  };
+}
+
+function parseSilosConfig(rawSilos: unknown): Record<string, SiloTomlConfig> {
+  const silos = objectField(rawSilos);
+
+  return Object.fromEntries(
+    Object.entries(silos).map(([name, rawSilo]) => [
+      name,
+      parseSiloTomlConfig(name, objectField(rawSilo)),
+    ]),
+  );
+}
+
+function parseSiloTomlConfig(name: string, silo: TomlObject): SiloTomlConfig {
+  const indexedDirectories = stringArrayField(silo.indexed_directories);
+  const indexDbPath = stringField(silo.index_db_path);
+
+  if (indexedDirectories.length === 0) {
+    throw new Error(`Silo "${name}" must have at least one indexed directory`);
+  }
+  if (indexDbPath.length === 0) {
+    throw new Error(`Silo "${name}" must have an index_db_path`);
+  }
+
+  return {
+    indexed_directories: indexedDirectories,
+    index_db_path: indexDbPath,
+    indexed_file_extensions: optionalStringArrayField(silo.indexed_file_extensions),
+    ignored_folder_patterns: optionalStringArrayField(silo.ignored_folder_patterns),
+    ignored_file_patterns: optionalStringArrayField(silo.ignored_file_patterns),
+    embedding_model_key: optionalStringField(silo.embedding_model_key),
+    is_stopped: silo.is_stopped === true ? true : undefined,
+    content_description: optionalStringField(silo.content_description),
+    accent_color: optionalStringField(silo.accent_color),
+    icon_name: optionalStringField(silo.icon_name),
+  };
+}
+
+function objectField(value: unknown): TomlObject {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as TomlObject) : {};
+}
+
+function stringField(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function optionalStringField(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function stringArrayField(value: unknown, fallback: string[] = []): string[] {
+  return Array.isArray(value) ? (value as string[]) : fallback;
+}
+
+function optionalStringArrayField(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? (value as string[]) : undefined;
+}
+
+function numberField(value: unknown, fallback: number): number {
+  return typeof value === 'number' ? value : fallback;
 }

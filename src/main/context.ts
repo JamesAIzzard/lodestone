@@ -12,7 +12,6 @@ import path from 'node:path';
 import type { LodestoneConfig } from '../backend/config';
 import { getDefaultConfigPath } from '../backend/config';
 import { createEmbeddingService, type EmbeddingService } from '../backend/embedding';
-import { resolveModelAlias } from '../backend/model-registry';
 import type { SiloManager } from '../backend/silo-manager';
 import { IndexingQueue } from '../backend/indexing-queue';
 import type { InternalApi } from './internal-api';
@@ -51,7 +50,7 @@ export function createAppContext(): AppContext {
     internalApi: null,
 
     getOrCreateEmbeddingService(model: string): EmbeddingService {
-      const modelId = resolveModelAlias(model);
+      const modelId = model;
       let service = ctx.embeddingServices.get(modelId);
       if (!service) {
         service = createEmbeddingService({

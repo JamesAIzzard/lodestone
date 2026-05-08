@@ -6,21 +6,21 @@ import type { EmbeddingService } from './embedding';
 import { IndexingQueue } from './indexing-queue';
 import { SiloManager } from './silo-manager';
 
-function makeConfig(dbPath: string): ResolvedSiloConfig {
+function makeConfig(indexDbPath: string): ResolvedSiloConfig {
   return {
     name: 'bad-model',
-    directories: [os.tmpdir()],
-    dbPath,
-    extensions: ['.md'],
-    ignore: [],
-    ignoreFiles: [],
-    model: 'nomic-embed-text',
-    debounce: 1,
-    activityLogLimit: 200,
-    stopped: false,
-    description: '',
-    color: 'blue',
-    icon: 'database',
+    indexedDirectories: [os.tmpdir()],
+    indexDbPath,
+    indexedFileExtensions: ['.md'],
+    ignoredFolderPatterns: [],
+    ignoredFilePatterns: [],
+    embeddingModelKey: 'nomic-embed-text',
+    fileChangeDelaySeconds: 1,
+    maxActivityLogEntries: 200,
+    isStopped: false,
+    contentDescription: '',
+    accentColor: 'blue',
+    iconName: 'database',
   };
 }
 
@@ -33,7 +33,9 @@ function makeFailingEmbeddingService(): EmbeddingService {
     embed: async () => [],
     embedBatch: async () => [],
     ensureReady: async () => {
-      throw new Error('Unknown embedding model "nomic-embed-text". Available models: snowflake-arctic-embed-xs.');
+      throw new Error(
+        'Unknown embedding model "nomic-embed-text". Available models: snowflake-arctic-embed-xs.',
+      );
     },
     dispose: async () => undefined,
   };

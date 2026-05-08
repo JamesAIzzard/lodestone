@@ -65,7 +65,7 @@ export function registerManager(
   siloToml: import('../backend/config').SiloTomlConfig,
 ): SiloManager {
   const resolved = resolveSiloConfig(name, siloToml, ctx.config!);
-  const embeddingService = ctx.getOrCreateEmbeddingService(resolved.model);
+  const embeddingService = ctx.getOrCreateEmbeddingService(resolved.embeddingModelKey);
   const manager = new SiloManager(
     resolved,
     embeddingService,
@@ -77,7 +77,7 @@ export function registerManager(
   attachActivityForwarding(ctx, manager);
   manager.onStateChange(() => notifySilosChanged(ctx));
 
-  if (resolved.stopped) {
+  if (resolved.isStopped) {
     manager.loadStoppedStatus();
     console.log(`[main] Silo "${name}" is stopped`);
   } else {
@@ -110,7 +110,7 @@ export async function stopSilo(
   if (ctx.config) {
     const siloToml = ctx.config.silos[name];
     if (siloToml) {
-      siloToml.stopped = true;
+      siloToml.is_stopped = true;
       saveConfig(ctx.configPath(), ctx.config);
     }
   }
@@ -130,7 +130,7 @@ export async function wakeSilo(
   if (ctx.config) {
     const siloToml = ctx.config.silos[name];
     if (siloToml) {
-      delete siloToml.stopped;
+      delete siloToml.is_stopped;
       saveConfig(ctx.configPath(), ctx.config);
     }
   }

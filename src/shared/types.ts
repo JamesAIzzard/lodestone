@@ -4,24 +4,18 @@ import type { SiloColor, SiloIconName } from './silo-appearance';
 
 export interface SiloConfig {
   name: string;
-  directories: string[];
-  extensions: string[];
-  ignorePatterns: string[];
-  ignoreFilePatterns: string[];
-  /** True when this silo has explicit folder ignore overrides */
-  hasIgnoreOverride: boolean;
-  /** True when this silo has explicit file ignore overrides */
-  hasFileIgnoreOverride: boolean;
-  /** True when this silo has explicit extension overrides */
-  hasExtensionOverride: boolean;
-  modelOverride: string | null;
-  dbPath: string;
-  /** Human-readable description of what this silo contains */
-  description: string;
-  /** Named palette colour key */
-  color: SiloColor;
-  /** Lucide icon name */
-  icon: SiloIconName;
+  indexedDirectories: string[];
+  indexedFileExtensions: string[];
+  ignoredFolderPatterns: string[];
+  ignoredFilePatterns: string[];
+  hasIgnoredFolderPatternsOverride: boolean;
+  hasIgnoredFilePatternsOverride: boolean;
+  hasIndexedFileExtensionsOverride: boolean;
+  embeddingModelOverride: string | null;
+  indexDbPath: string;
+  contentDescription: string;
+  accentColor: SiloColor;
+  iconName: SiloIconName;
 }
 
 export type WatcherState = 'ready' | 'indexing' | 'error' | 'stopped' | 'waiting';
@@ -54,7 +48,7 @@ export interface SiloStatus {
   /** Absolute path to the silo's SQLite database file */
   resolvedDbPath: string;
   /** The effective embedding model for this silo (global default or per-silo override) */
-  resolvedModel: string;
+  resolvedEmbeddingModelKey: string;
 }
 
 // ── Directory Scoring Primitives ─────────────────────────────────────────────
@@ -217,14 +211,12 @@ export interface ActivityEvent {
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
 export interface DefaultSettings {
-  extensions: string[];
-  ignore: string[];
-  ignoreFiles: string[];
-  debounce: number;
-  /** Number of surrounding lines in post-edit confirmation snippets */
-  contextLines: number;
-  /** Maximum number of activity log entries to keep per silo */
-  activityLogLimit: number;
+  indexedFileExtensions: string[];
+  ignoredFolderPatterns: string[];
+  ignoredFilePatterns: string[];
+  fileChangeDelaySeconds: number;
+  editContextLines: number;
+  maxActivityLogEntries: number;
 }
 
 // ── Server Status ────────────────────────────────────────────────────────────

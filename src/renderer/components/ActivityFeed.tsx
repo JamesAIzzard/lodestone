@@ -45,7 +45,7 @@ export default function ActivityFeed({ siloName, limit = 200 }: ActivityFeedProp
   // Build silo name → colour lookup
   const siloColorMap = useMemo(() => {
     const map = new Map<string, SiloColor>();
-    for (const s of silos) map.set(s.config.name, s.config.color);
+    for (const s of silos) map.set(s.config.name, s.config.accentColor);
     return map;
   }, [silos]);
 

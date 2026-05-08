@@ -40,15 +40,13 @@ import type { StoredSiloConfig } from '../store/types';
  */
 export interface ConfigPatch {
   name?: string;
-  description?: string;
-  model?: string;
-  /** Pre-validation; `apply` runs `validateSiloColor`. */
-  color?: string;
-  /** Pre-validation; `apply` runs `validateSiloIcon`. */
-  icon?: string;
-  ignore?: string[];
-  ignoreFiles?: string[];
-  extensions?: string[];
+  contentDescription?: string;
+  embeddingModelKey?: string;
+  accentColor?: string;
+  iconName?: string;
+  ignoredFolderPatterns?: string[];
+  ignoredFilePatterns?: string[];
+  indexedFileExtensions?: string[];
 }
 
 export class SiloConfigStore {
@@ -80,13 +78,17 @@ export class SiloConfigStore {
   apply(patch: ConfigPatch): void {
     const next: Partial<ResolvedSiloConfig> = {};
     if (patch.name !== undefined) next.name = patch.name;
-    if (patch.description !== undefined) next.description = patch.description;
-    if (patch.model !== undefined) next.model = patch.model;
-    if (patch.color !== undefined) next.color = validateSiloColor(patch.color);
-    if (patch.icon !== undefined) next.icon = validateSiloIcon(patch.icon);
-    if (patch.ignore !== undefined) next.ignore = patch.ignore;
-    if (patch.ignoreFiles !== undefined) next.ignoreFiles = patch.ignoreFiles;
-    if (patch.extensions !== undefined) next.extensions = patch.extensions;
+    if (patch.contentDescription !== undefined)
+      next.contentDescription = patch.contentDescription;
+    if (patch.embeddingModelKey !== undefined) next.embeddingModelKey = patch.embeddingModelKey;
+    if (patch.accentColor !== undefined) next.accentColor = validateSiloColor(patch.accentColor);
+    if (patch.iconName !== undefined) next.iconName = validateSiloIcon(patch.iconName);
+    if (patch.ignoredFolderPatterns !== undefined)
+      next.ignoredFolderPatterns = patch.ignoredFolderPatterns;
+    if (patch.ignoredFilePatterns !== undefined)
+      next.ignoredFilePatterns = patch.ignoredFilePatterns;
+    if (patch.indexedFileExtensions !== undefined)
+      next.indexedFileExtensions = patch.indexedFileExtensions;
     this.cfg = { ...this.cfg, ...next };
   }
 
@@ -98,14 +100,14 @@ export class SiloConfigStore {
     if (!this.canPersist()) return;
     const blob: StoredSiloConfig = {
       name: this.cfg.name,
-      description: this.cfg.description || undefined,
-      directories: this.cfg.directories,
-      extensions: this.cfg.extensions,
-      ignore: this.cfg.ignore,
-      ignoreFiles: this.cfg.ignoreFiles,
-      model: this.cfg.model,
-      color: this.cfg.color,
-      icon: this.cfg.icon,
+      contentDescription: this.cfg.contentDescription || undefined,
+      indexedDirectories: this.cfg.indexedDirectories,
+      indexedFileExtensions: this.cfg.indexedFileExtensions,
+      ignoredFolderPatterns: this.cfg.ignoredFolderPatterns,
+      ignoredFilePatterns: this.cfg.ignoredFilePatterns,
+      embeddingModelKey: this.cfg.embeddingModelKey,
+      accentColor: this.cfg.accentColor,
+      iconName: this.cfg.iconName,
     };
     await this.store.saveConfigBlob(this.cfg.name, blob);
   }

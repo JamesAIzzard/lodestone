@@ -163,7 +163,7 @@ export class WatcherCoordinator {
 
     // Update mtimes via MtimeIndex (fire-and-forget — never block the watcher).
     // event.filePath is an absolute path from the watcher; convert to stored key.
-    const directories = this.deps.getConfig().directories;
+    const directories = this.deps.getConfig().indexedDirectories;
     if (event.eventType === 'indexed') {
       try {
         const storedKey = makeStoredKey(event.filePath, directories);

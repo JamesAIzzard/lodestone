@@ -8,55 +8,51 @@
 import { parse, stringify } from 'smol-toml';
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveModelAlias, DEFAULT_MODEL } from './model-registry';
+import { DEFAULT_MODEL } from './model-registry';
 import {
   validateSiloColor,
   validateSiloIcon,
   type SiloColor,
   type SiloIconName,
 } from '../shared/silo-appearance';
+import {
+  DEFAULT_ACTIVITY_LOG_LIMIT,
+  DEFAULT_CONTEXT_LINES,
+  DEFAULT_FILE_CHANGE_DELAY_SECONDS,
+  DEFAULT_IGNORE_DIRS,
+  DEFAULT_IGNORE_FILES,
+} from '../shared/app-defaults';
+import { DEFAULT_INDEX_EXTENSIONS } from '../shared/file-types';
 
-// ── Config Types ─────────────────────────────────────────────────────────────
 
 export interface ServerConfig {
   name: string;
 }
 
 export interface EmbeddingsConfig {
-  /** Default embedding model: a registry key (e.g. 'snowflake-arctic-embed-xs').
-   *  Legacy 'built-in' alias is still accepted. */
-  model: string;
+  default_model_key: string;
 }
 
 export interface DefaultsConfig {
-  /** Debounce interval in seconds for file watcher events */
-  debounce: number;
-  /** Default file extensions to index */
-  extensions: string[];
-  /** Default folder ignore patterns (matched against directory basenames) */
-  ignore: string[];
-  /** Default file ignore patterns (matched against file basenames) */
-  ignore_files: string[];
-  /** Number of surrounding lines in post-edit confirmation snippets */
-  context_lines: number;
-  /** Maximum number of activity log entries to keep per silo */
-  activity_log_limit: number;
+  indexed_file_extensions: string[];
+  ignored_folder_patterns: string[];
+  ignored_file_patterns: string[];
+  file_change_delay_seconds: number;
+  edit_context_lines: number;
+  max_activity_log_entries: number;
 }
 
 export interface SiloTomlConfig {
-  directories: string[];
-  db_path: string;
-  extensions?: string[];
-  ignore?: string[];
-  ignore_files?: string[];
-  model?: string;
-  stopped?: boolean;
-  /** Human-readable description of what this silo contains (for MCP tool routing) */
-  description?: string;
-  /** Named colour key from the palette (e.g. 'blue', 'emerald') */
-  color?: string;
-  /** Lucide icon name in kebab-case (e.g. 'database', 'book-open') */
-  icon?: string;
+  indexed_directories: string[];
+  index_db_path: string;
+  indexed_file_extensions?: string[];
+  ignored_folder_patterns?: string[];
+  ignored_file_patterns?: string[];
+  embedding_model_key?: string;
+  is_stopped?: boolean;
+  content_description?: string;
+  accent_color?: string;
+  icon_name?: string;
 }
 
 export type SearchConfig = Record<string, never>;
@@ -77,34 +73,15 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     name: 'lodestone',
   },
   embeddings: {
-    model: DEFAULT_MODEL,
+    default_model_key: DEFAULT_MODEL,
   },
   defaults: {
-    debounce: 10.0,
-    extensions: [
-      '.md',
-      '.txt',
-      '.ts',
-      '.tsx',
-      '.js',
-      '.jsx',
-      '.py',
-      '.rs',
-      '.go',
-      '.java',
-      '.c',
-      '.h',
-      '.cpp',
-      '.hpp',
-      '.cs',
-      '.rb',
-      '.swift',
-      '.kt',
-    ],
-    ignore: ['.*', '_*', 'node_modules', 'dist', 'build'],
-    ignore_files: ['.*', 'Thumbs.db'],
-    context_lines: 10,
-    activity_log_limit: 2000,
+    indexed_file_extensions: DEFAULT_INDEX_EXTENSIONS,
+    ignored_folder_patterns: DEFAULT_IGNORE_DIRS,
+    ignored_file_patterns: DEFAULT_IGNORE_FILES,
+    file_change_delay_seconds: DEFAULT_FILE_CHANGE_DELAY_SECONDS,
+    edit_context_lines: DEFAULT_CONTEXT_LINES,
+    max_activity_log_entries: DEFAULT_ACTIVITY_LOG_LIMIT,
   },
   search: {},
   silos: {},
@@ -126,27 +103,35 @@ export function loadConfig(configPath: string): LodestoneConfig {
   // search section is reserved but currently empty (weights removed in two-axis model)
   const silos = (parsed.silos ?? {}) as Record<string, unknown>;
 
-  // Validate silos — each must have directories and db_path
+  // Validate silos — each must have indexed directories and an index database path.
   const validatedSilos: Record<string, SiloTomlConfig> = {};
   for (const [name, raw] of Object.entries(silos)) {
     const silo = raw as Record<string, unknown>;
-    if (!Array.isArray(silo.directories) || silo.directories.length === 0) {
-      throw new Error(`Silo "${name}" must have at least one directory`);
+    if (!Array.isArray(silo.indexed_directories) || silo.indexed_directories.length === 0) {
+      throw new Error(`Silo "${name}" must have at least one indexed directory`);
     }
-    if (typeof silo.db_path !== 'string' || silo.db_path.length === 0) {
-      throw new Error(`Silo "${name}" must have a db_path`);
+    if (typeof silo.index_db_path !== 'string' || silo.index_db_path.length === 0) {
+      throw new Error(`Silo "${name}" must have an index_db_path`);
     }
     validatedSilos[name] = {
-      directories: silo.directories as string[],
-      db_path: silo.db_path as string,
-      extensions: Array.isArray(silo.extensions) ? (silo.extensions as string[]) : undefined,
-      ignore: Array.isArray(silo.ignore) ? (silo.ignore as string[]) : undefined,
-      ignore_files: Array.isArray(silo.ignore_files) ? (silo.ignore_files as string[]) : undefined,
-      model: typeof silo.model === 'string' ? silo.model : undefined,
-      stopped: silo.stopped === true ? true : undefined,
-      description: typeof silo.description === 'string' ? silo.description : undefined,
-      color: typeof silo.color === 'string' ? silo.color : undefined,
-      icon: typeof silo.icon === 'string' ? silo.icon : undefined,
+      indexed_directories: silo.indexed_directories as string[],
+      index_db_path: silo.index_db_path as string,
+      indexed_file_extensions: Array.isArray(silo.indexed_file_extensions)
+        ? (silo.indexed_file_extensions as string[])
+        : undefined,
+      ignored_folder_patterns: Array.isArray(silo.ignored_folder_patterns)
+        ? (silo.ignored_folder_patterns as string[])
+        : undefined,
+      ignored_file_patterns: Array.isArray(silo.ignored_file_patterns)
+        ? (silo.ignored_file_patterns as string[])
+        : undefined,
+      embedding_model_key:
+        typeof silo.embedding_model_key === 'string' ? silo.embedding_model_key : undefined,
+      is_stopped: silo.is_stopped === true ? true : undefined,
+      content_description:
+        typeof silo.content_description === 'string' ? silo.content_description : undefined,
+      accent_color: typeof silo.accent_color === 'string' ? silo.accent_color : undefined,
+      icon_name: typeof silo.icon_name === 'string' ? silo.icon_name : undefined,
     };
   }
 
@@ -155,31 +140,33 @@ export function loadConfig(configPath: string): LodestoneConfig {
       name: typeof server.name === 'string' ? server.name : DEFAULT_CONFIG.server.name,
     },
     embeddings: {
-      model:
-        typeof embeddings.model === 'string' ? embeddings.model : DEFAULT_CONFIG.embeddings.model,
+      default_model_key:
+        typeof embeddings.default_model_key === 'string'
+          ? embeddings.default_model_key
+          : DEFAULT_CONFIG.embeddings.default_model_key,
     },
     defaults: {
-      debounce:
-        typeof defaults.debounce === 'number'
-          ? defaults.debounce
-          : DEFAULT_CONFIG.defaults.debounce,
-      extensions: Array.isArray(defaults.extensions)
-        ? (defaults.extensions as string[])
-        : DEFAULT_CONFIG.defaults.extensions,
-      ignore: Array.isArray(defaults.ignore)
-        ? (defaults.ignore as string[])
-        : DEFAULT_CONFIG.defaults.ignore,
-      ignore_files: Array.isArray(defaults.ignore_files)
-        ? (defaults.ignore_files as string[])
-        : DEFAULT_CONFIG.defaults.ignore_files,
-      context_lines:
-        typeof defaults.context_lines === 'number'
-          ? defaults.context_lines
-          : DEFAULT_CONFIG.defaults.context_lines,
-      activity_log_limit:
-        typeof defaults.activity_log_limit === 'number'
-          ? defaults.activity_log_limit
-          : DEFAULT_CONFIG.defaults.activity_log_limit,
+      indexed_file_extensions: Array.isArray(defaults.indexed_file_extensions)
+        ? (defaults.indexed_file_extensions as string[])
+        : DEFAULT_CONFIG.defaults.indexed_file_extensions,
+      ignored_folder_patterns: Array.isArray(defaults.ignored_folder_patterns)
+        ? (defaults.ignored_folder_patterns as string[])
+        : DEFAULT_CONFIG.defaults.ignored_folder_patterns,
+      ignored_file_patterns: Array.isArray(defaults.ignored_file_patterns)
+        ? (defaults.ignored_file_patterns as string[])
+        : DEFAULT_CONFIG.defaults.ignored_file_patterns,
+      file_change_delay_seconds:
+        typeof defaults.file_change_delay_seconds === 'number'
+          ? defaults.file_change_delay_seconds
+          : DEFAULT_CONFIG.defaults.file_change_delay_seconds,
+      edit_context_lines:
+        typeof defaults.edit_context_lines === 'number'
+          ? defaults.edit_context_lines
+          : DEFAULT_CONFIG.defaults.edit_context_lines,
+      max_activity_log_entries:
+        typeof defaults.max_activity_log_entries === 'number'
+          ? defaults.max_activity_log_entries
+          : DEFAULT_CONFIG.defaults.max_activity_log_entries,
     },
     search: {},
     silos: validatedSilos,
@@ -226,21 +213,18 @@ export function configExists(configPath: string): boolean {
 /** A silo config with all defaults resolved (no optional fields). */
 export interface ResolvedSiloConfig {
   name: string;
-  directories: string[];
-  dbPath: string;
-  extensions: string[];
-  ignore: string[];
-  ignoreFiles: string[];
-  model: string;
-  debounce: number;
-  activityLogLimit: number;
-  stopped: boolean;
-  /** Human-readable description for MCP tool routing */
-  description: string;
-  /** Palette colour for UI accent (validated, always present) */
-  color: SiloColor;
-  /** Lucide icon name for UI display (validated, always present) */
-  icon: SiloIconName;
+  indexedDirectories: string[];
+  indexDbPath: string;
+  indexedFileExtensions: string[];
+  ignoredFolderPatterns: string[];
+  ignoredFilePatterns: string[];
+  embeddingModelKey: string;
+  fileChangeDelaySeconds: number;
+  maxActivityLogEntries: number;
+  isStopped: boolean;
+  contentDescription: string;
+  accentColor: SiloColor;
+  iconName: SiloIconName;
 }
 
 /**
@@ -252,21 +236,20 @@ export function resolveSiloConfig(
   silo: SiloTomlConfig,
   config: LodestoneConfig,
 ): ResolvedSiloConfig {
-  // Resolve 'built-in' alias → actual default model key for backward compat
-  const rawModel = silo.model ?? config.embeddings.model;
   return {
     name: siloName,
-    directories: silo.directories,
-    dbPath: silo.db_path,
-    extensions: silo.extensions ?? config.defaults.extensions,
-    ignore: silo.ignore ?? config.defaults.ignore,
-    ignoreFiles: silo.ignore_files ?? config.defaults.ignore_files,
-    model: resolveModelAlias(rawModel),
-    debounce: config.defaults.debounce,
-    activityLogLimit: config.defaults.activity_log_limit,
-    stopped: silo.stopped === true,
-    description: silo.description ?? '',
-    color: validateSiloColor(silo.color),
-    icon: validateSiloIcon(silo.icon),
+    indexedDirectories: silo.indexed_directories,
+    indexDbPath: silo.index_db_path,
+    indexedFileExtensions: silo.indexed_file_extensions ?? config.defaults.indexed_file_extensions,
+    ignoredFolderPatterns:
+      silo.ignored_folder_patterns ?? config.defaults.ignored_folder_patterns,
+    ignoredFilePatterns: silo.ignored_file_patterns ?? config.defaults.ignored_file_patterns,
+    embeddingModelKey: silo.embedding_model_key ?? config.embeddings.default_model_key,
+    fileChangeDelaySeconds: config.defaults.file_change_delay_seconds,
+    maxActivityLogEntries: config.defaults.max_activity_log_entries,
+    isStopped: silo.is_stopped === true,
+    contentDescription: silo.content_description ?? '',
+    accentColor: validateSiloColor(silo.accent_color),
+    iconName: validateSiloIcon(silo.icon_name),
   };
 }

@@ -69,14 +69,14 @@ export interface SiloMeta {
  */
 export interface StoredSiloConfig {
   name: string;
-  description?: string;
-  directories: string[];
-  extensions: string[];
-  ignore: string[];
-  ignoreFiles: string[];
-  model: string;
-  color?: string;
-  icon?: string;
+  contentDescription?: string;
+  indexedDirectories: string[];
+  indexedFileExtensions: string[];
+  ignoredFolderPatterns: string[];
+  ignoredFilePatterns: string[];
+  embeddingModelKey: string;
+  accentColor?: string;
+  iconName?: string;
 }
 
 // ── Chunk Metadata (for signal implementations) ─────────────────────────────

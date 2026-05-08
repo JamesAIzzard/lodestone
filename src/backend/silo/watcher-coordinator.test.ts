@@ -19,10 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { ResolvedSiloConfig } from '../config';
-import {
-  LocalStoreFacade,
-  createInMemoryStoreFacade,
-} from '../test-helpers/local-store-facade';
+import { LocalStoreFacade, createInMemoryStoreFacade } from '../test-helpers/local-store-facade';
 import { FakeSiloWatcher } from '../test-helpers/fake-watcher';
 import { createStubEmbedding } from '../test-helpers/stub-embedding';
 import { IndexingQueue } from '../indexing-queue';
@@ -123,24 +120,30 @@ async function makeHarness(
 
   const config: ResolvedSiloConfig = {
     name: SILO,
-    directories: [fileDir],
-    dbPath: path.join(workDir, 'db.sqlite'),
-    extensions: ['.md'],
-    ignore: [],
-    ignoreFiles: [],
-    model: 'stub-model',
-    debounce: 1,
-    activityLogLimit: 100,
-    stopped: false,
-    description: '',
-    color: 'blue',
-    icon: 'database',
+    indexedDirectories: [fileDir],
+    indexDbPath: path.join(workDir, 'db.sqlite'),
+    indexedFileExtensions: ['.md'],
+    ignoredFolderPatterns: [],
+    ignoredFilePatterns: [],
+    embeddingModelKey: 'stub-model',
+    fileChangeDelaySeconds: 1,
+    maxActivityLogEntries: 100,
+    isStopped: false,
+    contentDescription: '',
+    accentColor: 'blue',
+    iconName: 'database',
     ...opts.configOverrides,
   };
 
   const lifecycle = new SiloLifecycle();
   const mtimes = new MtimeIndex(SILO, store);
-  const activity = new ActivityLog(SILO, store, () => config.name, CAP, () => 100);
+  const activity = new ActivityLog(
+    SILO,
+    store,
+    () => config.name,
+    CAP,
+    () => 100,
+  );
   const queue = new IndexingQueue();
   const watcher = new FakeSiloWatcher();
   const embedding = createStubEmbedding({ dimensions: DIMS });
@@ -256,7 +259,7 @@ describe('WatcherCoordinator — handleEvent', () => {
 
     const filePath = path.join(h.fileDir, 'live.md');
     fs.writeFileSync(filePath, '# Live\n');
-    const storedKey = makeStoredKey(filePath, h.config.directories);
+    const storedKey = makeStoredKey(filePath, h.config.indexedDirectories);
 
     // Pre-seed file row + stat to a known mtime so the UPDATE lands.
     const initialMtime = Date.now() - 60_000;
@@ -281,7 +284,7 @@ describe('WatcherCoordinator — handleEvent', () => {
     h.coord.start();
 
     const filePath = path.join(h.fileDir, 'gone.md');
-    const storedKey = makeStoredKey(filePath, h.config.directories);
+    const storedKey = makeStoredKey(filePath, h.config.indexedDirectories);
     await seedFile(h.store, storedKey, Date.now());
     expect((await h.store.loadMtimes(SILO)).has(storedKey)).toBe(true);
 
@@ -315,7 +318,7 @@ describe('WatcherCoordinator — handleEvent', () => {
     h.coord.start();
 
     const filePath = path.join(h.fileDir, 'broken.md');
-    const storedKey = makeStoredKey(filePath, h.config.directories);
+    const storedKey = makeStoredKey(filePath, h.config.indexedDirectories);
     const seedMtime = Date.now();
     await seedFile(h.store, storedKey, seedMtime);
 
@@ -503,7 +506,12 @@ describe('WatcherCoordinator — awaitInFlight + lifecycle', () => {
     const holderTask = new Promise<void>((r) => {
       releaseHolder = r;
     });
-    h.queue.enqueue('other-silo', () => undefined, () => undefined, () => holderTask);
+    h.queue.enqueue(
+      'other-silo',
+      () => undefined,
+      () => undefined,
+      () => holderTask,
+    );
 
     h.watcher.runQueueImpl = async () => undefined;
     h.watcher.queueFilledHandler!();

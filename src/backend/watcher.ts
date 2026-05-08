@@ -120,16 +120,16 @@ export class SiloWatcher implements SiloWatcherLike {
 
     // chokidar v4+ removed glob support — watch directories directly and
     // filter by extension + ignore patterns via the `ignored` callback.
-    const extSet = new Set(this.config.extensions.map((e) => e.toLowerCase()));
+    const extSet = new Set(this.config.indexedFileExtensions.map((e) => e.toLowerCase()));
 
-    this.watcher = watch(this.config.directories, {
+    this.watcher = watch(this.config.indexedDirectories, {
       ignored: (filePath, stats) => {
         const base = path.basename(filePath);
         if (!stats || stats.isDirectory()) {
-          return matchesAnyPattern(base, this.config.ignore);
+          return matchesAnyPattern(base, this.config.ignoredFolderPatterns);
         }
         // For files, check file ignore patterns first, then extension whitelist.
-        if (matchesAnyPattern(base, this.config.ignoreFiles)) return true;
+        if (matchesAnyPattern(base, this.config.ignoredFilePatterns)) return true;
         const ext = path.extname(filePath).toLowerCase();
         return !extSet.has(ext);
       },
@@ -141,13 +141,15 @@ export class SiloWatcher implements SiloWatcherLike {
       },
     });
 
-    const debounceMs = this.config.debounce * 1000;
+    const debounceMs = this.config.fileChangeDelaySeconds * 1000;
 
     this.watcher.on('add', (filePath: string) => this.debounce(filePath, 'upsert', debounceMs));
     this.watcher.on('change', (filePath: string) => this.debounce(filePath, 'upsert', debounceMs));
     this.watcher.on('unlink', (filePath: string) => this.debounce(filePath, 'delete', debounceMs));
     this.watcher.on('addDir', (dirPath: string) => this.debounceDir(dirPath, 'add', debounceMs));
-    this.watcher.on('unlinkDir', (dirPath: string) => this.debounceDir(dirPath, 'remove', debounceMs));
+    this.watcher.on('unlinkDir', (dirPath: string) =>
+      this.debounceDir(dirPath, 'remove', debounceMs),
+    );
   }
 
   /** Stop watching and clear all pending timers. */
@@ -177,7 +179,7 @@ export class SiloWatcher implements SiloWatcherLike {
     const absPath = path.resolve(filePath);
     let storedKey: string;
     try {
-      storedKey = makeStoredKey(absPath, this.config.directories);
+      storedKey = makeStoredKey(absPath, this.config.indexedDirectories);
     } catch {
       return; // file outside configured directories
     }
@@ -229,7 +231,7 @@ export class SiloWatcher implements SiloWatcherLike {
         this.dirAddQueue.push(absDirPath);
       }
     } else {
-      const storedDirKey = makeStoredDirKey(absDirPath, this.config.directories);
+      const storedDirKey = makeStoredDirKey(absDirPath, this.config.indexedDirectories);
       if (storedDirKey && !this.dirRemoveQueue.includes(storedDirKey)) {
         this.dirRemoveQueue.push(storedDirKey);
       }
@@ -263,7 +265,11 @@ export class SiloWatcher implements SiloWatcherLike {
           deletes.push({ storedKey: item.storedKey, absPath: item.absPath });
         } else {
           let fileSize: number | undefined;
-          try { fileSize = fs.statSync(item.absPath).size; } catch { /* vanished */ }
+          try {
+            fileSize = fs.statSync(item.absPath).size;
+          } catch {
+            /* vanished */
+          }
           upsertJobs.push({ absPath: item.absPath, storedKey: item.storedKey, fileSize });
         }
       }
@@ -321,14 +327,21 @@ export class SiloWatcher implements SiloWatcherLike {
       // Process queued directory additions
       const pendingDirAdds = this.dirAddQueue.splice(0);
       for (const absDirPath of pendingDirAdds) {
-        const storedDirKey = makeStoredDirKey(absDirPath, this.config.directories);
+        const storedDirKey = makeStoredDirKey(absDirPath, this.config.indexedDirectories);
         if (storedDirKey) {
           try {
             const inserted = await this.storeOps.insertDirEntry(storedDirKey);
             if (inserted) {
-              this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absDirPath, eventType: 'dir-added' });
+              this.emit({
+                timestamp: new Date(),
+                siloName: this.config.name,
+                filePath: absDirPath,
+                eventType: 'dir-added',
+              });
             }
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         }
       }
 
@@ -338,8 +351,13 @@ export class SiloWatcher implements SiloWatcherLike {
         try {
           const deletedId = await this.storeOps.deleteDirEntry(storedDirKey);
           if (deletedId !== null) {
-            const absPath = resolveStoredKey(storedDirKey, this.config.directories);
-            this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absPath, eventType: 'dir-removed' });
+            const absPath = resolveStoredKey(storedDirKey, this.config.indexedDirectories);
+            this.emit({
+              timestamp: new Date(),
+              siloName: this.config.name,
+              filePath: absPath,
+              eventType: 'dir-removed',
+            });
           }
         } catch (err) {
           console.error(`[watcher] Error removing directory ${storedDirKey}:`, err);

@@ -50,7 +50,7 @@ export interface ModelDefinition {
 /**
  * All known built-in embedding models, keyed by their config identifier.
  *
- * The key is what appears in config.toml (`embeddings.model` or `silos.*.model`)
+ * The key is what appears in config.toml (`embeddings.default_model_key` or `silos.*.embedding_model_key`)
  * and in `meta.json` for mismatch detection. It must be stable across versions.
  */
 export const MODEL_REGISTRY: Record<string, ModelDefinition> = {
@@ -70,7 +70,7 @@ export const MODEL_REGISTRY: Record<string, ModelDefinition> = {
     displayName: 'Nomic Embed v1.5 (131MB, 768-dim)',
     hfModelId: 'nomic-ai/nomic-embed-text-v1.5',
     dimensions: 768,
-    maxTokens: 8192,  // model's technical limit — kept for truncation safety
+    maxTokens: 8192, // model's technical limit — kept for truncation safety
     chunkTokens: 512, // target chunk size — 8192 causes huge ONNX tensors and poor retrieval precision
     queryPrefix: 'search_query: ',
     documentPrefix: 'search_document: ',
@@ -112,15 +112,6 @@ export function getBundledModelIds(): string[] {
 }
 
 /**
- * Resolve the legacy 'built-in' alias to the actual default model name.
- * This handles config files from Phase 2 that use 'built-in' as the model name.
- */
-export function resolveModelAlias(modelId: string): string {
-  if (modelId === 'built-in') return DEFAULT_MODEL;
-  return modelId;
-}
-
-/**
  * Return the path-safe identifier for a model, used when auto-generating database filenames.
  * For known registry models, returns the deliberate `pathSafeId`.
  * For malformed user-edited config values, sanitizes the model ID to be path-safe.
@@ -128,5 +119,9 @@ export function resolveModelAlias(modelId: string): string {
 export function getModelPathSafeId(modelId: string): string {
   const def = MODEL_REGISTRY[modelId];
   if (def?.pathSafeId) return def.pathSafeId;
-  return modelId.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/(^-|-$)/g, '');
+  return modelId
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/(^-|-$)/g, '');
 }

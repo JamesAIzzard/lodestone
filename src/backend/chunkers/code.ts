@@ -18,31 +18,9 @@ import type Parser from 'web-tree-sitter';
 import type { ExtractionResult, ChunkRecord } from '../pipeline-types';
 import { estimateTokens, hashText, mergeUpTo } from '../chunk-utils';
 import { chunkPlaintext } from './plaintext';
+import { CODE_EXTENSIONS, getCodeGrammar } from '../../shared/file-types';
 
 // ── Language Registry ────────────────────────────────────────────────────────
-
-/**
- * Maps file extensions to their Tree-sitter grammar name.
- * The grammar name maps to a `tree-sitter-{name}.wasm` file in tree-sitter-wasms.
- */
-const EXTENSION_TO_GRAMMAR: Record<string, string> = {
-  '.ts':   'typescript',
-  '.tsx':  'tsx',
-  '.js':   'javascript',
-  '.jsx':  'tsx',        // JSX is parsed by the TSX grammar
-  '.py':   'python',
-  '.rs':   'rust',
-  '.go':   'go',
-  '.java': 'java',
-  '.c':    'c',
-  '.h':    'c',
-  '.cpp':  'cpp',
-  '.hpp':  'cpp',
-  '.cs':   'c_sharp',
-  '.rb':   'ruby',
-  '.swift':'swift',
-  '.kt':   'kotlin',
-};
 
 /**
  * Top-level AST node types that represent "definitions" — the natural
@@ -51,56 +29,94 @@ const EXTENSION_TO_GRAMMAR: Record<string, string> = {
  */
 const DEFINITION_TYPES: Record<string, string[]> = {
   typescript: [
-    'function_declaration', 'class_declaration', 'interface_declaration',
-    'type_alias_declaration', 'enum_declaration', 'export_statement',
-    'lexical_declaration', 'abstract_class_declaration', 'module',
+    'function_declaration',
+    'class_declaration',
+    'interface_declaration',
+    'type_alias_declaration',
+    'enum_declaration',
+    'export_statement',
+    'lexical_declaration',
+    'abstract_class_declaration',
+    'module',
   ],
   tsx: [
-    'function_declaration', 'class_declaration', 'interface_declaration',
-    'type_alias_declaration', 'enum_declaration', 'export_statement',
-    'lexical_declaration', 'abstract_class_declaration', 'module',
+    'function_declaration',
+    'class_declaration',
+    'interface_declaration',
+    'type_alias_declaration',
+    'enum_declaration',
+    'export_statement',
+    'lexical_declaration',
+    'abstract_class_declaration',
+    'module',
   ],
   javascript: [
-    'function_declaration', 'class_declaration', 'export_statement',
-    'lexical_declaration', 'variable_declaration',
+    'function_declaration',
+    'class_declaration',
+    'export_statement',
+    'lexical_declaration',
+    'variable_declaration',
   ],
-  python: [
-    'function_definition', 'class_definition', 'decorated_definition',
-  ],
+  python: ['function_definition', 'class_definition', 'decorated_definition'],
   rust: [
-    'function_item', 'struct_item', 'enum_item', 'impl_item',
-    'trait_item', 'mod_item', 'type_item', 'const_item', 'static_item',
-    'use_declaration', 'macro_definition',
+    'function_item',
+    'struct_item',
+    'enum_item',
+    'impl_item',
+    'trait_item',
+    'mod_item',
+    'type_item',
+    'const_item',
+    'static_item',
+    'use_declaration',
+    'macro_definition',
   ],
-  go: [
-    'function_declaration', 'method_declaration', 'type_declaration',
-  ],
+  go: ['function_declaration', 'method_declaration', 'type_declaration'],
   java: [
-    'class_declaration', 'interface_declaration', 'method_declaration',
-    'enum_declaration', 'annotation_type_declaration',
+    'class_declaration',
+    'interface_declaration',
+    'method_declaration',
+    'enum_declaration',
+    'annotation_type_declaration',
   ],
   c: [
-    'function_definition', 'struct_specifier', 'enum_specifier',
-    'type_definition', 'declaration',
+    'function_definition',
+    'struct_specifier',
+    'enum_specifier',
+    'type_definition',
+    'declaration',
   ],
   cpp: [
-    'function_definition', 'class_specifier', 'struct_specifier',
-    'enum_specifier', 'namespace_definition', 'template_declaration',
-    'type_definition', 'declaration',
+    'function_definition',
+    'class_specifier',
+    'struct_specifier',
+    'enum_specifier',
+    'namespace_definition',
+    'template_declaration',
+    'type_definition',
+    'declaration',
   ],
   c_sharp: [
-    'class_declaration', 'interface_declaration', 'struct_declaration',
-    'enum_declaration', 'method_declaration', 'namespace_declaration',
+    'class_declaration',
+    'interface_declaration',
+    'struct_declaration',
+    'enum_declaration',
+    'method_declaration',
+    'namespace_declaration',
   ],
-  ruby: [
-    'method', 'class', 'module', 'singleton_method',
-  ],
+  ruby: ['method', 'class', 'module', 'singleton_method'],
   swift: [
-    'function_declaration', 'class_declaration', 'struct_declaration',
-    'enum_declaration', 'protocol_declaration', 'extension_declaration',
+    'function_declaration',
+    'class_declaration',
+    'struct_declaration',
+    'enum_declaration',
+    'protocol_declaration',
+    'extension_declaration',
   ],
   kotlin: [
-    'function_declaration', 'class_declaration', 'object_declaration',
+    'function_declaration',
+    'class_declaration',
+    'object_declaration',
     'interface_declaration',
   ],
 };
@@ -136,11 +152,15 @@ async function ensureInit(): Promise<void> {
       // When web-tree-sitter is externalised the default resolution works,
       // but this acts as a safety net.
       const wasmDir = resolveTreeSitterWasmDir();
-      await ParserClass!.init(wasmDir ? {
-        locateFile(scriptName: string) {
-          return path.join(wasmDir, scriptName);
-        },
-      } : undefined);
+      await ParserClass!.init(
+        wasmDir
+          ? {
+              locateFile(scriptName: string) {
+                return path.join(wasmDir, scriptName);
+              },
+            }
+          : undefined,
+      );
     })();
   }
   return initPromise;
@@ -227,7 +247,7 @@ export async function chunkCodeAsync(
   if (body.length === 0) return [];
 
   const ext = path.extname(filePath).toLowerCase();
-  const grammarName = EXTENSION_TO_GRAMMAR[ext];
+  const grammarName = getCodeGrammar(ext);
 
   if (!grammarName) {
     return chunkPlaintext(filePath, extraction, maxChunkTokens);
@@ -257,7 +277,7 @@ interface RawSegment {
   text: string;
   sectionPath: string[];
   startLine: number; // 1-based
-  endLine: number;   // 1-based, inclusive
+  endLine: number; // 1-based, inclusive
   isDefinition: boolean;
 }
 
@@ -318,7 +338,7 @@ function parseAndChunk(
           sectionPath: seg.sectionPath,
           text: sub,
           locationHint: { type: 'lines', start: seg.startLine, end: seg.endLine },
-  
+
           contentHash: hashText(sub),
         });
       }
@@ -397,7 +417,7 @@ function attachLeadingComments(segments: RawSegment[]): RawSegment[] {
     while (result.length > 0) {
       const prev = result[result.length - 1];
       const isComment = !prev.isDefinition && isCommentText(prev.text);
-      const hasNoGap = (leadingStartLine - prev.endLine) <= 1;
+      const hasNoGap = leadingStartLine - prev.endLine <= 1;
 
       if (isComment && hasNoGap) {
         leadingText = prev.text + '\n' + leadingText;
@@ -408,9 +428,7 @@ function attachLeadingComments(segments: RawSegment[]): RawSegment[] {
       }
     }
 
-    const finalText = leadingText
-      ? leadingText + '\n' + def.text
-      : def.text;
+    const finalText = leadingText ? leadingText + '\n' + def.text : def.text;
 
     result.push({
       text: finalText,
@@ -473,10 +491,8 @@ function isCommentText(text: string): boolean {
 function extractDefinitionName(node: Parser.SyntaxNode, nodeType: string): string | null {
   if (nodeType === 'export_statement') {
     // export function foo() {} -> unwrap to the inner declaration
-    const inner = node.namedChildren.find(c =>
-      c.type !== 'comment' &&
-      c.type !== 'export' &&
-      c.type !== 'default',
+    const inner = node.namedChildren.find(
+      (c) => c.type !== 'comment' && c.type !== 'export' && c.type !== 'default',
     );
     if (inner) {
       return extractDefinitionName(inner, inner.type);
@@ -491,8 +507,8 @@ function extractDefinitionName(node: Parser.SyntaxNode, nodeType: string): strin
 
   if (nodeType === 'decorated_definition') {
     // Python: @decorator \n def foo(): -> unwrap to function_definition
-    const inner = node.namedChildren.find(c =>
-      c.type === 'function_definition' || c.type === 'class_definition',
+    const inner = node.namedChildren.find(
+      (c) => c.type === 'function_definition' || c.type === 'class_definition',
     );
     if (inner) {
       return extractDefinitionName(inner, inner.type);
@@ -502,9 +518,7 @@ function extractDefinitionName(node: Parser.SyntaxNode, nodeType: string): strin
 
   if (nodeType === 'lexical_declaration' || nodeType === 'variable_declaration') {
     // const foo = () => {} — extract the variable name
-    const declarator = node.namedChildren.find(c =>
-      c.type === 'variable_declarator',
-    );
+    const declarator = node.namedChildren.find((c) => c.type === 'variable_declarator');
     if (declarator) {
       const nameNode = declarator.childForFieldName('name');
       if (nameNode) return nameNode.text;
@@ -525,7 +539,8 @@ function getNodeName(node: Parser.SyntaxNode): string | null {
   // Some nodes use 'declarator' (C/C++ functions)
   const declarator = node.childForFieldName('declarator');
   if (declarator) {
-    const innerName = declarator.childForFieldName('name') ?? declarator.childForFieldName('declarator');
+    const innerName =
+      declarator.childForFieldName('name') ?? declarator.childForFieldName('declarator');
     if (innerName) return innerName.text;
     return declarator.text.split('(')[0]?.trim() ?? null;
   }
@@ -549,9 +564,9 @@ function subSplitCode(text: string, maxTokens: number): string[] {
 // ── Exports ──────────────────────────────────────────────────────────────────
 
 /** All supported code file extensions */
-export const CODE_EXTENSIONS = Object.keys(EXTENSION_TO_GRAMMAR);
+export { CODE_EXTENSIONS };
 
 /** Check if an extension has a Tree-sitter grammar available */
 export function hasGrammar(ext: string): boolean {
-  return ext.toLowerCase() in EXTENSION_TO_GRAMMAR;
+  return getCodeGrammar(ext) !== undefined;
 }

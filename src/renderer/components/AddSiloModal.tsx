@@ -13,13 +13,19 @@ import { cn } from '@/lib/utils';
 import { modelIdFromDisplay, toSlug, toModelSlug } from '@/lib/format';
 import ExtensionPicker from './ExtensionPicker';
 import SiloAppearancePicker from './SiloAppearancePicker';
-import { autoAssignColor, DEFAULT_SILO_ICON, validateSiloColor, validateSiloIcon, type SiloColor, type SiloIconName } from '../../shared/silo-appearance';
+import {
+  autoAssignColor,
+  DEFAULT_SILO_ICON,
+  validateSiloColor,
+  validateSiloIcon,
+  type SiloColor,
+  type SiloIconName,
+} from '../../shared/silo-appearance';
 import type { StoredSiloConfigResponse } from '../../shared/electron-api';
 
 const NEW_STEPS = ['Mode', 'Name', 'Directories', 'Extensions', 'Model', 'Storage'] as const;
 const EXISTING_STEPS = ['Mode', 'Storage', 'Name', 'Directories', 'Extensions', 'Model'] as const;
 type Step = (typeof NEW_STEPS)[number] | (typeof EXISTING_STEPS)[number];
-
 
 interface AddSiloModalProps {
   open: boolean;
@@ -66,8 +72,8 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
       setModelPathSafeIds(status.modelPathSafeIds ?? {});
     });
     window.electronAPI?.getDefaults().then((defaults) => {
-      defaultExtensionsRef.current = defaults.extensions;
-      setExtensions(defaults.extensions);
+      defaultExtensionsRef.current = defaults.indexedFileExtensions;
+      setExtensions(defaults.indexedFileExtensions);
     });
     // Auto-assign a colour based on the number of existing silos
     window.electronAPI?.getSilos().then((silos) => {
@@ -75,7 +81,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
     });
   }, []);
 
-  // Auto-generate db_path when name or model changes (only in 'new' mode)
+  // Auto-generate the index database path when name or model changes.
   useEffect(() => {
     if (name.trim() && mode === 'new') {
       const slug = toSlug(name);
@@ -131,13 +137,13 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
       try {
         const result = await window.electronAPI?.createSilo({
           name: name.trim(),
-          directories,
-          extensions,
-          dbPath: dbPath.trim(),
-          model,
-          description: description.trim() || undefined,
-          color: siloColor,
-          icon: siloIcon,
+          indexedDirectories: directories,
+          indexedFileExtensions: extensions,
+          indexDbPath: dbPath.trim(),
+          embeddingModelKey: model,
+          contentDescription: description.trim() || undefined,
+          accentColor: siloColor,
+          iconName: siloIcon,
           mode: mode ?? 'new',
         });
         if (result && !result.success) {
@@ -179,12 +185,12 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
 
     if (result?.config) {
       setName(result.config.name);
-      setDescription(result.config.description ?? '');
-      setExtensions(result.config.extensions);
-      setOriginalDirectories(result.config.directories);
-      setModel(result.config.model);
-      if (result.config.color) setSiloColor(validateSiloColor(result.config.color));
-      if (result.config.icon) setSiloIcon(validateSiloIcon(result.config.icon));
+      setDescription(result.config.contentDescription ?? '');
+      setExtensions(result.config.indexedFileExtensions);
+      setOriginalDirectories(result.config.indexedDirectories);
+      setModel(result.config.embeddingModelKey);
+      if (result.config.accentColor) setSiloColor(validateSiloColor(result.config.accentColor));
+      if (result.config.iconName) setSiloIcon(validateSiloIcon(result.config.iconName));
       setConfigLoaded(true);
     } else if (result?.meta) {
       // Legacy DB without config blob — pre-fill model from meta
@@ -204,9 +210,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>
-            {mode === 'existing' ? 'Connect Database' : 'Create Silo'}
-          </DialogTitle>
+          <DialogTitle>{mode === 'existing' ? 'Connect Database' : 'Create Silo'}</DialogTitle>
           <DialogDescription>
             Step {stepIndex + 1} of {steps.length}: {step}
           </DialogDescription>
@@ -217,17 +221,13 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
           {steps.map((_, i) => (
             <div
               key={i}
-              className={cn(
-                'h-1 flex-1 rounded-full',
-                i <= stepIndex ? 'bg-primary' : 'bg-muted',
-              )}
+              className={cn('h-1 flex-1 rounded-full', i <= stepIndex ? 'bg-primary' : 'bg-muted')}
             />
           ))}
         </div>
 
         {/* Step content */}
         <div className="mt-4 min-h-[140px]">
-
           {/* ── Mode ─────────────────────────────────────────────── */}
           {step === 'Mode' && (
             <div>
@@ -262,7 +262,9 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
                   <DatabaseZap className="h-4 w-4 shrink-0" />
                   <div>
                     <div className="font-medium">Connect existing</div>
-                    <div className="text-[10px] text-muted-foreground">Reconnect a portable .db file</div>
+                    <div className="text-[10px] text-muted-foreground">
+                      Reconnect a portable .db file
+                    </div>
                   </div>
                 </button>
               </div>
@@ -332,7 +334,9 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
               )}
 
               <label className="mb-2 block text-sm text-muted-foreground">
-                {mode === 'existing' ? 'Select local directories to map' : 'Choose directories to index'}
+                {mode === 'existing'
+                  ? 'Select local directories to map'
+                  : 'Choose directories to index'}
               </label>
               <Button variant="outline" size="sm" onClick={handleBrowse}>
                 <FolderOpen className="h-3.5 w-3.5" />
@@ -371,24 +375,20 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
               <label className="mb-2 block text-sm text-muted-foreground">
                 File extensions to index
               </label>
-              <ExtensionPicker
-                extensions={extensions}
-                onChange={setExtensions}
-              />
+              <ExtensionPicker extensions={extensions} onChange={setExtensions} />
             </div>
           )}
 
           {/* ── Model ────────────────────────────────────────────── */}
           {step === 'Model' && (
             <div>
-              <label className="mb-2 block text-sm text-muted-foreground">
-                Embedding model
-              </label>
+              <label className="mb-2 block text-sm text-muted-foreground">Embedding model</label>
               {mode === 'existing' && dbModel && modelIdFromDisplay(model) !== dbModel && (
                 <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-400">
                   <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
                   <span>
-                    The index was built with <strong>{dbModel}</strong>. Choosing a different model will require a full rebuild.
+                    The index was built with <strong>{dbModel}</strong>. Choosing a different model
+                    will require a full rebuild.
                   </span>
                 </div>
               )}
@@ -407,9 +407,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
                     <div
                       className={cn(
                         'h-2 w-2 rounded-full border',
-                        m === model
-                          ? 'border-primary bg-primary'
-                          : 'border-muted-foreground/40',
+                        m === model ? 'border-primary bg-primary' : 'border-muted-foreground/40',
                       )}
                     />
                     {m}
@@ -434,14 +432,21 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
               <div className="flex items-center gap-2">
                 <div className="flex-1 flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2 min-w-0">
                   <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="flex-1 text-sm text-foreground font-mono truncate">{dbPath}</span>
+                  <span className="flex-1 text-sm text-foreground font-mono truncate">
+                    {dbPath}
+                  </span>
                 </div>
-                <Button variant="outline" size="sm" className="shrink-0" onClick={async () => {
-                  const slug = toSlug(name) || 'silo';
-                  const modelSlug = modelPathSafeIds[model] ?? toModelSlug(model);
-                  const chosen = await window.electronAPI?.saveDbFile(`${slug}_${modelSlug}.db`);
-                  if (chosen) setDbPath(chosen);
-                }}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={async () => {
+                    const slug = toSlug(name) || 'silo';
+                    const modelSlug = modelPathSafeIds[model] ?? toModelSlug(model);
+                    const chosen = await window.electronAPI?.saveDbFile(`${slug}_${modelSlug}.db`);
+                    if (chosen) setDbPath(chosen);
+                  }}
+                >
                   <FolderOpen className="h-3.5 w-3.5" />
                   Browse...
                 </Button>
@@ -466,7 +471,9 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
               {dbPath && (
                 <div className="mt-3 flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2">
                   <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="flex-1 text-sm text-foreground font-mono truncate">{dbPath}</span>
+                  <span className="flex-1 text-sm text-foreground font-mono truncate">
+                    {dbPath}
+                  </span>
                 </div>
               )}
               {dbPath && configLoaded && (
@@ -476,7 +483,8 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
               )}
               {dbPath && !configLoaded && dbModel && (
                 <p className="mt-2 text-xs text-muted-foreground/60">
-                  Database found (model: {dbModel}), but no stored settings. You'll configure them manually.
+                  Database found (model: {dbModel}), but no stored settings. You'll configure them
+                  manually.
                 </p>
               )}
               {dbPath && !configLoaded && !dbModel && (
@@ -493,13 +501,16 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
           )}
         </div>
 
-        {error && (
-          <p className="text-xs text-red-400">{error}</p>
-        )}
+        {error && <p className="text-xs text-red-400">{error}</p>}
 
         <DialogFooter>
           {!isFirst && (
-            <Button variant="ghost" size="sm" onClick={() => setStepIndex((i) => i - 1)} disabled={creating}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setStepIndex((i) => i - 1)}
+              disabled={creating}
+            >
               Back
             </Button>
           )}

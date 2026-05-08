@@ -1,13 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  CheckCircle2,
-  Loader2,
-  XCircle,
-  FolderOpen,
-  X,
-  ArrowRight,
-} from 'lucide-react';
+import { CheckCircle2, Loader2, XCircle, FolderOpen, X, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { toSlug } from '@/lib/format';
@@ -33,7 +26,9 @@ export default function OnboardingView() {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [indexDone, setIndexDone] = useState(false);
-  const [indexProgress, setIndexProgress] = useState<{ current: number; total: number } | null>(null);
+  const [indexProgress, setIndexProgress] = useState<{ current: number; total: number } | null>(
+    null,
+  );
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load server model defaults and default extensions on mount
@@ -45,7 +40,7 @@ export default function OnboardingView() {
       setModel(status.defaultModel);
     });
     window.electronAPI?.getDefaults().then((defaults) => {
-      setExtensions(defaults.extensions);
+      setExtensions(defaults.indexedFileExtensions);
     });
   }, []);
 
@@ -108,10 +103,10 @@ export default function OnboardingView() {
       const slug = toSlug(siloName);
       const result = await window.electronAPI?.createSilo({
         name: slug,
-        directories,
-        extensions,
-        dbPath: `${slug}.db`,
-        model: model || defaultModel,
+        indexedDirectories: directories,
+        indexedFileExtensions: extensions,
+        indexDbPath: `${slug}.db`,
+        embeddingModelKey: model || defaultModel,
       });
 
       setCreating(false);
@@ -160,19 +155,10 @@ export default function OnboardingView() {
                   i > stepIndex && 'bg-muted text-muted-foreground',
                 )}
               >
-                {i < stepIndex ? (
-                  <CheckCircle2 className="h-4 w-4" />
-                ) : (
-                  i + 1
-                )}
+                {i < stepIndex ? <CheckCircle2 className="h-4 w-4" /> : i + 1}
               </div>
               {i < STEPS.length - 1 && (
-                <div
-                  className={cn(
-                    'h-px w-12',
-                    i < stepIndex ? 'bg-primary' : 'bg-muted',
-                  )}
-                />
+                <div className={cn('h-px w-12', i < stepIndex ? 'bg-primary' : 'bg-muted')} />
               )}
             </div>
           ))}
@@ -258,7 +244,8 @@ export default function OnboardingView() {
             <div>
               <h2 className="text-sm font-medium text-foreground">Indexing Your Files</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Building the search index for <span className="text-foreground">{siloName || 'your silo'}</span>.
+                Building the search index for{' '}
+                <span className="text-foreground">{siloName || 'your silo'}</span>.
               </p>
 
               <div className="mt-6">
@@ -283,9 +270,10 @@ export default function OnboardingView() {
                       <div
                         className="h-full rounded-full bg-primary transition-all duration-300"
                         style={{
-                          width: indexProgress && indexProgress.total > 0
-                            ? `${(indexProgress.current / indexProgress.total) * 100}%`
-                            : '0%',
+                          width:
+                            indexProgress && indexProgress.total > 0
+                              ? `${(indexProgress.current / indexProgress.total) * 100}%`
+                              : '0%',
                         }}
                       />
                     </div>

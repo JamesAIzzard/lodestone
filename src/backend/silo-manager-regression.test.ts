@@ -25,10 +25,7 @@ import os from 'node:os';
 import type { ResolvedSiloConfig } from './config';
 import { IndexingQueue } from './indexing-queue';
 import { SiloManager } from './silo-manager';
-import {
-  LocalStoreFacade,
-  createTempDirStoreFacade,
-} from './test-helpers/local-store-facade';
+import { LocalStoreFacade, createTempDirStoreFacade } from './test-helpers/local-store-facade';
 import { FakeSiloWatcher } from './test-helpers/fake-watcher';
 import { createStubEmbedding } from './test-helpers/stub-embedding';
 import { makeStoredKey } from './store/paths';
@@ -43,7 +40,7 @@ interface TestSilo {
   workDir: string;
   fileDir: string;
   dbDir: string;
-  dbPath: string;
+  indexDbPath: string;
   config: ResolvedSiloConfig;
   cleanup: () => void;
 }
@@ -64,7 +61,11 @@ let cleanups: Array<() => void> = [];
 
 afterEach(() => {
   for (const fn of cleanups.splice(0)) {
-    try { fn(); } catch { /* best-effort */ }
+    try {
+      fn();
+    } catch {
+      /* best-effort */
+    }
   }
 });
 
@@ -88,18 +89,18 @@ function makeTestSilo(opts: TestSiloOptions = {}): TestSilo {
 
   const config: ResolvedSiloConfig = {
     name,
-    directories: [fileDir],
-    dbPath,
-    extensions: ['.md'],
-    ignore: [],
-    ignoreFiles: [],
-    model: 'stub-model',
-    debounce: 1,
-    activityLogLimit: 200,
-    stopped: false,
-    description: '',
-    color: 'blue',
-    icon: 'database',
+    indexedDirectories: [fileDir],
+    indexDbPath: dbPath,
+    indexedFileExtensions: ['.md'],
+    ignoredFolderPatterns: [],
+    ignoredFilePatterns: [],
+    embeddingModelKey: 'stub-model',
+    fileChangeDelaySeconds: 1,
+    maxActivityLogEntries: 200,
+    isStopped: false,
+    contentDescription: '',
+    accentColor: 'blue',
+    iconName: 'database',
     ...opts.configOverrides,
   };
 
@@ -108,23 +109,18 @@ function makeTestSilo(opts: TestSiloOptions = {}): TestSilo {
   const queue = opts.queue ?? new IndexingQueue();
   const embedding = opts.embedding ?? createStubEmbedding({ dimensions: 4 });
 
-  const manager = new SiloManager(
-    config,
-    embedding,
-    workDir,
-    queue,
-    store,
-    () => watcher,
-  );
+  const manager = new SiloManager(config, embedding, workDir, queue, store, () => watcher);
 
   const cleanup = () => {
     try {
       fs.rmSync(workDir, { recursive: true, force: true });
-    } catch { /* harmless on Windows if a handle lingers */ }
+    } catch {
+      /* harmless on Windows if a handle lingers */
+    }
   };
   cleanups.push(cleanup);
 
-  return { manager, store, watcher, queue, workDir, fileDir, dbDir, dbPath, config, cleanup };
+  return { manager, store, watcher, queue, workDir, fileDir, dbDir, indexDbPath: dbPath, config, cleanup };
 }
 
 /** Wait for the next microtask flush — useful after fire-and-forget ops. */
@@ -163,7 +159,7 @@ describe('SiloManager — start lifecycle', () => {
 
   it('detects model mismatch when meta records a different model than config', async () => {
     // First run: write meta with model A
-    const a = makeTestSilo({ configOverrides: { model: 'model-a' } });
+    const a = makeTestSilo({ configOverrides: { embeddingModelKey: 'model-a' } });
     await a.manager.start();
     expect(a.manager.hasModelMismatch()).toBe(false);
     await a.manager.stop();
@@ -173,7 +169,7 @@ describe('SiloManager — start lifecycle', () => {
     // an app restart with mutated config.
     const freshStore = createTempDirStoreFacade();
     const watcher = new FakeSiloWatcher();
-    const config: ResolvedSiloConfig = { ...a.config, model: 'model-b' };
+    const config: ResolvedSiloConfig = { ...a.config, embeddingModelKey: 'model-b' };
     const manager = new SiloManager(
       config,
       createStubEmbedding({ dimensions: 4 }),
@@ -257,7 +253,7 @@ describe('SiloManager — config update side effects', () => {
     expect(before.indexedFileCount).toBe(2);
 
     // Add an ignore pattern that matches drop.md
-    await t.manager.updateIgnorePatterns([], ['drop.md']);
+    await t.manager.updateIgnoredPatterns([], ['drop.md']);
 
     const after = await t.manager.getStatus();
     expect(after.watcherState).toBe('ready');
@@ -274,11 +270,11 @@ describe('SiloManager — config update side effects', () => {
     // For colour/icon, the value should round-trip and the index stays untouched.
     // NB: the icon name must be one of the validated `SILO_ICON_NAMES` set —
     // an unknown value silently falls back to the default `'database'`.
-    await t.manager.updateColor('emerald');
-    await t.manager.updateIcon('book-open');
+    await t.manager.updateAccentColor('emerald');
+    await t.manager.updateIconName('book-open');
 
-    expect(t.manager.getConfig().color).toBe('emerald');
-    expect(t.manager.getConfig().icon).toBe('book-open');
+    expect(t.manager.getConfig().accentColor).toBe('emerald');
+    expect(t.manager.getConfig().iconName).toBe('book-open');
 
     const after = await t.manager.getStatus();
     expect(after.watcherState).toBe('ready');
@@ -328,7 +324,7 @@ describe('SiloManager — watcher events drive mtime + activity', () => {
     await t.manager.start();
 
     const liveAbs = path.join(t.fileDir, 'live.md');
-    const storedKey = makeStoredKey(liveAbs, t.config.directories);
+    const storedKey = makeStoredKey(liveAbs, t.config.indexedDirectories);
     const mtimesBefore = await t.store.loadMtimes('test-silo');
     expect(mtimesBefore.has(storedKey)).toBe(true);
     const originalMtime = mtimesBefore.get(storedKey)!;
@@ -361,7 +357,7 @@ describe('SiloManager — watcher events drive mtime + activity', () => {
     await t.manager.start();
 
     const goneAbs = path.join(t.fileDir, 'gone.md');
-    const storedKey = makeStoredKey(goneAbs, t.config.directories);
+    const storedKey = makeStoredKey(goneAbs, t.config.indexedDirectories);
     expect((await t.store.loadMtimes('test-silo')).has(storedKey)).toBe(true);
 
     t.watcher.emitDeleted(goneAbs, 'test-silo');
@@ -463,12 +459,19 @@ describe('SiloManager — start cancellation honoured at each yield point (Phase
     const sharedQueue = new IndexingQueue();
     let releaseBusy!: () => void;
     let busyAdmitted!: () => void;
-    const busyAdmittedP = new Promise<void>((r) => { busyAdmitted = r; });
+    const busyAdmittedP = new Promise<void>((r) => {
+      busyAdmitted = r;
+    });
     sharedQueue.enqueue(
       'busy',
-      () => { /* onWaiting */ },
+      () => {
+        /* onWaiting */
+      },
       () => busyAdmitted(),
-      () => new Promise<void>((r) => { releaseBusy = r; }),
+      () =>
+        new Promise<void>((r) => {
+          releaseBusy = r;
+        }),
     );
     await busyAdmittedP;
 
@@ -497,16 +500,20 @@ describe('SiloManager — start cancellation honoured at each yield point (Phase
     expect(t.watcher.started).toBe(false);
   });
 
-  it('stop() while configStore.persist is in flight bails before transition(\'ready\')', async () => {
+  it("stop() while configStore.persist is in flight bails before transition('ready')", async () => {
     const t = makeTestSilo();
 
     // Gate saveConfigBlob so configStore.persist hangs at the moment it
     // executes inside doStart. Reconcile completes first (the queue task
     // resolves cleanly), then doStart awaits persist — which now hangs.
     let releaseSave!: () => void;
-    const saveGate = new Promise<void>((r) => { releaseSave = r; });
+    const saveGate = new Promise<void>((r) => {
+      releaseSave = r;
+    });
     let persistEntered!: () => void;
-    const persistEnteredP = new Promise<void>((r) => { persistEntered = r; });
+    const persistEnteredP = new Promise<void>((r) => {
+      persistEntered = r;
+    });
     const originalSave = t.store.saveConfigBlob.bind(t.store);
     t.store.saveConfigBlob = async (siloId, blob) => {
       persistEntered();

@@ -15,13 +15,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSilos: (): Promise<unknown[]> => ipcRenderer.invoke('silos:list'),
   createSilo: (opts: {
     name: string;
-    directories: string[];
-    extensions: string[];
-    dbPath: string;
-    model: string;
-    description?: string;
-    color?: string;
-    icon?: string;
+    indexedDirectories: string[];
+    indexedFileExtensions: string[];
+    indexDbPath: string;
+    embeddingModelKey: string;
+    contentDescription?: string;
+    accentColor?: string;
+    iconName?: string;
     mode?: 'new' | 'existing';
   }): Promise<unknown> => ipcRenderer.invoke('silos:create', opts),
   deleteSilo: (name: string): Promise<unknown> => ipcRenderer.invoke('silos:delete', name),
@@ -33,13 +33,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateSilo: (
     name: string,
     updates: {
-      description?: string;
-      model?: string;
-      ignore?: string[];
-      ignoreFiles?: string[];
-      extensions?: string[];
-      color?: string;
-      icon?: string;
+      contentDescription?: string;
+      embeddingModelKey?: string;
+      ignoredFolderPatterns?: string[];
+      ignoredFilePatterns?: string[];
+      indexedFileExtensions?: string[];
+      accentColor?: string;
+      iconName?: string;
     },
   ): Promise<unknown> => ipcRenderer.invoke('silos:update', name, updates),
   renameSilo: (oldName: string, newName: string): Promise<unknown> =>

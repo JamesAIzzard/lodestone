@@ -39,10 +39,7 @@ import { MtimeIndex } from './silo/mtime-index';
 import { ActivityLog } from './silo/activity-log';
 import { SiloConfigStore } from './silo/silo-config-store';
 import { SiloLifecycle } from './silo/silo-lifecycle';
-import {
-  WatcherCoordinator,
-  type ReconcileProgressSnapshot,
-} from './silo/watcher-coordinator';
+import { WatcherCoordinator, type ReconcileProgressSnapshot } from './silo/watcher-coordinator';
 import { DirectoryExplorer } from './silo/directory-explorer';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -122,13 +119,9 @@ export class SiloManager {
       this.store,
       () => this.config.name,
       MAX_ACTIVITY_EVENTS,
-      () => this.config.activityLogLimit,
+      () => this.config.maxActivityLogEntries,
     );
-    this.explorer = new DirectoryExplorer(
-      config.name,
-      this.store,
-      () => this.config.directories,
-    );
+    this.explorer = new DirectoryExplorer(config.name, this.store, () => this.config.indexedDirectories);
     this.watcherCoord = new WatcherCoordinator({
       lifecycle: this.lifecycle,
       mtimes: this.mtimes,
@@ -183,23 +176,23 @@ export class SiloManager {
   }
 
   /**
-   * Update the configured model for this silo and re-check for mismatch.
+   * Update the configured embedding model key for this silo and re-check for mismatch.
    *
    * This does NOT restart the silo or change the running embedding service —
    * it just updates the config so that:
-   *  1. silos:list returns the new model
-   *  2. modelMismatch is set if the new model differs from what built the index
+   *  1. silos:list returns the new embedding model key
+   *  2. modelMismatch is set if the new key differs from what built the index
    *
    * The user must rebuild the index for the new model to take effect.
    */
-  async updateModel(model: string): Promise<void> {
-    this.configStore.apply({ model });
+  async updateEmbeddingModel(embeddingModelKey: string): Promise<void> {
+    this.configStore.apply({ embeddingModelKey });
 
     // Re-check mismatch against stored meta
     if (this.dbOpen) {
       const meta = await this.store.loadMeta(this.siloId);
       if (meta) {
-        this.modelMismatch = meta.model !== model;
+        this.modelMismatch = meta.model !== embeddingModelKey;
       } else {
         // No meta but DB exists — legacy or corrupt, flag mismatch
         this.modelMismatch = true;
@@ -208,9 +201,8 @@ export class SiloManager {
     await this.configStore.persist();
   }
 
-  /** Update the silo description and persist to DB config blob. */
-  async updateDescription(description: string): Promise<void> {
-    this.configStore.apply({ description });
+  async updateContentDescription(contentDescription: string): Promise<void> {
+    this.configStore.apply({ contentDescription });
     await this.configStore.persist();
   }
 
@@ -234,16 +226,19 @@ export class SiloManager {
   /**
    * Update ignore patterns, re-reconcile to remove now-ignored files, and restart the watcher.
    */
-  async updateIgnorePatterns(ignore: string[], ignoreFiles: string[]): Promise<void> {
-    this.configStore.apply({ ignore, ignoreFiles });
+  async updateIgnoredPatterns(
+    ignoredFolderPatterns: string[],
+    ignoredFilePatterns: string[],
+  ): Promise<void> {
+    this.configStore.apply({ ignoredFolderPatterns, ignoredFilePatterns });
     await this.reconcileAndRestartWatcher('ignore pattern');
   }
 
   /**
    * Update file extensions, re-reconcile to index/remove files, and restart the watcher.
    */
-  async updateExtensions(extensions: string[]): Promise<void> {
-    this.configStore.apply({ extensions });
+  async updateIndexedFileExtensions(indexedFileExtensions: string[]): Promise<void> {
+    this.configStore.apply({ indexedFileExtensions });
     await this.reconcileAndRestartWatcher('extension');
   }
 
@@ -316,15 +311,13 @@ export class SiloManager {
     }
   }
 
-  /** Update the silo colour and persist to DB config blob. */
-  async updateColor(color: string): Promise<void> {
-    this.configStore.apply({ color });
+  async updateAccentColor(accentColor: string): Promise<void> {
+    this.configStore.apply({ accentColor });
     await this.configStore.persist();
   }
 
-  /** Update the silo icon and persist to DB config blob. */
-  async updateIcon(icon: string): Promise<void> {
-    this.configStore.apply({ icon });
+  async updateIconName(iconName: string): Promise<void> {
+    this.configStore.apply({ iconName });
     await this.configStore.persist();
   }
 
@@ -358,7 +351,7 @@ export class SiloManager {
     this.lifecycle.transition('ready');
     this.watcherCoord.start();
     console.log(
-      `[silo:${this.config.name}] Started (watching ${this.config.directories.join(', ')})`,
+      `[silo:${this.config.name}] Started (watching ${this.config.indexedDirectories.join(', ')})`,
     );
   }
 
@@ -380,15 +373,19 @@ export class SiloManager {
   private async checkAndPersistMeta(): Promise<void> {
     const meta = await this.store.loadMeta(this.siloId);
     if (meta) {
-      if (meta.model !== this.config.model) {
+      if (meta.model !== this.config.embeddingModelKey) {
         this.modelMismatch = true;
         console.warn(
-          `[silo:${this.config.name}] Model mismatch: index built with "${meta.model}" but config uses "${this.config.model}". Rebuild required.`,
+          `[silo:${this.config.name}] Model mismatch: index built with "${meta.model}" but config uses "${this.config.embeddingModelKey}". Rebuild required.`,
         );
       }
     } else {
       // First run or fresh DB — write meta now
-      await this.store.saveMeta(this.siloId, this.config.model, this.embeddingService!.dimensions);
+      await this.store.saveMeta(
+        this.siloId,
+        this.config.embeddingModelKey,
+        this.embeddingService!.dimensions,
+      );
       this.modelMismatch = false;
     }
   }
@@ -644,11 +641,11 @@ export class SiloManager {
     // Convert absolute startPath → stored key prefix for DB filtering
     let storedStartPath = params.startPath;
     if (params.startPath) {
-      const key = makeStoredDirKey(params.startPath, this.config.directories);
+      const key = makeStoredDirKey(params.startPath, this.config.indexedDirectories);
       if (key) {
         storedStartPath = key;
       } else {
-        const rootIdx = this.config.directories.indexOf(params.startPath);
+        const rootIdx = this.config.indexedDirectories.indexOf(params.startPath);
         if (rootIdx >= 0) {
           storedStartPath = `${rootIdx}:`;
         }
@@ -661,7 +658,7 @@ export class SiloManager {
     // Resolve stored keys back to absolute file paths
     return results.map((r) => ({
       ...r,
-      filePath: resolveStoredKey(r.filePath, this.config.directories),
+      filePath: resolveStoredKey(r.filePath, this.config.indexedDirectories),
     }));
   }
 
@@ -671,7 +668,7 @@ export class SiloManager {
    */
   async reindexFile(absolutePath: string): Promise<void> {
     if (!this.embeddingService || !this.dbOpen || this.lifecycle.stopRequested) return;
-    const storedKey = makeStoredKey(absolutePath, this.config.directories);
+    const storedKey = makeStoredKey(absolutePath, this.config.indexedDirectories);
     const stat = fs.statSync(absolutePath);
     const prepared = await prepareFile(
       absolutePath,
@@ -711,9 +708,7 @@ export class SiloManager {
         indexedFileCount: inMaintenance ? this.mtimes.size : this.cachedFileCount,
         chunkCount: this.cachedChunkCount,
         lastUpdated: this.activity.lastUpdated,
-        databaseSizeBytes: inMaintenance
-          ? this.readFileSizeFromDisk()
-          : this.cachedSizeBytes,
+        databaseSizeBytes: inMaintenance ? this.readFileSizeFromDisk() : this.cachedSizeBytes,
         watcherState: this.lifecycle.watcherState(),
         errorMessage: this.errorMessage,
         reconcileProgress: this.reconcileProgress,
@@ -831,10 +826,10 @@ export class SiloManager {
   };
 
   private resolveDbPath(): string {
-    if (path.isAbsolute(this.config.dbPath)) {
-      return this.config.dbPath;
+    if (path.isAbsolute(this.config.indexDbPath)) {
+      return this.config.indexDbPath;
     }
-    return path.join(this.userDataDir, this.config.dbPath);
+    return path.join(this.userDataDir, this.config.indexDbPath);
   }
 
   private readFileSizeFromDisk(): number {
@@ -855,4 +850,3 @@ export class SiloManager {
     }
   }
 }
-

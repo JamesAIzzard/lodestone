@@ -131,8 +131,15 @@ export async function reconcile(
   const diskAbsPaths = new Map<string, { mtime: number; size: number }>(); // absPath → stat
   const diskDirAbsPaths = new Set<string>(); // all directory absolute paths on disk
 
-  for (const dir of config.directories) {
-    walkDirectory(dir, config.extensions, config.ignore, config.ignoreFiles, diskAbsPaths, diskDirAbsPaths);
+  for (const dir of config.indexedDirectories) {
+    walkDirectory(
+      dir,
+      config.indexedFileExtensions,
+      config.ignoredFolderPatterns,
+      config.ignoredFilePatterns,
+      diskAbsPaths,
+      diskDirAbsPaths,
+    );
   }
   console.log(`${TAG} Phase 1 done: ${diskAbsPaths.size} files, ${diskDirAbsPaths.size} dirs on disk (${ms(t1)})`);
 
@@ -141,7 +148,7 @@ export async function reconcile(
   const diskStored = new Map<string, { absPath: string; mtime: number; size: number }>();
   for (const [absPath, { mtime, size }] of diskAbsPaths) {
     try {
-      const key = makeStoredKey(absPath, config.directories);
+      const key = makeStoredKey(absPath, config.indexedDirectories);
       diskStored.set(key, { absPath, mtime, size });
     } catch {
       // path outside all directories — shouldn't happen with correct globs
@@ -246,7 +253,7 @@ export async function reconcile(
     let removeProgress = alreadyDone + loopResult.filesProcessed;
 
     for (const storedKey of filesToRemove) {
-      const absPath = resolveStoredKey(storedKey, config.directories);
+      const absPath = resolveStoredKey(storedKey, config.indexedDirectories);
       onProgress?.({
         phase: 'removing',
         current: ++removeProgress,
@@ -263,7 +270,7 @@ export async function reconcile(
       mtimes.recordDeleted(storedKey);
       filesRemoved++;
       onEvent?.({
-        filePath: resolveStoredKey(storedKey, config.directories),
+        filePath: resolveStoredKey(storedKey, config.indexedDirectories),
         eventType: 'deleted',
       });
     }
@@ -282,8 +289,8 @@ export async function reconcile(
     const diskDirEntries: DirEntry[] = [];
 
     for (const absDirPath of diskDirAbsPaths) {
-      for (let dirIdx = 0; dirIdx < config.directories.length; dirIdx++) {
-        const siloRoot = config.directories[dirIdx];
+      for (let dirIdx = 0; dirIdx < config.indexedDirectories.length; dirIdx++) {
+        const siloRoot = config.indexedDirectories[dirIdx];
         const rel = path.relative(siloRoot, absDirPath);
         if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
 
@@ -308,7 +315,10 @@ export async function reconcile(
       console.log(`${TAG} Removed ${removedDirKeys.length} stale director${removedDirKeys.length === 1 ? 'y' : 'ies'}`);
       // Emit dir-removed events for each orphaned directory
       for (const dirPath of removedDirKeys) {
-        onEvent?.({ filePath: resolveStoredKey(dirPath, config.directories), eventType: 'dir-removed' });
+        onEvent?.({
+          filePath: resolveStoredKey(dirPath, config.indexedDirectories),
+          eventType: 'dir-removed',
+        });
       }
     }
 

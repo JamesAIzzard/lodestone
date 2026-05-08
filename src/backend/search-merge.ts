@@ -19,7 +19,7 @@ function groupByModel(
 ): Map<string, Array<[string, SiloManager]>> {
   const byModel = new Map<string, Array<[string, SiloManager]>>();
   for (const [name, manager] of managers) {
-    const model = manager.getConfig().model;
+    const model = manager.getConfig().embeddingModelKey;
     const group = byModel.get(model) ?? [];
     if (!byModel.has(model)) byModel.set(model, group);
     group.push([name, manager]);

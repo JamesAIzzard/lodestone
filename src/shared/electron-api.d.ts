@@ -13,14 +13,14 @@ import type {
 export interface StoredSiloConfigResponse {
   config: {
     name: string;
-    description?: string;
-    directories: string[];
-    extensions: string[];
-    ignore: string[];
-    ignoreFiles: string[];
-    model: string;
-    color?: string;
-    icon?: string;
+    contentDescription?: string;
+    indexedDirectories: string[];
+    indexedFileExtensions: string[];
+    ignoredFolderPatterns: string[];
+    ignoredFilePatterns: string[];
+    embeddingModelKey: string;
+    accentColor?: string;
+    iconName?: string;
   } | null;
   meta: {
     model: string;
@@ -55,13 +55,13 @@ export interface ElectronAPI {
   getSilos: () => Promise<SiloStatus[]>;
   createSilo: (opts: {
     name: string;
-    directories: string[];
-    extensions: string[];
-    dbPath: string;
-    model: string;
-    description?: string;
-    color?: string;
-    icon?: string;
+    indexedDirectories: string[];
+    indexedFileExtensions: string[];
+    indexDbPath: string;
+    embeddingModelKey: string;
+    contentDescription?: string;
+    accentColor?: string;
+    iconName?: string;
     mode?: 'new' | 'existing';
   }) => Promise<{ success: boolean; error?: string }>;
   deleteSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
@@ -73,13 +73,13 @@ export interface ElectronAPI {
   updateSilo: (
     name: string,
     updates: {
-      description?: string;
-      model?: string;
-      ignore?: string[];
-      ignoreFiles?: string[];
-      extensions?: string[];
-      color?: string;
-      icon?: string;
+      contentDescription?: string;
+      embeddingModelKey?: string;
+      ignoredFolderPatterns?: string[];
+      ignoredFilePatterns?: string[];
+      indexedFileExtensions?: string[];
+      accentColor?: string;
+      iconName?: string;
     },
   ) => Promise<{ success: boolean; error?: string }>;
   search: (params: SearchParams, siloName?: string) => Promise<SearchResult[]>;

@@ -15,8 +15,12 @@ import path from 'node:path';
 import { app } from 'electron';
 import { createServer, type Server, type Socket } from 'node:net';
 import type { AppContext } from './context';
-import { dispatchExplore, mergeDirectoryResults, dispatchSearch, mergeSearchResults } from '../backend/search-merge';
-import { resolveModelAlias } from '../backend/model-registry';
+import {
+  dispatchExplore,
+  mergeDirectoryResults,
+  dispatchSearch,
+  mergeSearchResults,
+} from '../backend/search-merge';
 import type { SearchResult, DirectoryResult, SiloStatus, SearchParams } from '../shared/types';
 import type { EditOperation, EditResult } from '../backend/edit';
 import type { SiloManager } from '../backend/silo-manager';
@@ -166,9 +170,8 @@ export class InternalApi {
 
   private sendResponse(socket: Socket, id: number, result?: unknown, error?: string): void {
     if (socket.destroyed) return;
-    const msg = error !== undefined
-      ? JSON.stringify({ id, error })
-      : JSON.stringify({ id, result });
+    const msg =
+      error !== undefined ? JSON.stringify({ id, error }) : JSON.stringify({ id, result });
     socket.write(msg + '\n');
   }
 
@@ -191,7 +194,14 @@ export class InternalApi {
 
     if (!query) throw new Error('Missing required parameter: query');
 
-    const searchParams: SearchParams = { query, mode, limit: maxResults, startPath, filePattern, regexFlags };
+    const searchParams: SearchParams = {
+      query,
+      mode,
+      limit: maxResults,
+      startPath,
+      filePattern,
+      regexFlags,
+    };
 
     // Notify renderer that a silo is being queried (triggers shimmer effect)
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo', siloName: silo });
@@ -204,7 +214,8 @@ export class InternalApi {
       const m = this.ctx.siloManagers.get(silo);
       if (!m) throw new Error(`Silo "${silo}" not found`);
       if (m.isStopped) throw new Error(`Silo "${silo}" is stopped`);
-      if (m.hasModelMismatch()) throw new Error(`Silo "${silo}" has a model mismatch — rebuild required`);
+      if (m.hasModelMismatch())
+        throw new Error(`Silo "${silo}" has a model mismatch — rebuild required`);
       ready.push([silo, m]);
     } else {
       for (const [name, m] of this.ctx.siloManagers) {
@@ -232,9 +243,10 @@ export class InternalApi {
     }
 
     // Filepath and regex modes can search any ready silo; other modes need an embedding service
-    const searchable = mode === 'regex' || mode === 'filepath'
-      ? ready
-      : ready.filter(([, m]) => m.getEmbeddingService() !== null);
+    const searchable =
+      mode === 'regex' || mode === 'filepath'
+        ? ready
+        : ready.filter(([, m]) => m.getEmbeddingService() !== null);
 
     if (searchable.length === 0) {
       return { results: [], warnings };
@@ -243,7 +255,7 @@ export class InternalApi {
     const raw = await dispatchSearch(
       searchParams,
       searchable,
-      (model) => this.ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
+      (model) => this.ctx.embeddingServices.get(model) ?? null,
     );
 
     const merged = mergeSearchResults(raw, maxResults);
@@ -286,7 +298,8 @@ export class InternalApi {
       const m = this.ctx.siloManagers.get(silo);
       if (!m) throw new Error(`Silo "${silo}" not found`);
       if (m.isStopped) throw new Error(`Silo "${silo}" is stopped`);
-      if (m.hasModelMismatch()) throw new Error(`Silo "${silo}" has a model mismatch — rebuild required`);
+      if (m.hasModelMismatch())
+        throw new Error(`Silo "${silo}" has a model mismatch — rebuild required`);
       ready.push([silo, m]);
     } else {
       for (const [name, m] of this.ctx.siloManagers) {
@@ -369,10 +382,10 @@ export class InternalApi {
   private reindexEditedFile(filePath: string): void {
     const resolved = path.resolve(filePath);
     for (const manager of this.ctx.siloManagers.values()) {
-      const dirs = manager.getConfig().directories;
-      const isOwned = dirs.some(d => resolved.startsWith(path.resolve(d) + path.sep));
+      const dirs = manager.getConfig().indexedDirectories;
+      const isOwned = dirs.some((d) => resolved.startsWith(path.resolve(d) + path.sep));
       if (isOwned) {
-        manager.reindexFile(filePath).catch(err => {
+        manager.reindexFile(filePath).catch((err) => {
           console.error(`[internal-api] reindex failed for ${filePath}:`, err);
         });
         return;
@@ -391,7 +404,7 @@ export class InternalApi {
   }
 
   private handleGetDefaults(): { contextLines: number } {
-    const contextLines = this.ctx.config?.defaults.context_lines ?? 10;
+    const contextLines = this.ctx.config?.defaults.edit_context_lines ?? 10;
     return { contextLines };
   }
 
@@ -408,18 +421,21 @@ export class InternalApi {
       statuses.push({
         config: {
           name: cfg.name,
-          directories: cfg.directories,
-          extensions: cfg.extensions,
-          ignorePatterns: cfg.ignore,
-          ignoreFilePatterns: cfg.ignoreFiles,
-          hasIgnoreOverride: siloToml?.ignore !== undefined,
-          hasFileIgnoreOverride: siloToml?.ignore_files !== undefined,
-          hasExtensionOverride: siloToml?.extensions !== undefined,
-          modelOverride: cfg.model === resolveModelAlias(this.ctx.config?.embeddings.model ?? '') ? null : cfg.model,
-          dbPath: cfg.dbPath,
-          description: cfg.description,
-          color: cfg.color,
-          icon: cfg.icon,
+          indexedDirectories: cfg.indexedDirectories,
+          indexedFileExtensions: cfg.indexedFileExtensions,
+          ignoredFolderPatterns: cfg.ignoredFolderPatterns,
+          ignoredFilePatterns: cfg.ignoredFilePatterns,
+          hasIgnoredFolderPatternsOverride: siloToml?.ignored_folder_patterns !== undefined,
+          hasIgnoredFilePatternsOverride: siloToml?.ignored_file_patterns !== undefined,
+          hasIndexedFileExtensionsOverride: siloToml?.indexed_file_extensions !== undefined,
+          embeddingModelOverride:
+            cfg.embeddingModelKey === (this.ctx.config?.embeddings.default_model_key ?? '')
+              ? null
+              : cfg.embeddingModelKey,
+          indexDbPath: cfg.indexDbPath,
+          contentDescription: cfg.contentDescription,
+          accentColor: cfg.accentColor,
+          iconName: cfg.iconName,
         },
         indexedFileCount: status.indexedFileCount,
         chunkCount: status.chunkCount,
@@ -430,10 +446,9 @@ export class InternalApi {
         reconcileProgress: status.reconcileProgress,
         modelMismatch: status.modelMismatch,
         resolvedDbPath: status.resolvedDbPath,
-        resolvedModel: cfg.model,
+        resolvedEmbeddingModelKey: cfg.embeddingModelKey,
       });
     }
     return { silos: statuses };
   }
-
 }

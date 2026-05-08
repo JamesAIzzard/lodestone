@@ -3,17 +3,12 @@
  *
  * Provides a unified interface for generating vector embeddings from text,
  * using bundled Transformers.js / ONNX models through a shared worker thread.
- * The legacy 'built-in' alias is resolved via resolveModelAlias() for
- * backward compatibility.
  */
 
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { WorkerResponse } from './embedding-worker-protocol';
-import {
-  getModelDefinition,
-  resolveModelAlias,
-} from './model-registry';
+import { getModelDefinition } from './model-registry';
 
 // ── Interface ────────────────────────────────────────────────────────────────
 
@@ -227,8 +222,7 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
 // ── Factory ──────────────────────────────────────────────────────────────────
 
 export interface EmbeddingServiceOptions {
-  /** Model identifier: a registry key (e.g. 'snowflake-arctic-embed-xs')
-   *  or the legacy alias 'built-in'. */
+  /** Model identifier: a registry key (e.g. 'snowflake-arctic-embed-xs'). */
   model: string;
   /** Cache directory for bundled model files */
   modelCacheDir: string;
@@ -238,6 +232,5 @@ export interface EmbeddingServiceOptions {
  * Create the bundled ONNX embedding service for the configured model.
  */
 export function createEmbeddingService(options: EmbeddingServiceOptions): EmbeddingService {
-  const modelId = resolveModelAlias(options.model);
-  return new WorkerEmbeddingProxy(modelId, options.modelCacheDir);
+  return new WorkerEmbeddingProxy(options.model, options.modelCacheDir);
 }

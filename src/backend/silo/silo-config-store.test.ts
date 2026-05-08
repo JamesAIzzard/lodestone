@@ -18,18 +18,18 @@ import { SiloConfigStore } from './silo-config-store';
 
 const DEFAULT_CONFIG: ResolvedSiloConfig = {
   name: 'test-silo',
-  directories: ['/tmp/files'],
-  dbPath: '/tmp/db/test.db',
-  extensions: ['.md'],
-  ignore: [],
-  ignoreFiles: [],
-  model: 'stub-model',
-  debounce: 1,
-  activityLogLimit: 200,
-  stopped: false,
-  description: '',
-  color: 'blue',
-  icon: 'database',
+  indexedDirectories: ['/tmp/files'],
+  indexDbPath: '/tmp/db/test.db',
+  indexedFileExtensions: ['.md'],
+  ignoredFolderPatterns: [],
+  ignoredFilePatterns: [],
+  embeddingModelKey: 'stub-model',
+  fileChangeDelaySeconds: 1,
+  maxActivityLogEntries: 200,
+  isStopped: false,
+  contentDescription: '',
+  accentColor: 'blue',
+  iconName: 'database',
 };
 
 interface SaveCall {
@@ -103,9 +103,9 @@ describe('SiloConfigStore — reader surface', () => {
 
   it('current is the live snapshot — references update after apply', () => {
     const { store } = makeStore();
-    expect(store.current.description).toBe('');
-    store.apply({ description: 'updated' });
-    expect(store.current.description).toBe('updated');
+    expect(store.current.contentDescription).toBe('');
+    store.apply({ contentDescription: 'updated' });
+    expect(store.current.contentDescription).toBe('updated');
   });
 });
 
@@ -119,22 +119,22 @@ describe('SiloConfigStore — apply (in-memory mutation)', () => {
 
   it('apply({ description }) updates only description', () => {
     const { store } = makeStore();
-    store.apply({ description: 'a description' });
-    expect(store.current.description).toBe('a description');
+    store.apply({ contentDescription: 'a description' });
+    expect(store.current.contentDescription).toBe('a description');
     expect(store.current.name).toBe(DEFAULT_CONFIG.name);
-    expect(store.current.color).toBe(DEFAULT_CONFIG.color);
+    expect(store.current.accentColor).toBe(DEFAULT_CONFIG.accentColor);
   });
 
   it('apply({ model }) updates the model verbatim — no validation', () => {
     const { store } = makeStore();
-    store.apply({ model: 'new-model' });
-    expect(store.current.model).toBe('new-model');
+    store.apply({ embeddingModelKey: 'new-model' });
+    expect(store.current.embeddingModelKey).toBe('new-model');
   });
 
   it('apply({ color }) accepts a valid palette colour', () => {
     const { store } = makeStore();
-    store.apply({ color: 'emerald' });
-    expect(store.current.color).toBe('emerald');
+    store.apply({ accentColor: 'emerald' });
+    expect(store.current.accentColor).toBe('emerald');
   });
 
   it('apply({ color }) silently falls back to the default for invalid values', () => {
@@ -142,14 +142,14 @@ describe('SiloConfigStore — apply (in-memory mutation)', () => {
     // for unknown colours rather than throwing. Pinned to keep silo update
     // semantics identical to before the extraction.
     const { store } = makeStore();
-    store.apply({ color: 'puce-pomegranate' });
-    expect(store.current.color).toBe('blue');
+    store.apply({ accentColor: 'puce-pomegranate' });
+    expect(store.current.accentColor).toBe('blue');
   });
 
   it('apply({ icon }) accepts a valid icon name', () => {
     const { store } = makeStore();
-    store.apply({ icon: 'book-open' });
-    expect(store.current.icon).toBe('book-open');
+    store.apply({ iconName: 'book-open' });
+    expect(store.current.iconName).toBe('book-open');
   });
 
   it('apply({ icon }) silently falls back to the default for invalid values', () => {
@@ -157,35 +157,35 @@ describe('SiloConfigStore — apply (in-memory mutation)', () => {
     // captured a real surprise here — the pre-refactor test originally tried
     // 'book' and got 'database' back, which prompted the icon-name correction.
     const { store } = makeStore();
-    store.apply({ icon: 'book' }); // not in SILO_ICON_NAMES — 'book-open' is
-    expect(store.current.icon).toBe('database');
+    store.apply({ iconName: 'book' }); // not in SILO_ICON_NAMES — 'book-open' is
+    expect(store.current.iconName).toBe('database');
   });
 
   it('apply({ ignore, ignoreFiles }) updates both at once', () => {
     const { store } = makeStore();
-    store.apply({ ignore: ['*.tmp'], ignoreFiles: ['drop.md'] });
-    expect(store.current.ignore).toEqual(['*.tmp']);
-    expect(store.current.ignoreFiles).toEqual(['drop.md']);
+    store.apply({ ignoredFolderPatterns: ['*.tmp'], ignoredFilePatterns: ['drop.md'] });
+    expect(store.current.ignoredFolderPatterns).toEqual(['*.tmp']);
+    expect(store.current.ignoredFilePatterns).toEqual(['drop.md']);
   });
 
   it('apply({ extensions }) updates extensions', () => {
     const { store } = makeStore();
-    store.apply({ extensions: ['.md', '.txt'] });
-    expect(store.current.extensions).toEqual(['.md', '.txt']);
+    store.apply({ indexedFileExtensions: ['.md', '.txt'] });
+    expect(store.current.indexedFileExtensions).toEqual(['.md', '.txt']);
   });
 
   it('apply with multiple fields applies all of them in one mutation', () => {
     const { store } = makeStore();
-    store.apply({ description: 'multi', color: 'rose', extensions: ['.md', '.org'] });
-    expect(store.current.description).toBe('multi');
-    expect(store.current.color).toBe('rose');
-    expect(store.current.extensions).toEqual(['.md', '.org']);
+    store.apply({ contentDescription: 'multi', accentColor: 'rose', indexedFileExtensions: ['.md', '.org'] });
+    expect(store.current.contentDescription).toBe('multi');
+    expect(store.current.accentColor).toBe('rose');
+    expect(store.current.indexedFileExtensions).toEqual(['.md', '.org']);
   });
 
   it('apply does not auto-persist — store.saveConfigBlob is never called', () => {
     const { store, spy } = makeStore();
-    store.apply({ description: 'changed' });
-    store.apply({ color: 'amber' });
+    store.apply({ contentDescription: 'changed' });
+    store.apply({ accentColor: 'amber' });
     expect(spy.saved).toEqual([]);
   });
 
@@ -194,21 +194,21 @@ describe('SiloConfigStore — apply (in-memory mutation)', () => {
     // spread that preserves every other field. This pins that contract.
     const { store } = makeStore();
     const before = store.current;
-    store.apply({ description: 'changed' });
+    store.apply({ contentDescription: 'changed' });
     const after = store.current;
 
-    expect(after.directories).toBe(before.directories);
-    expect(after.dbPath).toBe(before.dbPath);
-    expect(after.extensions).toBe(before.extensions);
-    expect(after.ignore).toBe(before.ignore);
-    expect(after.activityLogLimit).toBe(before.activityLogLimit);
+    expect(after.indexedDirectories).toBe(before.indexedDirectories);
+    expect(after.indexDbPath).toBe(before.indexDbPath);
+    expect(after.indexedFileExtensions).toBe(before.indexedFileExtensions);
+    expect(after.ignoredFolderPatterns).toBe(before.ignoredFolderPatterns);
+    expect(after.maxActivityLogEntries).toBe(before.maxActivityLogEntries);
   });
 });
 
 describe('SiloConfigStore — persist', () => {
   it('writes a StoredSiloConfig blob mirroring the current ResolvedSiloConfig', async () => {
     const { store, spy } = makeStore();
-    store.apply({ description: 'persisted', color: 'emerald', icon: 'book-open' });
+    store.apply({ contentDescription: 'persisted', accentColor: 'emerald', iconName: 'book-open' });
     await store.persist();
 
     expect(spy.saved.length).toBe(1);
@@ -216,25 +216,25 @@ describe('SiloConfigStore — persist', () => {
     expect(siloId).toBe('test-silo');
     expect(blob).toEqual({
       name: 'test-silo',
-      description: 'persisted',
-      directories: DEFAULT_CONFIG.directories,
-      extensions: DEFAULT_CONFIG.extensions,
-      ignore: DEFAULT_CONFIG.ignore,
-      ignoreFiles: DEFAULT_CONFIG.ignoreFiles,
-      model: DEFAULT_CONFIG.model,
-      color: 'emerald',
-      icon: 'book-open',
+      contentDescription: 'persisted',
+      indexedDirectories: DEFAULT_CONFIG.indexedDirectories,
+      indexedFileExtensions: DEFAULT_CONFIG.indexedFileExtensions,
+      ignoredFolderPatterns: DEFAULT_CONFIG.ignoredFolderPatterns,
+      ignoredFilePatterns: DEFAULT_CONFIG.ignoredFilePatterns,
+      embeddingModelKey: DEFAULT_CONFIG.embeddingModelKey,
+      accentColor: 'emerald',
+      iconName: 'book-open',
     });
   });
 
   it('writes description as undefined when the current value is empty string', async () => {
-    // Pre-refactor behaviour: `description: this.config.description || undefined`.
+    // Pre-refactor behaviour: `contentDescription: this.config.contentDescription || undefined`.
     // Storing the empty string would round-trip through JSON differently from
     // unset, so the original code coerced empties to undefined. Pinned.
     const { store, spy } = makeStore();
     await store.persist();
     expect(spy.saved.length).toBe(1);
-    expect(spy.saved[0].blob.description).toBeUndefined();
+    expect(spy.saved[0].blob.contentDescription).toBeUndefined();
   });
 
   it('is a no-op when canPersist() returns false', async () => {

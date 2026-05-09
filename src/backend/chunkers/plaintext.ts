@@ -37,7 +37,6 @@ export function chunkPlaintext(
       sectionPath: [filename],
       text: body,
       locationHint: { type: 'lines', start: 1, end: lineCount },
-
       contentHash: hashText(body),
     }];
   }
@@ -68,7 +67,6 @@ export function chunkPlaintext(
       sectionPath: [filename],
       text,
       locationHint: { type: 'lines', start: lineOffset, end: lineOffset + lineCount - 1 },
-
       contentHash: hashText(text),
     });
     // Advance by lines used + blank line separator

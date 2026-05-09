@@ -18,7 +18,7 @@ import { extractPlaintext } from './extractors/plaintext';
 import { extractCode } from './extractors/code';
 import { chunkByHeading } from './chunkers/heading';
 import { chunkPlaintext } from './chunkers/plaintext';
-import { chunkCodeAsync } from './chunkers/code';
+import { chunkCode } from './chunkers/code';
 import { extractPdf } from './extractors/pdf';
 import { chunkPdf } from './chunkers/pdf';
 import { readTextLines } from './readers/text';
@@ -41,7 +41,7 @@ const markdownProcessor: FileProcessor = {
 // Code files — Tree-sitter AST-based chunking (async), line-based reading
 const codeProcessor: FileProcessor = {
   extractor: extractCode,
-  asyncChunker: chunkCodeAsync,
+  asyncChunker: chunkCode,
   reader: readTextLines,
 };
 

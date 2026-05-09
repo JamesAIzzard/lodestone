@@ -64,6 +64,7 @@
     "@huggingface/transformers": "^3.8.1",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@repomix/tree-sitter-wasms": "^0.1.17",
     "better-sqlite3": "^12.6.2",
     "chokidar": "^5.0.0",
     "class-variance-authority": "^0.7.1",
@@ -84,9 +85,8 @@
     "sqlite-vec": "^0.1.7-alpha.10",
     "tailwind-merge": "^3.5.0",
     "trash": "^10.1.0",
-    "tree-sitter-wasms": "^0.1.13",
     "unified": "^11.0.5",
-    "web-tree-sitter": "^0.20.8",
+    "web-tree-sitter": "^0.26.8",
     "zod": "^4.3.6"
   }
 }

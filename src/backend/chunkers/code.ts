@@ -8,13 +8,13 @@
  * Fallback: if no grammar is available for a file's extension, or parsing
  * fails, falls back to the plaintext paragraph chunker.
  *
- * Uses web-tree-sitter v0.20.x (WASM build) to avoid native addon packaging
- * issues with Electron. Grammar WASM files are provided by tree-sitter-wasms.
+ * Uses web-tree-sitter's WASM build to avoid native addon packaging issues
+ * with Electron. Grammar WASM files are loaded from node_modules.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type Parser from 'web-tree-sitter';
+import { Parser, Language, type Node } from 'web-tree-sitter';
 import type { ExtractionResult, ChunkRecord } from '../pipeline-types';
 import { estimateTokens, hashText, mergeUpTo } from '../chunk-utils';
 import { chunkPlaintext } from './plaintext';
@@ -39,7 +39,8 @@ export async function chunkCode(
   const language = await loadGrammar(grammarName);
   if (!language) return chunkPlaintext(filePath, extraction, maxChunkTokens);
 
-  const parser = createParser(language);
+  const parser = new Parser();
+  parser.setLanguage(language);
   try {
     return chunkByDefinitions(filePath, body, parser, definitionTypes, maxChunkTokens);
   } catch (err) {
@@ -66,6 +67,10 @@ function chunkByDefinitions(
   maxChunkTokens: number,
 ): ChunkRecord[] {
   const tree = parser.parse(body);
+  // v0.26 types allow null when parsing is cancelled by options; we don't pass
+  // cancellation options, but still fail explicitly if the runtime returns none.
+  if (!tree) throw new Error('Tree-sitter returned no parse tree');
+
   try {
     const filename = filePath.split(/[/\\]/).pop() ?? filePath;
     const definitionSet = new Set(definitionTypes);
@@ -112,7 +117,7 @@ function buildChunkRecords(
 }
 
 function categorizeTopLevelNodes(
-  root: Parser.SyntaxNode,
+  root: Node,
   filename: string,
   definitionSet: Set<string>,
 ): Segment[] {
@@ -206,7 +211,7 @@ function isCommentText(text: string): boolean {
   return COMMENT_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
 }
 
-function extractDefinitionName(node: Parser.SyntaxNode, nodeType: string): string | null {
+function extractDefinitionName(node: Node, nodeType: string): string | null {
   if (nodeType === 'export_statement') {
     // export function foo() {} → unwrap to inner declaration
     const inner = node.namedChildren.find(
@@ -241,7 +246,7 @@ function extractDefinitionName(node: Parser.SyntaxNode, nodeType: string): strin
   return getNodeName(node);
 }
 
-function getNodeName(node: Parser.SyntaxNode): string | null {
+function getNodeName(node: Node): string | null {
   const nameNode = node.childForFieldName('name');
   if (nameNode) return nameNode.text;
 
@@ -257,28 +262,16 @@ function getNodeName(node: Parser.SyntaxNode): string | null {
   return null;
 }
 
-// In v0.20.x, web-tree-sitter's default export *is* the Parser class, with
-// Parser.Language as a nested class. The runtime needs an async one-time init
-// to load tree-sitter.wasm into Emscripten's linear memory before any parser
-// can be constructed.
-let ParserClass: typeof Parser | null = null;
-const languageCache = new Map<string, Parser.Language>();
+// web-tree-sitter needs an async one-time init to load its runtime WASM into
+// Emscripten's linear memory before any parser can be constructed.
+const languageCache = new Map<string, Language>();
 let initPromise: Promise<void> | null = null;
 
-// Safe to non-null-assert: every caller awaits loadGrammar first, which awaits
-// ensureInit, which sets ParserClass.
-function createParser(language: Parser.Language): Parser {
-  const parser = new ParserClass!();
-  parser.setLanguage(language);
-  return parser;
-}
-
-async function loadGrammar(grammarName: string): Promise<Parser.Language | null> {
+async function loadGrammar(grammarName: string): Promise<Language | null> {
   const cached = languageCache.get(grammarName);
   if (cached) return cached;
 
   await ensureInit();
-  if (!ParserClass) return null;
 
   try {
     const wasmPath = resolveGrammarWasm(grammarName);
@@ -287,7 +280,7 @@ async function loadGrammar(grammarName: string): Promise<Parser.Language | null>
       return null;
     }
 
-    const language = await ParserClass.Language.load(wasmPath);
+    const language = await Language.load(wasmPath);
     languageCache.set(grammarName, language);
     return language;
   } catch (err) {
@@ -300,14 +293,10 @@ async function ensureInit(): Promise<void> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    const mod = await import('web-tree-sitter');
-    // Handle both CJS-style default export and direct named export.
-    ParserClass = (mod as any).default ?? mod;
-
     // When Vite bundles the chunker into .vite/build/, Emscripten's default
-    // resolution can't find tree-sitter.wasm. locateFile bridges the gap.
+    // resolution can't find web-tree-sitter.wasm. locateFile bridges the gap.
     const wasmDir = resolveRuntimeWasmDir();
-    await ParserClass!.init(
+    await Parser.init(
       wasmDir
         ? { locateFile: (scriptName: string) => path.join(wasmDir, scriptName) }
         : undefined,
@@ -317,13 +306,20 @@ async function ensureInit(): Promise<void> {
 }
 
 function resolveRuntimeWasmDir(): string | null {
-  const file = walkUpForFile(path.join('node_modules', 'web-tree-sitter', 'tree-sitter.wasm'));
+  const file = walkUpForFile(
+    path.join('node_modules', 'web-tree-sitter', 'web-tree-sitter.wasm'),
+  );
   return file ? path.dirname(file) : null;
 }
 
 function resolveGrammarWasm(grammarName: string): string | null {
   return walkUpForFile(
-    path.join('node_modules', 'tree-sitter-wasms', 'out', `tree-sitter-${grammarName}.wasm`),
+    path.join(
+      'node_modules',
+      '@repomix/tree-sitter-wasms',
+      'out',
+      `tree-sitter-${grammarName}.wasm`,
+    ),
   );
 }
 

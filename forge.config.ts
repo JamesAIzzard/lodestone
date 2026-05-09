@@ -25,10 +25,22 @@ const EXTERNAL_MODULES = [
   'onnxruntime-web',
   'chokidar',
   'web-tree-sitter',
-  'tree-sitter-wasms',
+  '@repomix/tree-sitter-wasms',
   'trash',
   'pdfjs-dist',
 ];
+
+export function getPackagedExternalDependencies(pkg: {
+  dependencies?: Record<string, string>;
+}): Record<string, string> {
+  const filteredDeps: Record<string, string> = {};
+  for (const mod of EXTERNAL_MODULES) {
+    if (pkg.dependencies?.[mod]) {
+      filteredDeps[mod] = pkg.dependencies[mod];
+    }
+  }
+  return filteredDeps;
+}
 
 const config: ForgeConfig = {
   packagerConfig: {
@@ -51,12 +63,7 @@ const config: ForgeConfig = {
           const pkgPath = path.join(buildPath, 'package.json');
           const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
 
-          const filteredDeps: Record<string, string> = {};
-          for (const mod of EXTERNAL_MODULES) {
-            if (pkg.dependencies?.[mod]) {
-              filteredDeps[mod] = pkg.dependencies[mod];
-            }
-          }
+          const filteredDeps = getPackagedExternalDependencies(pkg);
 
           // Rewrite package.json with only the external deps so npm doesn't
           // install everything Vite already bundled.

@@ -1,11 +1,17 @@
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { extractMarkdown } from './extractors/markdown';
 import { chunkByHeading } from './chunkers/heading';
 
-// Helper: extract then chunk in one step (mirrors old chunkMarkdown API)
+// Helper: extract then chunk in one step (mirrors old chunkMarkdown API).
+// Derives FileInfo from the path the same way the pipeline driver does.
 function chunkMarkdown(filePath: string, content: string, maxChunkTokens = 8192) {
   const extraction = extractMarkdown(content);
-  return chunkByHeading(filePath, extraction, maxChunkTokens);
+  const fileInfo = {
+    extension: path.extname(filePath).toLowerCase(),
+    basename: path.basename(filePath),
+  };
+  return chunkByHeading(extraction, fileInfo, maxChunkTokens);
 }
 
 // ── extractMarkdown ──────────────────────────────────────────────────────────

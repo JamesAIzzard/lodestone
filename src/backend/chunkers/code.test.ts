@@ -1,12 +1,18 @@
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { chunkCode } from './code';
 import { extractCode } from '../extractors/code';
 import type { ExtractionResult } from '../pipeline-types';
 
-// Helper: extract then chunk in one step
+// Helper: extract then chunk in one step.
+// Derives FileInfo from the path the same way the pipeline driver does.
 async function extractAndChunk(filePath: string, content: string, maxChunkTokens = 8192) {
   const extraction = extractCode(content);
-  return chunkCode(filePath, extraction, maxChunkTokens);
+  const fileInfo = {
+    extension: path.extname(filePath).toLowerCase(),
+    basename: path.basename(filePath),
+  };
+  return chunkCode(extraction, fileInfo, maxChunkTokens);
 }
 
 // ── extractCode ──────────────────────────────────────────────────────────────
@@ -329,7 +335,11 @@ describe('chunkCode — edge cases', () => {
       body: content,
       metadata: {},
     };
-    const chunks = await chunkCode('/test/unknown.xyz', extraction, 8192);
+    const chunks = await chunkCode(
+      extraction,
+      { extension: '.xyz', basename: 'unknown.xyz' },
+      8192,
+    );
 
     // Should still produce chunks (via plaintext fallback)
     expect(chunks.length).toBeGreaterThan(0);

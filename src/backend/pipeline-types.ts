@@ -26,6 +26,18 @@ export interface ExtractionResult {
 // ── Chunking ─────────────────────────────────────────────────────────────────
 
 /**
+ * Identity of the file being chunked, derived from its path by the pipeline
+ * driver. Chunkers receive this instead of the raw path so they don't need
+ * to do filesystem-path parsing themselves.
+ */
+export interface FileInfo {
+  /** Lowercased file extension including the dot, e.g. ".ts" */
+  extension: string;
+  /** Filename without directory, e.g. "code.ts" */
+  basename: string;
+}
+
+/**
  * A single chunk produced by a chunker, ready for embedding and storage.
  */
 export interface ChunkRecord {
@@ -42,6 +54,13 @@ export interface ChunkRecord {
   /** SHA-256 hash of the chunk text (for change detection) */
   contentHash: string;
 }
+
+/**
+ * What a chunker actually produces. The pipeline driver stamps `filePath`
+ * onto these to form complete `ChunkRecord`s — chunkers don't see the path
+ * because they don't need it.
+ */
+export type ChunkOutput = Omit<ChunkRecord, 'filePath'>;
 
 // ── Pluggable interfaces ─────────────────────────────────────────────────────
 
@@ -76,22 +95,26 @@ export class CancellationError extends Error {
 /**
  * A chunker splits extracted text into semantic pieces under a token limit.
  * Different chunking strategies suit different document structures.
+ *
+ * Chunkers are pure with respect to filesystem paths — they receive the
+ * file's identity via `FileInfo` and return path-free `ChunkOutput`s. The
+ * pipeline driver stamps `filePath` onto the returned records.
  */
 export type Chunker = (
-  filePath: string,
   extraction: ExtractionResult,
+  fileInfo: FileInfo,
   maxChunkTokens: number,
-) => ChunkRecord[];
+) => ChunkOutput[];
 
 /**
  * An async chunker — same contract as Chunker but returns a Promise.
  * Used for chunkers that require async initialization (e.g. Tree-sitter WASM).
  */
 export type AsyncChunker = (
-  filePath: string,
   extraction: ExtractionResult,
+  fileInfo: FileInfo,
   maxChunkTokens: number,
-) => Promise<ChunkRecord[]>;
+) => Promise<ChunkOutput[]>;
 
 // ── Reading ──────────────────────────────────────────────────────────────────
 

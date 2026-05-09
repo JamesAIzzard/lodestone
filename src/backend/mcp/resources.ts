@@ -12,7 +12,7 @@ import { buildDatetime } from './formatting';
 
 export const STARTUP_GUIDE = `# lodestone-files - Startup Guide
 
-This is the file search and editing server. Use it to search indexed silos, browse directories, read files, and edit notes in the knowledge base.
+This a file search and editing server. Use it to search indexed silos, browse directories, read files, and edit notes in the knowledge base.
 
 ## Key Tools
 
@@ -45,9 +45,7 @@ Use \`lodestone_edit\` with the appropriate operation (\`str_replace\`, \`insert
 
 ## Note-Writing Conventions
 
-- Filenames and directory names are generally in CAPS.
-- Markdown headings are in CAPS using \`##\` for level 1 and \`###\` for level 2; Obsidian auto-numbers headings so no manual numbering is needed.
-- When a heading includes a function or method name, use inline \`code_fence\` syntax rather than caps. Respect the real case of function/method names.
+- Obsidian auto-numbers headings so no manual numbering is needed.
 - Equations use MathJax (\`$\` inline, \`$$\` block).
 - Terms are explained on first appearance using the blockquote style:
 
@@ -64,7 +62,7 @@ $$M_f = \\mu \\cdot P \\cdot d_m$$
 - Widely known fundamental equations are wrapped in \`\\boxed{}\`.
 - Code uses fenced blocks with language tags; inline code uses backtick syntax.
 - Open questions or items requiring review are delimited with \`==\`.
-- Comments use \`%%\`.
+- Comments use \`%%\`. To comment on text ==highlight the text==%% and add a comment immediately afterwards. %%
 - Paragraphs are preferred over bullet lists unless a list is genuinely the clearer format.`;
 
 const GUIDES = { startup: STARTUP_GUIDE, notes: NOTES_GUIDE } as const;

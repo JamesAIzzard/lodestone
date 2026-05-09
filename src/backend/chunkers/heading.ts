@@ -10,7 +10,7 @@ import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import { toString } from 'mdast-util-to-string';
 import type { Root, Content, Heading } from 'mdast';
-import type { ExtractionResult, ChunkRecord } from '../pipeline-types';
+import type { ExtractionResult, FileInfo, ChunkOutput } from '../pipeline-types';
 import { estimateTokens, hashText, subSplitText } from '../chunk-utils';
 
 interface RawSection {
@@ -28,10 +28,10 @@ interface RawSection {
  * Oversized sections are sub-split on paragraph/sentence boundaries.
  */
 export function chunkByHeading(
-  filePath: string,
   extraction: ExtractionResult,
+  fileInfo: FileInfo,
   maxChunkTokens: number,
-): ChunkRecord[] {
+): ChunkOutput[] {
   const { body } = extraction;
 
   if (body.length === 0) {
@@ -39,9 +39,9 @@ export function chunkByHeading(
   }
 
   const tree = unified().use(remarkParse).parse(body) as Root;
-  const sections = splitByHeadings(tree, filePath);
+  const sections = splitByHeadings(tree, fileInfo.basename);
 
-  const chunks: ChunkRecord[] = [];
+  const chunks: ChunkOutput[] = [];
   for (const section of sections) {
     const text = nodesToText(section.nodes).trim();
     if (text.length === 0) continue;
@@ -50,7 +50,6 @@ export function chunkByHeading(
 
     if (estimatedTokens <= maxChunkTokens) {
       chunks.push({
-        filePath,
         chunkIndex: chunks.length,
         sectionPath: section.sectionPath,
         text,
@@ -63,12 +62,11 @@ export function chunkByHeading(
       const subChunks = subSplitText(text, maxChunkTokens);
       for (const sub of subChunks) {
         chunks.push({
-          filePath,
           chunkIndex: chunks.length,
           sectionPath: section.sectionPath,
           text: sub,
           locationHint: { type: 'lines', start: section.startLine, end: section.endLine },
-  
+
           contentHash: hashText(sub),
         });
       }
@@ -80,14 +78,12 @@ export function chunkByHeading(
 
 /**
  * Walk the AST and group nodes by heading boundaries.
- * Content before the first heading uses the filename as the section name.
+ * Content before the first heading uses the basename as the section name.
  */
-function splitByHeadings(tree: Root, filePath: string): RawSection[] {
+function splitByHeadings(tree: Root, basename: string): RawSection[] {
   const sections: RawSection[] = [];
   const headingStack: string[] = [];
   let currentSection: RawSection | null = null;
-
-  const filename = filePath.split(/[/\\]/).pop() ?? filePath;
 
   for (const node of tree.children) {
     if (node.type === 'heading') {
@@ -115,9 +111,9 @@ function splitByHeadings(tree: Root, filePath: string): RawSection[] {
       };
     } else {
       if (!currentSection) {
-        // Content before any heading — use filename as section name
+        // Content before any heading — use basename as section name
         currentSection = {
-          sectionPath: [filename],
+          sectionPath: [basename],
           depth: 0,
           nodes: [],
           startLine: node.position?.start.line ?? 1,

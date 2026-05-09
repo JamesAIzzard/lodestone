@@ -11,7 +11,7 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import type { FileProcessor, ExtractionResult } from './pipeline-types';
+import type { FileProcessor, ExtractionResult, FileInfo } from './pipeline-types';
 import { CancellationError } from './pipeline-types';
 import { extractMarkdown } from './extractors/markdown';
 import { extractPlaintext } from './extractors/plaintext';
@@ -160,9 +160,13 @@ export async function prepareFile(
   }
 
   onStage?.('chunking');
+  const fileInfo: FileInfo = {
+    extension: path.extname(absolutePath).toLowerCase(),
+    basename: path.basename(absolutePath),
+  };
   const chunks = asyncChunker
-    ? await asyncChunker(absolutePath, extraction, embeddingService.chunkTokens)
-    : chunker!(absolutePath, extraction, embeddingService.chunkTokens);
+    ? await asyncChunker(extraction, fileInfo, embeddingService.chunkTokens)
+    : chunker!(extraction, fileInfo, embeddingService.chunkTokens);
 
   if (chunks.length === 0) {
     return { storedKey, chunks: [], embeddings: [], mtimeMs, fileMetadata };

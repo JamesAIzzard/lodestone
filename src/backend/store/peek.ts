@@ -35,6 +35,13 @@ export function peekFileCount(dbPath: string): number {
  * Open a database file read-only, read the config blob and meta, then close it.
  * Used by the wizard to peek at stored config when reconnecting an existing DB.
  * Does not load sqlite-vec since we only read the meta table.
+ *
+ * Legacy blobs (written before the field-rename in commit 202ba88) used
+ * snake-cased domain words instead of the present `indexed*` / `ignored*`
+ * naming. {@link normalizeStoredConfig} accepts either shape so the wizard
+ * can pre-fill correctly when reconnecting an older `.db` file. The blob
+ * is rewritten in the current shape the next time the silo starts and
+ * `configStore.persist()` runs, so this is a read-only migration.
  */
 export function readConfigFromDbFile(dbPath: string): {
   config: StoredSiloConfig | null;
@@ -68,7 +75,8 @@ export function readConfigFromDbFile(dbPath: string): {
         const configJson = map.get('config');
         if (configJson) {
           try {
-            config = JSON.parse(configJson) as StoredSiloConfig;
+            const raw = JSON.parse(configJson) as unknown;
+            config = normalizeStoredConfig(raw);
           } catch {
             // Malformed config — ignore
           }
@@ -82,4 +90,49 @@ export function readConfigFromDbFile(dbPath: string): {
   } catch {
     return null;
   }
+}
+
+/**
+ * Coerce a parsed config blob into the current {@link StoredSiloConfig} shape.
+ * Falls back to legacy keys written before commit 202ba88 ("Clarify app and
+ * silo config naming") so reconnecting an older `.db` still pre-fills the
+ * wizard. Returns `null` when the blob is malformed beyond rescue (e.g. an
+ * array, a primitive, or missing both `name` and any directories field).
+ */
+function normalizeStoredConfig(raw: unknown): StoredSiloConfig | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const blob = raw as Record<string, unknown>;
+
+  const pickString = (...keys: string[]): string | undefined => {
+    for (const k of keys) {
+      const v = blob[k];
+      if (typeof v === 'string') return v;
+    }
+    return undefined;
+  };
+  const pickStringArray = (...keys: string[]): string[] | undefined => {
+    for (const k of keys) {
+      const v = blob[k];
+      if (Array.isArray(v) && v.every((s) => typeof s === 'string')) return v as string[];
+    }
+    return undefined;
+  };
+
+  const name = pickString('name');
+  const indexedDirectories = pickStringArray('indexedDirectories', 'directories');
+  const indexedFileExtensions = pickStringArray('indexedFileExtensions', 'extensions');
+  const embeddingModelKey = pickString('embeddingModelKey', 'model');
+  if (!name || !indexedDirectories || !indexedFileExtensions || !embeddingModelKey) return null;
+
+  return {
+    name,
+    contentDescription: pickString('contentDescription', 'description'),
+    indexedDirectories,
+    indexedFileExtensions,
+    ignoredFolderPatterns: pickStringArray('ignoredFolderPatterns', 'ignore') ?? [],
+    ignoredFilePatterns: pickStringArray('ignoredFilePatterns', 'ignoreFiles') ?? [],
+    embeddingModelKey,
+    accentColor: pickString('accentColor', 'color'),
+    iconName: pickString('iconName', 'icon'),
+  };
 }

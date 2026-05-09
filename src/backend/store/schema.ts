@@ -28,74 +28,136 @@ const vecExtPath = sqliteVec.getLoadablePath().replace(
 );
 
 /**
- * Detect whether an existing database file has a stale (pre-V2) schema.
+ * Result of pre-open schema inspection.
  *
- * `CREATE TABLE IF NOT EXISTS` silently preserves old table structures,
- * so a V1 database opened with V2 DDL retains its V1 columns. The V2
- * BM25 scorer then queries non-existent columns (terms.id, postings.term_id)
- * and silently produces no results.
- *
- * We detect this by checking structural markers (V2-specific columns) and
- * the stored schema version in the meta table.
+ * - `fresh`     — file is missing or has no tables yet; create from scratch.
+ * - `current`   — schema already at {@link SCHEMA_VERSION}; open as-is.
+ * - `migrate`   — V2/V3/V4 database; bring forward in place via {@link migrateSchema}
+ *                 and preserve the existing index data.
+ * - `incompatible` — pre-V2 (V1) layout; structural columns differ from
+ *                 anything we know how to migrate, so the file gets deleted
+ *                 and re-indexed from disk on the next reconcile.
  */
-function isStaleSchema(dbPath: string): boolean {
+type SchemaCheck =
+  | { kind: 'fresh' }
+  | { kind: 'current' }
+  | { kind: 'migrate'; from: number }
+  | { kind: 'incompatible' };
+
+/**
+ * Inspect an existing database file and decide how to bring it up to the
+ * current schema version.
+ *
+ * The structural-marker checks (`stored_key`, `file_id`, `term_id`) gate
+ * incompatible-V1: those columns were renamed across the V1→V2 break, so a
+ * V1 file in V2 DDL would silently retain its old shape and the V2 scorers
+ * would query non-existent columns. A missing structural marker therefore
+ * means we cannot migrate — only rebuild.
+ *
+ * Once V2-or-later structure is confirmed, the version stamp in `meta`
+ * picks `current` vs `migrate`. Reads happen through a temporary readonly
+ * connection so the caller can decide whether to delete the file (V1) or
+ * open it for an in-place migration (V2-V4).
+ */
+function checkSchema(dbPath: string): SchemaCheck {
+  if (!fs.existsSync(dbPath)) return { kind: 'fresh' };
   let db: Database.Database | null = null;
   try {
     db = new Database(dbPath, { readonly: true });
 
-    // Check if the files table exists at all (fresh DB has no tables yet)
+    // Fresh-but-empty file: no `files` table → treat as fresh and let
+    // CREATE TABLE IF NOT EXISTS populate it.
     const filesTable = db.prepare(
       "SELECT 1 FROM sqlite_master WHERE type='table' AND name='files'",
     ).get();
-    if (!filesTable) return false;
+    if (!filesTable) return { kind: 'fresh' };
 
-    // V2 structural marker: files.stored_key (V1 had files.file_path)
+    // V2 structural markers — renamed between V1 and V2. If any are missing
+    // we can't migrate, only rebuild.
     const fileCols = db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
-    if (!fileCols.some((c) => c.name === 'stored_key')) return true;
-
-    // V2 structural marker: chunks.file_id (V1 had chunks.file_path)
+    if (!fileCols.some((c) => c.name === 'stored_key')) return { kind: 'incompatible' };
     const chunkCols = db.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>;
-    if (!chunkCols.some((c) => c.name === 'file_id')) return true;
-
-    // V2 structural marker: postings.term_id (V1 had postings.term)
+    if (!chunkCols.some((c) => c.name === 'file_id')) return { kind: 'incompatible' };
     const postCols = db.prepare('PRAGMA table_info(postings)').all() as Array<{ name: string }>;
-    if (!postCols.some((c) => c.name === 'term_id')) return true;
+    if (!postCols.some((c) => c.name === 'term_id')) return { kind: 'incompatible' };
 
-    // Check stored schema version for future bumps (V2 → V3, etc.)
+    // Read the stored version, defaulting to V2 (the version at which the
+    // marker columns above became stable).
+    let storedVersion = 2;
     try {
       const row = db.prepare("SELECT value FROM meta WHERE key = 'version'").get() as
         | { value: string }
         | undefined;
-      if (row && parseInt(row.value, 10) < SCHEMA_VERSION) return true;
+      if (row) storedVersion = parseInt(row.value, 10);
     } catch {
-      // meta table might not exist yet — that's OK for a fresh DB
+      // meta table might not exist on the very oldest V2 builds — that's OK,
+      // we already know structurally it's at least V2.
     }
 
-    return false;
+    if (storedVersion >= SCHEMA_VERSION) return { kind: 'current' };
+    return { kind: 'migrate', from: storedVersion };
   } catch {
-    // Can't open or read the database at all — treat as stale
-    return true;
+    return { kind: 'incompatible' };
   } finally {
     try { db?.close(); } catch { /* best-effort */ }
   }
 }
 
 /**
- * Open or create a V2 SQLite database for a silo.
+ * Migrate an open V2-V4 database in place to {@link SCHEMA_VERSION}.
+ *
+ * Each step is idempotent (guarded by `PRAGMA table_info`) so a partial
+ * run can be safely retried. Steps that don't require DDL (V2→V3 corpus
+ * stats keys, V3→V4 activity_log table) are no-ops here: corpus stats are
+ * recomputed lazily by {@link updateCorpusStats}, and the activity_log
+ * table is added by the `CREATE TABLE IF NOT EXISTS` block in
+ * {@link createSiloDatabase} that runs after this function returns.
+ *
+ * Wrapped in a transaction so a mid-migration failure leaves the file in
+ * its pre-migration state. The version stamp is bumped at the end so the
+ * next boot won't re-attempt a half-done migration.
+ */
+function migrateSchema(db: SiloDatabase, from: number): void {
+  console.log(`[schema] Migrating database in place: V${from} → V${SCHEMA_VERSION}`);
+  const tx = db.transaction(() => {
+    // V4 → V5: per-chunk metadata column moved to a single per-file column
+    // (commit fdd9f1f — eliminates 16 GB → 23 MB duplication on large PDFs).
+    if (from < 5) {
+      const fileCols = db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
+      if (!fileCols.some((c) => c.name === 'file_metadata')) {
+        db.exec(`ALTER TABLE files ADD COLUMN file_metadata TEXT NOT NULL DEFAULT '{}'`);
+      }
+      const chunkCols = db.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>;
+      if (chunkCols.some((c) => c.name === 'metadata')) {
+        db.exec(`ALTER TABLE chunks DROP COLUMN metadata`);
+      }
+    }
+
+    db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
+      .run('version', String(SCHEMA_VERSION));
+  });
+  tx();
+}
+
+/**
+ * Open or create a SQLite database for a silo.
  * Loads sqlite-vec, creates all tables, and enables WAL mode.
  *
- * If the database file exists but has a stale (V1) schema, it is
- * automatically deleted and recreated. The silo will re-index from
- * scratch on next reconciliation.
+ * If the file exists with a V2-V4 schema it is migrated in place via
+ * {@link migrateSchema}, preserving the existing index. Only pre-V2 (V1)
+ * layouts are deleted and rebuilt — there the column renames make a
+ * straight migration impossible.
  */
 export function createSiloDatabase(dbPath: string, dimensions: number): SiloDatabase {
   const dir = path.dirname(dbPath);
   fs.mkdirSync(dir, { recursive: true });
 
-  // Guard against CREATE TABLE IF NOT EXISTS silently preserving old schemas.
-  // If the file exists with an outdated structure, nuke it for a clean rebuild.
-  if (fs.existsSync(dbPath) && isStaleSchema(dbPath)) {
-    console.log(`[schema] Stale schema detected at ${path.basename(dbPath)} — deleting for clean V2 rebuild`);
+  const check = checkSchema(dbPath);
+
+  // V1 → V2 changed primary-column names (file_path → stored_key etc.), so
+  // the only safe path is to delete and re-index from disk.
+  if (check.kind === 'incompatible') {
+    console.log(`[schema] Pre-V2 (V1) schema detected at ${path.basename(dbPath)} — deleting for clean rebuild`);
     for (const suffix of ['', '-wal', '-shm']) {
       try { fs.unlinkSync(dbPath + suffix); } catch { /* OK if missing */ }
     }
@@ -105,6 +167,10 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
   db.loadExtension(vecExtPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+
+  if (check.kind === 'migrate') {
+    migrateSchema(db, check.from);
+  }
 
   db.exec(`
     -- Files (merged with mtimes — mtime_ms is nullable for new/empty files)

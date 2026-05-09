@@ -186,9 +186,9 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
     if (result?.config) {
       setName(result.config.name);
       setDescription(result.config.contentDescription ?? '');
-      setExtensions(result.config.indexedFileExtensions);
-      setOriginalDirectories(result.config.indexedDirectories);
-      setModel(result.config.embeddingModelKey);
+      setExtensions(result.config.indexedFileExtensions ?? defaultExtensionsRef.current);
+      setOriginalDirectories(result.config.indexedDirectories ?? []);
+      if (result.config.embeddingModelKey) setModel(result.config.embeddingModelKey);
       if (result.config.accentColor) setSiloColor(validateSiloColor(result.config.accentColor));
       if (result.config.iconName) setSiloIcon(validateSiloIcon(result.config.iconName));
       setConfigLoaded(true);

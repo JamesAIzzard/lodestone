@@ -7,8 +7,8 @@
  *
  * Lodestone uses exactly one embedding model — there is no registry and no
  * model id parameter; all configuration comes from {@link EMBEDDING_MODEL}.
- * For now the weights are fetched through the Transformers.js cache/download
- * path (Phase 1); Phase 2 will switch to loading vendored local weights.
+ * Weights are vendored under resources/models and loaded from a local
+ * directory supplied by the main process.
  * Query and document prefixes are applied transparently:
  *   - embed()      → query prefix (used for search queries)
  *   - embedBatch() → document prefix (used for indexing chunks)
@@ -32,17 +32,14 @@ export class BuiltInEmbeddingService implements EmbeddingService {
   readonly maxTokens = EMBEDDING_MODEL.maxTokens;
   readonly chunkTokens = EMBEDDING_MODEL.chunkTokens;
 
-  /**
-   * @param cacheDir Directory where Transformers.js stores downloaded model
-   *                 files. In Electron, use app.getPath('userData') + '/model-cache'.
-   */
-  constructor(private readonly cacheDir: string) {}
+  constructor(private readonly modelDir: string) {}
 
   private async getExtractor(): Promise<FeatureExtractionPipeline> {
     if (!this.extractor) {
-      env.cacheDir = this.cacheDir;
-      env.allowLocalModels = true;
-      env.allowRemoteModels = true;
+      // The model is vendored locally and loaded by absolute path. Disable
+      // remote models so a missing or corrupt bundled file fails fast and
+      // offline, instead of silently attempting a (malformed) network fetch.
+      env.allowRemoteModels = false;
 
       // Limit ONNX Runtime thread count to avoid saturating all CPU cores
       // during indexing. Cap at 2 (or half the cores, whichever is smaller).
@@ -50,7 +47,7 @@ export class BuiltInEmbeddingService implements EmbeddingService {
       const onnxThreads = Math.max(1, Math.min(2, Math.floor(cpuCount / 2)));
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.extractor = await (pipeline as any)('feature-extraction', EMBEDDING_MODEL.hfModelId, {
+      this.extractor = await (pipeline as any)('feature-extraction', this.modelDir, {
         dtype: EMBEDDING_MODEL.dtype,
         session_options: {
           intraOpNumThreads: onnxThreads,

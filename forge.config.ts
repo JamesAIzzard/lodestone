@@ -45,7 +45,7 @@ export function getPackagedExternalDependencies(pkg: {
 const config: ForgeConfig = {
   packagerConfig: {
     icon: './assets/icon',
-    extraResource: ['mcp-wrapper.js', 'assets/icon.png'],
+    extraResource: ['mcp-wrapper.js', 'assets/icon.png', 'resources/models'],
     asar: {
       // AutoUnpackNativesPlugin handles .node files.  We additionally need
       // .dll/.dylib/.so for sqlite-vec and .wasm for tree-sitter — these are

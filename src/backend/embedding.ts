@@ -32,10 +32,8 @@ export interface EmbeddingService {
 // ── Shared ONNX Worker ──────────────────────────────────────────────────────
 //
 // ONNX Runtime's native code has process-global state that crashes when
-// multiple worker threads load models simultaneously. ALL built-in models
-// share a single worker thread to avoid this. The worker holds a Map of
-// BuiltInEmbeddingService instances keyed by model ID and serializes all
-// ONNX calls through a queue.
+// multiple worker threads load models simultaneously. The single bundled
+// model runs through one worker thread, which serializes all ONNX calls.
 
 let sharedWorker: Worker | null = null;
 let sharedNextId = 1;
@@ -119,7 +117,7 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
   readonly maxTokens = EMBEDDING_MODEL.maxTokens;
   readonly chunkTokens = EMBEDDING_MODEL.chunkTokens;
 
-  constructor(private readonly cacheDir: string) {
+  constructor(private readonly modelDir: string) {
     activeProxies.add(this);
   }
 
@@ -146,7 +144,7 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
     // from EMBEDDING_MODEL, so the response is only awaited for readiness.
     await postToSharedWorker({
       type: 'init',
-      cacheDir: this.cacheDir,
+      modelDir: this.modelDir,
     });
   }
 
@@ -194,13 +192,13 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
 // ── Factory ──────────────────────────────────────────────────────────────────
 
 export interface EmbeddingServiceOptions {
-  /** Directory where Transformers.js caches downloaded model files. */
-  modelCacheDir: string;
+  /** Absolute directory containing the bundled Transformers.js model files. */
+  modelDir: string;
 }
 
 /**
  * Create the ONNX embedding service for the single bundled model.
  */
 export function createEmbeddingService(options: EmbeddingServiceOptions): EmbeddingService {
-  return new WorkerEmbeddingProxy(options.modelCacheDir);
+  return new WorkerEmbeddingProxy(options.modelDir);
 }

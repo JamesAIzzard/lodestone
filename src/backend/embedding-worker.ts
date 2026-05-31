@@ -48,7 +48,7 @@ async function processNext(): Promise<void> {
     switch (msg.type) {
       case 'init': {
         if (!service) {
-          service = new BuiltInEmbeddingService(msg.cacheDir);
+          service = new BuiltInEmbeddingService(msg.modelDir);
           // Force model load now so latency is paid during init, not on the
           // first real embed.
           await service.embed('warmup');

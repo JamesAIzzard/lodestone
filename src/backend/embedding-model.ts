@@ -2,9 +2,8 @@
  * The single embedding model used by Lodestone.
  *
  * There is no registry and no user-facing model choice — every silo uses this
- * one model. For now it is fetched through the Transformers.js cache/download
- * path like before (Phase 1); Phase 2 will vendor the weights and load them
- * from a local directory instead.
+ * one model. The model files are vendored under resources/models and loaded
+ * from that local directory at runtime.
  *
  * The `key` is written into each index's `meta` table and is what mismatch
  * detection compares against. Changing the model means changing `key`, which
@@ -14,8 +13,6 @@
 export interface EmbeddingModel {
   /** Stable identifier written to index metadata and compared for mismatch. */
   key: string;
-  /** HuggingFace model ID for Transformers.js (download/cache source). */
-  hfModelId: string;
   /** Human-readable name for display. */
   displayName: string;
   /** Vector dimensionality. */
@@ -36,7 +33,6 @@ export interface EmbeddingModel {
 
 export const EMBEDDING_MODEL: EmbeddingModel = {
   key: 'snowflake-arctic-embed-s',
-  hfModelId: 'Snowflake/snowflake-arctic-embed-s',
   displayName: 'Snowflake Arctic Embed S',
   dimensions: 384,
   maxTokens: 512,

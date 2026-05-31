@@ -3,7 +3,7 @@
  * (WorkerEmbeddingProxy) and the embedding worker thread.
  *
  * Lodestone hosts a single model, so the worker holds one service. The
- * `cacheDir` on InitRequest is where Transformers.js stores downloaded weights.
+ * `modelDir` on InitRequest points at the vendored Transformers.js model.
  */
 
 // ── Requests (main → worker) ────────────────────────────────────────────────
@@ -11,8 +11,8 @@
 export interface InitRequest {
   id: number;
   type: 'init';
-  /** Directory where Transformers.js caches downloaded model files. */
-  cacheDir: string;
+  /** Absolute directory containing the vendored Transformers.js model files. */
+  modelDir: string;
 }
 
 export interface EmbedRequest {

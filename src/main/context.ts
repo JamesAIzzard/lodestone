@@ -8,13 +8,13 @@
  */
 
 import { app, type BrowserWindow, type Tray } from 'electron';
-import path from 'node:path';
 import type { LodestoneConfig } from '../backend/config';
 import { getDefaultLodestoneConfigPath } from '../backend/config';
 import { createEmbeddingService, type EmbeddingService } from '../backend/embedding';
 import type { SiloManager } from '../backend/silo-manager';
 import { IndexingQueue } from '../backend/indexing-queue';
 import type { InternalApi } from './internal-api';
+import { resolveBundledModelDir } from './embedding-model-path';
 
 export interface AppContext {
   config: LodestoneConfig | null;
@@ -31,7 +31,7 @@ export interface AppContext {
 
   getOrCreateEmbeddingService(): EmbeddingService;
   getUserDataDir(): string;
-  getModelCacheDir(): string;
+  getBundledModelDir(): string;
   configPath(): string;
 }
 
@@ -51,7 +51,7 @@ export function createAppContext(): AppContext {
 
     getOrCreateEmbeddingService(): EmbeddingService {
       if (!ctx.embeddingService) {
-        ctx.embeddingService = createEmbeddingService({ modelCacheDir: ctx.getModelCacheDir() });
+        ctx.embeddingService = createEmbeddingService({ modelDir: ctx.getBundledModelDir() });
       }
       return ctx.embeddingService;
     },
@@ -60,8 +60,13 @@ export function createAppContext(): AppContext {
       return app.getPath('userData');
     },
 
-    getModelCacheDir(): string {
-      return path.join(ctx.getUserDataDir(), 'model-cache');
+    getBundledModelDir(): string {
+      const proc = process as NodeJS.Process & { resourcesPath: string };
+      return resolveBundledModelDir({
+        isPackaged: app.isPackaged,
+        appPath: app.getAppPath(),
+        resourcesPath: proc.resourcesPath,
+      });
     },
 
     configPath(): string {

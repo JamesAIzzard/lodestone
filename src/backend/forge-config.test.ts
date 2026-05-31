@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { getPackagedExternalDependencies } from '../../forge.config';
+import forgeConfig, { getPackagedExternalDependencies } from '../../forge.config';
 
 describe('forge packaging config', () => {
   it('keeps the scoped Tree-sitter grammar WASM package in packaged dependencies', () => {
@@ -16,5 +16,9 @@ describe('forge packaging config', () => {
       '@repomix/tree-sitter-wasms': '^0.1.17',
     });
     expect(filtered).not.toHaveProperty('react');
+  });
+
+  it('copies the vendored embedding models into packaged resources', () => {
+    expect(forgeConfig.packagerConfig?.extraResource).toContain('resources/models');
   });
 });

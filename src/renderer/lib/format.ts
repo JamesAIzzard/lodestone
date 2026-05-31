@@ -35,13 +35,6 @@ export function toSlug(input: string): string {
   return input.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '-');
 }
 
-export function toModelSlug(embeddingModelKey: string): string {
-  return embeddingModelKey.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-');
-}
-
-export function modelIdFromDisplay(display: string): string {
-  return display.split(' \u2014 ')[0].trim();
-}
 
 export function scorePercent(score: number): string {
   return `${Math.round(score * 100)}%`;

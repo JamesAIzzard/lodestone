@@ -67,7 +67,6 @@ export default function SiloCard({
   }, []);
   const state = stateConfig[watcherState];
   const colorClasses = SILO_COLOR_MAP[config.accentColor];
-  const hasModelOverride = config.embeddingModelOverride !== null;
   const isStopped = watcherState === 'stopped';
   const isWaiting = watcherState === 'waiting';
   const isActive = watcherState === 'indexing';
@@ -306,14 +305,6 @@ export default function SiloCard({
                   <span className="line-clamp-2 break-words">{silo.errorMessage}</span>
                 </span>
               )}
-              <span
-                className={cn(
-                  'block mt-0.5',
-                  hasModelOverride ? 'text-amber-400/80' : 'text-muted-foreground/50',
-                )}
-              >
-                {silo.resolvedEmbeddingModelKey}
-              </span>
             </div>
           </div>
 

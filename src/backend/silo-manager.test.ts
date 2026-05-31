@@ -14,7 +14,6 @@ function makeConfig(indexDbPath: string): ResolvedSiloConfig {
     indexedFileExtensions: ['.md'],
     ignoredFolderPatterns: [],
     ignoredFilePatterns: [],
-    embeddingModelKey: 'nomic-embed-text',
     fileChangeDelaySeconds: 1,
     maxActivityLogEntries: 200,
     isStopped: false,

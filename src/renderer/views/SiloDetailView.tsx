@@ -20,14 +20,14 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { abbreviatePath, formatBytes, formatTime, modelIdFromDisplay } from '@/lib/format';
+import { abbreviatePath, formatBytes, formatTime } from '@/lib/format';
 import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
 import ExtensionPicker from '@/components/ExtensionPicker';
 import SiloAppearancePicker from '@/components/SiloAppearancePicker';
 import SiloIcon from '@/components/SiloIconComponent';
 import ActivityFeed from '@/components/ActivityFeed';
 import { SILO_COLOR_MAP, type SiloColor, type SiloIconName } from '../../shared/silo-appearance';
-import type { SiloStatus, ServerStatus } from '../../shared/types';
+import type { SiloStatus } from '../../shared/types';
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -60,8 +60,6 @@ export default function SiloDetailView() {
 
   // Editable form state
   const [editDescription, setEditDescription] = useState('');
-  const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
-  const [selectedModel, setSelectedModel] = useState('');
   const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
   const [fileIgnore, setFileIgnore] = useState<string[]>([]);
   const [ignoreOverridden, setIgnoreOverridden] = useState(false);
@@ -142,12 +140,6 @@ export default function SiloDetailView() {
     setSiloColor(silo.config.accentColor);
     setSiloIcon(silo.config.iconName);
 
-    window.electronAPI?.getServerStatus().then((status) => {
-      setServerStatus(status);
-      const effective = silo.config.embeddingModelOverride ?? status.defaultModel;
-      setSelectedModel(effective);
-    });
-
     window.electronAPI?.getDefaults().then((d) => {
       setDefaultFolderIgnore(d.ignoredFolderPatterns);
       setDefaultFileIgnore(d.ignoredFilePatterns);
@@ -202,12 +194,6 @@ export default function SiloDetailView() {
     } finally {
       setIsRenaming(false);
     }
-  }
-
-  async function handleModelChange(newModel: string) {
-    setSelectedModel(newModel);
-    await window.electronAPI?.updateSilo(siloName, { embeddingModelKey: newModel });
-    fetchSilo();
   }
 
   async function handleRebuild() {
@@ -322,10 +308,6 @@ export default function SiloDetailView() {
   const isActive = silo.watcherState === 'indexing';
   const isStopped = silo.watcherState === 'stopped';
   const isWaiting = silo.watcherState === 'waiting';
-  const defaultModel = serverStatus?.defaultModel ?? 'snowflake-arctic-embed-xs';
-  const effectiveModel = selectedModel || config.embeddingModelOverride || defaultModel;
-  const isOverride = effectiveModel !== defaultModel;
-  const modelOptions = serverStatus?.availableModels ?? [];
   const progress = silo.reconcileProgress;
   const progressPctRaw =
     progress && progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : null;
@@ -544,45 +526,6 @@ export default function SiloDetailView() {
               onColorChange={handleColorChange}
               onIconChange={handleIconChange}
             />
-          </Row>
-          <Row label="Model">
-            <div className="flex flex-col gap-1.5">
-              <select
-                value={effectiveModel}
-                onChange={(e) => handleModelChange(e.target.value)}
-                className={cn(
-                  'h-7 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground',
-                  'focus:outline-none focus:ring-1 focus:ring-ring',
-                  isOverride && 'border-amber-500/40',
-                )}
-              >
-                {modelOptions.map((m) => {
-                  const id = modelIdFromDisplay(m);
-                  return (
-                    <option key={m} value={id}>
-                      {m}
-                      {id === defaultModel ? ' (default)' : ''}
-                    </option>
-                  );
-                })}
-              </select>
-              {isOverride && (
-                <div className="flex items-center gap-1.5">
-                  <Badge
-                    variant="outline"
-                    className="text-[10px] text-amber-400 border-amber-500/30"
-                  >
-                    override
-                  </Badge>
-                  <button
-                    onClick={() => handleModelChange(defaultModel)}
-                    className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    Reset to default
-                  </button>
-                </div>
-              )}
-            </div>
           </Row>
           <Row label="Extensions">
             <ExtensionPicker

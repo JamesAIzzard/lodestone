@@ -17,12 +17,6 @@ import {
 import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import type { SiloManager } from '../backend/silo-manager';
 import {
-  DEFAULT_MODEL,
-  getBundledModelIds,
-  getModelDefinition,
-  getModelPathSafeId,
-} from '../backend/model-registry';
-import {
   dispatchExplore,
   mergeDirectoryResults,
   dispatchSearch,
@@ -115,10 +109,6 @@ function registerSiloHandlers(ctx: AppContext): void {
           hasIgnoredFolderPatternsOverride: siloToml?.ignored_folder_patterns !== undefined,
           hasIgnoredFilePatternsOverride: siloToml?.ignored_file_patterns !== undefined,
           hasIndexedFileExtensionsOverride: siloToml?.indexed_file_extensions !== undefined,
-          embeddingModelOverride:
-            cfg.embeddingModelKey === (ctx.config?.default_model_key ?? '')
-              ? null
-              : cfg.embeddingModelKey,
           indexDbPath: cfg.indexDbPath,
           contentDescription: cfg.contentDescription,
           accentColor: cfg.accentColor,
@@ -133,7 +123,6 @@ function registerSiloHandlers(ctx: AppContext): void {
         reconcileProgress: status.reconcileProgress,
         modelMismatch: status.modelMismatch,
         resolvedDbPath: status.resolvedDbPath,
-        resolvedEmbeddingModelKey: cfg.embeddingModelKey,
       });
     }
     return statuses;
@@ -166,11 +155,7 @@ function registerSiloHandlers(ctx: AppContext): void {
 
       if (searchable.length === 0) return [];
 
-      const raw = await dispatchSearch(
-        params,
-        searchable,
-        (model) => ctx.embeddingServices.get(model) ?? null,
-      );
+      const raw = await dispatchSearch(params, searchable, ctx.embeddingService);
 
       const merged = mergeSearchResults(raw, limit);
 
@@ -347,8 +332,7 @@ function registerSiloHandlers(ctx: AppContext): void {
     const manager = ctx.siloManagers.get(name);
     if (!manager) return { success: false, error: `Silo "${name}" not found` };
 
-    const embeddingService = ctx.getOrCreateEmbeddingService(manager.getConfig().embeddingModelKey);
-    manager.updateEmbeddingService(embeddingService);
+    manager.updateEmbeddingService(ctx.getOrCreateEmbeddingService());
 
     // Fire and forget — rebuild() stops current work, then queues via the
     // IndexingQueue. The silo's watcherState updates via silos:changed events.
@@ -366,7 +350,6 @@ function registerSiloHandlers(ctx: AppContext): void {
       name: string,
       updates: {
         contentDescription?: string;
-        embeddingModelKey?: string;
         ignoredFolderPatterns?: string[];
         ignoredFilePatterns?: string[];
         indexedFileExtensions?: string[];
@@ -395,13 +378,6 @@ function registerSiloHandlers(ctx: AppContext): void {
         const validated = validateSiloIcon(updates.iconName);
         siloToml.icon_name = validated;
         await manager?.updateIconName(validated);
-      }
-
-      if (updates.embeddingModelKey !== undefined) {
-        const defaultModel = ctx.config.default_model_key;
-        siloToml.embedding_model_key =
-          updates.embeddingModelKey !== defaultModel ? updates.embeddingModelKey : undefined;
-        await manager?.updateEmbeddingModel(updates.embeddingModelKey);
       }
 
       // Ignore pattern updates — empty array means "revert to defaults"
@@ -496,7 +472,6 @@ function registerSiloHandlers(ctx: AppContext): void {
         indexedDirectories: string[];
         indexedFileExtensions: string[];
         indexDbPath: string;
-        embeddingModelKey: string;
         contentDescription?: string;
         accentColor?: string;
         iconName?: string;
@@ -525,8 +500,6 @@ function registerSiloHandlers(ctx: AppContext): void {
         };
       }
 
-      const model = opts.embeddingModelKey.split(' — ')[0].trim();
-
       // Auto-assign colour if not provided, cycling through the palette
       const color = opts.accentColor
         ? validateSiloColor(opts.accentColor)
@@ -538,7 +511,6 @@ function registerSiloHandlers(ctx: AppContext): void {
         index_db_path: opts.indexDbPath,
         indexed_file_extensions:
           opts.indexedFileExtensions.length > 0 ? opts.indexedFileExtensions : undefined,
-        embedding_model_key: model !== ctx.config.default_model_key ? model : undefined,
         content_description: opts.contentDescription?.trim() || undefined,
         accent_color: color,
         icon_name: icon ?? undefined,
@@ -567,20 +539,9 @@ function registerSettingsHandlers(ctx: AppContext): void {
       totalFiles += status.indexedFileCount;
     }
 
-    const models: string[] = getBundledModelIds().map((id) => {
-      const def = getModelDefinition(id);
-      return def ? `${id} — ${def.displayName}` : id;
-    });
-    const modelPathSafeIds = Object.fromEntries(
-      getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
-    );
-
     return {
       uptimeSeconds,
-      availableModels: models,
-      defaultModel: ctx.config?.default_model_key ?? DEFAULT_MODEL,
       totalIndexedFiles: totalFiles,
-      modelPathSafeIds,
     };
   });
 

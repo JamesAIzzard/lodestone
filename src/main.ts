@@ -141,7 +141,7 @@ async function startGuiInternalApi(ctx: AppContext): Promise<void> {
 }
 
 function needsBackendShutdown(ctx: AppContext): boolean {
-  return !ctx.shuttingDown && (ctx.siloManagers.size > 0 || ctx.embeddingServices.size > 0);
+  return !ctx.shuttingDown && (ctx.siloManagers.size > 0 || ctx.embeddingService !== null);
 }
 
 function quitAfterShutdownTimeout(): Promise<void> {

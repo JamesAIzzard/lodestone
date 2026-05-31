@@ -19,7 +19,7 @@ import type { InternalApi } from './internal-api';
 export interface AppContext {
   config: LodestoneConfig | null;
   siloManagers: Map<string, SiloManager>;
-  embeddingServices: Map<string, EmbeddingService>;
+  embeddingService: EmbeddingService | null;
   mainWindow: BrowserWindow | null;
   tray: Tray | null;
   isQuitting: boolean;
@@ -29,7 +29,7 @@ export interface AppContext {
   indexingQueue: IndexingQueue;
   internalApi: InternalApi | null;
 
-  getOrCreateEmbeddingService(model: string): EmbeddingService;
+  getOrCreateEmbeddingService(): EmbeddingService;
   getUserDataDir(): string;
   getModelCacheDir(): string;
   configPath(): string;
@@ -39,7 +39,7 @@ export function createAppContext(): AppContext {
   const ctx: AppContext = {
     config: null,
     siloManagers: new Map(),
-    embeddingServices: new Map(),
+    embeddingService: null,
     mainWindow: null,
     tray: null,
     isQuitting: false,
@@ -49,17 +49,11 @@ export function createAppContext(): AppContext {
     indexingQueue: new IndexingQueue(),
     internalApi: null,
 
-    getOrCreateEmbeddingService(model: string): EmbeddingService {
-      const modelId = model;
-      let service = ctx.embeddingServices.get(modelId);
-      if (!service) {
-        service = createEmbeddingService({
-          model: modelId,
-          modelCacheDir: ctx.getModelCacheDir(),
-        });
-        ctx.embeddingServices.set(modelId, service);
+    getOrCreateEmbeddingService(): EmbeddingService {
+      if (!ctx.embeddingService) {
+        ctx.embeddingService = createEmbeddingService({ modelCacheDir: ctx.getModelCacheDir() });
       }
-      return service;
+      return ctx.embeddingService;
     },
 
     getUserDataDir(): string {

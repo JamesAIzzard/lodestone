@@ -8,9 +8,9 @@ import {
   DialogFooter,
 } from './ui/dialog';
 import { Button } from './ui/button';
-import { FolderOpen, Plus, X, HardDrive, Link, AlertTriangle, DatabaseZap } from 'lucide-react';
+import { FolderOpen, Plus, X, HardDrive, DatabaseZap } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { modelIdFromDisplay, toSlug, toModelSlug } from '@/lib/format';
+import { toSlug } from '@/lib/format';
 import ExtensionPicker from './ExtensionPicker';
 import SiloAppearancePicker from './SiloAppearancePicker';
 import {
@@ -23,8 +23,8 @@ import {
 } from '../../shared/silo-appearance';
 import type { StoredSiloConfigResponse } from '../../shared/electron-api';
 
-const NEW_STEPS = ['Mode', 'Name', 'Directories', 'Extensions', 'Model', 'Storage'] as const;
-const EXISTING_STEPS = ['Mode', 'Storage', 'Name', 'Directories', 'Extensions', 'Model'] as const;
+const NEW_STEPS = ['Mode', 'Name', 'Directories', 'Extensions', 'Storage'] as const;
+const EXISTING_STEPS = ['Mode', 'Storage', 'Name', 'Directories', 'Extensions'] as const;
 type Step = (typeof NEW_STEPS)[number] | (typeof EXISTING_STEPS)[number];
 
 interface AddSiloModalProps {
@@ -42,9 +42,6 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   const defaultExtensionsRef = useRef<string[]>(['.md', '.py']);
   const [extensions, setExtensions] = useState<string[]>(['.md', '.py']);
   const [dbPath, setDbPath] = useState('');
-  const [model, setModel] = useState('snowflake-arctic-embed-xs');
-  const [availableModels, setAvailableModels] = useState<string[]>(['snowflake-arctic-embed-xs']);
-  const [modelPathSafeIds, setModelPathSafeIds] = useState<Record<string, string>>({});
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,7 +51,6 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
 
   // "Connect existing" state
   const [originalDirectories, setOriginalDirectories] = useState<string[]>([]);
-  const [dbModel, setDbModel] = useState<string | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
 
   const steps = mode === 'existing' ? EXISTING_STEPS : NEW_STEPS;
@@ -62,15 +58,8 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   const isFirst = stepIndex === 0;
   const isLast = stepIndex === steps.length - 1;
 
-  // Fetch available models, defaults and auto-assign colour on mount
+  // Fetch defaults and auto-assign colour on mount
   useEffect(() => {
-    window.electronAPI?.getServerStatus().then((status) => {
-      if (status.availableModels.length > 0) {
-        setAvailableModels(status.availableModels);
-      }
-      setModel(status.defaultModel);
-      setModelPathSafeIds(status.modelPathSafeIds ?? {});
-    });
     window.electronAPI?.getDefaults().then((defaults) => {
       defaultExtensionsRef.current = defaults.indexedFileExtensions;
       setExtensions(defaults.indexedFileExtensions);
@@ -81,14 +70,13 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
     });
   }, []);
 
-  // Auto-generate the index database path when name or model changes.
+  // Auto-generate the index database path when name changes.
   useEffect(() => {
     if (name.trim() && mode === 'new') {
       const slug = toSlug(name);
-      const modelSlug = modelPathSafeIds[model] ?? toModelSlug(model);
-      setDbPath(`silos/${slug}_${modelSlug}.db`);
+      setDbPath(`silos/${slug}.db`);
     }
-  }, [name, model, mode, modelPathSafeIds]);
+  }, [name, mode]);
 
   function reset() {
     setStepIndex(0);
@@ -98,11 +86,9 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
     setDirectories([]);
     setExtensions(defaultExtensionsRef.current);
     setDbPath('');
-    setModel('snowflake-arctic-embed-xs');
     setError(null);
     setCreating(false);
     setOriginalDirectories([]);
-    setDbModel(null);
     setConfigLoaded(false);
     setSiloColor(autoAssignColor(0));
     setSiloIcon(DEFAULT_SILO_ICON);
@@ -125,8 +111,6 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
         return extensions.length > 0;
       case 'Storage':
         return dbPath.trim().length > 0;
-      case 'Model':
-        return true;
     }
   }
 
@@ -140,7 +124,6 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
           indexedDirectories: directories,
           indexedFileExtensions: extensions,
           indexDbPath: dbPath.trim(),
-          embeddingModelKey: model,
           contentDescription: description.trim() || undefined,
           accentColor: siloColor,
           iconName: siloIcon,
@@ -188,21 +171,11 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
       setDescription(result.config.contentDescription ?? '');
       setExtensions(result.config.indexedFileExtensions ?? defaultExtensionsRef.current);
       setOriginalDirectories(result.config.indexedDirectories ?? []);
-      if (result.config.embeddingModelKey) setModel(result.config.embeddingModelKey);
       if (result.config.accentColor) setSiloColor(validateSiloColor(result.config.accentColor));
       if (result.config.iconName) setSiloIcon(validateSiloIcon(result.config.iconName));
       setConfigLoaded(true);
-    } else if (result?.meta) {
-      // Legacy DB without config blob — pre-fill model from meta
-      setModel(result.meta.model);
-      setConfigLoaded(false);
     } else {
       setConfigLoaded(false);
-    }
-
-    // Always store the DB's built-in model for mismatch warnings
-    if (result?.meta) {
-      setDbModel(result.meta.model);
     }
   }
 
@@ -379,50 +352,6 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
             </div>
           )}
 
-          {/* ── Model ────────────────────────────────────────────── */}
-          {step === 'Model' && (
-            <div>
-              <label className="mb-2 block text-sm text-muted-foreground">Embedding model</label>
-              {mode === 'existing' && dbModel && modelIdFromDisplay(model) !== dbModel && (
-                <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-400">
-                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                  <span>
-                    The index was built with <strong>{dbModel}</strong>. Choosing a different model
-                    will require a full rebuild.
-                  </span>
-                </div>
-              )}
-              <div className="flex flex-col gap-1.5">
-                {availableModels.map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setModel(m)}
-                    className={cn(
-                      'flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors text-left',
-                      m === model
-                        ? 'border-primary bg-primary/10 text-foreground'
-                        : 'border-border text-muted-foreground hover:border-foreground/20',
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        'h-2 w-2 rounded-full border',
-                        m === model ? 'border-primary bg-primary' : 'border-muted-foreground/40',
-                      )}
-                    />
-                    {m}
-                    {modelIdFromDisplay(m) === dbModel && mode === 'existing' && (
-                      <span className="text-[10px] text-muted-foreground">(stored in DB)</span>
-                    )}
-                    {m.startsWith('snowflake-arctic-embed') && mode !== 'existing' && (
-                      <span className="text-[10px] text-muted-foreground">(default)</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* ── Storage ──────────────────────────────────────────── */}
           {step === 'Storage' && mode === 'new' && (
             <div>
@@ -442,8 +371,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
                   className="shrink-0"
                   onClick={async () => {
                     const slug = toSlug(name) || 'silo';
-                    const modelSlug = modelPathSafeIds[model] ?? toModelSlug(model);
-                    const chosen = await window.electronAPI?.saveDbFile(`${slug}_${modelSlug}.db`);
+                    const chosen = await window.electronAPI?.saveDbFile(`${slug}.db`);
                     if (chosen) setDbPath(chosen);
                   }}
                 >
@@ -481,13 +409,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
                   Settings loaded from database. Review and adjust in the following steps.
                 </p>
               )}
-              {dbPath && !configLoaded && dbModel && (
-                <p className="mt-2 text-xs text-muted-foreground/60">
-                  Database found (model: {dbModel}), but no stored settings. You'll configure them
-                  manually.
-                </p>
-              )}
-              {dbPath && !configLoaded && !dbModel && (
+              {dbPath && !configLoaded && (
                 <p className="mt-2 text-xs text-muted-foreground/60">
                   Database opened. Configure settings in the following steps.
                 </p>

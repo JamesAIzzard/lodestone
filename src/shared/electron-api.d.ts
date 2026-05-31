@@ -18,7 +18,6 @@ export interface StoredSiloConfigResponse {
     indexedFileExtensions: string[];
     ignoredFolderPatterns: string[];
     ignoredFilePatterns: string[];
-    embeddingModelKey: string;
     accentColor?: string;
     iconName?: string;
   } | null;
@@ -58,7 +57,6 @@ export interface ElectronAPI {
     indexedDirectories: string[];
     indexedFileExtensions: string[];
     indexDbPath: string;
-    embeddingModelKey: string;
     contentDescription?: string;
     accentColor?: string;
     iconName?: string;
@@ -74,7 +72,6 @@ export interface ElectronAPI {
     name: string,
     updates: {
       contentDescription?: string;
-      embeddingModelKey?: string;
       ignoredFolderPatterns?: string[];
       ignoredFilePatterns?: string[];
       indexedFileExtensions?: string[];

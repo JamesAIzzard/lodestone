@@ -23,7 +23,6 @@ const DEFAULT_CONFIG: ResolvedSiloConfig = {
   indexedFileExtensions: ['.md'],
   ignoredFolderPatterns: [],
   ignoredFilePatterns: [],
-  embeddingModelKey: 'stub-model',
   fileChangeDelaySeconds: 1,
   maxActivityLogEntries: 200,
   isStopped: false,
@@ -125,12 +124,6 @@ describe('SiloConfigStore — apply (in-memory mutation)', () => {
     expect(store.current.accentColor).toBe(DEFAULT_CONFIG.accentColor);
   });
 
-  it('apply({ model }) updates the model verbatim — no validation', () => {
-    const { store } = makeStore();
-    store.apply({ embeddingModelKey: 'new-model' });
-    expect(store.current.embeddingModelKey).toBe('new-model');
-  });
-
   it('apply({ color }) accepts a valid palette colour', () => {
     const { store } = makeStore();
     store.apply({ accentColor: 'emerald' });
@@ -221,7 +214,6 @@ describe('SiloConfigStore — persist', () => {
       indexedFileExtensions: DEFAULT_CONFIG.indexedFileExtensions,
       ignoredFolderPatterns: DEFAULT_CONFIG.ignoredFolderPatterns,
       ignoredFilePatterns: DEFAULT_CONFIG.ignoredFilePatterns,
-      embeddingModelKey: DEFAULT_CONFIG.embeddingModelKey,
       accentColor: 'emerald',
       iconName: 'book-open',
     });

@@ -121,8 +121,7 @@ function normalizeStoredConfig(raw: unknown): StoredSiloConfig | null {
   const name = pickString('name');
   const indexedDirectories = pickStringArray('indexedDirectories', 'directories');
   const indexedFileExtensions = pickStringArray('indexedFileExtensions', 'extensions');
-  const embeddingModelKey = pickString('embeddingModelKey', 'model');
-  if (!name || !indexedDirectories || !indexedFileExtensions || !embeddingModelKey) return null;
+  if (!name || !indexedDirectories || !indexedFileExtensions) return null;
 
   return {
     name,
@@ -131,7 +130,6 @@ function normalizeStoredConfig(raw: unknown): StoredSiloConfig | null {
     indexedFileExtensions,
     ignoredFolderPatterns: pickStringArray('ignoredFolderPatterns', 'ignore') ?? [],
     ignoredFilePatterns: pickStringArray('ignoredFilePatterns', 'ignoreFiles') ?? [],
-    embeddingModelKey,
     accentColor: pickString('accentColor', 'color'),
     iconName: pickString('iconName', 'icon'),
   };

@@ -74,7 +74,6 @@ export interface StoredSiloConfig {
   indexedFileExtensions: string[];
   ignoredFolderPatterns: string[];
   ignoredFilePatterns: string[];
-  embeddingModelKey: string;
   accentColor?: string;
   iconName?: string;
 }

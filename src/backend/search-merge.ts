@@ -11,22 +11,6 @@ import type { SearchHint, ChunkHint } from '../shared/types';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 import type { SearchParams } from '../shared/types';
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-/** Group silo managers by their embedding model so each model is embedded once. */
-function groupByModel(
-  managers: Iterable<[string, SiloManager]>,
-): Map<string, Array<[string, SiloManager]>> {
-  const byModel = new Map<string, Array<[string, SiloManager]>>();
-  for (const [name, manager] of managers) {
-    const model = manager.getConfig().embeddingModelKey;
-    const group = byModel.get(model) ?? [];
-    if (!byModel.has(model)) byModel.set(model, group);
-    group.push([name, manager]);
-  }
-  return byModel;
-}
-
 // ── Search Pipeline ─────────────────────────────────────────────────────────
 
 /** Per-file result from the decaying-sum pipeline with silo name attached. */
@@ -43,45 +27,40 @@ export interface SiloSearchResult {
 /**
  * Run a search across multiple silos using the decaying-sum pipeline.
  *
- * Groups silos by embedding model so the query is only embedded once per model.
- * For 'bm25' and 'regex' modes, embedding is skipped entirely.
+ * Lodestone uses a single embedding model, so the query is embedded once and
+ * the vector is reused across every silo. For 'bm25', 'filepath', and 'regex'
+ * modes, embedding is skipped entirely.
  */
 export async function dispatchSearch(
   params: SearchParams,
   managers: Iterable<[string, SiloManager]>,
-  resolveService: (model: string) => EmbeddingService | null,
+  embeddingService: EmbeddingService | null,
 ): Promise<SiloSearchResult[]> {
   const skipEmbedding = params.mode === 'bm25' || params.mode === 'filepath' || params.mode === 'regex';
-  const byModel = groupByModel(managers);
+
+  let queryVector: number[] = [];
+  if (!skipEmbedding) {
+    if (!embeddingService) return [];
+    queryVector = await embeddingService.embed(params.query);
+  }
 
   const raw: SiloSearchResult[] = [];
-  for (const [model, group] of byModel) {
-    let queryVector: number[];
-    if (skipEmbedding) {
-      queryVector = [];
-    } else {
-      const service = resolveService(model);
-      if (!service) continue;
-      queryVector = await service.embed(params.query);
-    }
-
-    for (const [name, manager] of group) {
-      try {
-        const siloResults = await manager.search(queryVector, params);
-        for (const r of siloResults) {
-          raw.push({
-            filePath: r.filePath,
-            siloName: name,
-            score: r.score,
-            scoreLabel: r.scoreLabel,
-            signals: r.signals,
-            hint: r.hint,
-            chunks: r.chunks,
-          });
-        }
-      } catch (err) {
-        console.error(`[search] Error in silo "${name}":`, err);
+  for (const [name, manager] of managers) {
+    try {
+      const siloResults = await manager.search(queryVector, params);
+      for (const r of siloResults) {
+        raw.push({
+          filePath: r.filePath,
+          siloName: name,
+          score: r.score,
+          scoreLabel: r.scoreLabel,
+          signals: r.signals,
+          hint: r.hint,
+          chunks: r.chunks,
+        });
       }
+    } catch (err) {
+      console.error(`[search] Error in silo "${name}":`, err);
     }
   }
 

@@ -10,7 +10,6 @@ import {
 } from '@/components/ui/dialog';
 import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
 import ExtensionPicker from '@/components/ExtensionPicker';
-import type { ServerStatus } from '../../shared/types';
 import type {
   McpClientConfigureResult,
   McpClientId,
@@ -38,8 +37,6 @@ const MCP_CLIENTS: Array<{
 ];
 
 export default function SettingsView() {
-  const [status, setStatus] = useState<ServerStatus | null>(null);
-  const [selectedModel, setSelectedModel] = useState('');
   const [extensions, setExtensions] = useState<string[]>([]);
   const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
   const [fileIgnore, setFileIgnore] = useState<string[]>([]);
@@ -58,10 +55,6 @@ export default function SettingsView() {
   const [appVersion, setAppVersion] = useState<string | null>(null);
 
   useEffect(() => {
-    window.electronAPI?.getServerStatus().then((s) => {
-      setStatus(s);
-      setSelectedModel(s.defaultModel);
-    });
     window.electronAPI?.getDefaults().then((d) => {
       setExtensions(d.indexedFileExtensions);
       setFolderIgnore(d.ignoredFolderPatterns);
@@ -150,15 +143,6 @@ export default function SettingsView() {
     if (dataDir) window.electronAPI?.openPath(dataDir);
   }
 
-  // Build model list from server status
-  const availableModels: string[] = [];
-  if (status) {
-    availableModels.push(...status.availableModels);
-  }
-  if (availableModels.length === 0) {
-    availableModels.push('snowflake-arctic-embed-xs');
-  }
-
   const selectedMcpClientInfo =
     MCP_CLIENTS.find((client) => client.id === selectedMcpClient) ?? MCP_CLIENTS[0];
   const selectedMcpClientStatus = mcpClientStatuses[selectedMcpClient] ?? null;
@@ -168,24 +152,6 @@ export default function SettingsView() {
       <h1 className="mb-8 text-lg font-semibold text-foreground">Settings</h1>
 
       <div className="flex flex-col gap-10 max-w-2xl">
-        {/* ── Default Embedding Model ──────────────────────────── */}
-        <Section
-          title="Default Embedding Model"
-          description="Applies to newly created silos. Existing silos are not affected."
-        >
-          <select
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            {availableModels.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </Section>
-
         {/* ── Default File Extensions ──────────────────────────── */}
         <Section
           title="Default File Extensions"

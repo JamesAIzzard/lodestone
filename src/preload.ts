@@ -18,7 +18,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     indexedDirectories: string[];
     indexedFileExtensions: string[];
     indexDbPath: string;
-    embeddingModelKey: string;
     contentDescription?: string;
     accentColor?: string;
     iconName?: string;
@@ -34,7 +33,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     name: string,
     updates: {
       contentDescription?: string;
-      embeddingModelKey?: string;
       ignoredFolderPatterns?: string[];
       ignoredFilePatterns?: string[];
       indexedFileExtensions?: string[];

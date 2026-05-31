@@ -11,7 +11,6 @@ export interface SiloConfig {
   hasIgnoredFolderPatternsOverride: boolean;
   hasIgnoredFilePatternsOverride: boolean;
   hasIndexedFileExtensionsOverride: boolean;
-  embeddingModelOverride: string | null;
   indexDbPath: string;
   contentDescription: string;
   accentColor: SiloColor;
@@ -47,8 +46,6 @@ export interface SiloStatus {
   modelMismatch?: boolean;
   /** Absolute path to the silo's SQLite database file */
   resolvedDbPath: string;
-  /** The effective embedding model for this silo (global default or per-silo override) */
-  resolvedEmbeddingModelKey: string;
 }
 
 // ── Directory Scoring Primitives ─────────────────────────────────────────────
@@ -223,9 +220,5 @@ export interface DefaultSettings {
 
 export interface ServerStatus {
   uptimeSeconds: number;
-  availableModels: string[];
-  defaultModel: string;
   totalIndexedFiles: number;
-  /** Maps model registry key → path-safe ID for use in auto-generated filenames */
-  modelPathSafeIds: Record<string, string>;
 }

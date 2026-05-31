@@ -310,7 +310,6 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
           lines.push(`Files: ${silo.indexedFileCount.toLocaleString()}`);
           lines.push(`Chunks: ${silo.chunkCount.toLocaleString()}`);
           lines.push(`Size: ${formatBytes(silo.databaseSizeBytes)}`);
-          lines.push(`Model: ${silo.resolvedEmbeddingModelKey}`);
           if (silo.modelMismatch) lines.push('Warning: Model mismatch \u2014 rebuild required');
           lines.push(`Directories: ${silo.config.indexedDirectories.join(', ')}`);
           lines.push('');

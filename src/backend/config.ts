@@ -1,7 +1,6 @@
 import { parse, stringify } from 'smol-toml';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_MODEL } from './model-registry';
 import {
   validateSiloColor,
   validateSiloIcon,
@@ -32,7 +31,6 @@ export interface SiloTomlConfig {
   indexed_file_extensions?: string[];
   ignored_folder_patterns?: string[];
   ignored_file_patterns?: string[];
-  embedding_model_key?: string;
   is_stopped?: boolean;
   content_description?: string;
   accent_color?: string;
@@ -41,7 +39,6 @@ export interface SiloTomlConfig {
 
 export interface LodestoneConfig {
   server_name: string;
-  default_model_key: string;
   defaults: DefaultsConfig;
   silos: Record<string, SiloTomlConfig>;
 }
@@ -53,7 +50,6 @@ export interface ResolvedSiloConfig {
   indexedFileExtensions: string[];
   ignoredFolderPatterns: string[];
   ignoredFilePatterns: string[];
-  embeddingModelKey: string;
   fileChangeDelaySeconds: number;
   maxActivityLogEntries: number;
   isStopped: boolean;
@@ -64,7 +60,6 @@ export interface ResolvedSiloConfig {
 
 const DEFAULT_CONFIG: LodestoneConfig = {
   server_name: 'lodestone',
-  default_model_key: DEFAULT_MODEL,
   defaults: {
     indexed_file_extensions: DEFAULT_INDEX_EXTENSIONS,
     ignored_folder_patterns: DEFAULT_IGNORE_DIRS,
@@ -83,7 +78,6 @@ export function loadLodestoneConfig(configPath: string): LodestoneConfig {
 
   return {
     server_name: stringField(parsed.server_name, DEFAULT_CONFIG.server_name),
-    default_model_key: stringField(parsed.default_model_key, DEFAULT_CONFIG.default_model_key),
     defaults: parseDefaultsConfig(parsed.defaults),
     silos: parseSilosConfig(parsed.silos),
   };
@@ -119,7 +113,6 @@ export function resolveSiloRuntimeConfig(
     indexedFileExtensions: silo.indexed_file_extensions ?? config.defaults.indexed_file_extensions,
     ignoredFolderPatterns: silo.ignored_folder_patterns ?? config.defaults.ignored_folder_patterns,
     ignoredFilePatterns: silo.ignored_file_patterns ?? config.defaults.ignored_file_patterns,
-    embeddingModelKey: silo.embedding_model_key ?? config.default_model_key,
     fileChangeDelaySeconds: config.defaults.file_change_delay_seconds,
     maxActivityLogEntries: config.defaults.max_activity_log_entries,
     isStopped: silo.is_stopped === true,
@@ -193,7 +186,6 @@ function parseSiloTomlConfig(name: string, silo: TomlObject): SiloTomlConfig {
     indexed_file_extensions: optionalStringArrayField(silo.indexed_file_extensions),
     ignored_folder_patterns: optionalStringArrayField(silo.ignored_folder_patterns),
     ignored_file_patterns: optionalStringArrayField(silo.ignored_file_patterns),
-    embedding_model_key: optionalStringField(silo.embedding_model_key),
     is_stopped: silo.is_stopped === true ? true : undefined,
     content_description: optionalStringField(silo.content_description),
     accent_color: optionalStringField(silo.accent_color),

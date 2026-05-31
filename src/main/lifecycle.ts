@@ -65,7 +65,7 @@ export function registerManager(
   siloToml: import('../backend/config').SiloTomlConfig,
 ): SiloManager {
   const resolved = resolveSiloRuntimeConfig(name, siloToml, ctx.config!);
-  const embeddingService = ctx.getOrCreateEmbeddingService(resolved.embeddingModelKey);
+  const embeddingService = ctx.getOrCreateEmbeddingService();
   const manager = new SiloManager(
     resolved,
     embeddingService,
@@ -154,13 +154,13 @@ export async function shutdownBackend(ctx: AppContext): Promise<void> {
   }
   ctx.siloManagers.clear();
 
-  for (const [modelId, service] of ctx.embeddingServices) {
+  if (ctx.embeddingService) {
     try {
-      await service.dispose();
-      console.log(`[main] Embedding service "${modelId}" disposed`);
+      await ctx.embeddingService.dispose();
+      console.log('[main] Embedding service disposed');
     } catch (err) {
-      console.error(`[main] Error disposing embedding service "${modelId}":`, err);
+      console.error('[main] Error disposing embedding service:', err);
     }
+    ctx.embeddingService = null;
   }
-  ctx.embeddingServices.clear();
 }

@@ -2,9 +2,8 @@
  * Message protocol for communication between the main thread
  * (WorkerEmbeddingProxy) and the embedding worker thread.
  *
- * The `modelId` field added to InitRequest allows the main process to
- * specify which built-in model the worker should load. This maps to a
- * key in MODEL_REGISTRY (e.g. 'snowflake-arctic-embed-xs').
+ * Lodestone hosts a single model, so the worker holds one service. The
+ * `cacheDir` on InitRequest is where Transformers.js stores downloaded weights.
  */
 
 // ── Requests (main → worker) ────────────────────────────────────────────────
@@ -12,32 +11,25 @@
 export interface InitRequest {
   id: number;
   type: 'init';
+  /** Directory where Transformers.js caches downloaded model files. */
   cacheDir: string;
-  /** Model identifier from the registry (e.g. 'snowflake-arctic-embed-xs') */
-  modelId: string;
 }
 
 export interface EmbedRequest {
   id: number;
   type: 'embed';
   text: string;
-  /** Route to the correct model when the worker hosts multiple models */
-  modelId: string;
 }
 
 export interface EmbedBatchRequest {
   id: number;
   type: 'embedBatch';
   texts: string[];
-  /** Route to the correct model when the worker hosts multiple models */
-  modelId: string;
 }
 
 export interface DisposeRequest {
   id: number;
   type: 'dispose';
-  /** If set, dispose only this model; otherwise dispose all */
-  modelId?: string;
 }
 
 export type WorkerRequest = InitRequest | EmbedRequest | EmbedBatchRequest | DisposeRequest;

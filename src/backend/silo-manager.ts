@@ -41,6 +41,7 @@ import { SiloConfigStore } from './silo/silo-config-store';
 import { SiloLifecycle } from './silo/silo-lifecycle';
 import { WatcherCoordinator, type ReconcileProgressSnapshot } from './silo/watcher-coordinator';
 import { DirectoryExplorer } from './silo/directory-explorer';
+import { EMBEDDING_MODEL } from './embedding-model';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -173,32 +174,6 @@ export class SiloManager {
   /** Register a listener for watcher state transitions. Only one listener is supported. */
   onStateChange(listener: () => void): void {
     this.stateChangeListener = listener;
-  }
-
-  /**
-   * Update the configured embedding model key for this silo and re-check for mismatch.
-   *
-   * This does NOT restart the silo or change the running embedding service —
-   * it just updates the config so that:
-   *  1. silos:list returns the new embedding model key
-   *  2. modelMismatch is set if the new key differs from what built the index
-   *
-   * The user must rebuild the index for the new model to take effect.
-   */
-  async updateEmbeddingModel(embeddingModelKey: string): Promise<void> {
-    this.configStore.apply({ embeddingModelKey });
-
-    // Re-check mismatch against stored meta
-    if (this.dbOpen) {
-      const meta = await this.store.loadMeta(this.siloId);
-      if (meta) {
-        this.modelMismatch = meta.model !== embeddingModelKey;
-      } else {
-        // No meta but DB exists — legacy or corrupt, flag mismatch
-        this.modelMismatch = true;
-      }
-    }
-    await this.configStore.persist();
   }
 
   async updateContentDescription(contentDescription: string): Promise<void> {
@@ -373,17 +348,17 @@ export class SiloManager {
   private async checkAndPersistMeta(): Promise<void> {
     const meta = await this.store.loadMeta(this.siloId);
     if (meta) {
-      if (meta.model !== this.config.embeddingModelKey) {
+      if (meta.model !== EMBEDDING_MODEL.key) {
         this.modelMismatch = true;
         console.warn(
-          `[silo:${this.config.name}] Model mismatch: index built with "${meta.model}" but config uses "${this.config.embeddingModelKey}". Rebuild required.`,
+          `[silo:${this.config.name}] Model mismatch: index built with "${meta.model}" but app uses "${EMBEDDING_MODEL.key}". Rebuild required.`,
         );
       }
     } else {
       // First run or fresh DB — write meta now
       await this.store.saveMeta(
         this.siloId,
-        this.config.embeddingModelKey,
+        EMBEDDING_MODEL.key,
         this.embeddingService!.dimensions,
       );
       this.modelMismatch = false;

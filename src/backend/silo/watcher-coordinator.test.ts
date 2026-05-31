@@ -125,7 +125,6 @@ async function makeHarness(
     indexedFileExtensions: ['.md'],
     ignoredFolderPatterns: [],
     ignoredFilePatterns: [],
-    embeddingModelKey: 'stub-model',
     fileChangeDelaySeconds: 1,
     maxActivityLogEntries: 100,
     isStopped: false,

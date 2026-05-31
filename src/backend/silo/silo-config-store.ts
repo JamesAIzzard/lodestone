@@ -41,7 +41,6 @@ import type { StoredSiloConfig } from '../store/types';
 export interface ConfigPatch {
   name?: string;
   contentDescription?: string;
-  embeddingModelKey?: string;
   accentColor?: string;
   iconName?: string;
   ignoredFolderPatterns?: string[];
@@ -80,7 +79,6 @@ export class SiloConfigStore {
     if (patch.name !== undefined) next.name = patch.name;
     if (patch.contentDescription !== undefined)
       next.contentDescription = patch.contentDescription;
-    if (patch.embeddingModelKey !== undefined) next.embeddingModelKey = patch.embeddingModelKey;
     if (patch.accentColor !== undefined) next.accentColor = validateSiloColor(patch.accentColor);
     if (patch.iconName !== undefined) next.iconName = validateSiloIcon(patch.iconName);
     if (patch.ignoredFolderPatterns !== undefined)
@@ -105,7 +103,6 @@ export class SiloConfigStore {
       indexedFileExtensions: this.cfg.indexedFileExtensions,
       ignoredFolderPatterns: this.cfg.ignoredFolderPatterns,
       ignoredFilePatterns: this.cfg.ignoredFilePatterns,
-      embeddingModelKey: this.cfg.embeddingModelKey,
       accentColor: this.cfg.accentColor,
       iconName: this.cfg.iconName,
     };

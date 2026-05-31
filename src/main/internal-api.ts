@@ -252,11 +252,7 @@ export class InternalApi {
       return { results: [], warnings };
     }
 
-    const raw = await dispatchSearch(
-      searchParams,
-      searchable,
-      (model) => this.ctx.embeddingServices.get(model) ?? null,
-    );
+    const raw = await dispatchSearch(searchParams, searchable, this.ctx.embeddingService);
 
     const merged = mergeSearchResults(raw, maxResults);
 
@@ -428,10 +424,6 @@ export class InternalApi {
           hasIgnoredFolderPatternsOverride: siloToml?.ignored_folder_patterns !== undefined,
           hasIgnoredFilePatternsOverride: siloToml?.ignored_file_patterns !== undefined,
           hasIndexedFileExtensionsOverride: siloToml?.indexed_file_extensions !== undefined,
-          embeddingModelOverride:
-            cfg.embeddingModelKey === (this.ctx.config?.default_model_key ?? '')
-              ? null
-              : cfg.embeddingModelKey,
           indexDbPath: cfg.indexDbPath,
           contentDescription: cfg.contentDescription,
           accentColor: cfg.accentColor,
@@ -446,7 +438,6 @@ export class InternalApi {
         reconcileProgress: status.reconcileProgress,
         modelMismatch: status.modelMismatch,
         resolvedDbPath: status.resolvedDbPath,
-        resolvedEmbeddingModelKey: cfg.embeddingModelKey,
       });
     }
     return { silos: statuses };

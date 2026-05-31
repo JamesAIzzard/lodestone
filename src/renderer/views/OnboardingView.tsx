@@ -13,14 +13,10 @@ export default function OnboardingView() {
   const [stepIndex, setStepIndex] = useState(0);
   const step = STEPS[stepIndex];
 
-  const [serverModels, setServerModels] = useState<string[]>([]);
-  const [defaultModel, setDefaultModel] = useState('snowflake-arctic-embed-xs');
-
   // Step 1 state
   const [siloName, setSiloName] = useState('');
   const [directories, setDirectories] = useState<string[]>([]);
   const [extensions, setExtensions] = useState<string[]>(['.md', '.py']);
-  const [model, setModel] = useState('');
 
   // Step 2 state
   const [creating, setCreating] = useState(false);
@@ -31,25 +27,12 @@ export default function OnboardingView() {
   );
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Load server model defaults and default extensions on mount
+  // Load default extensions on mount
   useEffect(() => {
-    window.electronAPI?.getServerStatus().then((status) => {
-      if (!status) return;
-      setServerModels(status.availableModels);
-      setDefaultModel(status.defaultModel);
-      setModel(status.defaultModel);
-    });
     window.electronAPI?.getDefaults().then((defaults) => {
       setExtensions(defaults.indexedFileExtensions);
     });
   }, []);
-
-  // Set model to default once loaded
-  useEffect(() => {
-    if (defaultModel && !model) {
-      setModel(defaultModel);
-    }
-  }, [defaultModel, model]);
 
   // Poll indexing progress in step 3
   useEffect(() => {
@@ -106,7 +89,6 @@ export default function OnboardingView() {
         indexedDirectories: directories,
         indexedFileExtensions: extensions,
         indexDbPath: `${slug}.db`,
-        embeddingModelKey: model || defaultModel,
       });
 
       setCreating(false);
@@ -216,26 +198,6 @@ export default function OnboardingView() {
                 File Extensions
               </label>
               <ExtensionPicker extensions={extensions} onChange={setExtensions} />
-
-              {/* Model */}
-              <label className="mt-4 mb-1.5 block text-xs text-muted-foreground">
-                Embedding Model
-              </label>
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                {serverModels.length > 0 ? (
-                  serverModels.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))
-                ) : (
-                  <option value={defaultModel}>{defaultModel}</option>
-                )}
-              </select>
             </div>
           )}
 

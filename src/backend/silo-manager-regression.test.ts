@@ -29,6 +29,7 @@ import { LocalStoreFacade, createTempDirStoreFacade } from './test-helpers/local
 import { FakeSiloWatcher } from './test-helpers/fake-watcher';
 import { createStubEmbedding } from './test-helpers/stub-embedding';
 import { makeStoredKey } from './store/paths';
+import { EMBEDDING_MODEL } from './embedding-model';
 
 // ── Test harness ─────────────────────────────────────────────────────────────
 
@@ -94,7 +95,6 @@ function makeTestSilo(opts: TestSiloOptions = {}): TestSilo {
     indexedFileExtensions: ['.md'],
     ignoredFolderPatterns: [],
     ignoredFilePatterns: [],
-    embeddingModelKey: 'stub-model',
     fileChangeDelaySeconds: 1,
     maxActivityLogEntries: 200,
     isStopped: false,
@@ -140,10 +140,10 @@ describe('SiloManager — start lifecycle', () => {
     expect(status.watcherState).toBe('ready');
     expect(t.store.openSiloIds()).toContain('test-silo');
 
-    // Meta was written on first run with the configured model + dimensions.
+    // Meta was written on first run with the bundled model + dimensions.
     const meta = await t.store.loadMeta('test-silo');
     expect(meta).not.toBeNull();
-    expect(meta!.model).toBe('stub-model');
+    expect(meta!.model).toBe(EMBEDDING_MODEL.key);
     expect(meta!.dimensions).toBe(4);
 
     // Reconcile indexed the one .md file.
@@ -157,33 +157,21 @@ describe('SiloManager — start lifecycle', () => {
     await t.manager.stop();
   });
 
-  it('detects model mismatch when meta records a different model than config', async () => {
-    // First run: write meta with model A
-    const a = makeTestSilo({ configOverrides: { embeddingModelKey: 'model-a' } });
-    await a.manager.start();
-    expect(a.manager.hasModelMismatch()).toBe(false);
-    await a.manager.stop();
+  it('flags model mismatch when the stored index was built with a different model', async () => {
+    // Simulate an index built by an older app version: open the DB directly
+    // and stamp a model key into meta that differs from the bundled model.
+    const t = makeTestSilo();
+    await t.store.open('test-silo', t.indexDbPath, 4);
+    await t.store.saveMeta('test-silo', 'some-old-model', 4);
+    await t.store.close('test-silo');
 
-    // Second run against the same on-disk DB but a different configured model.
-    // We reuse the dbPath but build a fresh facade + manager to simulate
-    // an app restart with mutated config.
-    const freshStore = createTempDirStoreFacade();
-    const watcher = new FakeSiloWatcher();
-    const config: ResolvedSiloConfig = { ...a.config, embeddingModelKey: 'model-b' };
-    const manager = new SiloManager(
-      config,
-      createStubEmbedding({ dimensions: 4 }),
-      a.workDir,
-      new IndexingQueue(),
-      freshStore,
-      () => watcher,
-    );
-
-    await manager.start();
-    expect(manager.hasModelMismatch()).toBe(true);
-    const status = await manager.getStatus();
+    // Starting a manager against that DB must detect the mismatch against
+    // EMBEDDING_MODEL.key so cross-silo search can exclude it.
+    await t.manager.start();
+    expect(t.manager.hasModelMismatch()).toBe(true);
+    const status = await t.manager.getStatus();
     expect(status.modelMismatch).toBe(true);
-    await manager.stop();
+    await t.manager.stop();
   });
 });
 
@@ -237,7 +225,7 @@ describe('SiloManager — rebuild', () => {
 
     const meta = await t.store.loadMeta('test-silo');
     expect(meta).not.toBeNull();
-    expect(meta!.model).toBe('stub-model');
+    expect(meta!.model).toBe(EMBEDDING_MODEL.key);
 
     await t.manager.stop();
   });

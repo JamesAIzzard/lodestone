@@ -5,13 +5,12 @@
  * one model. The model files are vendored under resources/models and loaded
  * from that local directory at runtime.
  *
- * The `key` is written into each index's `meta` table and is what mismatch
- * detection compares against. Changing the model means changing `key`, which
- * invalidates every existing index.
+ * The `key` is written into each index's `meta` table. Changing the model
+ * means changing `key`, which invalidates every existing index.
  */
 
 export interface EmbeddingModel {
-  /** Stable identifier written to index metadata and compared for mismatch. */
+  /** Stable identifier written to index metadata and checked by peekIndexState. */
   key: string;
   /** Human-readable name for display. */
   displayName: string;

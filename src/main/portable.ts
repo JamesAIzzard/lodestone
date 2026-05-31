@@ -129,7 +129,7 @@ export async function runFirstRunSetup(): Promise<string> {
     message: 'Choose where Lodestone stores its data',
     detail:
       `Lodestone needs a folder to store its configuration, search databases, ` +
-      `and model cache.\n\n` +
+      `and local app data.\n\n` +
       `Next to this app (portable):\n  ${suggested}\n\n` +
       `System folder:\n  ${appData}\n\n` +
       `Choose "Next to app" if you're running without admin rights or want to ` +

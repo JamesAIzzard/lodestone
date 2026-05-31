@@ -12,6 +12,7 @@
  */
 
 import type { EmbeddingService } from '../embedding';
+import { EMBEDDING_MODEL } from '../embedding-model';
 
 export interface StubEmbeddingOptions {
   dimensions?: number;
@@ -21,7 +22,7 @@ export interface StubEmbeddingOptions {
 }
 
 export function createStubEmbedding(opts: StubEmbeddingOptions = {}): EmbeddingService {
-  const dimensions = opts.dimensions ?? 4;
+  const dimensions = opts.dimensions ?? EMBEDDING_MODEL.dimensions;
   const norm = 1 / Math.sqrt(dimensions);
   const unit = Array.from({ length: dimensions }, () => norm);
 

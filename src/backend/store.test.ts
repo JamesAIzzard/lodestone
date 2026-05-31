@@ -18,6 +18,7 @@ import type { ChunkRecord } from './pipeline-types';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { EMBEDDING_MODEL } from './embedding-model';
 
 const DIMS = 4; // Use tiny vectors for tests
 
@@ -268,8 +269,12 @@ describe('store (V2)', () => {
     expect(second.createdAt).toBe(first.createdAt);
   });
 
-  it('loadMeta returns null for empty database', () => {
-    expect(loadMeta(db)).toBeNull();
+  it('stamps identity metadata when the database is created', () => {
+    const meta = loadMeta(db);
+    expect(meta).not.toBeNull();
+    expect(meta!.model).toBe(EMBEDDING_MODEL.key);
+    expect(meta!.dimensions).toBe(DIMS);
+    expect(meta!.version).toBe(5);
   });
 
   // ── Database Properties ────────────────────────────────────────────────

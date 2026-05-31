@@ -67,7 +67,6 @@ export interface ElectronAPI {
   stopSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   wakeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   rescanSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
-  rebuildSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   updateSilo: (
     name: string,
     updates: {

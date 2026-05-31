@@ -28,7 +28,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopSilo: (name: string): Promise<unknown> => ipcRenderer.invoke('silos:stop', name),
   wakeSilo: (name: string): Promise<unknown> => ipcRenderer.invoke('silos:wake', name),
   rescanSilo: (name: string): Promise<unknown> => ipcRenderer.invoke('silos:rescan', name),
-  rebuildSilo: (name: string): Promise<unknown> => ipcRenderer.invoke('silos:rebuild', name),
   updateSilo: (
     name: string,
     updates: {

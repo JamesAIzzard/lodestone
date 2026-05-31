@@ -121,7 +121,6 @@ function registerSiloHandlers(ctx: AppContext): void {
         watcherState: status.watcherState,
         errorMessage: status.errorMessage,
         reconcileProgress: status.reconcileProgress,
-        modelMismatch: status.modelMismatch,
         resolvedDbPath: status.resolvedDbPath,
       });
     }
@@ -131,14 +130,14 @@ function registerSiloHandlers(ctx: AppContext): void {
   ipcMain.handle(
     'silos:search',
     async (_event, params: SearchParams, siloName?: string): Promise<SearchResult[]> => {
-      // Collect searchable managers — skip stopped and model-mismatched silos
+      // Collect searchable managers; stopped silos are skipped.
       const ready: [string, SiloManager][] = [];
       if (siloName) {
         const m = ctx.siloManagers.get(siloName);
-        if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([siloName, m]);
+        if (m && !m.isStopped) ready.push([siloName, m]);
       } else {
         for (const [name, m] of ctx.siloManagers) {
-          if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+          if (!m.isStopped) ready.push([name, m]);
         }
       }
 
@@ -174,14 +173,14 @@ function registerSiloHandlers(ctx: AppContext): void {
   ipcMain.handle(
     'silos:explore',
     async (_event, params: ExploreParams): Promise<DirectoryResult[]> => {
-      // Collect searchable managers — skip stopped and model-mismatched silos
+      // Collect searchable managers; stopped silos are skipped.
       const ready: [string, SiloManager][] = [];
       if (params.silo) {
         const m = ctx.siloManagers.get(params.silo);
-        if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([params.silo, m]);
+        if (m && !m.isStopped) ready.push([params.silo, m]);
       } else {
         for (const [name, m] of ctx.siloManagers) {
-          if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+          if (!m.isStopped) ready.push([name, m]);
         }
       }
 
@@ -323,21 +322,6 @@ function registerSiloHandlers(ctx: AppContext): void {
     // without deleting the DB. State updates via silos:changed events.
     manager.rescan().catch((err) => {
       console.error(`[main] Failed to rescan silo "${name}":`, err);
-    });
-
-    return { success: true };
-  });
-
-  ipcMain.handle('silos:rebuild', (_event, name: string): { success: boolean; error?: string } => {
-    const manager = ctx.siloManagers.get(name);
-    if (!manager) return { success: false, error: `Silo "${name}" not found` };
-
-    manager.updateEmbeddingService(ctx.getOrCreateEmbeddingService());
-
-    // Fire and forget — rebuild() stops current work, then queues via the
-    // IndexingQueue. The silo's watcherState updates via silos:changed events.
-    manager.rebuild().catch((err) => {
-      console.error(`[main] Failed to rebuild silo "${name}":`, err);
     });
 
     return { success: true };

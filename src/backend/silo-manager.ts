@@ -15,7 +15,7 @@ import type { ResolvedSiloConfig } from './config';
 import type { EmbeddingService } from './embedding';
 import { type StoreFacade, proxyStoreFacade } from './store-facade';
 import { makeStoredKey, makeStoredDirKey, resolveStoredKey } from './store/paths';
-import { peekFileCount } from './store/peek';
+import { peekFileCount, peekIndexState } from './store/peek';
 import type { FlushUpsert } from './store/types';
 import { prepareFile } from './pipeline';
 import {
@@ -41,7 +41,6 @@ import { SiloConfigStore } from './silo/silo-config-store';
 import { SiloLifecycle } from './silo/silo-lifecycle';
 import { WatcherCoordinator, type ReconcileProgressSnapshot } from './silo/watcher-coordinator';
 import { DirectoryExplorer } from './silo/directory-explorer';
-import { EMBEDDING_MODEL } from './embedding-model';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -64,8 +63,6 @@ export interface SiloManagerStatus {
     embedDone?: number;
     embedTotal?: number;
   };
-  /** True when the configured model differs from the model used to build the index */
-  modelMismatch?: boolean;
   /** Absolute path to the silo's SQLite database file */
   resolvedDbPath: string;
 }
@@ -99,9 +96,6 @@ export class SiloManager {
   private cachedFileCount = 0;
   private cachedChunkCount = 0;
   private cachedSizeBytes = 0;
-  /** True when meta model differs from configured model */
-  private modelMismatch = false;
-
   /** Tracks the in-flight start() so stop() can wait for it to settle. */
   private startPromise: Promise<void> | null = null;
 
@@ -185,15 +179,6 @@ export class SiloManager {
   async updateName(name: string): Promise<void> {
     this.configStore.apply({ name });
     await this.configStore.persist();
-  }
-
-  /**
-   * Replace the shared embedding service.
-   * Call this before rebuild() when the configured model has changed,
-   * so the new index is built with the correct model and dimensions.
-   */
-  updateEmbeddingService(service: EmbeddingService): void {
-    this.sharedEmbeddingService = service;
   }
 
   // ── Config hot-swap ────────────────────────────────────────────────────
@@ -315,8 +300,8 @@ export class SiloManager {
 
   private async doStart(): Promise<void> {
     await this.initEmbedding();
+    this.prepareDatabaseFile();
     await this.openDatabase();
-    await this.checkAndPersistMeta();
     await this.loadInitialState();
     if (this.lifecycle.stopRequested) return;
     await this.runStartupReconcile();
@@ -336,33 +321,24 @@ export class SiloManager {
     await this.embeddingService.ensureReady();
   }
 
-  /** Step 2 — open (or create) the SQLite database via the store worker. */
+  /** Step 2 — delete any index that cannot be confirmed against the current identity. */
+  private prepareDatabaseFile(): void {
+    const dbPath = this.resolveDbPath();
+    const state = peekIndexState(dbPath);
+    if (state !== 'unusable') return;
+
+    console.log(`[silo:${this.config.name}] Existing index is unusable; deleting for automatic rebuild`);
+    this.deleteDatabaseFiles(dbPath);
+    this.cachedFileCount = 0;
+    this.cachedChunkCount = 0;
+    this.cachedSizeBytes = 0;
+  }
+
   private async openDatabase(): Promise<void> {
     const dbPath = this.resolveDbPath();
     await this.store.open(this.siloId, dbPath, this.embeddingService!.dimensions);
     this.dbOpen = true;
     console.log(`[silo:${this.config.name}] Opened database at ${dbPath}`);
-  }
-
-  /** Step 3 — check the meta row for model mismatch; write meta on first run. */
-  private async checkAndPersistMeta(): Promise<void> {
-    const meta = await this.store.loadMeta(this.siloId);
-    if (meta) {
-      if (meta.model !== EMBEDDING_MODEL.key) {
-        this.modelMismatch = true;
-        console.warn(
-          `[silo:${this.config.name}] Model mismatch: index built with "${meta.model}" but app uses "${EMBEDDING_MODEL.key}". Rebuild required.`,
-        );
-      }
-    } else {
-      // First run or fresh DB — write meta now
-      await this.store.saveMeta(
-        this.siloId,
-        EMBEDDING_MODEL.key,
-        this.embeddingService!.dimensions,
-      );
-      this.modelMismatch = false;
-    }
   }
 
   /** Step 4 — load mtimes (for offline change detection) and the activity log. */
@@ -540,48 +516,16 @@ export class SiloManager {
     await this.start();
   }
 
-  /**
-   * Rebuild the entire index from scratch.
-   * Stops the silo, deletes the database file on disk, clears mtimes,
-   * then restarts (which triggers a full reconciliation).
-   */
-  async rebuild(): Promise<void> {
-    console.log(`[silo:${this.config.name}] Rebuild requested`);
-    const wasStopped = this.isStopped;
+  private deleteDatabaseFiles(dbPath: string): void {
+    const filePaths = [dbPath, dbPath + '-wal', dbPath + '-shm'];
 
-    // Stop everything gracefully
-    if (!wasStopped) {
-      await this.stop();
-    }
-
-    // Delete the database file and WAL/SHM companion files
-    const dbPath = this.resolveDbPath();
-    for (const filePath of [
-      dbPath,
-      dbPath + '-wal',
-      dbPath + '-shm',
-      // Also clean up any leftover Orama-era sidecar files
-      path.join(path.dirname(dbPath), 'mtimes.json'),
-      path.join(path.dirname(dbPath), 'meta.json'),
-    ]) {
+    for (const filePath of filePaths) {
       try {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       } catch (err) {
         console.error(`[silo:${this.config.name}] Failed to delete ${filePath}:`, err);
       }
     }
-
-    // Clear in-memory state
-    this.modelMismatch = false;
-    this.cachedFileCount = 0;
-    this.cachedChunkCount = 0;
-    this.cachedSizeBytes = 0;
-
-    // Restart — this will create a fresh database and run full reconciliation
-    await this.start();
-    console.log(`[silo:${this.config.name}] Rebuild complete`);
   }
 
   /** Load minimal status for a stopped silo without starting it. */
@@ -687,7 +631,6 @@ export class SiloManager {
         watcherState: this.lifecycle.watcherState(),
         errorMessage: this.errorMessage,
         reconcileProgress: this.reconcileProgress,
-        modelMismatch: this.modelMismatch || undefined,
         resolvedDbPath: this.resolveDbPath(),
       };
     }
@@ -704,7 +647,6 @@ export class SiloManager {
       watcherState: this.lifecycle.watcherState(),
       errorMessage: this.errorMessage,
       reconcileProgress: this.reconcileProgress,
-      modelMismatch: this.modelMismatch || undefined,
       resolvedDbPath: this.resolveDbPath(),
     };
   }
@@ -712,11 +654,6 @@ export class SiloManager {
   /** Get recent activity events. */
   getActivityFeed(limit = 50): WatcherEvent[] {
     return this.activity.recent(limit);
-  }
-
-  /** Whether the index was built with a different model than currently configured. */
-  hasModelMismatch(): boolean {
-    return this.modelMismatch;
   }
 
   /** Get the resolved silo config. */

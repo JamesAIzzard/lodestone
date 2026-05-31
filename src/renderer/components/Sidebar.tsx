@@ -36,8 +36,10 @@ const NARROW_THRESHOLD = 640;
 export default function Sidebar() {
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [version, setVersion] = useState<string | null>(null);
+  // Default to collapsed when the user has no stored preference; only an
+  // explicit 'false' (the user expanded it before) keeps it open.
   const [collapsed, setCollapsed] = useState(
-    () => localStorage.getItem('sidebar-collapsed') === 'true',
+    () => localStorage.getItem('sidebar-collapsed') !== 'false',
   );
   const [forceCollapsed, setForceCollapsed] = useState(() => window.innerWidth < NARROW_THRESHOLD);
   const [isDark, setIsDark] = useState(

@@ -1,7 +1,7 @@
 {
   "name": "lodestone",
   "productName": "Lodestone",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "Local semantic search over your files via MCP",
   "main": ".vite/build/main.js",
   "private": true,

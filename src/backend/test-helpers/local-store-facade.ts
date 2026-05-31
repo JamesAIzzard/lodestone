@@ -12,7 +12,7 @@
  *     behaviour. Fast.
  *   - `createTempDirStoreFacade()` — respects the `dbPath` argument,
  *     supporting close-and-reopen cycles. Required for tests of `freeze()`,
- *     `wake()`, `rebuild()`, and `getStatus()` size assertions.
+ *     `wake()`, the unusable-index gate, and `getStatus()` size assertions.
  *
  * Why one class, not two: the dispatch logic for all 22 methods is
  * identical — only `open()` differs in how it picks the path. Factoring

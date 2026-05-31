@@ -7,8 +7,12 @@
  */
 
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
 import type { SiloMeta, StoredSiloConfig } from './types';
 import { SCHEMA_VERSION } from './types';
+import { EMBEDDING_MODEL } from '../embedding-model';
+
+export type IndexState = 'fresh' | 'usable' | 'unusable';
 
 /**
  * Peek at the file count in a silo database without fully opening it.
@@ -28,6 +32,60 @@ export function peekFileCount(dbPath: string): number {
     }
   } catch {
     return 0;
+  }
+}
+
+/**
+ * Strictly classify an on-disk index before it is opened for writes.
+ *
+ * `fresh` means there is no usable index structure yet, so normal DB
+ * creation can proceed. `usable` means the raw identity rows exactly match
+ * the current bundled model and schema. Anything else is `unusable` and
+ * should be deleted before opening.
+ */
+export function peekIndexState(dbPath: string): IndexState {
+  if (!fs.existsSync(dbPath)) return 'fresh';
+
+  try {
+    const stat = fs.statSync(dbPath);
+    if (stat.size === 0) return 'fresh';
+  } catch {
+    return 'unusable';
+  }
+
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const filesTable = db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='files'",
+      ).get();
+      if (!filesTable) return 'fresh';
+
+      const metaTable = db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'",
+      ).get();
+      if (!metaTable) return 'unusable';
+
+      const rows = db.prepare(
+        "SELECT key, value FROM meta WHERE key IN ('version', 'model', 'dimensions')",
+      ).all() as Array<{ key: string; value: string }>;
+      const map = new Map(rows.map((row) => [row.key, row.value]));
+
+      const version = map.get('version');
+      const model = map.get('model');
+      const dimensions = map.get('dimensions');
+      if (!version || !model || !dimensions) return 'unusable';
+
+      if (Number(version) !== SCHEMA_VERSION) return 'unusable';
+      if (model !== EMBEDDING_MODEL.key) return 'unusable';
+      if (Number(dimensions) !== EMBEDDING_MODEL.dimensions) return 'unusable';
+
+      return 'usable';
+    } finally {
+      db.close();
+    }
+  } catch {
+    return 'unusable';
   }
 }
 

@@ -6,9 +6,7 @@ import {
   Blocks,
   FolderOpen,
   Loader2,
-  RotateCcw,
   Trash2,
-  AlertTriangle,
   Pause,
   Play,
   HardDrive,
@@ -44,7 +42,6 @@ export default function SiloDetailView() {
   // Action state
   const [isStopping, setIsStopping] = useState(false);
   const [isWaking, setIsWaking] = useState(false);
-  const [rebuilding, setRebuilding] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -193,18 +190,6 @@ export default function SiloDetailView() {
       setRenameError(String(err));
     } finally {
       setIsRenaming(false);
-    }
-  }
-
-  async function handleRebuild() {
-    setRebuilding(true);
-    try {
-      const result = await window.electronAPI?.rebuildSilo(siloName);
-      if (result?.success) fetchSilo();
-    } catch (err) {
-      console.error('Rebuild failed:', err);
-    } finally {
-      setRebuilding(false);
     }
   }
 
@@ -438,26 +423,8 @@ export default function SiloDetailView() {
             </Button>
           )}
 
-          <Button variant="outline" size="sm" onClick={handleRebuild} disabled={rebuilding}>
-            <RotateCcw className={cn('h-3.5 w-3.5', rebuilding && 'animate-spin')} />
-            Rebuild Index
-          </Button>
         </div>
       </div>
-
-      {/* ── Model mismatch warning ───────────────────────────────────────────── */}
-      {silo.modelMismatch && (
-        <div className="mb-6 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
-          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
-          <div>
-            <p className="text-sm text-foreground">Model mismatch detected</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              The index was built with a different embedding model. Search results may be
-              inaccurate. Click &ldquo;Rebuild Index&rdquo; to re-index with the current model.
-            </p>
-          </div>
-        </div>
-      )}
 
       {/* ── Stats grid ──────────────────────────────────────────────────────── */}
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">

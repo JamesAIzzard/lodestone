@@ -206,7 +206,7 @@ export class InternalApi {
     // Notify renderer that a silo is being queried (triggers shimmer effect)
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo', siloName: silo });
 
-    // Collect managers — skip stopped and model-mismatched silos
+    // Collect managers; stopped silos are skipped.
     const ready: [string, SiloManager][] = [];
     const warnings: string[] = [];
 
@@ -214,12 +214,10 @@ export class InternalApi {
       const m = this.ctx.siloManagers.get(silo);
       if (!m) throw new Error(`Silo "${silo}" not found`);
       if (m.isStopped) throw new Error(`Silo "${silo}" is stopped`);
-      if (m.hasModelMismatch())
-        throw new Error(`Silo "${silo}" has a model mismatch — rebuild required`);
       ready.push([silo, m]);
     } else {
       for (const [name, m] of this.ctx.siloManagers) {
-        if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+        if (!m.isStopped) ready.push([name, m]);
       }
     }
 
@@ -294,12 +292,10 @@ export class InternalApi {
       const m = this.ctx.siloManagers.get(silo);
       if (!m) throw new Error(`Silo "${silo}" not found`);
       if (m.isStopped) throw new Error(`Silo "${silo}" is stopped`);
-      if (m.hasModelMismatch())
-        throw new Error(`Silo "${silo}" has a model mismatch — rebuild required`);
       ready.push([silo, m]);
     } else {
       for (const [name, m] of this.ctx.siloManagers) {
-        if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+        if (!m.isStopped) ready.push([name, m]);
       }
     }
 
@@ -436,7 +432,6 @@ export class InternalApi {
         watcherState: status.watcherState,
         errorMessage: status.errorMessage,
         reconcileProgress: status.reconcileProgress,
-        modelMismatch: status.modelMismatch,
         resolvedDbPath: status.resolvedDbPath,
       });
     }

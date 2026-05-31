@@ -9,7 +9,7 @@
  *   - Tests use the production schema (`createSiloDatabase` + the
  *     operations layer) via `LocalStoreFacade`. No mocks.
  *   - Lifecycle tests use the temp-dir facade so on-disk behaviour
- *     (`peekFileCount`, `readFileSizeFromDisk`, `rebuild()`'s unlink +
+ *     (`peekFileCount`, `readFileSizeFromDisk`, the gate's unlink +
  *     re-create) is exercised faithfully.
  *   - The watcher is faked via `FakeSiloWatcher` so we can drive
  *     synthetic events into `handleWatcherEvent` (private) through the
@@ -50,7 +50,7 @@ interface TestSiloOptions {
   name?: string;
   files?: Record<string, string>; // relative path → contents
   configOverrides?: Partial<ResolvedSiloConfig>;
-  /** When true, returns the same store instance and a fresh manager wired to a different config (used for model-mismatch test). */
+  /** Reuse an existing store instance for tests that need shared store state. */
   reuseStore?: LocalStoreFacade;
   /** Provide a pre-built embedding service (e.g. failing one). */
   embedding?: ReturnType<typeof createStubEmbedding>;
@@ -107,7 +107,7 @@ function makeTestSilo(opts: TestSiloOptions = {}): TestSilo {
   const store = opts.reuseStore ?? createTempDirStoreFacade();
   const watcher = new FakeSiloWatcher();
   const queue = opts.queue ?? new IndexingQueue();
-  const embedding = opts.embedding ?? createStubEmbedding({ dimensions: 4 });
+  const embedding = opts.embedding ?? createStubEmbedding();
 
   const manager = new SiloManager(config, embedding, workDir, queue, store, () => watcher);
 
@@ -144,7 +144,7 @@ describe('SiloManager — start lifecycle', () => {
     const meta = await t.store.loadMeta('test-silo');
     expect(meta).not.toBeNull();
     expect(meta!.model).toBe(EMBEDDING_MODEL.key);
-    expect(meta!.dimensions).toBe(4);
+    expect(meta!.dimensions).toBe(EMBEDDING_MODEL.dimensions);
 
     // Reconcile indexed the one .md file.
     expect(status.indexedFileCount).toBe(1);
@@ -157,20 +157,28 @@ describe('SiloManager — start lifecycle', () => {
     await t.manager.stop();
   });
 
-  it('flags model mismatch when the stored index was built with a different model', async () => {
-    // Simulate an index built by an older app version: open the DB directly
+  it('automatically rebuilds when the stored index was built with a different model', async () => {
+    // Simulate an index built by an older app version: create the DB directly
     // and stamp a model key into meta that differs from the bundled model.
     const t = makeTestSilo();
-    await t.store.open('test-silo', t.indexDbPath, 4);
-    await t.store.saveMeta('test-silo', 'some-old-model', 4);
+    await t.store.open('test-silo', t.indexDbPath, EMBEDDING_MODEL.dimensions);
+    await t.store.saveMeta('test-silo', 'some-old-model', EMBEDDING_MODEL.dimensions);
     await t.store.close('test-silo');
 
-    // Starting a manager against that DB must detect the mismatch against
-    // EMBEDDING_MODEL.key so cross-silo search can exclude it.
+    // Starting a manager against that DB discards the old index and indexes
+    // from disk through the normal startup path.
     await t.manager.start();
-    expect(t.manager.hasModelMismatch()).toBe(true);
     const status = await t.manager.getStatus();
-    expect(status.modelMismatch).toBe(true);
+    expect(status.watcherState).toBe('ready');
+    expect(status.indexedFileCount).toBe(1);
+    expect(status.chunkCount).toBeGreaterThan(0);
+    const meta = await t.store.loadMeta('test-silo');
+    expect(meta).not.toBeNull();
+    expect(meta!.model).toBe(EMBEDDING_MODEL.key);
+
+    const results = await t.manager.search([], { query: 'a.md', mode: 'filepath', limit: 10 });
+    expect(results.map((r) => path.basename(r.filePath))).toContain('a.md');
+
     await t.manager.stop();
   });
 });
@@ -199,33 +207,6 @@ describe('SiloManager — freeze / wake round-trip', () => {
     expect(woken.watcherState).toBe('ready');
     expect(woken.indexedFileCount).toBe(1);
     expect(woken.chunkCount).toBe(liveChunks);
-
-    await t.manager.stop();
-  });
-});
-
-describe('SiloManager — rebuild', () => {
-  it('produces a fresh empty index after returning, then re-indexes on next start', async () => {
-    const t = makeTestSilo();
-    await t.manager.start();
-    const before = await t.manager.getStatus();
-    expect(before.indexedFileCount).toBe(1);
-    expect(before.chunkCount).toBeGreaterThan(0);
-
-    await t.manager.rebuild();
-
-    // After rebuild() returns, start() has already run on a fresh DB —
-    // index is freshly populated, not empty. The behaviour worth pinning
-    // is that meta is fresh (no model mismatch) and the index reflects
-    // the *current* config, not stale state.
-    const after = await t.manager.getStatus();
-    expect(after.watcherState).toBe('ready');
-    expect(after.indexedFileCount).toBe(1);
-    expect(t.manager.hasModelMismatch()).toBe(false);
-
-    const meta = await t.store.loadMeta('test-silo');
-    expect(meta).not.toBeNull();
-    expect(meta!.model).toBe(EMBEDDING_MODEL.key);
 
     await t.manager.stop();
   });
@@ -419,7 +400,7 @@ describe('SiloManager — start cancellation honoured at each yield point (Phase
     // start() schedules doStart; stop() is invoked synchronously before
     // any of doStart's awaits resolve. By the time doStart's microtasks
     // run, stopRequested is already true. doStart progresses through the
-    // four prelude phases (initEmbedding/openDatabase/checkAndPersistMeta/
+    // four prelude phases (initEmbedding/prepareDatabaseFile/openDatabase/
     // loadInitialState — all cheap against the local facade) and then
     // hits the explicit short-circuit after loadInitialState, returning
     // without ever entering runStartupReconcile.

@@ -293,12 +293,6 @@ export default function SiloCard({
                   ? `~${formatBytes(silo.databaseSizeBytes)}`
                   : formatBytes(silo.databaseSizeBytes)}
               </span>
-              {silo.modelMismatch && (
-                <span className="flex items-center gap-1 text-amber-400 mt-0.5">
-                  <AlertTriangle className="h-3 w-3 shrink-0" />
-                  Model mismatch — rebuild required
-                </span>
-              )}
               {silo.errorMessage && (
                 <span className="flex items-start gap-1 text-red-400 mt-0.5">
                   <AlertTriangle className="h-3 w-3 shrink-0 mt-px" />

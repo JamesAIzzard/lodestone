@@ -299,7 +299,7 @@ export default function SettingsView() {
                 Open Data Folder
               </Button>
               <p className="mt-2 text-xs text-muted-foreground/60">
-                All configuration, databases, and model cache are stored here.
+                All configuration, databases, and local app data are stored here.
               </p>
             </div>
             <div>

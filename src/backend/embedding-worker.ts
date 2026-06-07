@@ -1,32 +1,36 @@
 /**
- * Worker thread entry point for ONNX embedding inference.
+ * Embedding worker thread entry point.
  *
- * Runs in a separate thread via worker_threads to keep the main Electron
- * process event loop free for IPC and rendering during indexing.
+ * Loads and runs the single embedding model off the main thread, keeping the
+ * main Electron process event loop free for IPC and rendering during indexing.
  *
- * IMPORTANT: There is exactly ONE worker thread for ALL built-in models.
- * ONNX Runtime's native code has process-global state that crashes when
- * multiple worker threads load models concurrently. This single worker
- * hosts a Map of BuiltInEmbeddingService instances keyed by model ID.
- *
- * Messages are serialized through a queue so only one ONNX inference
- * call is in-flight at a time — the native runtime crashes if multiple
- * async sessions overlap (V8 HandleScope conflict).
+ * IMPORTANT: messages are processed through a serialized queue so only ONE
+ * ONNX inference call is in-flight at a time. ONNX Runtime's native code
+ * schedules cleanup callbacks via setImmediate; starting the next inference
+ * synchronously — before those callbacks fire — crashes with a V8 HandleScope
+ * violation. The `setImmediate(processNext)` yield at the end of each message
+ * is what guarantees that ordering. Do not replace this with per-message
+ * concurrent handlers.
  */
 
 import { parentPort } from 'node:worker_threads';
 import { BuiltInEmbeddingService } from './embedding-builtin';
 import type { WorkerRequest } from './embedding-worker-protocol';
 
-/** All loaded models, keyed by model ID */
-const services = new Map<string, BuiltInEmbeddingService>();
+if (!parentPort) {
+  throw new Error('embedding-worker must be run as a worker thread');
+}
+const port = parentPort;
+
+// The single embedding service, created on first 'init'.
+let service: BuiltInEmbeddingService | null = null;
 
 // ── Message queue — serialize all ONNX calls ────────────────────────────────
 
 const queue: WorkerRequest[] = [];
 let processing = false;
 
-parentPort!.on('message', (msg: WorkerRequest) => {
+port.on('message', (msg: WorkerRequest) => {
   queue.push(msg);
   if (!processing) processNext();
 });
@@ -43,14 +47,13 @@ async function processNext(): Promise<void> {
   try {
     switch (msg.type) {
       case 'init': {
-        let service = services.get(msg.modelId);
         if (!service) {
-          service = new BuiltInEmbeddingService(msg.modelId, msg.cacheDir);
-          // Force model load so latency is paid during init, not first real embed
+          service = new BuiltInEmbeddingService(msg.modelDir);
+          // Force model load now so latency is paid during init, not on the
+          // first real embed.
           await service.embed('warmup');
-          services.set(msg.modelId, service);
         }
-        parentPort!.postMessage({
+        port.postMessage({
           id: msg.id,
           type: 'init-ok',
           dimensions: service.dimensions,
@@ -61,46 +64,34 @@ async function processNext(): Promise<void> {
         break;
       }
       case 'embed': {
-        const service = services.get(msg.modelId);
-        if (!service) throw new Error(`Model "${msg.modelId}" not initialized`);
+        if (!service) throw new Error('Embedding model not initialized');
         const vector = await service.embed(msg.text);
-        parentPort!.postMessage({ id: msg.id, type: 'embed-ok', vector });
+        port.postMessage({ id: msg.id, type: 'embed-ok', vector });
         break;
       }
       case 'embedBatch': {
-        const service = services.get(msg.modelId);
-        if (!service) throw new Error(`Model "${msg.modelId}" not initialized`);
+        if (!service) throw new Error('Embedding model not initialized');
         const vectors = await service.embedBatch(msg.texts);
-        parentPort!.postMessage({ id: msg.id, type: 'embedBatch-ok', vectors });
+        port.postMessage({ id: msg.id, type: 'embedBatch-ok', vectors });
         break;
       }
       case 'dispose': {
-        if (msg.modelId) {
-          // Dispose a specific model
-          const service = services.get(msg.modelId);
-          if (service) {
-            await service.dispose();
-            services.delete(msg.modelId);
-          }
-        } else {
-          // Dispose all models
-          for (const [id, service] of services) {
-            await service.dispose();
-            services.delete(id);
-          }
+        if (service) {
+          await service.dispose();
+          service = null;
         }
-        parentPort!.postMessage({ id: msg.id, type: 'dispose-ok' });
+        port.postMessage({ id: msg.id, type: 'dispose-ok' });
         break;
       }
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    parentPort!.postMessage({ id: msg.id, type: 'error', message });
+    port.postMessage({ id: msg.id, type: 'error', message });
   }
 
-  // Yield to the event loop before processing the next message.
-  // ONNX runtime schedules native cleanup callbacks via setImmediate;
-  // calling processNext() synchronously would start the next inference
-  // before those callbacks fire, crashing with a HandleScope violation.
+  // Yield to the event loop before the next message. ONNX runtime schedules
+  // native cleanup callbacks via setImmediate; calling processNext()
+  // synchronously would start the next inference before those callbacks fire,
+  // crashing with a HandleScope violation.
   setImmediate(() => processNext());
 }

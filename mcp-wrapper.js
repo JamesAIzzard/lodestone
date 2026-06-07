@@ -8,7 +8,7 @@
  *
  * The wrapper:
  *   1. Creates a Windows named pipe
- *   2. Spawns Electron with --mcp --ipc-path=<pipe>
+ *   2. Spawns Electron as an MCP bridge with --mcp-bridge --ipc-path=<pipe>
  *   3. Relays stdin/stdout (MCP protocol) ↔ named pipe (Electron)
  *   4. Electron's actual stdout/stderr go to the wrapper's stderr (debug logs)
  *
@@ -69,12 +69,12 @@ let electronPath, spawnArgs;
 if (installedPath) {
   // Production: Electron loads app.asar automatically — no entry path needed
   electronPath = installedPath;
-  spawnArgs = (pipePath) => ['--mcp', `--ipc-path=${pipePath}`];
+  spawnArgs = (pipePath) => ['--mcp-bridge', `--ipc-path=${pipePath}`];
   process.stderr.write(`[mcp-wrapper] using installed: ${installedPath}\n`);
 } else {
   // Development: use node_modules/electron with explicit entry
   electronPath = devElectronPath;
-  spawnArgs = (pipePath) => [devEntryPath, '--mcp', `--ipc-path=${pipePath}`];
+  spawnArgs = (pipePath) => [devEntryPath, '--mcp-bridge', `--ipc-path=${pipePath}`];
   process.stderr.write(`[mcp-wrapper] using dev: ${devElectronPath}\n`);
 }
 

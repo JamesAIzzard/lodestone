@@ -5,9 +5,11 @@
  * @huggingface/transformers dependency is only loaded in the worker thread,
  * never in the main Electron process.
  *
- * Phase 3: Now uses the model registry for configuration instead of
- * hardcoded constants. Query and document prefixes are applied
- * transparently based on the model definition:
+ * Lodestone uses exactly one embedding model — there is no registry and no
+ * model id parameter; all configuration comes from {@link EMBEDDING_MODEL}.
+ * Weights are vendored under resources/models and loaded from a local
+ * directory supplied by the main process.
+ * Query and document prefixes are applied transparently:
  *   - embed()      → query prefix (used for search queries)
  *   - embedBatch() → document prefix (used for indexing chunks)
  */
@@ -20,50 +22,24 @@ import {
   type FeatureExtractionPipelineOptions,
 } from '@huggingface/transformers';
 import type { EmbeddingService } from './embedding';
-import {
-  getModelDefinition,
-  MODEL_REGISTRY,
-  type ModelDefinition,
-} from './model-registry';
+import { EMBEDDING_MODEL } from './embedding-model';
 
 export class BuiltInEmbeddingService implements EmbeddingService {
   private extractor: FeatureExtractionPipeline | null = null;
-  private readonly def: ModelDefinition;
 
-  readonly dimensions: number;
-  readonly modelName: string;
-  readonly maxTokens: number;
-  readonly chunkTokens: number;
+  readonly dimensions = EMBEDDING_MODEL.dimensions;
+  readonly modelName = EMBEDDING_MODEL.displayName;
+  readonly maxTokens = EMBEDDING_MODEL.maxTokens;
+  readonly chunkTokens = EMBEDDING_MODEL.chunkTokens;
 
-  /**
-   * @param modelId  Registry key (e.g. 'snowflake-arctic-embed-xs').
-   *                 Throws if the ID is not in the registry.
-   * @param cacheDir Directory to store downloaded model files.
-   *                 In Electron, use app.getPath('userData') + '/models'.
-   */
-  constructor(
-    private readonly modelId: string,
-    private readonly cacheDir: string,
-  ) {
-    const def = getModelDefinition(modelId);
-    if (!def) {
-      throw new Error(
-        `Unknown embedding model "${modelId}". ` +
-          `Available models: ${Object.keys(MODEL_REGISTRY).join(', ')}.`,
-      );
-    }
-    this.def = def;
-    this.dimensions = def.dimensions;
-    this.modelName = `${modelId} (${def.displayName})`;
-    this.maxTokens = def.maxTokens;
-    this.chunkTokens = def.chunkTokens;
-  }
+  constructor(private readonly modelDir: string) {}
 
   private async getExtractor(): Promise<FeatureExtractionPipeline> {
     if (!this.extractor) {
-      env.cacheDir = this.cacheDir;
-      env.allowLocalModels = true;
-      env.allowRemoteModels = true;
+      // The model is vendored locally and loaded by absolute path. Disable
+      // remote models so a missing or corrupt bundled file fails fast and
+      // offline, instead of silently attempting a (malformed) network fetch.
+      env.allowRemoteModels = false;
 
       // Limit ONNX Runtime thread count to avoid saturating all CPU cores
       // during indexing. Cap at 2 (or half the cores, whichever is smaller).
@@ -71,8 +47,8 @@ export class BuiltInEmbeddingService implements EmbeddingService {
       const onnxThreads = Math.max(1, Math.min(2, Math.floor(cpuCount / 2)));
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.extractor = await (pipeline as any)('feature-extraction', this.def.hfModelId, {
-        dtype: this.def.dtype,
+      this.extractor = await (pipeline as any)('feature-extraction', this.modelDir, {
+        dtype: EMBEDDING_MODEL.dtype,
         session_options: {
           intraOpNumThreads: onnxThreads,
           interOpNumThreads: 1,
@@ -88,9 +64,9 @@ export class BuiltInEmbeddingService implements EmbeddingService {
    */
   async embed(text: string): Promise<number[]> {
     const extractor = await this.getExtractor();
-    const prefixed = this.def.queryPrefix + text;
+    const prefixed = EMBEDDING_MODEL.queryPrefix + text;
     const result = await extractor(prefixed, {
-      pooling: 'mean',
+      pooling: 'cls',
       normalize: true,
       truncation: true,
       max_length: this.maxTokens,
@@ -112,11 +88,11 @@ export class BuiltInEmbeddingService implements EmbeddingService {
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
     const extractor = await this.getExtractor();
-    const prefixed = this.def.documentPrefix
-      ? texts.map((t) => this.def.documentPrefix + t)
+    const prefixed = EMBEDDING_MODEL.documentPrefix
+      ? texts.map((t) => EMBEDDING_MODEL.documentPrefix + t)
       : texts;
     const result = await extractor(prefixed, {
-      pooling: 'mean',
+      pooling: 'cls',
       normalize: true,
       truncation: true,
       max_length: this.maxTokens,
@@ -136,7 +112,7 @@ export class BuiltInEmbeddingService implements EmbeddingService {
   }
 
   async ensureReady(): Promise<void> {
-    // Dimensions are known from the model registry at construction time — nothing to probe.
+    // Dimensions are known from EMBEDDING_MODEL at construction time — nothing to probe.
   }
 
   async dispose(): Promise<void> {

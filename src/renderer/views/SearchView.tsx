@@ -145,7 +145,7 @@ export default function SearchView() {
 
   const siloColorMap = useMemo(() => {
     const map = new Map<string, SiloColor>();
-    for (const s of silos) map.set(s.config.name, s.config.color);
+    for (const s of silos) map.set(s.config.name, s.config.accentColor);
     return map;
   }, [silos]);
 

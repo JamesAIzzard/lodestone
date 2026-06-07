@@ -6,9 +6,7 @@ import {
   Blocks,
   FolderOpen,
   Loader2,
-  RotateCcw,
   Trash2,
-  AlertTriangle,
   Pause,
   Play,
   HardDrive,
@@ -20,14 +18,14 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { abbreviatePath, formatBytes, formatTime, modelIdFromDisplay } from '@/lib/format';
+import { abbreviatePath, formatBytes, formatTime } from '@/lib/format';
 import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
 import ExtensionPicker from '@/components/ExtensionPicker';
 import SiloAppearancePicker from '@/components/SiloAppearancePicker';
 import SiloIcon from '@/components/SiloIconComponent';
 import ActivityFeed from '@/components/ActivityFeed';
 import { SILO_COLOR_MAP, type SiloColor, type SiloIconName } from '../../shared/silo-appearance';
-import type { SiloStatus, ServerStatus } from '../../shared/types';
+import type { SiloStatus } from '../../shared/types';
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -44,7 +42,6 @@ export default function SiloDetailView() {
   // Action state
   const [isStopping, setIsStopping] = useState(false);
   const [isWaking, setIsWaking] = useState(false);
-  const [rebuilding, setRebuilding] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -60,8 +57,6 @@ export default function SiloDetailView() {
 
   // Editable form state
   const [editDescription, setEditDescription] = useState('');
-  const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
-  const [selectedModel, setSelectedModel] = useState('');
   const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
   const [fileIgnore, setFileIgnore] = useState<string[]>([]);
   const [ignoreOverridden, setIgnoreOverridden] = useState(false);
@@ -130,25 +125,22 @@ export default function SiloDetailView() {
     setIsEditingName(false);
     setEditName('');
     setRenameError(null);
-    setEditDescription(silo.config.description || '');
-    setFolderIgnore(silo.config.ignorePatterns);
-    setFileIgnore(silo.config.ignoreFilePatterns);
-    setIgnoreOverridden(silo.config.hasIgnoreOverride || silo.config.hasFileIgnoreOverride);
-    setExtensions(silo.config.extensions);
-    setExtensionOverridden(silo.config.hasExtensionOverride);
-    setSiloColor(silo.config.color);
-    setSiloIcon(silo.config.icon);
-
-    window.electronAPI?.getServerStatus().then((status) => {
-      setServerStatus(status);
-      const effective = silo.config.modelOverride ?? status.defaultModel;
-      setSelectedModel(effective);
-    });
+    setEditDescription(silo.config.contentDescription || '');
+    setFolderIgnore(silo.config.ignoredFolderPatterns);
+    setFileIgnore(silo.config.ignoredFilePatterns);
+    setIgnoreOverridden(
+      silo.config.hasIgnoredFolderPatternsOverride ||
+        silo.config.hasIgnoredFilePatternsOverride,
+    );
+    setExtensions(silo.config.indexedFileExtensions);
+    setExtensionOverridden(silo.config.hasIndexedFileExtensionsOverride);
+    setSiloColor(silo.config.accentColor);
+    setSiloIcon(silo.config.iconName);
 
     window.electronAPI?.getDefaults().then((d) => {
-      setDefaultFolderIgnore(d.ignore);
-      setDefaultFileIgnore(d.ignoreFiles);
-      setDefaultExtensions(d.extensions);
+      setDefaultFolderIgnore(d.ignoredFolderPatterns);
+      setDefaultFileIgnore(d.ignoredFilePatterns);
+      setDefaultExtensions(d.indexedFileExtensions);
     });
   }, [silo]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -201,24 +193,6 @@ export default function SiloDetailView() {
     }
   }
 
-  async function handleModelChange(newModel: string) {
-    setSelectedModel(newModel);
-    await window.electronAPI?.updateSilo(siloName, { model: newModel });
-    fetchSilo();
-  }
-
-  async function handleRebuild() {
-    setRebuilding(true);
-    try {
-      const result = await window.electronAPI?.rebuildSilo(siloName);
-      if (result?.success) fetchSilo();
-    } catch (err) {
-      console.error('Rebuild failed:', err);
-    } finally {
-      setRebuilding(false);
-    }
-  }
-
   async function handleDelete() {
     setDeleting(true);
     setDeleteError(null);
@@ -243,13 +217,13 @@ export default function SiloDetailView() {
 
   async function handleFolderIgnoreChange(patterns: string[]) {
     setFolderIgnore(patterns);
-    await window.electronAPI?.updateSilo(siloName, { ignore: patterns });
+    await window.electronAPI?.updateSilo(siloName, { ignoredFolderPatterns: patterns });
     fetchSilo();
   }
 
   async function handleFileIgnoreChange(patterns: string[]) {
     setFileIgnore(patterns);
-    await window.electronAPI?.updateSilo(siloName, { ignoreFiles: patterns });
+    await window.electronAPI?.updateSilo(siloName, { ignoredFilePatterns: patterns });
     fetchSilo();
   }
 
@@ -259,7 +233,7 @@ export default function SiloDetailView() {
     const files = [...defaultFileIgnore];
     setFolderIgnore(folders);
     setFileIgnore(files);
-    await window.electronAPI?.updateSilo(siloName, { ignore: folders, ignoreFiles: files });
+    await window.electronAPI?.updateSilo(siloName, { ignoredFolderPatterns: folders, ignoredFilePatterns: files });
     fetchSilo();
   }
 
@@ -267,13 +241,13 @@ export default function SiloDetailView() {
     setIgnoreOverridden(false);
     setFolderIgnore(defaultFolderIgnore);
     setFileIgnore(defaultFileIgnore);
-    await window.electronAPI?.updateSilo(siloName, { ignore: [], ignoreFiles: [] });
+    await window.electronAPI?.updateSilo(siloName, { ignoredFolderPatterns: [], ignoredFilePatterns: [] });
     fetchSilo();
   }
 
   async function handleExtensionsChange(exts: string[]) {
     setExtensions(exts);
-    await window.electronAPI?.updateSilo(siloName, { extensions: exts });
+    await window.electronAPI?.updateSilo(siloName, { indexedFileExtensions: exts });
     fetchSilo();
   }
 
@@ -281,25 +255,25 @@ export default function SiloDetailView() {
     setExtensionOverridden(true);
     const exts = [...defaultExtensions];
     setExtensions(exts);
-    await window.electronAPI?.updateSilo(siloName, { extensions: exts });
+    await window.electronAPI?.updateSilo(siloName, { indexedFileExtensions: exts });
     fetchSilo();
   }
 
   async function handleExtensionRevert() {
     setExtensionOverridden(false);
     setExtensions(defaultExtensions);
-    await window.electronAPI?.updateSilo(siloName, { extensions: [] });
+    await window.electronAPI?.updateSilo(siloName, { indexedFileExtensions: [] });
     fetchSilo();
   }
 
   async function handleColorChange(newColor: SiloColor) {
     setSiloColor(newColor);
-    await window.electronAPI?.updateSilo(siloName, { color: newColor });
+    await window.electronAPI?.updateSilo(siloName, { accentColor: newColor });
   }
 
   async function handleIconChange(newIcon: SiloIconName) {
     setSiloIcon(newIcon);
-    await window.electronAPI?.updateSilo(siloName, { icon: newIcon });
+    await window.electronAPI?.updateSilo(siloName, { iconName: newIcon });
   }
 
   // ── Loading state ────────────────────────────────────────────────────────────
@@ -319,10 +293,6 @@ export default function SiloDetailView() {
   const isActive = silo.watcherState === 'indexing';
   const isStopped = silo.watcherState === 'stopped';
   const isWaiting = silo.watcherState === 'waiting';
-  const defaultModel = serverStatus?.defaultModel ?? 'snowflake-arctic-embed-xs';
-  const effectiveModel = selectedModel || config.modelOverride || defaultModel;
-  const isOverride = effectiveModel !== defaultModel;
-  const modelOptions = serverStatus?.availableModels ?? [];
   const progress = silo.reconcileProgress;
   const progressPctRaw =
     progress && progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : null;
@@ -401,8 +371,8 @@ export default function SiloDetailView() {
           </div>
 
           {renameError && <p className="text-xs text-red-400">{renameError}</p>}
-          {config.description && (
-            <p className="text-sm text-muted-foreground">{config.description}</p>
+          {config.contentDescription && (
+            <p className="text-sm text-muted-foreground">{config.contentDescription}</p>
           )}
           {silo.errorMessage && (
             <p className="max-w-3xl text-xs text-red-400 break-words">{silo.errorMessage}</p>
@@ -453,26 +423,8 @@ export default function SiloDetailView() {
             </Button>
           )}
 
-          <Button variant="outline" size="sm" onClick={handleRebuild} disabled={rebuilding}>
-            <RotateCcw className={cn('h-3.5 w-3.5', rebuilding && 'animate-spin')} />
-            Rebuild Index
-          </Button>
         </div>
       </div>
-
-      {/* ── Model mismatch warning ───────────────────────────────────────────── */}
-      {silo.modelMismatch && (
-        <div className="mb-6 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
-          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
-          <div>
-            <p className="text-sm text-foreground">Model mismatch detected</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              The index was built with a different embedding model. Search results may be
-              inaccurate. Click &ldquo;Rebuild Index&rdquo; to re-index with the current model.
-            </p>
-          </div>
-        </div>
-      )}
 
       {/* ── Stats grid ──────────────────────────────────────────────────────── */}
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -525,8 +477,8 @@ export default function SiloDetailView() {
               value={editDescription}
               onChange={(e) => setEditDescription(e.target.value)}
               onBlur={() => {
-                if (editDescription !== (config.description || '')) {
-                  window.electronAPI?.updateSilo(siloName, { description: editDescription });
+                if (editDescription !== (config.contentDescription || '')) {
+                  window.electronAPI?.updateSilo(siloName, { contentDescription: editDescription });
                 }
               }}
               placeholder="Describe what this silo contains..."
@@ -541,45 +493,6 @@ export default function SiloDetailView() {
               onColorChange={handleColorChange}
               onIconChange={handleIconChange}
             />
-          </Row>
-          <Row label="Model">
-            <div className="flex flex-col gap-1.5">
-              <select
-                value={effectiveModel}
-                onChange={(e) => handleModelChange(e.target.value)}
-                className={cn(
-                  'h-7 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground',
-                  'focus:outline-none focus:ring-1 focus:ring-ring',
-                  isOverride && 'border-amber-500/40',
-                )}
-              >
-                {modelOptions.map((m) => {
-                  const id = modelIdFromDisplay(m);
-                  return (
-                    <option key={m} value={id}>
-                      {m}
-                      {id === defaultModel ? ' (default)' : ''}
-                    </option>
-                  );
-                })}
-              </select>
-              {isOverride && (
-                <div className="flex items-center gap-1.5">
-                  <Badge
-                    variant="outline"
-                    className="text-[10px] text-amber-400 border-amber-500/30"
-                  >
-                    override
-                  </Badge>
-                  <button
-                    onClick={() => handleModelChange(defaultModel)}
-                    className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    Reset to default
-                  </button>
-                </div>
-              )}
-            </div>
           </Row>
           <Row label="Extensions">
             <ExtensionPicker
@@ -605,7 +518,7 @@ export default function SiloDetailView() {
           </Row>
           <Row label="Directories">
             <div className="flex flex-col gap-1">
-              {config.directories.map((dir) => (
+              {config.indexedDirectories.map((dir) => (
                 <span key={dir} className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   <FolderOpen className="h-3 w-3 shrink-0" />
                   {abbreviatePath(dir)}

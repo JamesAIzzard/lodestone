@@ -11,14 +11,14 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import type { FileProcessor, ExtractionResult } from './pipeline-types';
+import type { FileProcessor, ExtractionResult, FileInfo } from './pipeline-types';
 import { CancellationError } from './pipeline-types';
 import { extractMarkdown } from './extractors/markdown';
 import { extractPlaintext } from './extractors/plaintext';
 import { extractCode } from './extractors/code';
 import { chunkByHeading } from './chunkers/heading';
 import { chunkPlaintext } from './chunkers/plaintext';
-import { chunkCodeAsync, CODE_EXTENSIONS } from './chunkers/code';
+import { chunkCode } from './chunkers/code';
 import { extractPdf } from './extractors/pdf';
 import { chunkPdf } from './chunkers/pdf';
 import { readTextLines } from './readers/text';
@@ -26,33 +26,31 @@ import { readPdfPage } from './readers/pdf';
 import type { EmbeddingService } from './embedding';
 import type { ChunkRecord } from './pipeline-types';
 import type { FlushUpsert } from './store/types';
+import { FILE_TYPES, type FileProcessorKind } from '../shared/file-types';
 
 // ── Processor Registry ───────────────────────────────────────────────────────
 
-/**
- * Maps file extensions to their extractor + chunker + reader triple.
- * Extensions not in this map fall back to the default processor.
- */
-const processors = new Map<string, FileProcessor>([
+// Processor implementations keyed by shared file type kind.
+const markdownProcessor: FileProcessor = {
   // Markdown — heading-based chunking, line-based reading
-  ['.md',       { extractor: extractMarkdown,  chunker: chunkByHeading, reader: readTextLines }],
-  ['.markdown', { extractor: extractMarkdown,  chunker: chunkByHeading, reader: readTextLines }],
-  ['.mdx',      { extractor: extractMarkdown,  chunker: chunkByHeading, reader: readTextLines }],
-]);
+  extractor: extractMarkdown,
+  chunker: chunkByHeading,
+  reader: readTextLines,
+};
 
 // Code files — Tree-sitter AST-based chunking (async), line-based reading
 const codeProcessor: FileProcessor = {
   extractor: extractCode,
-  asyncChunker: chunkCodeAsync,
+  asyncChunker: chunkCode,
   reader: readTextLines,
 };
 
-for (const ext of CODE_EXTENSIONS) {
-  processors.set(ext, codeProcessor);
-}
-
 // PDF — async Buffer-based extraction + page-aware chunking + page-based reading
-processors.set('.pdf', { asyncExtractor: extractPdf, chunker: chunkPdf, asyncReader: readPdfPage });
+const pdfProcessor: FileProcessor = {
+  asyncExtractor: extractPdf,
+  chunker: chunkPdf,
+  asyncReader: readPdfPage,
+};
 
 /** Default processor for unregistered extensions. */
 const defaultProcessor: FileProcessor = {
@@ -60,6 +58,23 @@ const defaultProcessor: FileProcessor = {
   chunker: chunkPlaintext,
   reader: readTextLines,
 };
+
+const processorsByKind: Record<FileProcessorKind, FileProcessor> = {
+  markdown: markdownProcessor,
+  code: codeProcessor,
+  pdf: pdfProcessor,
+  plaintext: defaultProcessor,
+};
+
+/**
+ * Maps file extensions to their extractor + chunker + reader triple.
+ * Extensions not in this map fall back to the default processor.
+ */
+const processors = new Map<string, FileProcessor>();
+
+for (const fileType of FILE_TYPES) {
+  processors.set(fileType.extension, processorsByKind[fileType.processorKind]);
+}
 
 /**
  * Look up the processor for a file based on its extension.
@@ -145,9 +160,13 @@ export async function prepareFile(
   }
 
   onStage?.('chunking');
+  const fileInfo: FileInfo = {
+    extension: path.extname(absolutePath).toLowerCase(),
+    basename: path.basename(absolutePath),
+  };
   const chunks = asyncChunker
-    ? await asyncChunker(absolutePath, extraction, embeddingService.chunkTokens)
-    : chunker!(absolutePath, extraction, embeddingService.chunkTokens);
+    ? await asyncChunker(extraction, fileInfo, embeddingService.chunkTokens)
+    : chunker!(extraction, fileInfo, embeddingService.chunkTokens);
 
   if (chunks.length === 0) {
     return { storedKey, chunks: [], embeddings: [], mtimeMs, fileMetadata };
@@ -260,7 +279,7 @@ export async function indexFileLoop(
     shouldStop,
     progressOffset = 0,
   } = opts;
-  const total = opts.progressTotal ?? (progressOffset + jobs.length);
+  const total = opts.progressTotal ?? progressOffset + jobs.length;
 
   let totalPrepareMs = 0;
   let totalFlushMs = 0;
@@ -308,27 +327,72 @@ export async function indexFileLoop(
     filesProcessed++;
     const current = progressOffset + filesProcessed;
 
-    onProgress?.({ current, total, filePath: absPath, fileSize, fileStage: 'reading', batchChunks, batchChunkLimit });
+    onProgress?.({
+      current,
+      total,
+      filePath: absPath,
+      fileSize,
+      fileStage: 'reading',
+      batchChunks,
+      batchChunkLimit,
+    });
 
     try {
       const tPrep = performance.now();
       const prepared = await prepareFile(
-        absPath, storedKey, embeddingService, mtimeMs,
-        (stage) => onProgress?.({ current, total, filePath: absPath, fileSize, fileStage: stage, batchChunks, batchChunkLimit }),
+        absPath,
+        storedKey,
+        embeddingService,
+        mtimeMs,
+        (stage) =>
+          onProgress?.({
+            current,
+            total,
+            filePath: absPath,
+            fileSize,
+            fileStage: stage,
+            batchChunks,
+            batchChunkLimit,
+          }),
         shouldStop,
-        (done, embedTotal) => onProgress?.({ current, total, filePath: absPath, fileSize, fileStage: 'embedding', batchChunks, batchChunkLimit, embedDone: done, embedTotal }),
+        (done, embedTotal) =>
+          onProgress?.({
+            current,
+            total,
+            filePath: absPath,
+            fileSize,
+            fileStage: 'embedding',
+            batchChunks,
+            batchChunkLimit,
+            embedDone: done,
+            embedTotal,
+          }),
       );
       const prepMs = performance.now() - tPrep;
       totalPrepareMs += prepMs;
 
       if (prepMs > 500) {
         const fileName = absPath.split(/[\\/]/).pop() ?? absPath;
-        console.log(`[index]   SLOW file: ${fileName} → ${prepMs.toFixed(0)}ms (${prepared.chunks.length} chunks)`);
+        console.log(
+          `[index]   SLOW file: ${fileName} → ${prepMs.toFixed(0)}ms (${prepared.chunks.length} chunks)`,
+        );
       }
 
       batch.push({
-        upsert: { storedKey, chunks: prepared.chunks, embeddings: prepared.embeddings, mtimeMs: prepared.mtimeMs, fileMetadata: prepared.fileMetadata },
-        info: { absPath, storedKey, chunkCount: prepared.chunks.length, durationMs: prepMs, mtimeMs: prepared.mtimeMs },
+        upsert: {
+          storedKey,
+          chunks: prepared.chunks,
+          embeddings: prepared.embeddings,
+          mtimeMs: prepared.mtimeMs,
+          fileMetadata: prepared.fileMetadata,
+        },
+        info: {
+          absPath,
+          storedKey,
+          chunkCount: prepared.chunks.length,
+          durationMs: prepMs,
+          mtimeMs: prepared.mtimeMs,
+        },
       });
       batchChunks += prepared.chunks.length;
 

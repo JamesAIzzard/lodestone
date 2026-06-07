@@ -8,23 +8,23 @@
  * the page its content actually lives on.
  */
 
-import type { ExtractionResult, ChunkRecord } from '../pipeline-types';
+import type { ExtractionResult, FileInfo, ChunkOutput } from '../pipeline-types';
 import type { PdfParagraph } from '../extractors/pdf';
 import { estimateTokens, hashText, subSplitText, mergeUpTo } from '../chunk-utils';
 
 /**
- * Chunk PDF extraction result into paragraph-based ChunkRecords.
+ * Chunk PDF extraction result into paragraph-based ChunkOutputs.
  *
  * Merges paragraphs across pages up to maxChunkTokens, then sub-splits
  * any oversized paragraphs on sentence/line boundaries.
  */
 export function chunkPdf(
-  filePath: string,
   extraction: ExtractionResult,
+  fileInfo: FileInfo,
   maxChunkTokens: number,
-): ChunkRecord[] {
+): ChunkOutput[] {
   const paragraphs = extraction.metadata.paragraphs as PdfParagraph[] | undefined;
-  const filename = filePath.split(/[/\\]/).pop() ?? filePath;
+  const { basename } = fileInfo;
 
   // Fallback: if no paragraphs in metadata (shouldn't happen with updated
   // extractor, but defensive), fall back to body split
@@ -32,9 +32,8 @@ export function chunkPdf(
     if (!extraction.body.trim()) return [];
 
     return [{
-      filePath,
       chunkIndex: 0,
-      sectionPath: [filename],
+      sectionPath: [basename],
       text: extraction.body,
       locationHint: { type: 'page', page: 1 },
 
@@ -75,18 +74,17 @@ export function chunkPdf(
     merged.push({ text: currentText, page: currentPage });
   }
 
-  // Sub-split any oversized groups, then build ChunkRecords
-  const chunks: ChunkRecord[] = [];
+  // Sub-split any oversized groups, then build ChunkOutputs
+  const chunks: ChunkOutput[] = [];
 
   for (const group of merged) {
     if (estimateTokens(group.text) <= maxChunkTokens) {
       chunks.push({
-        filePath,
         chunkIndex: chunks.length,
-        sectionPath: [filename],
+        sectionPath: [basename],
         text: group.text,
         locationHint: { type: 'page', page: group.page },
-  
+
         contentHash: hashText(group.text),
       });
     } else {
@@ -94,12 +92,11 @@ export function chunkPdf(
       const parts = subSplitText(group.text, maxChunkTokens);
       for (const part of parts) {
         chunks.push({
-          filePath,
           chunkIndex: chunks.length,
-          sectionPath: [filename],
+          sectionPath: [basename],
           text: part,
           locationHint: { type: 'page', page: group.page },
-    
+
           contentHash: hashText(part),
         });
       }

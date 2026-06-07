@@ -1,12 +1,18 @@
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { chunkCodeAsync } from './code';
+import { chunkCode } from './code';
 import { extractCode } from '../extractors/code';
 import type { ExtractionResult } from '../pipeline-types';
 
-// Helper: extract then async-chunk in one step
-async function chunkCode(filePath: string, content: string, maxChunkTokens = 8192) {
+// Helper: extract then chunk in one step.
+// Derives FileInfo from the path the same way the pipeline driver does.
+async function extractAndChunk(filePath: string, content: string, maxChunkTokens = 8192) {
   const extraction = extractCode(content);
-  return chunkCodeAsync(filePath, extraction, maxChunkTokens);
+  const fileInfo = {
+    extension: path.extname(filePath).toLowerCase(),
+    basename: path.basename(filePath),
+  };
+  return chunkCode(extraction, fileInfo, maxChunkTokens);
 }
 
 // ── extractCode ──────────────────────────────────────────────────────────────
@@ -35,11 +41,19 @@ describe('extractCode', () => {
     const result = extractCode('');
     expect(result.body).toBe('');
   });
+
+  it('preserves leading and trailing whitespace', () => {
+    // Critical for downstream chunkers: trimming would shift Tree-sitter row 0
+    // away from the file's actual line 1, throwing off chunk line numbers.
+    const content = '\n\nfunction hello() {}\n\n';
+    const result = extractCode(content);
+    expect(result.body).toBe(content);
+  });
 });
 
-// ── chunkCodeAsync — TypeScript ──────────────────────────────────────────────
+// ── chunkCode — TypeScript ──────────────────────────────────────────────
 
-describe('chunkCodeAsync — TypeScript', () => {
+describe('chunkCode — TypeScript', () => {
   it('produces separate chunks for each top-level definition', async () => {
     const content = `import { something } from 'somewhere';
 
@@ -74,7 +88,7 @@ export enum Status {
 export const helper = (x: number): number => x * 2;
 `;
 
-    const chunks = await chunkCode('/test/example.ts', content);
+    const chunks = await extractAndChunk('/test/example.ts', content);
 
     // Should have: preamble (import), function, class, interface, type, enum, const
     expect(chunks.length).toBeGreaterThanOrEqual(5);
@@ -105,7 +119,7 @@ function processFile(path: string): string {
 }
 `;
 
-    const chunks = await chunkCode('/test/jsdoc.ts', content);
+    const chunks = await extractAndChunk('/test/jsdoc.ts', content);
 
     // The JSDoc comment should be part of the function chunk
     const fnChunk = chunks.find((c) => c.sectionPath.includes('processFile'));
@@ -127,7 +141,7 @@ export function doWork(): void {
 }
 `;
 
-    const chunks = await chunkCode('/test/preamble.ts', content);
+    const chunks = await extractAndChunk('/test/preamble.ts', content);
 
     // Should have a preamble and a function
     expect(chunks.length).toBeGreaterThanOrEqual(2);
@@ -135,6 +149,15 @@ export function doWork(): void {
     // The preamble should contain imports
     const preamble = chunks[0];
     expect(preamble.text).toContain("import fs from 'node:fs'");
+  });
+
+  it('reports correct line numbers when file starts with blank lines', async () => {
+    const content = `\n\n\nfunction first(): void {\n  console.log('first');\n}\n`;
+    const chunks = await extractAndChunk('/test/leading-blanks.ts', content);
+    const fn = chunks.find((c) => c.sectionPath.includes('first'));
+    expect(fn).toBeDefined();
+    // Function declaration is on the original file's line 4, not line 1.
+    expect(fn!.locationHint).toEqual(expect.objectContaining({ type: 'lines', start: 4 }));
   });
 
   it('has correct line numbers', async () => {
@@ -147,7 +170,7 @@ function second(): void {
 }
 `;
 
-    const chunks = await chunkCode('/test/lines.ts', content);
+    const chunks = await extractAndChunk('/test/lines.ts', content);
 
     const first = chunks.find((c) => c.sectionPath.includes('first'));
     const second = chunks.find((c) => c.sectionPath.includes('second'));
@@ -165,7 +188,7 @@ function second(): void {
 function b(): number { return 2; }
 `;
 
-    const chunks = await chunkCode('/test/hashes.ts', content);
+    const chunks = await extractAndChunk('/test/hashes.ts', content);
     const hashes = chunks.map((c) => c.contentHash);
     const uniqueHashes = new Set(hashes);
     expect(uniqueHashes.size).toBe(hashes.length);
@@ -177,16 +200,16 @@ function b() {}
 function c() {}
 `;
 
-    const chunks = await chunkCode('/test/indices.ts', content);
+    const chunks = await extractAndChunk('/test/indices.ts', content);
     expect(chunks.map((c) => c.chunkIndex)).toEqual(
       Array.from({ length: chunks.length }, (_, i) => i),
     );
   });
 });
 
-// ── chunkCodeAsync — Python ──────────────────────────────────────────────────
+// ── chunkCode — Python ──────────────────────────────────────────────────
 
-describe('chunkCodeAsync — Python', () => {
+describe('chunkCode — Python', () => {
   it('splits Python functions and classes', async () => {
     const content = `import os
 import sys
@@ -211,7 +234,7 @@ class DataManager:
         pass
 `;
 
-    const chunks = await chunkCode('/test/example.py', content);
+    const chunks = await extractAndChunk('/test/example.py', content);
 
     // Should have: preamble (imports), function, class
     expect(chunks.length).toBeGreaterThanOrEqual(2);
@@ -236,7 +259,7 @@ def decorated_function():
     pass
 `;
 
-    const chunks = await chunkCode('/test/decorators.py', content);
+    const chunks = await extractAndChunk('/test/decorators.py', content);
 
     const decoratedChunk = chunks.find((c) => c.sectionPath.includes('decorated_function'));
     expect(decoratedChunk).toBeDefined();
@@ -253,7 +276,7 @@ if __name__ == "__main__":
     main()
 `;
 
-    const chunks = await chunkCode('/test/script.py', content);
+    const chunks = await extractAndChunk('/test/script.py', content);
 
     // The main function should be found and chunked correctly
     const mainFn = chunks.find((c) => c.sectionPath.includes('main'));
@@ -262,9 +285,9 @@ if __name__ == "__main__":
   });
 });
 
-// ── chunkCodeAsync — Oversized definitions ───────────────────────────────────
+// ── chunkCode — Oversized definitions ───────────────────────────────────
 
-describe('chunkCodeAsync — oversized definitions', () => {
+describe('chunkCode — oversized definitions', () => {
   it('sub-splits a very large function', async () => {
     // Create a function that is unambiguously oversized.
     // estimateTokens = Math.ceil(text.length / 4), so maxChunkTokens=50 means
@@ -275,7 +298,7 @@ describe('chunkCodeAsync — oversized definitions', () => {
     );
     const content = `function bigFunction(): void {\n${lines.join('\n')}\n}`;
 
-    const chunks = await chunkCode('/test/big.ts', content, 50);
+    const chunks = await extractAndChunk('/test/big.ts', content, 50);
 
     // Should be sub-split into multiple chunks
     expect(chunks.length).toBeGreaterThan(1);
@@ -287,11 +310,11 @@ describe('chunkCodeAsync — oversized definitions', () => {
   });
 });
 
-// ── chunkCodeAsync — Empty and edge cases ────────────────────────────────────
+// ── chunkCode — Empty and edge cases ────────────────────────────────────
 
-describe('chunkCodeAsync — edge cases', () => {
+describe('chunkCode — edge cases', () => {
   it('returns empty array for empty file', async () => {
-    const chunks = await chunkCode('/test/empty.ts', '');
+    const chunks = await extractAndChunk('/test/empty.ts', '');
     expect(chunks).toEqual([]);
   });
 
@@ -301,7 +324,7 @@ describe('chunkCodeAsync — edge cases', () => {
 /* Block comment */
 `;
 
-    const chunks = await chunkCode('/test/comments.ts', content);
+    const chunks = await extractAndChunk('/test/comments.ts', content);
     // Should produce at most one chunk (the comments as preamble)
     expect(chunks.length).toBeLessThanOrEqual(1);
   });
@@ -312,7 +335,11 @@ describe('chunkCodeAsync — edge cases', () => {
       body: content,
       metadata: {},
     };
-    const chunks = await chunkCodeAsync('/test/unknown.xyz', extraction, 8192);
+    const chunks = await chunkCode(
+      extraction,
+      { extension: '.xyz', basename: 'unknown.xyz' },
+      8192,
+    );
 
     // Should still produce chunks (via plaintext fallback)
     expect(chunks.length).toBeGreaterThan(0);
@@ -325,7 +352,7 @@ import path from 'node:path';
 import { something } from './somewhere';
 `;
 
-    const chunks = await chunkCode('/test/imports.ts', content);
+    const chunks = await extractAndChunk('/test/imports.ts', content);
     // Should produce one preamble chunk with all imports
     expect(chunks.length).toBeGreaterThanOrEqual(1);
     expect(chunks[0].text).toContain('import fs');

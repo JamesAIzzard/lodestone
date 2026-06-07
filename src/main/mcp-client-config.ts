@@ -5,7 +5,7 @@ import { parse, stringify } from 'smol-toml';
 const LODESTONE_SERVER_NAME = 'lodestone-files';
 const CODEX_STARTUP_TIMEOUT_SEC = 20;
 
-export type McpClientId = 'claude-desktop' | 'codex-desktop';
+export type McpClientId = 'claude-desktop' | 'claude-code' | 'codex-desktop';
 
 export interface McpClientStatus {
   configPath: string;
@@ -44,6 +44,10 @@ export function getClaudeDesktopConfigPath(appDataDir: string): string {
   return path.join(appDataDir, 'Claude', 'claude_desktop_config.json');
 }
 
+export function getClaudeCodeConfigPath(homeDir: string): string {
+  return path.join(homeDir, '.claude.json');
+}
+
 export function getCodexDesktopConfigPath(homeDir: string): string {
   return path.join(homeDir, '.codex', 'config.toml');
 }
@@ -69,7 +73,7 @@ export function getClaudeDesktopStatus(configPath: string): McpClientStatus {
   };
 }
 
-export function configureClaudeDesktop(
+function configureJsonMcpClient(
   configPath: string,
   wrapperPath: string,
 ): McpClientConfigureResult {
@@ -91,6 +95,32 @@ export function configureClaudeDesktop(
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+export function configureClaudeDesktop(
+  configPath: string,
+  wrapperPath: string,
+): McpClientConfigureResult {
+  return configureJsonMcpClient(configPath, wrapperPath);
+}
+
+export function getClaudeCodeStatus(configPath: string): McpClientStatus {
+  const config = readJsonObject(configPath);
+  const mcpServers = config.mcpServers as Record<string, unknown> | undefined;
+  const claudeDir = path.join(path.dirname(configPath), '.claude');
+
+  return {
+    configPath,
+    hasClient: fs.existsSync(configPath) || fs.existsSync(claudeDir),
+    isConfigured: !!mcpServers?.[LODESTONE_SERVER_NAME],
+  };
+}
+
+export function configureClaudeCode(
+  configPath: string,
+  wrapperPath: string,
+): McpClientConfigureResult {
+  return configureJsonMcpClient(configPath, wrapperPath);
 }
 
 export function getCodexDesktopStatus(configPath: string): McpClientStatus {

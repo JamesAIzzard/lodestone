@@ -860,7 +860,7 @@ export function registerEditTool(server: McpServer, deps: McpServerDeps, puid: P
         deps.notifyActivity?.({ channel: 'silo' });
         // â”€â”€ Collect silo directories (needed by all operations) â”€â”€
         const statusResult = await deps.silo.status();
-        const siloDirectories = statusResult.silos.flatMap((s) => s.config.directories);
+        const siloDirectories = statusResult.silos.flatMap((s) => s.config.indexedDirectories);
         const ctx: HandlerContext = { deps, puid, siloDirectories };
 
         switch (operation) {

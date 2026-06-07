@@ -13,14 +13,13 @@ import type {
 export interface StoredSiloConfigResponse {
   config: {
     name: string;
-    description?: string;
-    directories: string[];
-    extensions: string[];
-    ignore: string[];
-    ignoreFiles: string[];
-    model: string;
-    color?: string;
-    icon?: string;
+    contentDescription?: string;
+    indexedDirectories: string[];
+    indexedFileExtensions: string[];
+    ignoredFolderPatterns: string[];
+    ignoredFilePatterns: string[];
+    accentColor?: string;
+    iconName?: string;
   } | null;
   meta: {
     model: string;
@@ -28,7 +27,7 @@ export interface StoredSiloConfigResponse {
   } | null;
 }
 
-export type McpClientId = 'claude-desktop' | 'codex-desktop';
+export type McpClientId = 'claude-desktop' | 'claude-code' | 'codex-desktop';
 
 export interface McpClientStatus {
   configPath: string;
@@ -55,13 +54,12 @@ export interface ElectronAPI {
   getSilos: () => Promise<SiloStatus[]>;
   createSilo: (opts: {
     name: string;
-    directories: string[];
-    extensions: string[];
-    dbPath: string;
-    model: string;
-    description?: string;
-    color?: string;
-    icon?: string;
+    indexedDirectories: string[];
+    indexedFileExtensions: string[];
+    indexDbPath: string;
+    contentDescription?: string;
+    accentColor?: string;
+    iconName?: string;
     mode?: 'new' | 'existing';
   }) => Promise<{ success: boolean; error?: string }>;
   deleteSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
@@ -69,17 +67,15 @@ export interface ElectronAPI {
   stopSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   wakeSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   rescanSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
-  rebuildSilo: (name: string) => Promise<{ success: boolean; error?: string }>;
   updateSilo: (
     name: string,
     updates: {
-      description?: string;
-      model?: string;
-      ignore?: string[];
-      ignoreFiles?: string[];
-      extensions?: string[];
-      color?: string;
-      icon?: string;
+      contentDescription?: string;
+      ignoredFolderPatterns?: string[];
+      ignoredFilePatterns?: string[];
+      indexedFileExtensions?: string[];
+      accentColor?: string;
+      iconName?: string;
     },
   ) => Promise<{ success: boolean; error?: string }>;
   search: (params: SearchParams, siloName?: string) => Promise<SearchResult[]>;

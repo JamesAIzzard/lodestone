@@ -43,7 +43,10 @@
       "Bash(npx wrangler vectorize create lodestone-memory-vectors-dev --dimensions=768 --metric=cosine)",
       "mcp__lodestone-files__lodestone_status",
       "mcp__lodestone-files-dev__lodestone_status",
-      "mcp__lodestone-files-dev__lodestone_guide"
+      "mcp__lodestone-files-dev__lodestone_guide",
+      "mcp__lodestone-files__lodestone_guide",
+      "Bash(cd \"C:\\\\Users\\\\James\\\\Documents\\\\lodestone\"; npx tsc --noEmit 2>&1 | head -40)",
+      "Read(//c/Users/James/Documents/lodestone/**)"
     ]
   },
   "enabledMcpjsonServers": [

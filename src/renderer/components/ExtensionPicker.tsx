@@ -3,8 +3,7 @@ import { X } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { cn } from '@/lib/utils';
-
-const COMMON_EXTENSIONS = ['.md', '.txt', '.py', '.ts', '.tsx', '.js', '.jsx', '.toml', '.yaml', '.json', '.pdf', '.rs', '.go', '.java'];
+import { PICKER_EXTENSIONS } from '../../shared/file-types';
 
 interface ExtensionPickerProps {
   extensions: string[];
@@ -81,8 +80,8 @@ export default function ExtensionPicker({
         <div className="flex gap-2">
           <button
             onClick={() => {
-              const custom = extensions.filter((e) => !COMMON_EXTENSIONS.includes(e));
-              onChange([...COMMON_EXTENSIONS, ...custom]);
+              const custom = extensions.filter((e) => !PICKER_EXTENSIONS.includes(e));
+              onChange([...PICKER_EXTENSIONS, ...custom]);
             }}
             className="text-[10px] text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2"
           >
@@ -90,7 +89,7 @@ export default function ExtensionPicker({
           </button>
           <button
             onClick={() => {
-              const custom = extensions.filter((e) => !COMMON_EXTENSIONS.includes(e));
+              const custom = extensions.filter((e) => !PICKER_EXTENSIONS.includes(e));
               onChange(custom);
             }}
             className="text-[10px] text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2"
@@ -103,7 +102,7 @@ export default function ExtensionPicker({
       {/* Toggle chips for common extensions */}
       {!disabled && (
         <div className="flex flex-wrap gap-1.5">
-          {COMMON_EXTENSIONS.map((ext) => (
+          {PICKER_EXTENSIONS.map((ext) => (
             <button
               key={ext}
               onClick={() => toggleExtension(ext)}
@@ -122,7 +121,7 @@ export default function ExtensionPicker({
 
       {/* Removable pills for active extensions not in the common list */}
       {(() => {
-        const customActive = extensions.filter((ext) => !COMMON_EXTENSIONS.includes(ext));
+        const customActive = extensions.filter((ext) => !PICKER_EXTENSIONS.includes(ext));
         if (customActive.length === 0) return null;
         return (
           <div className="flex flex-wrap gap-1.5">

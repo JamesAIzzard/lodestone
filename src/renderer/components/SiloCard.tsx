@@ -66,8 +66,7 @@ export default function SiloCard({
     setTimeout(() => setCopiedPath(null), 2000);
   }, []);
   const state = stateConfig[watcherState];
-  const colorClasses = SILO_COLOR_MAP[config.color];
-  const hasModelOverride = config.modelOverride !== null;
+  const colorClasses = SILO_COLOR_MAP[config.accentColor];
   const isStopped = watcherState === 'stopped';
   const isWaiting = watcherState === 'waiting';
   const isActive = watcherState === 'indexing';
@@ -207,11 +206,11 @@ export default function SiloCard({
           </div>
         </div>
         <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground truncate">
-          <SiloIcon icon={config.icon} className={cn('h-3.5 w-3.5 shrink-0', colorClasses.text)} />
+          <SiloIcon icon={config.iconName} className={cn('h-3.5 w-3.5 shrink-0', colorClasses.text)} />
           {config.name}
         </h3>
-        {config.description && (
-          <p className="text-xs text-muted-foreground/70 truncate">{config.description}</p>
+        {config.contentDescription && (
+          <p className="text-xs text-muted-foreground/70 truncate">{config.contentDescription}</p>
         )}
       </div>
 
@@ -294,26 +293,12 @@ export default function SiloCard({
                   ? `~${formatBytes(silo.databaseSizeBytes)}`
                   : formatBytes(silo.databaseSizeBytes)}
               </span>
-              {silo.modelMismatch && (
-                <span className="flex items-center gap-1 text-amber-400 mt-0.5">
-                  <AlertTriangle className="h-3 w-3 shrink-0" />
-                  Model mismatch — rebuild required
-                </span>
-              )}
               {silo.errorMessage && (
                 <span className="flex items-start gap-1 text-red-400 mt-0.5">
                   <AlertTriangle className="h-3 w-3 shrink-0 mt-px" />
                   <span className="line-clamp-2 break-words">{silo.errorMessage}</span>
                 </span>
               )}
-              <span
-                className={cn(
-                  'block mt-0.5',
-                  hasModelOverride ? 'text-amber-400/80' : 'text-muted-foreground/50',
-                )}
-              >
-                {silo.resolvedModel}
-              </span>
             </div>
           </div>
 
@@ -322,7 +307,7 @@ export default function SiloCard({
 
           {/* Directories group */}
           <div className="flex flex-col gap-1">
-            {config.directories.map((dir) => (
+            {config.indexedDirectories.map((dir) => (
               <TooltipProvider key={dir} delayDuration={300}>
                 <Tooltip>
                   <TooltipTrigger asChild>

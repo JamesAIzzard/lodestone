@@ -294,7 +294,8 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
 
         for (const silo of silos) {
           lines.push(`## ${silo.config.name}`);
-          if (silo.config.description) lines.push(`Description: ${silo.config.description}`);
+          if (silo.config.contentDescription)
+            lines.push(`Description: ${silo.config.contentDescription}`);
 
           // Show reconciliation progress when indexing
           if (silo.watcherState === 'indexing' && silo.reconcileProgress) {
@@ -309,9 +310,7 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
           lines.push(`Files: ${silo.indexedFileCount.toLocaleString()}`);
           lines.push(`Chunks: ${silo.chunkCount.toLocaleString()}`);
           lines.push(`Size: ${formatBytes(silo.databaseSizeBytes)}`);
-          lines.push(`Model: ${silo.resolvedModel}`);
-          if (silo.modelMismatch) lines.push('Warning: Model mismatch \u2014 rebuild required');
-          lines.push(`Directories: ${silo.config.directories.join(', ')}`);
+          lines.push(`Directories: ${silo.config.indexedDirectories.join(', ')}`);
           lines.push('');
         }
 

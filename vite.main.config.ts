@@ -7,7 +7,7 @@ export default defineConfig({
       // Modules that must NOT be bundled:
       //   - @huggingface/transformers + ONNX: native bindings, complex module resolution
       //   - chokidar: native file-watching (uses fs events)
-      //   - web-tree-sitter: ships a companion tree-sitter.wasm file that Emscripten
+      //   - web-tree-sitter: ships a companion web-tree-sitter.wasm file that Emscripten
       //     locates relative to the JS module. If bundled, the WASM path breaks.
       //   - pdfjs-dist: ships WASM files and requires the legacy build for Node.js;
       //     bundling would break internal module resolution.

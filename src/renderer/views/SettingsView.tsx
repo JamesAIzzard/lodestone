@@ -10,7 +10,6 @@ import {
 } from '@/components/ui/dialog';
 import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
 import ExtensionPicker from '@/components/ExtensionPicker';
-import type { ServerStatus } from '../../shared/types';
 import type {
   McpClientConfigureResult,
   McpClientId,
@@ -30,6 +29,12 @@ const MCP_CLIENTS: Array<{
     restartLabel: 'Claude Desktop',
   },
   {
+    id: 'claude-code',
+    label: 'Claude Code',
+    fallbackConfigName: '.claude.json',
+    restartLabel: 'Claude Code',
+  },
+  {
     id: 'codex-desktop',
     label: 'Codex Desktop',
     fallbackConfigName: 'config.toml',
@@ -38,13 +43,11 @@ const MCP_CLIENTS: Array<{
 ];
 
 export default function SettingsView() {
-  const [status, setStatus] = useState<ServerStatus | null>(null);
-  const [selectedModel, setSelectedModel] = useState('');
   const [extensions, setExtensions] = useState<string[]>([]);
   const [folderIgnore, setFolderIgnore] = useState<string[]>([]);
   const [fileIgnore, setFileIgnore] = useState<string[]>([]);
-  const [debounce, setDebounce] = useState(10);
-  const [activityLogLimit, setActivityLogLimit] = useState(2000);
+  const [fileChangeDelaySeconds, setFileChangeDelaySeconds] = useState(10);
+  const [maxActivityLogEntries, setMaxActivityLogEntries] = useState(2000);
   const [dataDir, setDataDir] = useState('');
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -58,16 +61,12 @@ export default function SettingsView() {
   const [appVersion, setAppVersion] = useState<string | null>(null);
 
   useEffect(() => {
-    window.electronAPI?.getServerStatus().then((s) => {
-      setStatus(s);
-      setSelectedModel(s.defaultModel);
-    });
     window.electronAPI?.getDefaults().then((d) => {
-      setExtensions(d.extensions);
-      setFolderIgnore(d.ignore);
-      setFileIgnore(d.ignoreFiles);
-      setDebounce(d.debounce);
-      setActivityLogLimit(d.activityLogLimit);
+      setExtensions(d.indexedFileExtensions);
+      setFolderIgnore(d.ignoredFolderPatterns);
+      setFileIgnore(d.ignoredFilePatterns);
+      setFileChangeDelaySeconds(d.fileChangeDelaySeconds);
+      setMaxActivityLogEntries(d.maxActivityLogEntries);
     });
     window.electronAPI?.getDataDir().then((dir) => setDataDir(dir));
     for (const client of MCP_CLIENTS) {
@@ -83,29 +82,29 @@ export default function SettingsView() {
 
   function handleExtensionsChange(updated: string[]) {
     setExtensions(updated);
-    window.electronAPI?.updateDefaults({ extensions: updated });
+    window.electronAPI?.updateDefaults({ indexedFileExtensions: updated });
   }
 
   function handleFolderIgnoreChange(patterns: string[]) {
     setFolderIgnore(patterns);
-    window.electronAPI?.updateDefaults({ ignore: patterns });
+    window.electronAPI?.updateDefaults({ ignoredFolderPatterns: patterns });
   }
 
   function handleFileIgnoreChange(patterns: string[]) {
     setFileIgnore(patterns);
-    window.electronAPI?.updateDefaults({ ignoreFiles: patterns });
+    window.electronAPI?.updateDefaults({ ignoredFilePatterns: patterns });
   }
 
   function handleDebounceChange(value: number) {
     const clamped = Math.max(1, value);
-    setDebounce(clamped);
-    window.electronAPI?.updateDefaults({ debounce: clamped });
+    setFileChangeDelaySeconds(clamped);
+    window.electronAPI?.updateDefaults({ fileChangeDelaySeconds: clamped });
   }
 
   function handleActivityLogLimitChange(value: number) {
     const clamped = Math.max(100, Math.min(50000, value));
-    setActivityLogLimit(clamped);
-    window.electronAPI?.updateDefaults({ activityLogLimit: clamped });
+    setMaxActivityLogEntries(clamped);
+    window.electronAPI?.updateDefaults({ maxActivityLogEntries: clamped });
   }
 
   async function handleResetAll() {
@@ -150,15 +149,6 @@ export default function SettingsView() {
     if (dataDir) window.electronAPI?.openPath(dataDir);
   }
 
-  // Build model list from server status
-  const availableModels: string[] = [];
-  if (status) {
-    availableModels.push(...status.availableModels);
-  }
-  if (availableModels.length === 0) {
-    availableModels.push('snowflake-arctic-embed-xs');
-  }
-
   const selectedMcpClientInfo =
     MCP_CLIENTS.find((client) => client.id === selectedMcpClient) ?? MCP_CLIENTS[0];
   const selectedMcpClientStatus = mcpClientStatuses[selectedMcpClient] ?? null;
@@ -168,24 +158,6 @@ export default function SettingsView() {
       <h1 className="mb-8 text-lg font-semibold text-foreground">Settings</h1>
 
       <div className="flex flex-col gap-10 max-w-2xl">
-        {/* ── Default Embedding Model ──────────────────────────── */}
-        <Section
-          title="Default Embedding Model"
-          description="Applies to newly created silos. Existing silos are not affected."
-        >
-          <select
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            {availableModels.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </Section>
-
         {/* ── Default File Extensions ──────────────────────────── */}
         <Section
           title="Default File Extensions"
@@ -214,13 +186,15 @@ export default function SettingsView() {
         >
           <div className="flex flex-col gap-4">
             <div>
-              <label className="mb-1.5 block text-xs text-muted-foreground">Debounce delay</label>
+              <label className="mb-1.5 block text-xs text-muted-foreground">
+                File change delay
+              </label>
               <div className="flex items-center gap-3">
                 <input
                   type="number"
                   min={1}
                   step={1}
-                  value={debounce}
+                  value={fileChangeDelaySeconds}
                   onChange={(e) => handleDebounceChange(Number(e.target.value))}
                   className="h-9 w-24 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 />
@@ -237,7 +211,7 @@ export default function SettingsView() {
                   min={100}
                   max={50000}
                   step={100}
-                  value={activityLogLimit}
+                  value={maxActivityLogEntries}
                   onChange={(e) => handleActivityLogLimitChange(Number(e.target.value))}
                   className="h-9 w-28 rounded-md border border-input bg-background px-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 />
@@ -331,7 +305,7 @@ export default function SettingsView() {
                 Open Data Folder
               </Button>
               <p className="mt-2 text-xs text-muted-foreground/60">
-                All configuration, databases, and model cache are stored here.
+                All configuration, databases, and local app data are stored here.
               </p>
             </div>
             <div>

@@ -1,13 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  CheckCircle2,
-  Loader2,
-  XCircle,
-  FolderOpen,
-  X,
-  ArrowRight,
-} from 'lucide-react';
+import { CheckCircle2, Loader2, XCircle, FolderOpen, X, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { toSlug } from '@/lib/format';
@@ -20,41 +13,26 @@ export default function OnboardingView() {
   const [stepIndex, setStepIndex] = useState(0);
   const step = STEPS[stepIndex];
 
-  const [serverModels, setServerModels] = useState<string[]>([]);
-  const [defaultModel, setDefaultModel] = useState('snowflake-arctic-embed-xs');
-
   // Step 1 state
   const [siloName, setSiloName] = useState('');
   const [directories, setDirectories] = useState<string[]>([]);
   const [extensions, setExtensions] = useState<string[]>(['.md', '.py']);
-  const [model, setModel] = useState('');
 
   // Step 2 state
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [indexDone, setIndexDone] = useState(false);
-  const [indexProgress, setIndexProgress] = useState<{ current: number; total: number } | null>(null);
+  const [indexProgress, setIndexProgress] = useState<{ current: number; total: number } | null>(
+    null,
+  );
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Load server model defaults and default extensions on mount
+  // Load default extensions on mount
   useEffect(() => {
-    window.electronAPI?.getServerStatus().then((status) => {
-      if (!status) return;
-      setServerModels(status.availableModels);
-      setDefaultModel(status.defaultModel);
-      setModel(status.defaultModel);
-    });
     window.electronAPI?.getDefaults().then((defaults) => {
-      setExtensions(defaults.extensions);
+      setExtensions(defaults.indexedFileExtensions);
     });
   }, []);
-
-  // Set model to default once loaded
-  useEffect(() => {
-    if (defaultModel && !model) {
-      setModel(defaultModel);
-    }
-  }, [defaultModel, model]);
 
   // Poll indexing progress in step 3
   useEffect(() => {
@@ -108,10 +86,9 @@ export default function OnboardingView() {
       const slug = toSlug(siloName);
       const result = await window.electronAPI?.createSilo({
         name: slug,
-        directories,
-        extensions,
-        dbPath: `${slug}.db`,
-        model: model || defaultModel,
+        indexedDirectories: directories,
+        indexedFileExtensions: extensions,
+        indexDbPath: `${slug}.db`,
       });
 
       setCreating(false);
@@ -160,19 +137,10 @@ export default function OnboardingView() {
                   i > stepIndex && 'bg-muted text-muted-foreground',
                 )}
               >
-                {i < stepIndex ? (
-                  <CheckCircle2 className="h-4 w-4" />
-                ) : (
-                  i + 1
-                )}
+                {i < stepIndex ? <CheckCircle2 className="h-4 w-4" /> : i + 1}
               </div>
               {i < STEPS.length - 1 && (
-                <div
-                  className={cn(
-                    'h-px w-12',
-                    i < stepIndex ? 'bg-primary' : 'bg-muted',
-                  )}
-                />
+                <div className={cn('h-px w-12', i < stepIndex ? 'bg-primary' : 'bg-muted')} />
               )}
             </div>
           ))}
@@ -230,26 +198,6 @@ export default function OnboardingView() {
                 File Extensions
               </label>
               <ExtensionPicker extensions={extensions} onChange={setExtensions} />
-
-              {/* Model */}
-              <label className="mt-4 mb-1.5 block text-xs text-muted-foreground">
-                Embedding Model
-              </label>
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="h-8 w-full rounded-md border border-input bg-background px-3 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                {serverModels.length > 0 ? (
-                  serverModels.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))
-                ) : (
-                  <option value={defaultModel}>{defaultModel}</option>
-                )}
-              </select>
             </div>
           )}
 
@@ -258,7 +206,8 @@ export default function OnboardingView() {
             <div>
               <h2 className="text-sm font-medium text-foreground">Indexing Your Files</h2>
               <p className="mt-1 text-xs text-muted-foreground">
-                Building the search index for <span className="text-foreground">{siloName || 'your silo'}</span>.
+                Building the search index for{' '}
+                <span className="text-foreground">{siloName || 'your silo'}</span>.
               </p>
 
               <div className="mt-6">
@@ -283,9 +232,10 @@ export default function OnboardingView() {
                       <div
                         className="h-full rounded-full bg-primary transition-all duration-300"
                         style={{
-                          width: indexProgress && indexProgress.total > 0
-                            ? `${(indexProgress.current / indexProgress.total) * 100}%`
-                            : '0%',
+                          width:
+                            indexProgress && indexProgress.total > 0
+                              ? `${(indexProgress.current / indexProgress.total) * 100}%`
+                              : '0%',
                         }}
                       />
                     </div>

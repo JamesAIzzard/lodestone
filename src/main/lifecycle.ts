@@ -3,11 +3,11 @@
  */
 
 import {
-  loadConfig,
-  saveConfig,
-  createDefaultConfig,
-  configExists,
-  resolveSiloConfig,
+  loadLodestoneConfig,
+  saveLodestoneConfig,
+  createDefaultLodestoneConfig,
+  lodestoneConfigFileExists,
+  resolveSiloRuntimeConfig,
 } from '../backend/config';
 import { SiloManager } from '../backend/silo-manager';
 import type { AppContext } from './context';
@@ -28,17 +28,17 @@ export function notifySilosChanged(ctx: AppContext): void {
 export function loadOrInitConfig(ctx: AppContext): void {
   const configPath = ctx.configPath();
 
-  if (configExists(configPath)) {
+  if (lodestoneConfigFileExists(configPath)) {
     try {
-      ctx.config = loadConfig(configPath);
+      ctx.config = loadLodestoneConfig(configPath);
       console.log(`[main] Loaded config from ${configPath}`);
     } catch (err) {
       console.error('[main] Failed to load config:', err);
-      ctx.config = createDefaultConfig();
+      ctx.config = createDefaultLodestoneConfig();
     }
   } else {
-    ctx.config = createDefaultConfig();
-    saveConfig(configPath, ctx.config);
+    ctx.config = createDefaultLodestoneConfig();
+    saveLodestoneConfig(configPath, ctx.config);
     console.log(`[main] Created default config at ${configPath}`);
   }
 }
@@ -64,8 +64,8 @@ export function registerManager(
   name: string,
   siloToml: import('../backend/config').SiloTomlConfig,
 ): SiloManager {
-  const resolved = resolveSiloConfig(name, siloToml, ctx.config!);
-  const embeddingService = ctx.getOrCreateEmbeddingService(resolved.model);
+  const resolved = resolveSiloRuntimeConfig(name, siloToml, ctx.config!);
+  const embeddingService = ctx.getOrCreateEmbeddingService();
   const manager = new SiloManager(
     resolved,
     embeddingService,
@@ -77,7 +77,7 @@ export function registerManager(
   attachActivityForwarding(ctx, manager);
   manager.onStateChange(() => notifySilosChanged(ctx));
 
-  if (resolved.stopped) {
+  if (resolved.isStopped) {
     manager.loadStoppedStatus();
     console.log(`[main] Silo "${name}" is stopped`);
   } else {
@@ -110,8 +110,8 @@ export async function stopSilo(
   if (ctx.config) {
     const siloToml = ctx.config.silos[name];
     if (siloToml) {
-      siloToml.stopped = true;
-      saveConfig(ctx.configPath(), ctx.config);
+      siloToml.is_stopped = true;
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
     }
   }
 
@@ -130,8 +130,8 @@ export async function wakeSilo(
   if (ctx.config) {
     const siloToml = ctx.config.silos[name];
     if (siloToml) {
-      delete siloToml.stopped;
-      saveConfig(ctx.configPath(), ctx.config);
+      delete siloToml.is_stopped;
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
     }
   }
 
@@ -154,13 +154,13 @@ export async function shutdownBackend(ctx: AppContext): Promise<void> {
   }
   ctx.siloManagers.clear();
 
-  for (const [modelId, service] of ctx.embeddingServices) {
+  if (ctx.embeddingService) {
     try {
-      await service.dispose();
-      console.log(`[main] Embedding service "${modelId}" disposed`);
+      await ctx.embeddingService.dispose();
+      console.log('[main] Embedding service disposed');
     } catch (err) {
-      console.error(`[main] Error disposing embedding service "${modelId}":`, err);
+      console.error('[main] Error disposing embedding service:', err);
     }
+    ctx.embeddingService = null;
   }
-  ctx.embeddingServices.clear();
 }

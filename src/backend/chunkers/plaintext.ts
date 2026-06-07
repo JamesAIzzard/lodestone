@@ -6,7 +6,7 @@
  * section path for all chunks.
  */
 
-import type { ExtractionResult, ChunkRecord } from '../pipeline-types';
+import type { ExtractionResult, FileInfo, ChunkOutput } from '../pipeline-types';
 import { estimateTokens, hashText, subSplitText, mergeUpTo } from '../chunk-utils';
 
 /**
@@ -16,28 +16,26 @@ import { estimateTokens, hashText, subSplitText, mergeUpTo } from '../chunk-util
  * Oversized paragraphs are further split on sentence boundaries.
  */
 export function chunkPlaintext(
-  filePath: string,
   extraction: ExtractionResult,
+  fileInfo: FileInfo,
   maxChunkTokens: number,
-): ChunkRecord[] {
+): ChunkOutput[] {
   const { body } = extraction;
 
   if (body.length === 0) {
     return [];
   }
 
-  const filename = filePath.split(/[/\\]/).pop() ?? filePath;
+  const { basename } = fileInfo;
 
   // If the whole file fits in one chunk, return it directly
   if (estimateTokens(body) <= maxChunkTokens) {
     const lineCount = body.split('\n').length;
     return [{
-      filePath,
       chunkIndex: 0,
-      sectionPath: [filename],
+      sectionPath: [basename],
       text: body,
       locationHint: { type: 'lines', start: 1, end: lineCount },
-
       contentHash: hashText(body),
     }];
   }
@@ -56,19 +54,17 @@ export function chunkPlaintext(
     }
   }
 
-  // Build ChunkRecords with approximate line numbers
-  const chunks: ChunkRecord[] = [];
+  // Build ChunkOutputs with approximate line numbers
+  const chunks: ChunkOutput[] = [];
   let lineOffset = 1;
 
   for (const text of segments) {
     const lineCount = text.split('\n').length;
     chunks.push({
-      filePath,
       chunkIndex: chunks.length,
-      sectionPath: [filename],
+      sectionPath: [basename],
       text,
       locationHint: { type: 'lines', start: lineOffset, end: lineOffset + lineCount - 1 },
-
       contentHash: hashText(text),
     });
     // Advance by lines used + blank line separator

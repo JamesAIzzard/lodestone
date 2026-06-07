@@ -7,480 +7,210 @@
  *
  * Fallback: if no grammar is available for a file's extension, or parsing
  * fails, falls back to the plaintext paragraph chunker.
- *
- * Uses web-tree-sitter v0.20.x (WASM build) to avoid native addon packaging
- * issues with Electron. Grammar WASM files are provided by tree-sitter-wasms.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import type Parser from 'web-tree-sitter';
-import type { ExtractionResult, ChunkRecord } from '../pipeline-types';
+import { Parser, type Node } from 'web-tree-sitter';
+import type { ExtractionResult, FileInfo, ChunkOutput } from '../pipeline-types';
 import { estimateTokens, hashText, mergeUpTo } from '../chunk-utils';
 import { chunkPlaintext } from './plaintext';
+import { getCodeGrammar } from '../../shared/file-types';
+import { DEFINITION_TYPES } from './definition-types';
+import { loadGrammar } from './tree-sitter-loader';
 
-// ── Language Registry ────────────────────────────────────────────────────────
-
-/**
- * Maps file extensions to their Tree-sitter grammar name.
- * The grammar name maps to a `tree-sitter-{name}.wasm` file in tree-sitter-wasms.
- */
-const EXTENSION_TO_GRAMMAR: Record<string, string> = {
-  '.ts':   'typescript',
-  '.tsx':  'tsx',
-  '.js':   'javascript',
-  '.jsx':  'tsx',        // JSX is parsed by the TSX grammar
-  '.py':   'python',
-  '.rs':   'rust',
-  '.go':   'go',
-  '.java': 'java',
-  '.c':    'c',
-  '.h':    'c',
-  '.cpp':  'cpp',
-  '.hpp':  'cpp',
-  '.cs':   'c_sharp',
-  '.rb':   'ruby',
-  '.swift':'swift',
-  '.kt':   'kotlin',
-};
-
-/**
- * Top-level AST node types that represent "definitions" — the natural
- * chunk boundaries for each language. Nodes not in this list are treated
- * as inter-definition content (preamble, global vars, etc.).
- */
-const DEFINITION_TYPES: Record<string, string[]> = {
-  typescript: [
-    'function_declaration', 'class_declaration', 'interface_declaration',
-    'type_alias_declaration', 'enum_declaration', 'export_statement',
-    'lexical_declaration', 'abstract_class_declaration', 'module',
-  ],
-  tsx: [
-    'function_declaration', 'class_declaration', 'interface_declaration',
-    'type_alias_declaration', 'enum_declaration', 'export_statement',
-    'lexical_declaration', 'abstract_class_declaration', 'module',
-  ],
-  javascript: [
-    'function_declaration', 'class_declaration', 'export_statement',
-    'lexical_declaration', 'variable_declaration',
-  ],
-  python: [
-    'function_definition', 'class_definition', 'decorated_definition',
-  ],
-  rust: [
-    'function_item', 'struct_item', 'enum_item', 'impl_item',
-    'trait_item', 'mod_item', 'type_item', 'const_item', 'static_item',
-    'use_declaration', 'macro_definition',
-  ],
-  go: [
-    'function_declaration', 'method_declaration', 'type_declaration',
-  ],
-  java: [
-    'class_declaration', 'interface_declaration', 'method_declaration',
-    'enum_declaration', 'annotation_type_declaration',
-  ],
-  c: [
-    'function_definition', 'struct_specifier', 'enum_specifier',
-    'type_definition', 'declaration',
-  ],
-  cpp: [
-    'function_definition', 'class_specifier', 'struct_specifier',
-    'enum_specifier', 'namespace_definition', 'template_declaration',
-    'type_definition', 'declaration',
-  ],
-  c_sharp: [
-    'class_declaration', 'interface_declaration', 'struct_declaration',
-    'enum_declaration', 'method_declaration', 'namespace_declaration',
-  ],
-  ruby: [
-    'method', 'class', 'module', 'singleton_method',
-  ],
-  swift: [
-    'function_declaration', 'class_declaration', 'struct_declaration',
-    'enum_declaration', 'protocol_declaration', 'extension_declaration',
-  ],
-  kotlin: [
-    'function_declaration', 'class_declaration', 'object_declaration',
-    'interface_declaration',
-  ],
-};
-
-// ── Grammar Cache ────────────────────────────────────────────────────────────
-
-/**
- * The Parser class constructor, loaded once from the web-tree-sitter module.
- * In v0.20.x, `Parser` is the default export and `Parser.Language` is a nested class.
- */
-let ParserClass: typeof Parser | null = null;
-
-/** Cached loaded Language instances (grammar name -> Language) */
-const languageCache = new Map<string, Parser.Language>();
-
-/** Whether Tree-sitter WASM runtime has been initialised */
-let initPromise: Promise<void> | null = null;
-
-/**
- * Ensure the Tree-sitter WASM runtime is initialised.
- * Safe to call multiple times — only runs once.
- */
-async function ensureInit(): Promise<void> {
-  if (!initPromise) {
-    initPromise = (async () => {
-      // web-tree-sitter v0.20.x: default export is the Parser class itself
-      const mod = await import('web-tree-sitter');
-      // Handle both CJS-style default and direct named export
-      ParserClass = (mod as any).default ?? mod;
-
-      // Provide locateFile so Emscripten can find tree-sitter.wasm even when
-      // the JS is bundled into a different directory (e.g. .vite/build/).
-      // When web-tree-sitter is externalised the default resolution works,
-      // but this acts as a safety net.
-      const wasmDir = resolveTreeSitterWasmDir();
-      await ParserClass!.init(wasmDir ? {
-        locateFile(scriptName: string) {
-          return path.join(wasmDir, scriptName);
-        },
-      } : undefined);
-    })();
-  }
-  return initPromise;
-}
-
-/**
- * Find the directory containing tree-sitter.wasm by walking upward from
- * __dirname until we hit node_modules/web-tree-sitter/.
- */
-function resolveTreeSitterWasmDir(): string | null {
-  let dir = __dirname;
-  for (let i = 0; i < 10; i++) {
-    const candidate = path.join(dir, 'node_modules', 'web-tree-sitter', 'tree-sitter.wasm');
-    if (fs.existsSync(candidate)) {
-      return path.join(dir, 'node_modules', 'web-tree-sitter');
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-/**
- * Resolve the path to a WASM grammar file.
- * Searches upward from the current file to find node_modules/tree-sitter-wasms/out/.
- */
-function resolveWasmPath(grammarName: string): string | null {
-  const filename = `tree-sitter-${grammarName}.wasm`;
-
-  // Walk upward from __dirname to find node_modules (works in vitest + Electron)
-  let dir = __dirname;
-  for (let i = 0; i < 10; i++) {
-    const candidate = path.join(dir, 'node_modules', 'tree-sitter-wasms', 'out', filename);
-    if (fs.existsSync(candidate)) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-
-  return null;
-}
-
-/**
- * Load a Tree-sitter grammar by name.
- * Returns null if the grammar WASM file is not found.
- */
-async function loadGrammar(grammarName: string): Promise<Parser.Language | null> {
-  const cached = languageCache.get(grammarName);
-  if (cached) return cached;
-
-  await ensureInit();
-  if (!ParserClass) return null;
-
-  try {
-    const wasmPath = resolveWasmPath(grammarName);
-    if (!wasmPath) {
-      console.warn(`[code-chunker] WASM file not found for grammar "${grammarName}"`);
-      return null;
-    }
-
-    const language = await ParserClass.Language.load(wasmPath);
-    languageCache.set(grammarName, language);
-    return language;
-  } catch (err) {
-    console.warn(`[code-chunker] Grammar not available for "${grammarName}":`, err);
-    return null;
-  }
-}
-
-// ── Chunker ──────────────────────────────────────────────────────────────────
-
-/**
- * Async code chunker — the real implementation.
- * Parses source code with Tree-sitter and splits by top-level definitions.
- */
-export async function chunkCodeAsync(
-  filePath: string,
+export async function chunkCode(
   extraction: ExtractionResult,
+  fileInfo: FileInfo,
   maxChunkTokens: number,
-): Promise<ChunkRecord[]> {
+): Promise<ChunkOutput[]> {
   const { body } = extraction;
-
   if (body.length === 0) return [];
 
-  const ext = path.extname(filePath).toLowerCase();
-  const grammarName = EXTENSION_TO_GRAMMAR[ext];
-
-  if (!grammarName) {
-    return chunkPlaintext(filePath, extraction, maxChunkTokens);
-  }
+  const grammarName = getCodeGrammar(fileInfo.extension);
+  if (!grammarName) return chunkPlaintext(extraction, fileInfo, maxChunkTokens);
 
   const definitionTypes = DEFINITION_TYPES[grammarName];
-  if (!definitionTypes) {
-    return chunkPlaintext(filePath, extraction, maxChunkTokens);
-  }
+  if (!definitionTypes) return chunkPlaintext(extraction, fileInfo, maxChunkTokens);
 
   const language = await loadGrammar(grammarName);
-  if (!language) {
-    return chunkPlaintext(filePath, extraction, maxChunkTokens);
-  }
+  if (!language) return chunkPlaintext(extraction, fileInfo, maxChunkTokens);
 
+  const parser = new Parser();
+  parser.setLanguage(language);
   try {
-    return parseAndChunk(filePath, body, language, definitionTypes, maxChunkTokens);
+    return chunkByDefinitions(body, fileInfo.basename, parser, definitionTypes, maxChunkTokens);
   } catch (err) {
-    console.warn(`[code-chunker] Parse failed for ${filePath}, falling back to plaintext:`, err);
-    return chunkPlaintext(filePath, extraction, maxChunkTokens);
+    console.warn(
+      `[code-chunker] Parse failed for ${fileInfo.basename}, falling back to plaintext:`,
+      err,
+    );
+    return chunkPlaintext(extraction, fileInfo, maxChunkTokens);
+  } finally {
+    parser.delete();
   }
 }
 
-// ── Parse and Chunk ──────────────────────────────────────────────────────────
-
-interface RawSegment {
+interface TopLevelCodeBlock {
   text: string;
   sectionPath: string[];
   startLine: number; // 1-based
-  endLine: number;   // 1-based, inclusive
+  endLine: number; // 1-based, inclusive
   isDefinition: boolean;
 }
 
-/**
- * Parse a source file with Tree-sitter and split it into definition-based chunks.
- */
-function parseAndChunk(
-  filePath: string,
+function chunkByDefinitions(
   body: string,
-  language: Parser.Language,
+  basename: string,
+  parser: Parser,
   definitionTypes: string[],
   maxChunkTokens: number,
-): ChunkRecord[] {
-  if (!ParserClass) throw new Error('Tree-sitter not initialised');
-
-  const parser = new ParserClass();
-  parser.setLanguage(language);
+): ChunkOutput[] {
   const tree = parser.parse(body);
+  // v0.26 types allow null when parsing is cancelled by options; we don't pass
+  // cancellation options, but still fail explicitly if the runtime returns none.
+  if (!tree) throw new Error('Tree-sitter returned no parse tree');
 
-  const root = tree.rootNode;
-  const filename = filePath.split(/[/\\]/).pop() ?? filePath;
-  const definitionSet = new Set(definitionTypes);
+  try {
+    const definitionSet = new Set(definitionTypes);
 
-  // Categorize top-level children into segments
-  const segments = buildSegments(root, filename, definitionSet);
+    const blocks = categorizeTopLevelNodes(tree.rootNode, basename, definitionSet);
+    const merged = attachLeadingComments(blocks);
+    return buildChunkRecords(merged, maxChunkTokens);
+  } finally {
+    tree.delete();
+  }
+}
 
-  // Attach leading comments/decorators to following definitions
-  const mergedSegments = attachLeadingComments(segments);
+function buildChunkRecords(blocks: TopLevelCodeBlock[], maxChunkTokens: number): ChunkOutput[] {
+  const chunks: ChunkOutput[] = [];
 
-  // Build ChunkRecords from segments
-  const chunks: ChunkRecord[] = [];
-
-  for (const seg of mergedSegments) {
-    const text = seg.text.trim();
+  for (const block of blocks) {
+    const text = block.text.trim();
     if (text.length === 0) continue;
 
-    const tokens = estimateTokens(text);
+    const location = { type: 'lines' as const, start: block.startLine, end: block.endLine };
+    // Oversized definitions split on newlines — the prose chunker's blank-line
+    // and sentence boundaries don't apply because individual lines are the
+    // smallest meaningful unit in source code.
+    const parts =
+      estimateTokens(text) <= maxChunkTokens ? [text] : splitByLines(text, maxChunkTokens);
 
-    if (tokens <= maxChunkTokens) {
+    for (const part of parts) {
       chunks.push({
-        filePath,
         chunkIndex: chunks.length,
-        sectionPath: seg.sectionPath,
-        text,
-        locationHint: { type: 'lines', start: seg.startLine, end: seg.endLine },
-
-        contentHash: hashText(text),
+        sectionPath: block.sectionPath,
+        text: part,
+        locationHint: location,
+        contentHash: hashText(part),
       });
-    } else {
-      // Sub-split oversized definitions on line boundaries.
-      // Unlike prose (which splits on paragraph/sentence boundaries),
-      // code is best split on newlines to keep individual lines intact.
-      const subChunks = subSplitCode(text, maxChunkTokens);
-      for (const sub of subChunks) {
-        chunks.push({
-          filePath,
-          chunkIndex: chunks.length,
-          sectionPath: seg.sectionPath,
-          text: sub,
-          locationHint: { type: 'lines', start: seg.startLine, end: seg.endLine },
-  
-          contentHash: hashText(sub),
-        });
-      }
     }
   }
-
-  // Clean up Tree-sitter resources
-  tree.delete();
-  parser.delete();
 
   return chunks;
 }
 
-/**
- * Walk the root node's children and categorize them as definitions or
- * inter-definition content.
- */
-function buildSegments(
-  root: Parser.SyntaxNode,
-  filename: string,
+function categorizeTopLevelNodes(
+  root: Node,
+  basename: string,
   definitionSet: Set<string>,
-): RawSegment[] {
-  const segments: RawSegment[] = [];
-  const children = root.children;
-
-  for (const child of children) {
-    const nodeType = child.type;
-    const startLine = child.startPosition.row + 1; // Tree-sitter uses 0-based rows
-    const endLine = child.endPosition.row + 1;
-    const text = child.text;
-
-    if (definitionSet.has(nodeType)) {
-      const name = extractDefinitionName(child, nodeType);
-      segments.push({
-        text,
-        sectionPath: name ? [name] : [filename],
-        startLine,
-        endLine,
-        isDefinition: true,
-      });
-    } else {
-      segments.push({
-        text,
-        sectionPath: [filename],
-        startLine,
-        endLine,
-        isDefinition: false,
-      });
-    }
-  }
-
-  return segments;
+): TopLevelCodeBlock[] {
+  return root.children.map((child) => {
+    const isDefinition = definitionSet.has(child.type);
+    const name = isDefinition ? extractDefinitionName(child, child.type) : null;
+    return {
+      text: child.text,
+      sectionPath: name ? [name] : [basename],
+      // Tree-sitter rows are 0-based; we emit 1-based line numbers.
+      startLine: child.startPosition.row + 1,
+      endLine: child.endPosition.row + 1,
+      isDefinition,
+    };
+  });
 }
 
 /**
- * Attach comments that immediately precede a definition to that definition's
- * chunk. This ensures JSDoc blocks, Python docstrings in comments, and
- * Rust doc-comments stay with the code they describe.
+ * Glue comments that immediately precede a definition onto that definition.
+ * Without this, JSDoc blocks and Rust doc-comments would land in a separate
+ * chunk from the function they describe — defeating semantic search for
+ * questions the doc actually answers.
  */
-function attachLeadingComments(segments: RawSegment[]): RawSegment[] {
-  const result: RawSegment[] = [];
+function attachLeadingComments(blocks: TopLevelCodeBlock[]): TopLevelCodeBlock[] {
+  const result: TopLevelCodeBlock[] = [];
 
-  let i = 0;
-  while (i < segments.length) {
-    if (!segments[i].isDefinition) {
-      result.push(segments[i]);
-      i++;
+  for (const block of blocks) {
+    if (!block.isDefinition) {
+      result.push(block);
       continue;
     }
 
-    // Found a definition. Look backward in result to absorb leading comments.
-    const def = segments[i];
     let leadingText = '';
-    let leadingStartLine = def.startLine;
+    let leadingStartLine = block.startLine;
 
     while (result.length > 0) {
       const prev = result[result.length - 1];
       const isComment = !prev.isDefinition && isCommentText(prev.text);
-      const hasNoGap = (leadingStartLine - prev.endLine) <= 1;
+      // Single-line gap counts as "attached"; a blank line breaks the bond.
+      const hasNoGap = leadingStartLine - prev.endLine <= 1;
+      if (!isComment || !hasNoGap) break;
 
-      if (isComment && hasNoGap) {
-        leadingText = prev.text + '\n' + leadingText;
-        leadingStartLine = prev.startLine;
-        result.pop();
-      } else {
-        break;
-      }
+      leadingText = prev.text + '\n' + leadingText;
+      leadingStartLine = prev.startLine;
+      result.pop();
     }
 
-    const finalText = leadingText
-      ? leadingText + '\n' + def.text
-      : def.text;
-
     result.push({
-      text: finalText,
-      sectionPath: def.sectionPath,
+      text: leadingText ? leadingText + '\n' + block.text : block.text,
+      sectionPath: block.sectionPath,
       startLine: leadingStartLine,
-      endLine: def.endLine,
+      endLine: block.endLine,
       isDefinition: true,
     });
-
-    i++;
   }
 
   return mergeNonDefinitions(result);
 }
 
-/**
- * Merge consecutive non-definition segments into single chunks.
- */
-function mergeNonDefinitions(segments: RawSegment[]): RawSegment[] {
-  const result: RawSegment[] = [];
+function mergeNonDefinitions(blocks: TopLevelCodeBlock[]): TopLevelCodeBlock[] {
+  const result: TopLevelCodeBlock[] = [];
 
-  for (const seg of segments) {
-    if (seg.isDefinition) {
-      result.push(seg);
+  for (const block of blocks) {
+    if (block.isDefinition) {
+      result.push(block);
+      continue;
+    }
+
+    const prev = result.length > 0 ? result[result.length - 1] : null;
+    if (prev && !prev.isDefinition) {
+      prev.text = prev.text + '\n' + block.text;
+      prev.endLine = Math.max(prev.endLine, block.endLine);
     } else {
-      const prev = result.length > 0 ? result[result.length - 1] : null;
-      if (prev && !prev.isDefinition) {
-        prev.text = prev.text + '\n' + seg.text;
-        prev.endLine = Math.max(prev.endLine, seg.endLine);
-      } else {
-        result.push({ ...seg });
-      }
+      result.push({ ...block });
     }
   }
 
   return result;
 }
 
-/**
- * Check if a text snippet looks like a comment (line or block).
- */
-function isCommentText(text: string): boolean {
-  const trimmed = text.trim();
-  return (
-    trimmed.startsWith('//') ||
-    trimmed.startsWith('/*') ||
-    trimmed.startsWith('#') ||
-    trimmed.startsWith('"""') ||
-    trimmed.startsWith("'''") ||
-    trimmed.startsWith('///') ||
-    trimmed.startsWith('/**')
-  );
+function splitByLines(text: string, maxTokens: number): string[] {
+  return mergeUpTo(text.split('\n'), maxTokens, '\n');
 }
 
-// ── Definition Name Extraction ───────────────────────────────────────────────
+// Covers JS/TS/Rust line+block, Python/Ruby/Shell line, and Python triple-quoted
+// strings used as docstrings. `///` and `/**` are subsumed by `//` and `/*`.
+const COMMENT_PREFIXES = ['//', '/*', '#', '"""', "'''"];
 
-/**
- * Extract a human-readable name from a definition AST node.
- */
-function extractDefinitionName(node: Parser.SyntaxNode, nodeType: string): string | null {
+function isCommentText(text: string): boolean {
+  const trimmed = text.trim();
+  return COMMENT_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
+function extractDefinitionName(node: Node, nodeType: string): string | null {
   if (nodeType === 'export_statement') {
-    // export function foo() {} -> unwrap to the inner declaration
-    const inner = node.namedChildren.find(c =>
-      c.type !== 'comment' &&
-      c.type !== 'export' &&
-      c.type !== 'default',
+    // export function foo() {} → unwrap to inner declaration
+    const inner = node.namedChildren.find(
+      (c) => c.type !== 'comment' && c.type !== 'export' && c.type !== 'default',
     );
-    if (inner) {
-      return extractDefinitionName(inner, inner.type);
-    }
+    if (inner) return extractDefinitionName(inner, inner.type);
+
     const defaultChild = node.childForFieldName('value') ?? node.childForFieldName('declaration');
     if (defaultChild) {
       const name = getNodeName(defaultChild);
@@ -490,68 +220,36 @@ function extractDefinitionName(node: Parser.SyntaxNode, nodeType: string): strin
   }
 
   if (nodeType === 'decorated_definition') {
-    // Python: @decorator \n def foo(): -> unwrap to function_definition
-    const inner = node.namedChildren.find(c =>
-      c.type === 'function_definition' || c.type === 'class_definition',
+    // Python: @decorator \n def foo() → unwrap to function_definition
+    const inner = node.namedChildren.find(
+      (c) => c.type === 'function_definition' || c.type === 'class_definition',
     );
-    if (inner) {
-      return extractDefinitionName(inner, inner.type);
-    }
+    if (inner) return extractDefinitionName(inner, inner.type);
     return null;
   }
 
   if (nodeType === 'lexical_declaration' || nodeType === 'variable_declaration') {
-    // const foo = () => {} — extract the variable name
-    const declarator = node.namedChildren.find(c =>
-      c.type === 'variable_declarator',
-    );
-    if (declarator) {
-      const nameNode = declarator.childForFieldName('name');
-      if (nameNode) return nameNode.text;
-    }
-    return null;
+    // const foo = () => {} — name lives on the variable_declarator, not the parent
+    const declarator = node.namedChildren.find((c) => c.type === 'variable_declarator');
+    const nameNode = declarator?.childForFieldName('name');
+    return nameNode?.text ?? null;
   }
 
   return getNodeName(node);
 }
 
-/**
- * Get the name of a node from its 'name' field.
- */
-function getNodeName(node: Parser.SyntaxNode): string | null {
+function getNodeName(node: Node): string | null {
   const nameNode = node.childForFieldName('name');
   if (nameNode) return nameNode.text;
 
-  // Some nodes use 'declarator' (C/C++ functions)
+  // C/C++ functions expose their name through 'declarator' instead of 'name'.
   const declarator = node.childForFieldName('declarator');
   if (declarator) {
-    const innerName = declarator.childForFieldName('name') ?? declarator.childForFieldName('declarator');
+    const innerName =
+      declarator.childForFieldName('name') ?? declarator.childForFieldName('declarator');
     if (innerName) return innerName.text;
     return declarator.text.split('(')[0]?.trim() ?? null;
   }
 
   return null;
-}
-
-// ── Code Sub-splitting ───────────────────────────────────────────────────────
-
-/**
- * Split oversized code text into chunks by line boundaries.
- * Unlike `subSplitText` (which splits on blank lines and sentences for prose),
- * this splits on individual newlines — the natural boundary in code.
- * Lines are greedily merged up to the token limit.
- */
-function subSplitCode(text: string, maxTokens: number): string[] {
-  const lines = text.split('\n');
-  return mergeUpTo(lines, maxTokens, '\n');
-}
-
-// ── Exports ──────────────────────────────────────────────────────────────────
-
-/** All supported code file extensions */
-export const CODE_EXTENSIONS = Object.keys(EXTENSION_TO_GRAMMAR);
-
-/** Check if an extension has a Tree-sitter grammar available */
-export function hasGrammar(ext: string): boolean {
-  return ext.toLowerCase() in EXTENSION_TO_GRAMMAR;
 }

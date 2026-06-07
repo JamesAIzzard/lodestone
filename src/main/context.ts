@@ -1,26 +1,25 @@
 /**
  * AppContext — shared mutable state for the Electron main process.
  *
- * All extracted modules (window, tray, lifecycle, IPC handlers, MCP mode)
+ * All extracted modules (window, tray, lifecycle, IPC handlers, MCP bridge)
  * receive this context object instead of accessing module-level variables.
  * The context is created once in main.ts and passed to each module's
  * registration/setup function.
  */
 
 import { app, type BrowserWindow, type Tray } from 'electron';
-import path from 'node:path';
 import type { LodestoneConfig } from '../backend/config';
-import { getDefaultConfigPath } from '../backend/config';
+import { getDefaultLodestoneConfigPath } from '../backend/config';
 import { createEmbeddingService, type EmbeddingService } from '../backend/embedding';
-import { resolveModelAlias } from '../backend/model-registry';
 import type { SiloManager } from '../backend/silo-manager';
 import { IndexingQueue } from '../backend/indexing-queue';
 import type { InternalApi } from './internal-api';
+import { resolveBundledModelDir } from './embedding-model-path';
 
 export interface AppContext {
   config: LodestoneConfig | null;
   siloManagers: Map<string, SiloManager>;
-  embeddingServices: Map<string, EmbeddingService>;
+  embeddingService: EmbeddingService | null;
   mainWindow: BrowserWindow | null;
   tray: Tray | null;
   isQuitting: boolean;
@@ -30,9 +29,9 @@ export interface AppContext {
   indexingQueue: IndexingQueue;
   internalApi: InternalApi | null;
 
-  getOrCreateEmbeddingService(model: string): EmbeddingService;
+  getOrCreateEmbeddingService(): EmbeddingService;
   getUserDataDir(): string;
-  getModelCacheDir(): string;
+  getBundledModelDir(): string;
   configPath(): string;
 }
 
@@ -40,7 +39,7 @@ export function createAppContext(): AppContext {
   const ctx: AppContext = {
     config: null,
     siloManagers: new Map(),
-    embeddingServices: new Map(),
+    embeddingService: null,
     mainWindow: null,
     tray: null,
     isQuitting: false,
@@ -50,29 +49,28 @@ export function createAppContext(): AppContext {
     indexingQueue: new IndexingQueue(),
     internalApi: null,
 
-    getOrCreateEmbeddingService(model: string): EmbeddingService {
-      const modelId = resolveModelAlias(model);
-      let service = ctx.embeddingServices.get(modelId);
-      if (!service) {
-        service = createEmbeddingService({
-          model: modelId,
-          modelCacheDir: ctx.getModelCacheDir(),
-        });
-        ctx.embeddingServices.set(modelId, service);
+    getOrCreateEmbeddingService(): EmbeddingService {
+      if (!ctx.embeddingService) {
+        ctx.embeddingService = createEmbeddingService({ modelDir: ctx.getBundledModelDir() });
       }
-      return service;
+      return ctx.embeddingService;
     },
 
     getUserDataDir(): string {
       return app.getPath('userData');
     },
 
-    getModelCacheDir(): string {
-      return path.join(ctx.getUserDataDir(), 'model-cache');
+    getBundledModelDir(): string {
+      const proc = process as NodeJS.Process & { resourcesPath: string };
+      return resolveBundledModelDir({
+        isPackaged: app.isPackaged,
+        appPath: app.getAppPath(),
+        resourcesPath: proc.resourcesPath,
+      });
     },
 
     configPath(): string {
-      return getDefaultConfigPath(ctx.getUserDataDir());
+      return getDefaultLodestoneConfigPath(ctx.getUserDataDir());
     },
   };
 

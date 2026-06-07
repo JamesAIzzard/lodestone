@@ -9,19 +9,13 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  saveConfig,
-  createDefaultConfig,
-  resolveSiloConfig,
+  saveLodestoneConfig,
+  createDefaultLodestoneConfig,
+  resolveSiloRuntimeConfig,
   type SiloTomlConfig,
 } from '../backend/config';
 import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import type { SiloManager } from '../backend/silo-manager';
-import {
-  getBundledModelIds,
-  getModelDefinition,
-  getModelPathSafeId,
-  resolveModelAlias,
-} from '../backend/model-registry';
 import {
   dispatchExplore,
   mergeDirectoryResults,
@@ -30,9 +24,12 @@ import {
 } from '../backend/search-merge';
 import {
   configureClaudeDesktop,
+  configureClaudeCode,
   configureCodexDesktop,
   getClaudeDesktopConfigPath as resolveClaudeDesktopConfigPath,
   getClaudeDesktopStatus,
+  getClaudeCodeConfigPath as resolveClaudeCodeConfigPath,
+  getClaudeCodeStatus,
   getCodexDesktopConfigPath as resolveCodexDesktopConfigPath,
   getCodexDesktopStatus,
   getMcpWrapperPath as resolveMcpWrapperPath,
@@ -108,19 +105,17 @@ function registerSiloHandlers(ctx: AppContext): void {
       statuses.push({
         config: {
           name: cfg.name,
-          directories: cfg.directories,
-          extensions: cfg.extensions,
-          ignorePatterns: cfg.ignore,
-          ignoreFilePatterns: cfg.ignoreFiles,
-          hasIgnoreOverride: siloToml?.ignore !== undefined,
-          hasFileIgnoreOverride: siloToml?.ignore_files !== undefined,
-          hasExtensionOverride: siloToml?.extensions !== undefined,
-          modelOverride:
-            cfg.model === resolveModelAlias(ctx.config?.embeddings.model ?? '') ? null : cfg.model,
-          dbPath: cfg.dbPath,
-          description: cfg.description,
-          color: cfg.color,
-          icon: cfg.icon,
+          indexedDirectories: cfg.indexedDirectories,
+          indexedFileExtensions: cfg.indexedFileExtensions,
+          ignoredFolderPatterns: cfg.ignoredFolderPatterns,
+          ignoredFilePatterns: cfg.ignoredFilePatterns,
+          hasIgnoredFolderPatternsOverride: siloToml?.ignored_folder_patterns !== undefined,
+          hasIgnoredFilePatternsOverride: siloToml?.ignored_file_patterns !== undefined,
+          hasIndexedFileExtensionsOverride: siloToml?.indexed_file_extensions !== undefined,
+          indexDbPath: cfg.indexDbPath,
+          contentDescription: cfg.contentDescription,
+          accentColor: cfg.accentColor,
+          iconName: cfg.iconName,
         },
         indexedFileCount: status.indexedFileCount,
         chunkCount: status.chunkCount,
@@ -129,9 +124,7 @@ function registerSiloHandlers(ctx: AppContext): void {
         watcherState: status.watcherState,
         errorMessage: status.errorMessage,
         reconcileProgress: status.reconcileProgress,
-        modelMismatch: status.modelMismatch,
         resolvedDbPath: status.resolvedDbPath,
-        resolvedModel: cfg.model,
       });
     }
     return statuses;
@@ -140,14 +133,14 @@ function registerSiloHandlers(ctx: AppContext): void {
   ipcMain.handle(
     'silos:search',
     async (_event, params: SearchParams, siloName?: string): Promise<SearchResult[]> => {
-      // Collect searchable managers — skip stopped and model-mismatched silos
+      // Collect searchable managers; stopped silos are skipped.
       const ready: [string, SiloManager][] = [];
       if (siloName) {
         const m = ctx.siloManagers.get(siloName);
-        if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([siloName, m]);
+        if (m && !m.isStopped) ready.push([siloName, m]);
       } else {
         for (const [name, m] of ctx.siloManagers) {
-          if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+          if (!m.isStopped) ready.push([name, m]);
         }
       }
 
@@ -164,11 +157,7 @@ function registerSiloHandlers(ctx: AppContext): void {
 
       if (searchable.length === 0) return [];
 
-      const raw = await dispatchSearch(
-        params,
-        searchable,
-        (model) => ctx.embeddingServices.get(resolveModelAlias(model)) ?? null,
-      );
+      const raw = await dispatchSearch(params, searchable, ctx.embeddingService);
 
       const merged = mergeSearchResults(raw, limit);
 
@@ -187,14 +176,14 @@ function registerSiloHandlers(ctx: AppContext): void {
   ipcMain.handle(
     'silos:explore',
     async (_event, params: ExploreParams): Promise<DirectoryResult[]> => {
-      // Collect searchable managers — skip stopped and model-mismatched silos
+      // Collect searchable managers; stopped silos are skipped.
       const ready: [string, SiloManager][] = [];
       if (params.silo) {
         const m = ctx.siloManagers.get(params.silo);
-        if (m && !m.isStopped && !m.hasModelMismatch()) ready.push([params.silo, m]);
+        if (m && !m.isStopped) ready.push([params.silo, m]);
       } else {
         for (const [name, m] of ctx.siloManagers) {
-          if (!m.isStopped && !m.hasModelMismatch()) ready.push([name, m]);
+          if (!m.isStopped) ready.push([name, m]);
         }
       }
 
@@ -274,7 +263,7 @@ function registerSiloHandlers(ctx: AppContext): void {
       }
 
       delete ctx.config.silos[name];
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" deleted from config`);
 
       notifySilosChanged(ctx);
@@ -305,7 +294,7 @@ function registerSiloHandlers(ctx: AppContext): void {
       ctx.siloManagers.delete(name);
 
       delete ctx.config.silos[name];
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" disconnected (database preserved on disk)`);
 
       notifySilosChanged(ctx);
@@ -341,35 +330,18 @@ function registerSiloHandlers(ctx: AppContext): void {
     return { success: true };
   });
 
-  ipcMain.handle('silos:rebuild', (_event, name: string): { success: boolean; error?: string } => {
-    const manager = ctx.siloManagers.get(name);
-    if (!manager) return { success: false, error: `Silo "${name}" not found` };
-
-    const embeddingService = ctx.getOrCreateEmbeddingService(manager.getConfig().model);
-    manager.updateEmbeddingService(embeddingService);
-
-    // Fire and forget — rebuild() stops current work, then queues via the
-    // IndexingQueue. The silo's watcherState updates via silos:changed events.
-    manager.rebuild().catch((err) => {
-      console.error(`[main] Failed to rebuild silo "${name}":`, err);
-    });
-
-    return { success: true };
-  });
-
   ipcMain.handle(
     'silos:update',
     async (
       _event,
       name: string,
       updates: {
-        description?: string;
-        model?: string;
-        ignore?: string[];
-        ignoreFiles?: string[];
-        extensions?: string[];
-        color?: string;
-        icon?: string;
+        contentDescription?: string;
+        ignoredFolderPatterns?: string[];
+        ignoredFilePatterns?: string[];
+        indexedFileExtensions?: string[];
+        accentColor?: string;
+        iconName?: string;
       },
     ): Promise<{ success: boolean; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
@@ -378,56 +350,58 @@ function registerSiloHandlers(ctx: AppContext): void {
 
       const manager = ctx.siloManagers.get(name);
 
-      if (updates.description !== undefined) {
-        siloToml.description = updates.description.trim() || undefined;
-        await manager?.updateDescription(updates.description.trim());
+      if (updates.contentDescription !== undefined) {
+        siloToml.content_description = updates.contentDescription.trim() || undefined;
+        await manager?.updateContentDescription(updates.contentDescription.trim());
       }
 
-      if (updates.color !== undefined) {
-        const validated = validateSiloColor(updates.color);
-        siloToml.color = validated;
-        await manager?.updateColor(validated);
+      if (updates.accentColor !== undefined) {
+        const validated = validateSiloColor(updates.accentColor);
+        siloToml.accent_color = validated;
+        await manager?.updateAccentColor(validated);
       }
 
-      if (updates.icon !== undefined) {
-        const validated = validateSiloIcon(updates.icon);
-        siloToml.icon = validated;
-        await manager?.updateIcon(validated);
-      }
-
-      if (updates.model !== undefined) {
-        const resolvedDefault = resolveModelAlias(ctx.config.embeddings.model);
-        const resolvedNew = resolveModelAlias(updates.model);
-        siloToml.model = resolvedNew !== resolvedDefault ? resolvedNew : undefined;
-        await manager?.updateModel(resolvedNew);
+      if (updates.iconName !== undefined) {
+        const validated = validateSiloIcon(updates.iconName);
+        siloToml.icon_name = validated;
+        await manager?.updateIconName(validated);
       }
 
       // Ignore pattern updates — empty array means "revert to defaults"
-      if (updates.ignore !== undefined) {
-        siloToml.ignore = updates.ignore.length > 0 ? updates.ignore : undefined;
+      if (updates.ignoredFolderPatterns !== undefined) {
+        siloToml.ignored_folder_patterns =
+          updates.ignoredFolderPatterns.length > 0 ? updates.ignoredFolderPatterns : undefined;
       }
-      if (updates.ignoreFiles !== undefined) {
-        siloToml.ignore_files = updates.ignoreFiles.length > 0 ? updates.ignoreFiles : undefined;
+      if (updates.ignoredFilePatterns !== undefined) {
+        siloToml.ignored_file_patterns =
+          updates.ignoredFilePatterns.length > 0 ? updates.ignoredFilePatterns : undefined;
       }
 
       // Extension updates — empty array means "revert to defaults"
-      if (updates.extensions !== undefined) {
-        siloToml.extensions = updates.extensions.length > 0 ? updates.extensions : undefined;
+      if (updates.indexedFileExtensions !== undefined) {
+        siloToml.indexed_file_extensions =
+          updates.indexedFileExtensions.length > 0 ? updates.indexedFileExtensions : undefined;
       }
 
       // Hot-swap the watcher if ignore patterns or extensions changed
       if (manager) {
-        if (updates.ignore !== undefined || updates.ignoreFiles !== undefined) {
-          const resolved = resolveSiloConfig(name, siloToml, ctx.config);
-          await manager.updateIgnorePatterns(resolved.ignore, resolved.ignoreFiles);
+        if (
+          updates.ignoredFolderPatterns !== undefined ||
+          updates.ignoredFilePatterns !== undefined
+        ) {
+          const resolved = resolveSiloRuntimeConfig(name, siloToml, ctx.config);
+          await manager.updateIgnoredPatterns(
+            resolved.ignoredFolderPatterns,
+            resolved.ignoredFilePatterns,
+          );
         }
-        if (updates.extensions !== undefined) {
-          const resolved = resolveSiloConfig(name, siloToml, ctx.config);
-          await manager.updateExtensions(resolved.extensions);
+        if (updates.indexedFileExtensions !== undefined) {
+          const resolved = resolveSiloRuntimeConfig(name, siloToml, ctx.config);
+          await manager.updateIndexedFileExtensions(resolved.indexedFileExtensions);
         }
       }
 
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${name}" updated`);
       return { success: true };
     },
@@ -468,7 +442,7 @@ function registerSiloHandlers(ctx: AppContext): void {
       // Update the manager's internal config name to match the new slug
       await manager.updateName(newSlug);
 
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Silo "${oldName}" renamed to "${trimmed}" (slug: "${newSlug}")`);
 
       notifySilosChanged(ctx);
@@ -482,13 +456,12 @@ function registerSiloHandlers(ctx: AppContext): void {
       _event,
       opts: {
         name: string;
-        directories: string[];
-        extensions: string[];
-        dbPath: string;
-        model: string;
-        description?: string;
-        color?: string;
-        icon?: string;
+        indexedDirectories: string[];
+        indexedFileExtensions: string[];
+        indexDbPath: string;
+        contentDescription?: string;
+        accentColor?: string;
+        iconName?: string;
         mode?: 'new' | 'existing';
       },
     ): Promise<{ success: boolean; error?: string }> => {
@@ -501,12 +474,12 @@ function registerSiloHandlers(ctx: AppContext): void {
       if (slug.length === 0) return { success: false, error: 'Invalid silo name' };
       if (ctx.siloManagers.has(slug))
         return { success: false, error: `Silo "${slug}" already exists` };
-      if (opts.directories.length === 0)
+      if (opts.indexedDirectories.length === 0)
         return { success: false, error: 'At least one directory is required' };
 
-      const resolvedDbPath = path.isAbsolute(opts.dbPath)
-        ? opts.dbPath
-        : path.join(ctx.getUserDataDir(), opts.dbPath);
+      const resolvedDbPath = path.isAbsolute(opts.indexDbPath)
+        ? opts.indexDbPath
+        : path.join(ctx.getUserDataDir(), opts.indexDbPath);
       if (opts.mode !== 'existing' && fs.existsSync(resolvedDbPath)) {
         return {
           success: false,
@@ -514,26 +487,24 @@ function registerSiloHandlers(ctx: AppContext): void {
         };
       }
 
-      const model = resolveModelAlias(opts.model.split(' — ')[0].trim());
-
       // Auto-assign colour if not provided, cycling through the palette
-      const color = opts.color
-        ? validateSiloColor(opts.color)
+      const color = opts.accentColor
+        ? validateSiloColor(opts.accentColor)
         : autoAssignColor(ctx.siloManagers.size);
-      const icon = opts.icon ? validateSiloIcon(opts.icon) : undefined;
+      const icon = opts.iconName ? validateSiloIcon(opts.iconName) : undefined;
 
       const siloToml: SiloTomlConfig = {
-        directories: opts.directories,
-        db_path: opts.dbPath,
-        extensions: opts.extensions.length > 0 ? opts.extensions : undefined,
-        model: model !== resolveModelAlias(ctx.config.embeddings.model) ? model : undefined,
-        description: opts.description?.trim() || undefined,
-        color,
-        icon: icon ?? undefined,
+        indexed_directories: opts.indexedDirectories,
+        index_db_path: opts.indexDbPath,
+        indexed_file_extensions:
+          opts.indexedFileExtensions.length > 0 ? opts.indexedFileExtensions : undefined,
+        content_description: opts.contentDescription?.trim() || undefined,
+        accent_color: color,
+        icon_name: icon ?? undefined,
       };
 
       ctx.config.silos[slug] = siloToml;
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       console.log(`[main] Saved new silo "${slug}" to config`);
 
       registerManager(ctx, slug, siloToml);
@@ -555,20 +526,9 @@ function registerSettingsHandlers(ctx: AppContext): void {
       totalFiles += status.indexedFileCount;
     }
 
-    const models: string[] = getBundledModelIds().map((id) => {
-      const def = getModelDefinition(id);
-      return def ? `${id} — ${def.displayName}` : id;
-    });
-    const modelPathSafeIds = Object.fromEntries(
-      getBundledModelIds().map((id) => [id, getModelPathSafeId(id)]),
-    );
-
     return {
       uptimeSeconds,
-      availableModels: models,
-      defaultModel: resolveModelAlias(ctx.config?.embeddings.model ?? 'snowflake-arctic-embed-xs'),
       totalIndexedFiles: totalFiles,
-      modelPathSafeIds,
     };
   });
 
@@ -588,23 +548,23 @@ function registerSettingsHandlers(ctx: AppContext): void {
 
   ipcMain.handle('defaults:get', async (): Promise<DefaultSettings> => {
     if (!ctx.config) {
-      const def = createDefaultConfig();
+      const def = createDefaultLodestoneConfig();
       return {
-        extensions: def.defaults.extensions,
-        ignore: def.defaults.ignore,
-        ignoreFiles: def.defaults.ignore_files,
-        debounce: def.defaults.debounce,
-        contextLines: def.defaults.context_lines,
-        activityLogLimit: def.defaults.activity_log_limit,
+        indexedFileExtensions: def.defaults.indexed_file_extensions,
+        ignoredFolderPatterns: def.defaults.ignored_folder_patterns,
+        ignoredFilePatterns: def.defaults.ignored_file_patterns,
+        fileChangeDelaySeconds: def.defaults.file_change_delay_seconds,
+        editContextLines: def.defaults.edit_context_lines,
+        maxActivityLogEntries: def.defaults.max_activity_log_entries,
       };
     }
     return {
-      extensions: ctx.config.defaults.extensions,
-      ignore: ctx.config.defaults.ignore,
-      ignoreFiles: ctx.config.defaults.ignore_files,
-      debounce: ctx.config.defaults.debounce,
-      contextLines: ctx.config.defaults.context_lines,
-      activityLogLimit: ctx.config.defaults.activity_log_limit,
+      indexedFileExtensions: ctx.config.defaults.indexed_file_extensions,
+      ignoredFolderPatterns: ctx.config.defaults.ignored_folder_patterns,
+      ignoredFilePatterns: ctx.config.defaults.ignored_file_patterns,
+      fileChangeDelaySeconds: ctx.config.defaults.file_change_delay_seconds,
+      editContextLines: ctx.config.defaults.edit_context_lines,
+      maxActivityLogEntries: ctx.config.defaults.max_activity_log_entries,
     };
   });
 
@@ -613,16 +573,21 @@ function registerSettingsHandlers(ctx: AppContext): void {
     async (_event, updates: Partial<DefaultSettings>): Promise<{ success: boolean }> => {
       if (!ctx.config) return { success: false };
 
-      if (updates.extensions !== undefined) ctx.config.defaults.extensions = updates.extensions;
-      if (updates.ignore !== undefined) ctx.config.defaults.ignore = updates.ignore;
-      if (updates.ignoreFiles !== undefined) ctx.config.defaults.ignore_files = updates.ignoreFiles;
-      if (updates.debounce !== undefined) ctx.config.defaults.debounce = updates.debounce;
-      if (updates.contextLines !== undefined)
-        ctx.config.defaults.context_lines = updates.contextLines;
-      if (updates.activityLogLimit !== undefined)
-        ctx.config.defaults.activity_log_limit = updates.activityLogLimit;
+      if (updates.indexedFileExtensions !== undefined)
+        ctx.config.defaults.indexed_file_extensions = updates.indexedFileExtensions;
+      if (updates.ignoredFolderPatterns !== undefined)
+        ctx.config.defaults.ignored_folder_patterns = updates.ignoredFolderPatterns;
+      if (updates.ignoredFilePatterns !== undefined)
+        ctx.config.defaults.ignored_file_patterns = updates.ignoredFilePatterns;
+      if (updates.fileChangeDelaySeconds !== undefined) {
+        ctx.config.defaults.file_change_delay_seconds = updates.fileChangeDelaySeconds;
+      }
+      if (updates.editContextLines !== undefined)
+        ctx.config.defaults.edit_context_lines = updates.editContextLines;
+      if (updates.maxActivityLogEntries !== undefined)
+        ctx.config.defaults.max_activity_log_entries = updates.maxActivityLogEntries;
 
-      saveConfig(ctx.configPath(), ctx.config);
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
       return { success: true };
     },
   );
@@ -641,8 +606,8 @@ function registerSettingsHandlers(ctx: AppContext): void {
     }
 
     // Replace config with clean defaults and persist
-    ctx.config = createDefaultConfig();
-    saveConfig(ctx.configPath(), ctx.config);
+    ctx.config = createDefaultLodestoneConfig();
+    saveLodestoneConfig(ctx.configPath(), ctx.config);
     console.log('[main] All settings reset to defaults');
 
     notifySilosChanged(ctx);
@@ -652,16 +617,26 @@ function registerSettingsHandlers(ctx: AppContext): void {
 
 function registerMcpHandlers(): void {
   function getClientConfigPath(clientId: McpClientId): string {
-    return clientId === 'claude-desktop'
-      ? resolveClaudeDesktopConfigPath(app.getPath('appData'))
-      : resolveCodexDesktopConfigPath(app.getPath('home'));
+    switch (clientId) {
+      case 'claude-desktop':
+        return resolveClaudeDesktopConfigPath(app.getPath('appData'));
+      case 'claude-code':
+        return resolveClaudeCodeConfigPath(app.getPath('home'));
+      case 'codex-desktop':
+        return resolveCodexDesktopConfigPath(app.getPath('home'));
+    }
   }
 
   function getClientStatus(clientId: McpClientId): McpClientStatus {
     const configPath = getClientConfigPath(clientId);
-    return clientId === 'claude-desktop'
-      ? getClaudeDesktopStatus(configPath)
-      : getCodexDesktopStatus(configPath);
+    switch (clientId) {
+      case 'claude-desktop':
+        return getClaudeDesktopStatus(configPath);
+      case 'claude-code':
+        return getClaudeCodeStatus(configPath);
+      case 'codex-desktop':
+        return getCodexDesktopStatus(configPath);
+    }
   }
 
   function configureClient(clientId: McpClientId): McpClientConfigureResult {
@@ -672,9 +647,14 @@ function registerMcpHandlers(): void {
       appPath: app.getAppPath(),
     });
 
-    return clientId === 'claude-desktop'
-      ? configureClaudeDesktop(configPath, wrapperPath)
-      : configureCodexDesktop(configPath, wrapperPath);
+    switch (clientId) {
+      case 'claude-desktop':
+        return configureClaudeDesktop(configPath, wrapperPath);
+      case 'claude-code':
+        return configureClaudeCode(configPath, wrapperPath);
+      case 'codex-desktop':
+        return configureCodexDesktop(configPath, wrapperPath);
+    }
   }
 
   ipcMain.handle(

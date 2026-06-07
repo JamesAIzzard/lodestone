@@ -15,13 +15,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSilos: (): Promise<unknown[]> => ipcRenderer.invoke('silos:list'),
   createSilo: (opts: {
     name: string;
-    directories: string[];
-    extensions: string[];
-    dbPath: string;
-    model: string;
-    description?: string;
-    color?: string;
-    icon?: string;
+    indexedDirectories: string[];
+    indexedFileExtensions: string[];
+    indexDbPath: string;
+    contentDescription?: string;
+    accentColor?: string;
+    iconName?: string;
     mode?: 'new' | 'existing';
   }): Promise<unknown> => ipcRenderer.invoke('silos:create', opts),
   deleteSilo: (name: string): Promise<unknown> => ipcRenderer.invoke('silos:delete', name),
@@ -29,17 +28,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopSilo: (name: string): Promise<unknown> => ipcRenderer.invoke('silos:stop', name),
   wakeSilo: (name: string): Promise<unknown> => ipcRenderer.invoke('silos:wake', name),
   rescanSilo: (name: string): Promise<unknown> => ipcRenderer.invoke('silos:rescan', name),
-  rebuildSilo: (name: string): Promise<unknown> => ipcRenderer.invoke('silos:rebuild', name),
   updateSilo: (
     name: string,
     updates: {
-      description?: string;
-      model?: string;
-      ignore?: string[];
-      ignoreFiles?: string[];
-      extensions?: string[];
-      color?: string;
-      icon?: string;
+      contentDescription?: string;
+      ignoredFolderPatterns?: string[];
+      ignoredFilePatterns?: string[];
+      indexedFileExtensions?: string[];
+      accentColor?: string;
+      iconName?: string;
     },
   ): Promise<unknown> => ipcRenderer.invoke('silos:update', name, updates),
   renameSilo: (oldName: string, newName: string): Promise<unknown> =>

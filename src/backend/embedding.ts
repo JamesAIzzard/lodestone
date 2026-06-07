@@ -3,17 +3,12 @@
  *
  * Provides a unified interface for generating vector embeddings from text,
  * using bundled Transformers.js / ONNX models through a shared worker thread.
- * The legacy 'built-in' alias is resolved via resolveModelAlias() for
- * backward compatibility.
  */
 
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { WorkerResponse } from './embedding-worker-protocol';
-import {
-  getModelDefinition,
-  resolveModelAlias,
-} from './model-registry';
+import { EMBEDDING_MODEL } from './embedding-model';
 
 // ── Interface ────────────────────────────────────────────────────────────────
 
@@ -37,10 +32,8 @@ export interface EmbeddingService {
 // ── Shared ONNX Worker ──────────────────────────────────────────────────────
 //
 // ONNX Runtime's native code has process-global state that crashes when
-// multiple worker threads load models simultaneously. ALL built-in models
-// share a single worker thread to avoid this. The worker holds a Map of
-// BuiltInEmbeddingService instances keyed by model ID and serializes all
-// ONNX calls through a queue.
+// multiple worker threads load models simultaneously. The single bundled
+// model runs through one worker thread, which serializes all ONNX calls.
 
 let sharedWorker: Worker | null = null;
 let sharedNextId = 1;
@@ -110,37 +103,21 @@ async function terminateSharedWorker(): Promise<void> {
 /**
  * Proxy that delegates ONNX embedding inference to the shared worker thread.
  *
- * All built-in model proxies share a single worker. Each proxy sends an
- * 'init' message for its model on first use, and all embed/embedBatch
- * calls include the modelId so the worker routes to the correct model.
- *
- * The worker is terminated only when the last proxy is disposed.
+ * Lodestone runs a single bundled model, so there is one proxy backed by one
+ * shared worker. The proxy sends an 'init' message on first use; the worker
+ * is terminated only when the last proxy is disposed.
  */
 export class WorkerEmbeddingProxy implements EmbeddingService {
   private initPromise: Promise<void> | null = null;
 
-  // Pre-populated from the model registry so callers can read
-  // dimensions/maxTokens/chunkTokens immediately (before worker warmup completes).
-  private _dimensions: number;
-  private _modelName: string;
-  private _maxTokens: number;
-  private _chunkTokens: number;
+  // Seeded from EMBEDDING_MODEL so callers can read dimensions/maxTokens/
+  // chunkTokens immediately (before worker warmup completes).
+  readonly dimensions = EMBEDDING_MODEL.dimensions;
+  readonly modelName = EMBEDDING_MODEL.displayName;
+  readonly maxTokens = EMBEDDING_MODEL.maxTokens;
+  readonly chunkTokens = EMBEDDING_MODEL.chunkTokens;
 
-  get dimensions(): number { return this._dimensions; }
-  get modelName(): string { return this._modelName; }
-  get maxTokens(): number { return this._maxTokens; }
-  get chunkTokens(): number { return this._chunkTokens; }
-
-  constructor(
-    private readonly modelId: string,
-    private readonly cacheDir: string,
-  ) {
-    // Seed from registry for instant access
-    const def = getModelDefinition(modelId);
-    this._dimensions = def?.dimensions ?? 384;
-    this._modelName = def ? `${modelId} (${def.displayName})` : modelId;
-    this._maxTokens = def?.maxTokens ?? 512;
-    this._chunkTokens = def?.chunkTokens ?? 512;
+  constructor(private readonly modelDir: string) {
     activeProxies.add(this);
   }
 
@@ -163,22 +140,12 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
   }
 
   private async doInit(): Promise<void> {
-    const response = await postToSharedWorker<{
-      dimensions: number;
-      modelName: string;
-      maxTokens: number;
-      chunkTokens: number;
-    }>({
+    // Warm up the worker's model. Dimensions/name/tokens are already known
+    // from EMBEDDING_MODEL, so the response is only awaited for readiness.
+    await postToSharedWorker({
       type: 'init',
-      cacheDir: this.cacheDir,
-      modelId: this.modelId,
+      modelDir: this.modelDir,
     });
-
-    // Update with actual values from the worker (should match registry)
-    this._dimensions = response.dimensions;
-    this._modelName = response.modelName;
-    this._maxTokens = response.maxTokens;
-    this._chunkTokens = response.chunkTokens;
   }
 
   // ── EmbeddingService implementation ──────────────────────────────────────
@@ -192,7 +159,6 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
     const response = await postToSharedWorker<{ vector: number[] }>({
       type: 'embed',
       text,
-      modelId: this.modelId,
     });
     return response.vector;
   }
@@ -203,7 +169,6 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
     const response = await postToSharedWorker<{ vectors: number[][] }>({
       type: 'embedBatch',
       texts,
-      modelId: this.modelId,
     });
     return response.vectors;
   }
@@ -211,7 +176,7 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
   async dispose(): Promise<void> {
     activeProxies.delete(this);
     try {
-      await postToSharedWorker({ type: 'dispose', modelId: this.modelId });
+      await postToSharedWorker({ type: 'dispose' });
     } catch {
       // Worker may already be gone
     }
@@ -227,17 +192,13 @@ export class WorkerEmbeddingProxy implements EmbeddingService {
 // ── Factory ──────────────────────────────────────────────────────────────────
 
 export interface EmbeddingServiceOptions {
-  /** Model identifier: a registry key (e.g. 'snowflake-arctic-embed-xs')
-   *  or the legacy alias 'built-in'. */
-  model: string;
-  /** Cache directory for bundled model files */
-  modelCacheDir: string;
+  /** Absolute directory containing the bundled Transformers.js model files. */
+  modelDir: string;
 }
 
 /**
- * Create the bundled ONNX embedding service for the configured model.
+ * Create the ONNX embedding service for the single bundled model.
  */
 export function createEmbeddingService(options: EmbeddingServiceOptions): EmbeddingService {
-  const modelId = resolveModelAlias(options.model);
-  return new WorkerEmbeddingProxy(modelId, options.modelCacheDir);
+  return new WorkerEmbeddingProxy(options.modelDir);
 }

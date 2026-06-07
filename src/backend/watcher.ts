@@ -45,9 +45,44 @@ export interface WatcherStoreOps {
 // Re-export for the silo-manager's progress callback signature.
 export type { IndexLoopProgress };
 
+/**
+ * The subset of `SiloWatcher` consumed by `SiloManager`.
+ *
+ * Defined as an interface so tests can substitute a controllable
+ * fake watcher without spinning up `chokidar` or piercing private
+ * methods on `SiloWatcher` directly. `SiloManager.handleWatcherEvent`
+ * remains private — tests drive it via the listener registered on
+ * `on()`.
+ */
+export interface SiloWatcherLike {
+  on(handler: WatcherEventHandler): void;
+  setQueueFilledHandler(fn: () => void): void;
+  start(): void;
+  stop(): Promise<void>;
+  runQueue(
+    onProgress?: (progress: IndexLoopProgress) => void,
+    shouldStop?: () => boolean,
+  ): Promise<void>;
+  readonly queueLength: number;
+}
+
+/**
+ * Factory for constructing a watcher implementation. Production wires
+ * the real `SiloWatcher` constructor; tests inject a fake.
+ */
+export type SiloWatcherFactory = (
+  config: ResolvedSiloConfig,
+  embeddingService: EmbeddingService,
+  storeOps: WatcherStoreOps,
+) => SiloWatcherLike;
+
+/** Default factory — constructs the real chokidar-backed `SiloWatcher`. */
+export const defaultSiloWatcherFactory: SiloWatcherFactory = (config, embedding, ops) =>
+  new SiloWatcher(config, embedding, ops);
+
 // ── SiloWatcher ──────────────────────────────────────────────────────────────
 
-export class SiloWatcher {
+export class SiloWatcher implements SiloWatcherLike {
   private watcher: FSWatcher | null = null;
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private processing = false;
@@ -85,16 +120,16 @@ export class SiloWatcher {
 
     // chokidar v4+ removed glob support — watch directories directly and
     // filter by extension + ignore patterns via the `ignored` callback.
-    const extSet = new Set(this.config.extensions.map((e) => e.toLowerCase()));
+    const extSet = new Set(this.config.indexedFileExtensions.map((e) => e.toLowerCase()));
 
-    this.watcher = watch(this.config.directories, {
+    this.watcher = watch(this.config.indexedDirectories, {
       ignored: (filePath, stats) => {
         const base = path.basename(filePath);
         if (!stats || stats.isDirectory()) {
-          return matchesAnyPattern(base, this.config.ignore);
+          return matchesAnyPattern(base, this.config.ignoredFolderPatterns);
         }
         // For files, check file ignore patterns first, then extension whitelist.
-        if (matchesAnyPattern(base, this.config.ignoreFiles)) return true;
+        if (matchesAnyPattern(base, this.config.ignoredFilePatterns)) return true;
         const ext = path.extname(filePath).toLowerCase();
         return !extSet.has(ext);
       },
@@ -106,13 +141,15 @@ export class SiloWatcher {
       },
     });
 
-    const debounceMs = this.config.debounce * 1000;
+    const debounceMs = this.config.fileChangeDelaySeconds * 1000;
 
     this.watcher.on('add', (filePath: string) => this.debounce(filePath, 'upsert', debounceMs));
     this.watcher.on('change', (filePath: string) => this.debounce(filePath, 'upsert', debounceMs));
     this.watcher.on('unlink', (filePath: string) => this.debounce(filePath, 'delete', debounceMs));
     this.watcher.on('addDir', (dirPath: string) => this.debounceDir(dirPath, 'add', debounceMs));
-    this.watcher.on('unlinkDir', (dirPath: string) => this.debounceDir(dirPath, 'remove', debounceMs));
+    this.watcher.on('unlinkDir', (dirPath: string) =>
+      this.debounceDir(dirPath, 'remove', debounceMs),
+    );
   }
 
   /** Stop watching and clear all pending timers. */
@@ -142,7 +179,7 @@ export class SiloWatcher {
     const absPath = path.resolve(filePath);
     let storedKey: string;
     try {
-      storedKey = makeStoredKey(absPath, this.config.directories);
+      storedKey = makeStoredKey(absPath, this.config.indexedDirectories);
     } catch {
       return; // file outside configured directories
     }
@@ -194,7 +231,7 @@ export class SiloWatcher {
         this.dirAddQueue.push(absDirPath);
       }
     } else {
-      const storedDirKey = makeStoredDirKey(absDirPath, this.config.directories);
+      const storedDirKey = makeStoredDirKey(absDirPath, this.config.indexedDirectories);
       if (storedDirKey && !this.dirRemoveQueue.includes(storedDirKey)) {
         this.dirRemoveQueue.push(storedDirKey);
       }
@@ -228,7 +265,11 @@ export class SiloWatcher {
           deletes.push({ storedKey: item.storedKey, absPath: item.absPath });
         } else {
           let fileSize: number | undefined;
-          try { fileSize = fs.statSync(item.absPath).size; } catch { /* vanished */ }
+          try {
+            fileSize = fs.statSync(item.absPath).size;
+          } catch {
+            /* vanished */
+          }
           upsertJobs.push({ absPath: item.absPath, storedKey: item.storedKey, fileSize });
         }
       }
@@ -286,14 +327,21 @@ export class SiloWatcher {
       // Process queued directory additions
       const pendingDirAdds = this.dirAddQueue.splice(0);
       for (const absDirPath of pendingDirAdds) {
-        const storedDirKey = makeStoredDirKey(absDirPath, this.config.directories);
+        const storedDirKey = makeStoredDirKey(absDirPath, this.config.indexedDirectories);
         if (storedDirKey) {
           try {
             const inserted = await this.storeOps.insertDirEntry(storedDirKey);
             if (inserted) {
-              this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absDirPath, eventType: 'dir-added' });
+              this.emit({
+                timestamp: new Date(),
+                siloName: this.config.name,
+                filePath: absDirPath,
+                eventType: 'dir-added',
+              });
             }
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         }
       }
 
@@ -303,8 +351,13 @@ export class SiloWatcher {
         try {
           const deletedId = await this.storeOps.deleteDirEntry(storedDirKey);
           if (deletedId !== null) {
-            const absPath = resolveStoredKey(storedDirKey, this.config.directories);
-            this.emit({ timestamp: new Date(), siloName: this.config.name, filePath: absPath, eventType: 'dir-removed' });
+            const absPath = resolveStoredKey(storedDirKey, this.config.indexedDirectories);
+            this.emit({
+              timestamp: new Date(),
+              siloName: this.config.name,
+              filePath: absPath,
+              eventType: 'dir-removed',
+            });
           }
         } catch (err) {
           console.error(`[watcher] Error removing directory ${storedDirKey}:`, err);

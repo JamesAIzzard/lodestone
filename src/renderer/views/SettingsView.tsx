@@ -29,6 +29,12 @@ const MCP_CLIENTS: Array<{
     restartLabel: 'Claude Desktop',
   },
   {
+    id: 'claude-code',
+    label: 'Claude Code',
+    fallbackConfigName: '.claude.json',
+    restartLabel: 'Claude Code',
+  },
+  {
     id: 'codex-desktop',
     label: 'Codex Desktop',
     fallbackConfigName: 'config.toml',

@@ -24,9 +24,12 @@ import {
 } from '../backend/search-merge';
 import {
   configureClaudeDesktop,
+  configureClaudeCode,
   configureCodexDesktop,
   getClaudeDesktopConfigPath as resolveClaudeDesktopConfigPath,
   getClaudeDesktopStatus,
+  getClaudeCodeConfigPath as resolveClaudeCodeConfigPath,
+  getClaudeCodeStatus,
   getCodexDesktopConfigPath as resolveCodexDesktopConfigPath,
   getCodexDesktopStatus,
   getMcpWrapperPath as resolveMcpWrapperPath,
@@ -614,16 +617,26 @@ function registerSettingsHandlers(ctx: AppContext): void {
 
 function registerMcpHandlers(): void {
   function getClientConfigPath(clientId: McpClientId): string {
-    return clientId === 'claude-desktop'
-      ? resolveClaudeDesktopConfigPath(app.getPath('appData'))
-      : resolveCodexDesktopConfigPath(app.getPath('home'));
+    switch (clientId) {
+      case 'claude-desktop':
+        return resolveClaudeDesktopConfigPath(app.getPath('appData'));
+      case 'claude-code':
+        return resolveClaudeCodeConfigPath(app.getPath('home'));
+      case 'codex-desktop':
+        return resolveCodexDesktopConfigPath(app.getPath('home'));
+    }
   }
 
   function getClientStatus(clientId: McpClientId): McpClientStatus {
     const configPath = getClientConfigPath(clientId);
-    return clientId === 'claude-desktop'
-      ? getClaudeDesktopStatus(configPath)
-      : getCodexDesktopStatus(configPath);
+    switch (clientId) {
+      case 'claude-desktop':
+        return getClaudeDesktopStatus(configPath);
+      case 'claude-code':
+        return getClaudeCodeStatus(configPath);
+      case 'codex-desktop':
+        return getCodexDesktopStatus(configPath);
+    }
   }
 
   function configureClient(clientId: McpClientId): McpClientConfigureResult {
@@ -634,9 +647,14 @@ function registerMcpHandlers(): void {
       appPath: app.getAppPath(),
     });
 
-    return clientId === 'claude-desktop'
-      ? configureClaudeDesktop(configPath, wrapperPath)
-      : configureCodexDesktop(configPath, wrapperPath);
+    switch (clientId) {
+      case 'claude-desktop':
+        return configureClaudeDesktop(configPath, wrapperPath);
+      case 'claude-code':
+        return configureClaudeCode(configPath, wrapperPath);
+      case 'codex-desktop':
+        return configureCodexDesktop(configPath, wrapperPath);
+    }
   }
 
   ipcMain.handle(

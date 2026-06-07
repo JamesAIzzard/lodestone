@@ -27,7 +27,7 @@ export interface StoredSiloConfigResponse {
   } | null;
 }
 
-export type McpClientId = 'claude-desktop' | 'codex-desktop';
+export type McpClientId = 'claude-desktop' | 'claude-code' | 'codex-desktop';
 
 export interface McpClientStatus {
   configPath: string;

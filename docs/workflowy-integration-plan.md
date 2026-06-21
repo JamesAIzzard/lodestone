@@ -170,7 +170,7 @@ cosine, so scores are directly comparable. The existing `silo` arg already cover
 **Not free — the plumbing.** Today the source collection is concretely `SiloManager`
 (`AppContext.siloManagers`, `dispatchSearch`'s param, the two call sites), so a Workflowy source
 has nowhere to plug in. This is resolved by the **prerequisite
-[SearchSource refactor](search-source-refactor-plan.md)** — a standalone, behaviour-preserving
+[SearchSource refactor](resource-oriented-architecture-plan.md)** — a standalone, behaviour-preserving
 change that introduces a `SearchSource` interface at the dispatch boundary (`SiloManager`
 implements it; `dispatchSearch` re-typed). See that doc for the interface and touch points.
 
@@ -224,7 +224,7 @@ discriminator + display label rather than overloading `filePath: string`.
 `> Workflowy results may be up to 10 min stale — refreshing in the background.` Note: today's
 "indexing" warnings are assembled *outside* managers in `internal-api.ts`, and a bare
 `search()` returns only results — so there's no per-source warning channel yet. The
-[SearchSource refactor](search-source-refactor-plan.md) adds one: `search()` returns
+[SearchSource refactor](resource-oriented-architecture-plan.md) adds one: `search()` returns
 `{ results, warnings }` and `dispatchSearch` aggregates them. The Workflowy source emits its
 stale notice through that envelope; it then flows into the same `warnings[]` → `> ...` block
 the MCP tool already renders (`tools-search.ts`).
@@ -266,7 +266,7 @@ cost than forcing two source kinds through one schema.
 
 ## Phasing
 
-**Prerequisite (separate task):** the [SearchSource refactor](search-source-refactor-plan.md) —
+**Prerequisite (separate task):** the [SearchSource refactor](resource-oriented-architecture-plan.md) —
 a standalone, behaviour-preserving change that adds the `SearchSource` interface so a non-silo
 source can join unified search. Lands and merges on its own; Workflowy then only *adds an
 implementor*. Not part of this feature's diff.

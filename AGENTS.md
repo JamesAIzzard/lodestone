@@ -14,3 +14,9 @@ Codex shows connectors by UUID instead of name. Use this mapping:
 ## Lodestone
 
 Call `lodestone_guide` at the start of every conversation - it describes the available tools.
+
+## Communication
+
+When explaining architecture, data flow, or refactor proposals, use Mermaid diagrams where they
+make the idea easier to follow. Prefer small focused diagrams alongside concise prose rather than
+large all-in-one diagrams.

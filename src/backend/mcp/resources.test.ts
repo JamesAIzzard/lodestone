@@ -21,11 +21,11 @@ describe('getGuideText', () => {
   });
 
   it('retrieves current configuration for each startup guide request', async () => {
-    let notePath: string | undefined;
-    const getConfig = async () => ({ notePath });
+    const currentConfig: { notePath?: string } = {};
+    const getConfig = async () => currentConfig;
 
     const first = await getGuideText('startup', getConfig);
-    notePath = 'C:\\Notes\\Current Instructions.md';
+    currentConfig.notePath = 'C:\\Notes\\Current Instructions.md';
     const second = await getGuideText('startup', getConfig);
 
     expect(first).toContain('LLM user instructions');

@@ -197,6 +197,7 @@ function startProxiedMcpServer(
       edit: (params) => gui.call<EditResult>('edit', params),
       getDefaults: () => gui.call<{ contextLines: number }>('getDefaults'),
     },
+    getLlmInstructionsConfig: () => gui.call<{ notePath?: string }>('getLlmInstructionsConfig'),
     notifyActivity: (params) => {
       gui.call('notify.activity', params as Record<string, unknown>).catch((): void => undefined);
     },

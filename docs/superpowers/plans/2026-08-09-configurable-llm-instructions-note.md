@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Keep the `startup` and `notes` guide topics and both existing `lodestone://guide/...` resource URIs.
-- Built-in guide content may describe Lodestone tool use only; writing, communication, Markdown, mathematical, and naming conventions belong in the selected note.
+- Built-in guide content may describe Lodestone tool use only; writing, communication, Markdown, mathematical, and naming conventions belong in the selected note or its linked notes.
 - The selected note is optional and stored as an exact absolute path.
 - When no note is set, advise searching for a likely LLM user instructions note.
 - Do not add a renderer filesystem-read capability or any new dependency.

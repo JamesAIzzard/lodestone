@@ -39,6 +39,7 @@ export interface SiloTomlConfig {
 
 export interface LodestoneConfig {
   server_name: string;
+  llm_instructions_note_path?: string;
   defaults: DefaultsConfig;
   silos: Record<string, SiloTomlConfig>;
 }
@@ -78,6 +79,7 @@ export function loadLodestoneConfig(configPath: string): LodestoneConfig {
 
   return {
     server_name: stringField(parsed.server_name, DEFAULT_CONFIG.server_name),
+    llm_instructions_note_path: optionalStringField(parsed.llm_instructions_note_path),
     defaults: parseDefaultsConfig(parsed.defaults),
     silos: parseSilosConfig(parsed.silos),
   };

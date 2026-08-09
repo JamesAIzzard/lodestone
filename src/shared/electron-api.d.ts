@@ -5,6 +5,7 @@ import type {
   ActivityEvent,
   ServerStatus,
   DefaultSettings,
+  LlmInstructionsSettings,
   ExploreParams,
   SearchParams,
 } from './types';
@@ -95,6 +96,10 @@ export interface ElectronAPI {
   getDefaults: () => Promise<DefaultSettings>;
   updateDefaults: (updates: Partial<DefaultSettings>) => Promise<{ success: boolean }>;
   resetAllSettings: () => Promise<{ success: boolean }>;
+
+  // ── LLM instructions ────────────────────────────────────────────────────
+  getLlmInstructionsSettings: () => Promise<LlmInstructionsSettings>;
+  updateLlmInstructionsSettings: (notePath?: string) => Promise<{ success: boolean }>;
 
   // ── Silo rename ────────────────────────────────────────────────────────────
   renameSilo: (oldName: string, newName: string) => Promise<{ success: boolean; error?: string }>;

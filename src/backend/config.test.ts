@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   loadLodestoneConfig,
+  saveLodestoneConfig,
   createDefaultLodestoneConfig,
   resolveSiloRuntimeConfig,
 } from './config';
@@ -21,6 +22,33 @@ describe('loadLodestoneConfig', () => {
   it('loads default config when file is missing', () => {
     const config = createDefaultLodestoneConfig();
     expect(config.server_name).toBe('lodestone');
+  });
+
+  it('loads an optional LLM instructions note path', () => {
+    const p = writeConfig(`
+server_name = "test"
+llm_instructions_note_path = "C:\\\\Notes\\\\LLM User Instructions.md"
+`);
+
+    expect(loadLodestoneConfig(p).llm_instructions_note_path).toBe(
+      'C:\\Notes\\LLM User Instructions.md',
+    );
+  });
+
+  it('leaves the LLM instructions note unset by default', () => {
+    expect(createDefaultLodestoneConfig().llm_instructions_note_path).toBeUndefined();
+  });
+
+  it('round-trips the selected LLM instructions note path', () => {
+    const p = writeConfig('server_name = "test"');
+    const config = loadLodestoneConfig(p);
+    config.llm_instructions_note_path = 'C:\\Notes\\LLM User Instructions.md';
+
+    saveLodestoneConfig(p, config);
+
+    expect(loadLodestoneConfig(p).llm_instructions_note_path).toBe(
+      'C:\\Notes\\LLM User Instructions.md',
+    );
   });
 
   it('ignores stale embedding-model fields from older configs without erroring', () => {

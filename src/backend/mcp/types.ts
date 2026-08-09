@@ -43,6 +43,8 @@ export interface McpServerDeps {
     /** Config defaults (e.g. contextLines). */
     getDefaults: () => Promise<{ contextLines: number }>;
   };
+  /** Current user-selected LLM instructions note. */
+  getLlmInstructionsConfig: () => Promise<{ notePath?: string }>;
   /** Fire-and-forget notification to the GUI to trigger the shimmer on a card. */
   notifyActivity?: (params: { channel: 'silo'; siloName?: string }) => void;
 }

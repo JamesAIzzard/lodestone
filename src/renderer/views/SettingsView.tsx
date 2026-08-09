@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dialog';
 import IgnorePatternsEditor from '@/components/IgnorePatternsEditor';
 import ExtensionPicker from '@/components/ExtensionPicker';
+import LlmInstructionsNoteSetting from '@/components/LlmInstructionsNoteSetting';
 import type {
   McpClientConfigureResult,
   McpClientId,
@@ -222,6 +223,13 @@ export default function SettingsView() {
               </p>
             </div>
           </div>
+        </Section>
+
+        <Section
+          title="LLM Instructions Note"
+          description="Choose the indexed note that contains your standing instructions for LLM clients."
+        >
+          <LlmInstructionsNoteSetting />
         </Section>
 
         {/* ── MCP Client Integration ────────────────────────────── */}

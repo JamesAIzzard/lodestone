@@ -83,6 +83,18 @@ describe('SyncScheduler', () => {
 });
 
 describe('MailAccount', () => {
+  it('pauses and resumes the mail scheduler as part of the source lifecycle', async () => {
+    const fixture = await accountFixture();
+    fixture.account.start();
+
+    await fixture.account.pause();
+    expect(fixture.account.status().syncState).toBe('paused');
+
+    fixture.account.resume();
+    expect(fixture.account.status().syncState).toBe('initialising');
+    await fixture.account.shutdown();
+  });
+
   it('hides the silo until selection reconciliation and indexing complete', async () => {
     const fixture = await accountFixture();
     const availability: boolean[] = [];

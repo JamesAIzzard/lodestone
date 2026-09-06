@@ -26,7 +26,7 @@ describe('mail account lifecycle configuration', () => {
     expect(silo).toMatchObject({
       indexed_directories: [path.join('C:\\LodestoneData', 'mail', hash, 'mirror')],
       index_db_path: path.join('C:\\LodestoneData', 'mail', hash, 'index.sqlite'),
-      indexed_file_extensions: ['md'],
+      indexed_file_extensions: ['.md'],
       read_only: true,
       managed_by: `mail:${hash}`,
       supports_path_search: false,
@@ -35,8 +35,10 @@ describe('mail account lifecycle configuration', () => {
     silo.read_only = false;
     silo.supports_path_search = true;
     silo.indexed_directories = ['C:\\wrong'];
+    silo.indexed_file_extensions = ['md'];
     expect(ensureMailSiloConfig(config, 'C:\\LodestoneData', hash, account)).toMatchObject({
       indexed_directories: [path.join('C:\\LodestoneData', 'mail', hash, 'mirror')],
+      indexed_file_extensions: ['.md'],
       read_only: true,
       supports_path_search: false,
     });

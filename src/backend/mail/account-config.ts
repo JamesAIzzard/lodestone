@@ -26,7 +26,7 @@ export function ensureMailSiloConfig(
     ...existing,
     indexed_directories: [paths.mirror],
     index_db_path: existing?.index_db_path ?? path.join(paths.root, 'index.sqlite'),
-    indexed_file_extensions: ['md'],
+    indexed_file_extensions: ['.md'],
     read_only: true,
     managed_by: owner,
     supports_path_search: false,

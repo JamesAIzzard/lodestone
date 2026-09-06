@@ -101,7 +101,8 @@ export async function initializeBackend(ctx: AppContext): Promise<void> {
         silo,
       });
       ctx.mailAccounts.set(hash, account);
-      account.start();
+      if (config.silos[accountConfig.silo_name]?.is_stopped) await account.pause();
+      else account.start();
     } catch (error) {
       try {
         manifest?.close();
@@ -167,6 +168,12 @@ export async function stopSilo(
 ): Promise<{ success: boolean; error?: string }> {
   const manager = ctx.siloManagers.get(name);
   if (!manager) return { success: false, error: `Silo "${name}" not found` };
+
+  const owner = ctx.config?.silos[name]?.managed_by;
+  const mailAccount = owner?.startsWith('mail:')
+    ? ctx.mailAccounts.get(owner.slice('mail:'.length))
+    : undefined;
+  await mailAccount?.pause();
   if (manager.isStopped) return { success: true };
 
   await manager.freeze();
@@ -189,7 +196,15 @@ export async function wakeSilo(
 ): Promise<{ success: boolean; error?: string }> {
   const manager = ctx.siloManagers.get(name);
   if (!manager) return { success: false, error: `Silo "${name}" not found` };
-  if (!manager.isStopped) return { success: true };
+
+  const owner = ctx.config?.silos[name]?.managed_by;
+  const mailAccount = owner?.startsWith('mail:')
+    ? ctx.mailAccounts.get(owner.slice('mail:'.length))
+    : undefined;
+  if (!manager.isStopped) {
+    mailAccount?.resume();
+    return { success: true };
+  }
 
   if (ctx.config) {
     const siloToml = ctx.config.silos[name];
@@ -200,6 +215,7 @@ export async function wakeSilo(
   }
 
   await manager.wake();
+  mailAccount?.resume();
 
   notifySilosChanged(ctx);
   return { success: true };

@@ -1,4 +1,9 @@
-import { accountHash, mirrorFileName } from './identity';
+import {
+  accountHash,
+  isLegacyMirrorFileName,
+  mirrorCollisionSuffix,
+  mirrorFileName,
+} from './identity';
 import { contentHash, renderMirrorFile } from './markdown-writer';
 import type { MailAdapter } from './adapter';
 import { AdapterError } from './adapter';
@@ -14,6 +19,13 @@ export interface MailSelection {
 }
 
 export type RoundOutcome = 'completed' | 'budget-exhausted' | 'auth-required' | 'failed';
+
+export interface MailMirrorProgress {
+  phase: 'listing' | 'mirroring' | 'finalising';
+  current: number;
+  total: number | null;
+  folder: string | null;
+}
 
 export type MailLog = (
   event: string,
@@ -36,6 +48,7 @@ export interface SynchroniserOptions {
   clock?: () => Date;
   log?: MailLog;
   fileOperations?: MirrorFileOperations;
+  onProgress?: (progress: MailMirrorProgress | null) => void;
 }
 
 export class Synchroniser {
@@ -49,6 +62,7 @@ export class Synchroniser {
   private readonly clock: () => Date;
   private readonly log: MailLog;
   private readonly files: MirrorFileOperations;
+  private readonly onProgress: (progress: MailMirrorProgress | null) => void;
   private readonly ready: Promise<void>;
   private activeRound: Promise<RoundOutcome> | null = null;
 
@@ -63,6 +77,7 @@ export class Synchroniser {
     this.clock = options.clock ?? (() => new Date());
     this.log = options.log ?? (() => undefined);
     this.files = options.fileOperations ?? { cleanTmp, writeMirrorFile, deleteMirrorFile };
+    this.onProgress = options.onProgress ?? (() => undefined);
     this.ready = this.files.cleanTmp(this.dirs);
   }
 
@@ -105,10 +120,19 @@ export class Synchroniser {
             role: folder.role,
             uidValidity: folder.uidValidity,
           };
+          let current = 0;
+          let total: number | null = null;
+          this.onProgress({ phase: 'listing', current, total, folder: folder.path });
           for await (const entry of this.adapter.listMessages(
             sourceFolder,
             this.selection.receivedAfter,
+            (count) => {
+              total = count;
+              this.onProgress({ phase: 'mirroring', current, total, folder: folder.path });
+            },
           )) {
+            current += 1;
+            this.onProgress({ phase: 'mirroring', current, total, folder: folder.path });
             if (this.selection.receivedAfter && entry.receivedAt < this.selection.receivedAfter)
               continue;
             if (this.adapter.isGmail && entry.labels?.includes('\\Draft')) continue;
@@ -123,6 +147,7 @@ export class Synchroniser {
             });
             const changed =
               !previousMessage ||
+              isLegacyMirrorFileName(previousMessage.fileName) ||
               !previousMembership ||
               previousMembership.seen !== entry.seen ||
               previousMembership.flagged !== entry.flagged ||
@@ -146,6 +171,7 @@ export class Synchroniser {
             account_hash: this.accountHash,
             round,
             error_kind: errorKind(error),
+            ...safeAdapterErrorCode(error),
           });
         }
       }
@@ -172,6 +198,12 @@ export class Synchroniser {
     startedAt: number,
     messageKeys: MessageKey[],
   ): Promise<RoundOutcome> {
+    this.onProgress({
+      phase: 'finalising',
+      current: 0,
+      total: messageKeys.length,
+      folder: null,
+    });
     for (let index = 0; index < messageKeys.length; index += 1) {
       const messageKey = messageKeys[index];
       if (
@@ -183,6 +215,12 @@ export class Synchroniser {
         if (outcome) return this.finish(round, outcome);
       }
       this.savePendingFinalisation(round, messageKeys.slice(index + 1));
+      this.onProgress({
+        phase: 'finalising',
+        current: index + 1,
+        total: messageKeys.length,
+        folder: null,
+      });
     }
 
     for (const message of this.manifest.messagesWithoutMembership()) {
@@ -268,21 +306,35 @@ export class Synchroniser {
       });
       const hash = contentHash(rendered);
       const existing = this.manifest.message(messageKey);
-      const fileName = existing?.fileName ?? mirrorFileName(this.accountUid, messageKey);
-      if (existing?.contentHash !== hash)
+      const baseFileName = mirrorFileName(
+        message.headers.subject,
+        message.headers.from,
+        receivedAt,
+      );
+      const hasCollision = this.manifest
+        .messages()
+        .some((record) => record.messageKey !== messageKey && record.fileName === baseFileName);
+      const fileName = hasCollision
+        ? mirrorFileName(
+            message.headers.subject,
+            message.headers.from,
+            receivedAt,
+            mirrorCollisionSuffix(this.accountUid, messageKey),
+          )
+        : baseFileName;
+      if (existing?.contentHash !== hash || existing.fileName !== fileName)
         await this.files.writeMirrorFile(this.dirs, fileName, rendered);
+      if (existing && existing.fileName !== fileName)
+        await this.files.deleteMirrorFile(this.dirs, existing.fileName);
       const fetchedAt = this.clock().toISOString();
-      if (existing) this.manifest.updateMessageHash(messageKey, hash, labels ?? null, fetchedAt);
-      else {
-        this.manifest.insertMessage({
-          messageKey,
-          fileName,
-          receivedAt: receivedAt.toISOString(),
-          labels: labels ?? null,
-          contentHash: hash,
-          fetchedAt,
-        });
-      }
+      this.manifest.insertMessage({
+        messageKey,
+        fileName,
+        receivedAt: receivedAt.toISOString(),
+        labels: labels ?? null,
+        contentHash: hash,
+        fetchedAt,
+      });
       return null;
     } catch (error) {
       if (error instanceof AdapterError && error.kind === 'not-found') {
@@ -311,6 +363,7 @@ export class Synchroniser {
             : 'error',
     );
     if (error) this.manifest.setState('last_error', errorKind(error));
+    if (outcome !== 'budget-exhausted') this.onProgress(null);
     this.log('mail-sync-finished', { account_hash: this.accountHash, round, outcome });
     return outcome;
   }
@@ -361,4 +414,9 @@ function classifyError(error: unknown): RoundOutcome {
 
 function errorKind(error: unknown): string {
   return error instanceof AdapterError ? error.kind : 'internal';
+}
+
+function safeAdapterErrorCode(error: unknown): { error_code?: string } {
+  if (!(error instanceof AdapterError) || !/^[a-z0-9:-]+$/i.test(error.message)) return {};
+  return { error_code: error.message };
 }

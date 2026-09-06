@@ -22,7 +22,11 @@ export class AdapterError extends Error {
 export interface MailAdapter {
   readonly isGmail?: boolean;
   listFolders(): Promise<Folder[]>;
-  listMessages(folder: Folder, receivedAfter?: Date | null): AsyncIterable<Entry>;
+  listMessages(
+    folder: Folder,
+    receivedAfter?: Date | null,
+    onCount?: (total: number) => void,
+  ): AsyncIterable<Entry>;
   fetchMessage(messageKey: MessageKey): Promise<Message>;
   close(): Promise<void>;
 }

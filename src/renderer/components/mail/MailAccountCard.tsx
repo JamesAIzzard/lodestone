@@ -1,64 +1,43 @@
 import { useState } from 'react';
-import {
-  AlertTriangle,
-  ExternalLink,
-  Loader2,
-  Mail,
-  RefreshCw,
-  Settings,
-  Trash2,
-  Unplug,
-} from 'lucide-react';
+import { AlertTriangle, Loader2, Mail, Pause, Play, RefreshCw, Search } from 'lucide-react';
 
-import type { MailAccountStatus, MailSyncState } from '../../../backend/mail/account';
+import type { MailAccountStatus } from '../../../backend/mail/account';
 import type { SiloStatus } from '../../../shared/types';
 import { SILO_COLOR_MAP } from '../../../shared/silo-appearance';
 import { cn } from '@/lib/utils';
 import { Badge } from '../ui/badge';
-import { Button } from '../ui/button';
-import { SiloIndexBadge } from '../SiloCard';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
-import MailAccountSettings from './MailAccountSettings';
-import ReconnectMailAccount from './ReconnectMailAccount';
-
-const syncLabels: Record<MailSyncState, { label: string; className: string }> = {
-  initialising: { label: 'Preparing mirror', className: 'bg-blue-400' },
-  syncing: { label: 'Mirroring mail', className: 'bg-amber-500 animate-pulse' },
-  idle: { label: 'Mirror up to date', className: 'bg-emerald-500' },
-  'reauthorisation-required': { label: 'Reconnect required', className: 'bg-red-500' },
-  error: { label: 'Mirror error', className: 'bg-red-500' },
-  removing: { label: 'Removing', className: 'bg-amber-500 animate-pulse' },
-};
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
 
 interface MailAccountCardProps {
   account: MailAccountStatus;
   silo: SiloStatus;
+  onClick: () => void;
   onChanged: () => void;
+  onSearchInSilo: () => void;
+  onStopToggle: () => void;
+  isStopping?: boolean;
+  shimmerKey?: number;
 }
 
-export default function MailAccountCard({ account, silo, onChanged }: MailAccountCardProps) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [reconnectOpen, setReconnectOpen] = useState(false);
-  const [removeOpen, setRemoveOpen] = useState(false);
-  const [working, setWorking] = useState<'sync' | 'remove' | null>(null);
+export default function MailAccountCard({
+  account,
+  silo,
+  onClick,
+  onChanged,
+  onSearchInSilo,
+  onStopToggle,
+  isStopping,
+  shimmerKey,
+}: MailAccountCardProps) {
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const sync = syncLabels[account.syncState];
   const color = SILO_COLOR_MAP[silo.config.accentColor];
-  const progress = silo.reconcileProgress;
-  const progressPercent =
-    progress && progress.total > 0
-      ? Math.min(Math.round((progress.current / progress.total) * 100), 99)
-      : null;
+  const stopped = silo.watcherState === 'stopped' || account.syncState === 'paused';
+  const mirrorProgress = account.mirrorProgress;
+  const state = combinedState(account, silo);
 
   async function syncNow() {
-    setWorking('sync');
+    setSyncing(true);
     setError(null);
     try {
       const result = await window.lodestone?.mail.syncNow(account.accountHash);
@@ -67,224 +46,239 @@ export default function MailAccountCard({ account, silo, onChanged }: MailAccoun
     } catch (err) {
       setError(String(err));
     } finally {
-      setWorking(null);
-    }
-  }
-
-  async function remove(retry = false) {
-    setWorking('remove');
-    setError(null);
-    try {
-      const action = retry ? window.lodestone?.mail.retryRemove : window.lodestone?.mail.remove;
-      const result = await action?.(account.accountHash);
-      if (!result?.success) {
-        setError(result?.error ?? 'Could not remove the account.');
-        setRemoveOpen(false);
-      } else {
-        setRemoveOpen(false);
-      }
-      onChanged();
-    } catch (err) {
-      setError(String(err));
-      setRemoveOpen(false);
-      onChanged();
-    } finally {
-      setWorking(null);
+      setSyncing(false);
     }
   }
 
   return (
-    <>
-      <article
-        className={cn(
-          'flex flex-col gap-3 rounded-lg border border-border border-l-[3px] bg-card p-4',
-          color.cardAccent,
-        )}
-      >
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3 className="flex items-center gap-2 truncate text-sm font-semibold">
-              <Mail className={cn('h-4 w-4 shrink-0', color.text)} />
-              {account.displayName}
-            </h3>
-            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{account.username}</p>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'relative flex w-full flex-col gap-3 overflow-hidden rounded-lg border border-border border-l-[3px] bg-card p-4 text-left transition-colors',
+        color.cardAccent,
+        'hover:border-foreground/20 hover:bg-accent/30',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+      )}
+    >
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <Badge variant={state.variant} className="gap-1.5 whitespace-nowrap">
+              <span className={cn('h-1.5 w-1.5 rounded-full', state.dotClass)} />
+              {state.label}
+            </Badge>
+            <Badge variant="secondary">Read-only</Badge>
           </div>
-          <Badge variant="secondary">
-            {account.credentialKind === 'oauth' ? 'OAuth' : 'Password'}
-          </Badge>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <CardAction label="Search in this silo" onClick={onSearchInSilo}>
+              <Search className="h-3.5 w-3.5" />
+            </CardAction>
+            <CardAction
+              label={stopped ? 'Source is paused' : 'Synchronise mail now'}
+              onClick={() => void syncNow()}
+              disabled={stopped || syncing || account.syncState === 'removing'}
+            >
+              {syncing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+            </CardAction>
+            <CardAction
+              label={isStopping ? 'Pausing source' : stopped ? 'Resume source' : 'Pause source'}
+              onClick={onStopToggle}
+              disabled={isStopping}
+            >
+              {isStopping ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : stopped ? (
+                <Play className="h-3.5 w-3.5" />
+              ) : (
+                <Pause className="h-3.5 w-3.5" />
+              )}
+            </CardAction>
+          </div>
         </div>
+        <h3 className="flex items-center gap-1.5 truncate text-sm font-semibold text-foreground">
+          <Mail className={cn('h-3.5 w-3.5 shrink-0', color.text)} />
+          {silo.config.name}
+        </h3>
+        <p className="truncate text-xs text-muted-foreground/70">{account.username}</p>
+      </div>
 
-        <div className="flex flex-wrap gap-1.5">
-          <Badge
-            variant={
-              account.syncState === 'error' || account.syncState === 'reauthorisation-required'
-                ? 'destructive'
-                : 'secondary'
-            }
-            className="gap-1.5"
-          >
-            <span className={cn('h-1.5 w-1.5 rounded-full', sync.className)} />
-            {sync.label}
-          </Badge>
-          <SiloIndexBadge silo={silo} />
-          {!silo.available && <Badge variant="destructive">Search unavailable</Badge>}
+      <div className={cn('space-y-3', stopped && 'opacity-50')}>
+        <Progress
+          label={
+            account.syncState === 'syncing'
+              ? mirrorProgress?.phase === 'finalising'
+                ? 'Finalising mirror'
+                : `Mirroring${mirrorProgress?.folder ? ` ${mirrorProgress.folder}` : ''}`
+              : stopped
+                ? 'Mirror paused'
+                : 'Mirror up to date'
+          }
+          current={mirrorProgress?.current ?? account.messageCount}
+          total={
+            mirrorProgress?.total ?? (account.lastRoundCompletedAt ? account.messageCount : null)
+          }
+          colour="bg-violet-500"
+          complete={
+            account.syncState === 'idle' || (stopped && account.lastRoundCompletedAt !== null)
+          }
+        />
+        <Progress
+          label={
+            silo.watcherState === 'indexing'
+              ? 'Indexing messages'
+              : stopped
+                ? 'Index paused'
+                : 'Index up to date'
+          }
+          current={silo.indexedFileCount}
+          total={Math.max(account.messageCount, silo.indexedFileCount)}
+          colour="bg-amber-500"
+          complete={silo.indexCaughtUp}
+        />
+
+        <div className="space-y-1 text-xs text-muted-foreground">
+          <div className="flex items-center justify-between gap-3">
+            <span>{account.messageCount.toLocaleString()} messages mirrored</span>
+            <span>{silo.indexedFileCount.toLocaleString()} indexed</span>
+          </div>
+          <p className="truncate">{account.selectionSummary}</p>
+          <p>Last mirror round: {relativeTime(account.lastRoundCompletedAt)}</p>
         </div>
+      </div>
 
-        {silo.watcherState === 'indexing' && progress && progress.total > 0 && (
-          <div className="space-y-1">
-            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-amber-500"
-                style={{ width: `${progressPercent ?? 0}%` }}
-              />
-            </div>
-            <p className="text-[10px] text-muted-foreground">
-              {progress.current.toLocaleString()} / {progress.total.toLocaleString()} files indexed
-            </p>
-          </div>
-        )}
+      {(account.lastError || error) && (
+        <p className="flex items-start gap-1.5 text-xs text-red-400">
+          <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+          {error ?? `Mail synchronisation failed (${account.lastError}).`}
+        </p>
+      )}
 
-        <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-          <div>
-            <dt className="text-muted-foreground">Folders</dt>
-            <dd className="mt-0.5">{account.selectionSummary}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Messages</dt>
-            <dd className="mt-0.5">{account.messageCount.toLocaleString()}</dd>
-          </div>
-          <div className="col-span-2">
-            <dt className="text-muted-foreground">Last mirror round</dt>
-            <dd className="mt-0.5">{relativeTime(account.lastRoundCompletedAt)}</dd>
-          </div>
-        </dl>
+      {(shimmerKey ?? 0) > 0 && (
+        <div
+          key={shimmerKey}
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 animate-neural-shimmer"
+          style={{
+            background: `linear-gradient(108deg, transparent 38%, rgba(${color.shimmerRgb},0.08) 45%, rgba(${color.shimmerRgb},0.18) 50%, rgba(${color.shimmerRgb},0.08) 55%, transparent 62%)`,
+          }}
+        />
+      )}
+    </button>
+  );
+}
 
-        {(account.lastError || error) && (
-          <p className="flex items-start gap-1.5 text-xs text-red-400">
-            <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
-            {account.removalFailedStep
-              ? `Removal failed while ${removalStepLabel(account.removalFailedStep)}.`
-              : (error ?? `Mail synchronisation failed (${account.lastError}).`)}
-          </p>
-        )}
-
-        <div className="mt-auto flex flex-wrap gap-1.5 border-t border-border pt-3">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={syncNow}
-            disabled={working !== null || account.syncState === 'removing'}
-          >
-            {working === 'sync' ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="h-3.5 w-3.5" />
+function CardAction({
+  label,
+  onClick,
+  disabled = false,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <TooltipProvider delayDuration={300}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            role="button"
+            tabIndex={disabled ? -1 : 0}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (!disabled) onClick();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.stopPropagation();
+                if (!disabled) onClick();
+              }
+            }}
+            className={cn(
+              'rounded p-0.5 transition-colors',
+              disabled
+                ? 'cursor-default text-muted-foreground/25'
+                : 'text-muted-foreground/50 hover:bg-accent/40 hover:text-foreground',
             )}
-            Sync now
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setSettingsOpen(true)}
-            disabled={account.syncState === 'removing'}
           >
-            <Settings className="h-3.5 w-3.5" /> Settings
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setReconnectOpen(true)}
-            disabled={account.syncState === 'removing'}
-          >
-            <Unplug className="h-3.5 w-3.5" /> Reconnect
-          </Button>
-          {account.removalFailedStep ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => void remove(true)}
-              disabled={working !== null}
-            >
-              {working === 'remove' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              Retry remove
-            </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-red-400"
-              onClick={() => setRemoveOpen(true)}
-              disabled={working !== null}
-            >
-              <Trash2 className="h-3.5 w-3.5" /> Remove
-            </Button>
+            {children}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">{label}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+function Progress({
+  label,
+  current,
+  total,
+  colour,
+  complete = false,
+}: {
+  label: string;
+  current: number;
+  total: number | null;
+  colour: string;
+  complete?: boolean;
+}) {
+  const percent = complete
+    ? 100
+    : total && total > 0
+      ? Math.min(Math.round((current / total) * 100), 99)
+      : null;
+  return (
+    <div className="space-y-1">
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn(
+            'relative h-full overflow-hidden rounded-full transition-[width] duration-300',
+            colour,
+            percent === null && 'w-1/3 animate-pulse',
+          )}
+          style={percent === null ? undefined : { width: `${percent}%` }}
+        >
+          {complete && (
+            <span className="absolute inset-y-0 left-0 w-1/3 animate-progress-shimmer bg-gradient-to-r from-transparent via-white/25 to-transparent" />
           )}
         </div>
-      </article>
-
-      <MailAccountSettings
-        account={account}
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        onSaved={onChanged}
-      />
-      <ReconnectMailAccount
-        account={account}
-        open={reconnectOpen}
-        onOpenChange={setReconnectOpen}
-        onReconnected={onChanged}
-      />
-      <Dialog open={removeOpen} onOpenChange={setRemoveOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Remove {account.displayName}?</DialogTitle>
-            <DialogDescription>
-              This removes Lodestone's local mirror. It does not delete or change mail on the
-              server.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="mt-4 space-y-3 text-sm text-muted-foreground">
-            <p>The following local data will be deleted:</p>
-            <ul className="list-disc space-y-1 pl-5">
-              <li>Mirrored message files</li>
-              <li>The mail manifest and search index</li>
-              <li>The encrypted credential and account configuration</li>
-            </ul>
-            {account.credentialKind === 'oauth' && (
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-                onClick={() =>
-                  window.electronAPI?.openExternal('https://myaccount.microsoft.com/permissions')
-                }
-              >
-                Review Microsoft account permissions <ExternalLink className="h-3 w-3" />
-              </button>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setRemoveOpen(false)}
-              disabled={working !== null}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => void remove()}
-              disabled={working !== null}
-            >
-              {working === 'remove' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              Remove local mirror
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+      </div>
+      <div className="flex justify-between gap-2 text-[10px] text-muted-foreground">
+        <span className="truncate">{label}</span>
+        <span className="shrink-0">
+          {current.toLocaleString()}
+          {total !== null ? ` / ${total.toLocaleString()}` : ''}
+        </span>
+      </div>
+    </div>
   );
+}
+
+function combinedState(account: MailAccountStatus, silo: SiloStatus) {
+  if (silo.watcherState === 'stopped' || account.syncState === 'paused')
+    return { label: 'Paused', dotClass: 'bg-blue-400', variant: 'secondary' as const };
+  if (account.syncState === 'error' || account.syncState === 'reauthorisation-required')
+    return { label: 'Error', dotClass: 'bg-red-500', variant: 'destructive' as const };
+  if (account.syncState === 'syncing')
+    return {
+      label: 'Mirroring',
+      dotClass: 'bg-violet-500 animate-pulse',
+      variant: 'default' as const,
+    };
+  if (silo.watcherState === 'indexing')
+    return {
+      label: 'Indexing',
+      dotClass: 'bg-amber-500 animate-pulse',
+      variant: 'default' as const,
+    };
+  return { label: 'Ready', dotClass: 'bg-emerald-500', variant: 'secondary' as const };
 }
 
 function relativeTime(value: string | null): string {
@@ -303,8 +297,4 @@ function relativeTime(value: string | null): string {
     Math.round(elapsedSeconds / seconds),
     unit,
   );
-}
-
-function removalStepLabel(step: string): string {
-  return step.replaceAll('-', ' ');
 }

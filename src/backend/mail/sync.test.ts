@@ -48,6 +48,59 @@ describe('Synchroniser', () => {
     expect(await readdir(dirs.mirror)).toHaveLength(2);
   });
 
+  it('uses readable timestamped names and migrates legacy hashed files safely', async () => {
+    const adapter = standardAdapter();
+    add(adapter, 'inbox', 'Quarterly results');
+    const legacyName = 'a383522d27c5834a8f9950ba0c7d0029.md';
+    await mirrorFiles.writeMirrorFile(dirs, legacyName, 'legacy');
+    manifest.insertMessage({
+      messageKey: 'Quarterly results',
+      fileName: legacyName,
+      receivedAt: NOW.toISOString(),
+      labels: null,
+      contentHash: 'legacy',
+      fetchedAt: NOW.toISOString(),
+    });
+
+    expect(await synchroniser(adapter).runRound()).toBe('completed');
+
+    const fileName = required(manifest.message('Quarterly results')).fileName;
+    expect(fileName).toBe('Quarterly results -- 2026-09-06 09-00-00Z.md');
+    expect(await readdir(dirs.mirror)).toEqual([fileName]);
+  });
+
+  it('reports determinate listing and mirroring progress without message content', async () => {
+    const adapter = standardAdapter();
+    add(adapter, 'inbox', 'one');
+    add(adapter, 'inbox', 'two');
+    const onProgress = vi.fn();
+    const sync = new Synchroniser({
+      adapter,
+      manifest,
+      dirs,
+      accountUid: ACCOUNT_UID,
+      selection: { ...defaultSelection(), mode: 'explicit', folderKeys: ['inbox'] },
+      clock: () => NOW,
+      onProgress,
+    });
+
+    expect(await sync.runRound()).toBe('completed');
+    expect(onProgress).toHaveBeenCalledWith({
+      phase: 'mirroring',
+      current: 0,
+      total: 2,
+      folder: 'Inbox',
+    });
+    expect(onProgress).toHaveBeenCalledWith({
+      phase: 'mirroring',
+      current: 2,
+      total: 2,
+      folder: 'Inbox',
+    });
+    expect(onProgress).toHaveBeenLastCalledWith(null);
+    expect(JSON.stringify(onProgress.mock.calls)).not.toContain('one@example.test');
+  });
+
   it('adds, deletes and moves messages on subsequent complete rounds', async () => {
     const adapter = standardAdapter();
     add(adapter, 'inbox', 'first');

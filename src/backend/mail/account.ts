@@ -11,12 +11,18 @@ import { AdapterError } from './adapter';
 import type { Folder } from './types';
 import type { Manifest } from './manifest';
 import type { MirrorDirs } from './mirror-files';
-import { Synchroniser, type MailSelection, type RoundOutcome } from './sync';
+import {
+  Synchroniser,
+  type MailMirrorProgress,
+  type MailSelection,
+  type RoundOutcome,
+} from './sync';
 import { createMailLogger, type MailLogSink } from './logger';
 
 export type MailSyncState =
   | 'initialising'
   | 'syncing'
+  | 'paused'
   | 'idle'
   | 'reauthorisation-required'
   | 'error'
@@ -31,6 +37,7 @@ export interface MailAccountStatus {
   lastRoundCompletedAt: string | null;
   lastError: string | null;
   messageCount: number;
+  mirrorProgress?: MailMirrorProgress;
   selectionSummary: string;
   username: string;
   oauthClientId?: string;
@@ -115,6 +122,7 @@ export class MailAccount {
   private cachedLastCompleted: string | null = null;
   private cachedFolders: Folder[] = [];
   private selectionReconciliationPending = false;
+  private mirrorProgress: MailMirrorProgress | undefined;
 
   constructor(options: MailAccountOptions) {
     this.accountHash = options.accountHash;
@@ -146,6 +154,20 @@ export class MailAccount {
   }
 
   start(): void {
+    if (this.state('sync_state') === 'paused') return;
+    this.scheduler.start();
+  }
+
+  async pause(): Promise<void> {
+    await this.scheduler.stop();
+    await this.closeAdapter();
+    this.mirrorProgress = undefined;
+    this.manifest.setState('sync_state', 'paused');
+  }
+
+  resume(): void {
+    if (this.removing) return;
+    this.manifest.setState('sync_state', 'initialising');
     this.scheduler.start();
   }
 
@@ -180,6 +202,7 @@ export class MailAccount {
         ? `remove:${this.removalFailedStep}`
         : this.state('last_error'),
       messageCount: this.cachedMessageCount,
+      mirrorProgress: this.mirrorProgress,
       selectionSummary: this.selectionSummary(),
       username: this.config.username,
       oauthClientId: this.config.oauth_client_id,
@@ -336,6 +359,9 @@ export class MailAccount {
       accountUid: accountUid(this.config.host, this.config.port, this.config.username),
       selection: this.selection,
       log: (event, details) => this.log(event, details),
+      onProgress: (progress) => {
+        this.mirrorProgress = progress ?? undefined;
+      },
     });
   }
 

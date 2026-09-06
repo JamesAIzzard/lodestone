@@ -20,6 +20,18 @@ describe('getGuideText', () => {
     expect(guide).toContain('LLM user instructions');
   });
 
+  it('explains how clients should use mail silos', async () => {
+    const guide = await getGuideText('startup', async () => ({}));
+
+    expect(guide).toContain('Silos named `Mail: …` are read-only email mirrors');
+    expect(guide).toContain(
+      'frontmatter records the sender, recipients, date, folders and attachment names',
+    );
+    expect(guide).toContain('`lodestone_read` returns the whole message');
+    expect(guide).toContain('lag the mailbox by up to the sync interval');
+    expect(guide).toContain('`lodestone_edit` cannot modify them');
+  });
+
   it('retrieves current configuration for each startup guide request', async () => {
     const currentConfig: { notePath?: string } = {};
     const getConfig = async () => currentConfig;

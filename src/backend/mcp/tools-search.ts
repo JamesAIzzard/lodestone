@@ -7,7 +7,7 @@ import { z } from 'zod';
 import fs from 'node:fs';
 import type { McpServerDeps } from './types';
 import type { LocationHint } from '../../shared/types';
-import { PuidManager } from './puid-manager';
+import { isPathWithinRoot, PuidManager } from './puid-manager';
 import { getProcessor } from '../pipeline';
 import { detectLineEnding } from '../edit';
 import {
@@ -134,6 +134,7 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
         const content: Array<
           { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
         > = [];
+        const { silos } = await deps.silo.status();
 
         for (const entry of refs) {
           const id = typeof entry === 'string' ? entry : entry.id;
@@ -170,6 +171,19 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
           const filePath = puid.resolvePuid(id);
           const record = puid.getRecord(id); // may be undefined for raw-path reads
           const mime = PuidManager.imageMimeType(filePath);
+
+          const unavailableSilo = silos.find(
+            (silo) =>
+              !silo.available &&
+              silo.config.indexedDirectories.some((root) => isPathWithinRoot(filePath, root)),
+          );
+          if (unavailableSilo) {
+            content.push({
+              type: 'text' as const,
+              text: `## ${id}: ${filePath}\nError: Silo "${unavailableSilo.config.name}" is temporarily unavailable.`,
+            });
+            continue;
+          }
 
           try {
             // File size check â€” prevent reading excessively large files
@@ -306,6 +320,11 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
           } else {
             lines.push(`State: ${silo.watcherState}`);
           }
+
+          lines.push(`Available: ${silo.available}`);
+          lines.push(`Index caught up: ${silo.indexCaughtUp}`);
+          lines.push(`Read-only: ${silo.config.readOnly}`);
+          if (silo.config.managedBy) lines.push(`Managed by: ${silo.config.managedBy}`);
 
           lines.push(`Files: ${silo.indexedFileCount.toLocaleString()}`);
           lines.push(`Chunks: ${silo.chunkCount.toLocaleString()}`);

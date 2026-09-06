@@ -117,7 +117,12 @@ function registerSiloHandlers(ctx: AppContext): void {
           contentDescription: cfg.contentDescription,
           accentColor: cfg.accentColor,
           iconName: cfg.iconName,
+          readOnly: cfg.readOnly,
+          managedBy: cfg.managedBy,
+          supportsPathSearch: cfg.supportsPathSearch,
         },
+        available: status.available,
+        indexCaughtUp: status.indexCaughtUp,
         indexedFileCount: status.indexedFileCount,
         chunkCount: status.chunkCount,
         lastUpdated: status.lastUpdated?.toISOString() ?? null,
@@ -138,10 +143,13 @@ function registerSiloHandlers(ctx: AppContext): void {
       const ready: [string, SiloManager][] = [];
       if (siloName) {
         const m = ctx.siloManagers.get(siloName);
-        if (m && !m.isStopped) ready.push([siloName, m]);
+        if (!m) throw new Error(`Silo "${siloName}" not found`);
+        if (m.isStopped) throw new Error(`Silo "${siloName}" is stopped`);
+        if (!m.isAvailable) throw new Error(`Silo "${siloName}" is temporarily unavailable.`);
+        ready.push([siloName, m]);
       } else {
         for (const [name, m] of ctx.siloManagers) {
-          if (!m.isStopped) ready.push([name, m]);
+          if (!m.isStopped && m.isAvailable) ready.push([name, m]);
         }
       }
 
@@ -181,10 +189,13 @@ function registerSiloHandlers(ctx: AppContext): void {
       const ready: [string, SiloManager][] = [];
       if (params.silo) {
         const m = ctx.siloManagers.get(params.silo);
-        if (m && !m.isStopped) ready.push([params.silo, m]);
+        if (!m) throw new Error(`Silo "${params.silo}" not found`);
+        if (m.isStopped) throw new Error(`Silo "${params.silo}" is stopped`);
+        if (!m.isAvailable) throw new Error(`Silo "${params.silo}" is temporarily unavailable.`);
+        ready.push([params.silo, m]);
       } else {
         for (const [name, m] of ctx.siloManagers) {
-          if (!m.isStopped) ready.push([name, m]);
+          if (!m.isStopped && m.isAvailable) ready.push([name, m]);
         }
       }
 
@@ -239,6 +250,8 @@ function registerSiloHandlers(ctx: AppContext): void {
 
       const manager = ctx.siloManagers.get(name);
       if (!manager) return { success: false, error: `Silo "${name}" not found` };
+      const owner = manager.getConfig().managedBy;
+      if (owner) return managedSiloError(name, owner, 'removed');
 
       try {
         await manager.stop();
@@ -286,6 +299,8 @@ function registerSiloHandlers(ctx: AppContext): void {
 
       const manager = ctx.siloManagers.get(name);
       if (!manager) return { success: false, error: `Silo "${name}" not found` };
+      const owner = manager.getConfig().managedBy;
+      if (owner) return managedSiloError(name, owner, 'removed');
 
       try {
         await manager.stop();
@@ -343,6 +358,8 @@ function registerSiloHandlers(ctx: AppContext): void {
         indexedFileExtensions?: string[];
         accentColor?: string;
         iconName?: string;
+        indexedDirectories?: string[];
+        readOnly?: boolean;
       },
     ): Promise<{ success: boolean; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
@@ -350,6 +367,14 @@ function registerSiloHandlers(ctx: AppContext): void {
       if (!siloToml) return { success: false, error: `Silo "${name}" not found` };
 
       const manager = ctx.siloManagers.get(name);
+      const owner = manager?.getConfig().managedBy ?? siloToml.managed_by;
+      const rawUpdates = updates as Record<string, unknown>;
+      const changesDirectories =
+        'indexedDirectories' in rawUpdates || 'indexed_directories' in rawUpdates;
+      const clearsReadOnly = rawUpdates.readOnly === false || rawUpdates.read_only === false;
+      if (owner && (changesDirectories || clearsReadOnly)) {
+        return managedSiloError(name, owner, 'reconfigured');
+      }
 
       if (updates.contentDescription !== undefined) {
         siloToml.content_description = updates.contentDescription.trim() || undefined;
@@ -593,9 +618,12 @@ function registerSettingsHandlers(ctx: AppContext): void {
     },
   );
 
-  ipcMain.handle('llm-instructions:get', async (): Promise<LlmInstructionsSettings> => ({
-    notePath: ctx.config?.llm_instructions_note_path,
-  }));
+  ipcMain.handle(
+    'llm-instructions:get',
+    async (): Promise<LlmInstructionsSettings> => ({
+      notePath: ctx.config?.llm_instructions_note_path,
+    }),
+  );
 
   ipcMain.handle(
     'llm-instructions:update',
@@ -614,8 +642,13 @@ function registerSettingsHandlers(ctx: AppContext): void {
     },
   );
 
-  ipcMain.handle('defaults:reset-all', async (): Promise<{ success: boolean }> => {
+  ipcMain.handle('defaults:reset-all', async (): Promise<{ success: boolean; error?: string }> => {
     if (!ctx.config) return { success: false };
+
+    for (const [name, manager] of ctx.siloManagers) {
+      const owner = manager.getConfig().managedBy;
+      if (owner) return managedSiloError(name, owner, 'removed');
+    }
 
     // Stop all silo managers
     for (const [name, manager] of ctx.siloManagers) {
@@ -635,6 +668,17 @@ function registerSettingsHandlers(ctx: AppContext): void {
     notifySilosChanged(ctx);
     return { success: true };
   });
+}
+
+function managedSiloError(
+  name: string,
+  owner: string,
+  action: string,
+): { success: false; error: string } {
+  return {
+    success: false,
+    error: `Silo "${name}" is managed by "${owner}" and cannot be ${action} directly.`,
+  };
 }
 
 function registerMcpHandlers(): void {

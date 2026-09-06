@@ -217,10 +217,11 @@ export class InternalApi {
       const m = this.ctx.siloManagers.get(silo);
       if (!m) throw new Error(`Silo "${silo}" not found`);
       if (m.isStopped) throw new Error(`Silo "${silo}" is stopped`);
+      if (!m.isAvailable) throw new Error(`Silo "${silo}" is temporarily unavailable.`);
       ready.push([silo, m]);
     } else {
       for (const [name, m] of this.ctx.siloManagers) {
-        if (!m.isStopped) ready.push([name, m]);
+        if (!m.isStopped && m.isAvailable) ready.push([name, m]);
       }
     }
 
@@ -295,10 +296,11 @@ export class InternalApi {
       const m = this.ctx.siloManagers.get(silo);
       if (!m) throw new Error(`Silo "${silo}" not found`);
       if (m.isStopped) throw new Error(`Silo "${silo}" is stopped`);
+      if (!m.isAvailable) throw new Error(`Silo "${silo}" is temporarily unavailable.`);
       ready.push([silo, m]);
     } else {
       for (const [name, m] of this.ctx.siloManagers) {
-        if (!m.isStopped) ready.push([name, m]);
+        if (!m.isStopped && m.isAvailable) ready.push([name, m]);
       }
     }
 
@@ -353,11 +355,15 @@ export class InternalApi {
    */
   private async handleEdit(params: Record<string, unknown>): Promise<EditResult> {
     this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo' });
-    const { executeEdit } = await import('../backend/edit');
+    const { canonicalisePolicyPath, executeEdit } = await import('../backend/edit');
     const operation = params.operation as EditOperation;
     const contextLines = (params.contextLines as number) ?? 10;
     const siloDirectories = (params.siloDirectories as string[]) ?? [];
-    const result = await executeEdit(operation, contextLines, siloDirectories);
+    const readOnlyRoots = [...this.ctx.siloManagers.values()]
+      .filter((manager) => manager.getConfig().readOnly)
+      .flatMap((manager) => manager.getConfig().indexedDirectories)
+      .map(canonicalisePolicyPath);
+    const result = await executeEdit(operation, contextLines, siloDirectories, { readOnlyRoots });
 
     // Trigger immediate reindex for text edits and file creation
     if (result.success && result.sourcePath) {
@@ -429,7 +435,12 @@ export class InternalApi {
           contentDescription: cfg.contentDescription,
           accentColor: cfg.accentColor,
           iconName: cfg.iconName,
+          readOnly: cfg.readOnly,
+          managedBy: cfg.managedBy,
+          supportsPathSearch: cfg.supportsPathSearch,
         },
+        available: status.available,
+        indexCaughtUp: status.indexCaughtUp,
         indexedFileCount: status.indexedFileCount,
         chunkCount: status.chunkCount,
         lastUpdated: status.lastUpdated?.toISOString() ?? null,

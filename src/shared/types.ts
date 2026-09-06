@@ -15,12 +15,17 @@ export interface SiloConfig {
   contentDescription: string;
   accentColor: SiloColor;
   iconName: SiloIconName;
+  readOnly: boolean;
+  managedBy?: string;
+  supportsPathSearch: boolean;
 }
 
 export type WatcherState = 'ready' | 'indexing' | 'error' | 'stopped' | 'waiting';
 
 export interface SiloStatus {
   config: SiloConfig;
+  available: boolean;
+  indexCaughtUp: boolean;
   indexedFileCount: number;
   chunkCount: number;
   lastUpdated: string | null;
@@ -182,6 +187,8 @@ export interface SearchParams {
   startPath?: string;
   /** Maximum results to return. Default: 10. */
   limit?: number;
+  /** Internal per-silo policy. Defaults to true. */
+  supportsPathSearch?: boolean;
 }
 
 // ── Activity ──────────────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@
  *   6. stopRequested suppression
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -91,7 +91,7 @@ interface Harness {
   withoutEmbedding(): void;
 }
 
-let harnesses: Harness[] = [];
+const harnesses: Harness[] = [];
 
 afterEach(async () => {
   for (const h of harnesses.splice(0)) {
@@ -132,6 +132,8 @@ async function makeHarness(
     accentColor: 'blue',
     iconName: 'database',
     ...opts.configOverrides,
+    readOnly: opts.configOverrides?.readOnly ?? false,
+    supportsPathSearch: opts.configOverrides?.supportsPathSearch ?? true,
   };
 
   const lifecycle = new SiloLifecycle();

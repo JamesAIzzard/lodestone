@@ -129,8 +129,7 @@ export default function SiloDetailView() {
     setFolderIgnore(silo.config.ignoredFolderPatterns);
     setFileIgnore(silo.config.ignoredFilePatterns);
     setIgnoreOverridden(
-      silo.config.hasIgnoredFolderPatternsOverride ||
-        silo.config.hasIgnoredFilePatternsOverride,
+      silo.config.hasIgnoredFolderPatternsOverride || silo.config.hasIgnoredFilePatternsOverride,
     );
     setExtensions(silo.config.indexedFileExtensions);
     setExtensionOverridden(silo.config.hasIndexedFileExtensionsOverride);
@@ -233,7 +232,10 @@ export default function SiloDetailView() {
     const files = [...defaultFileIgnore];
     setFolderIgnore(folders);
     setFileIgnore(files);
-    await window.electronAPI?.updateSilo(siloName, { ignoredFolderPatterns: folders, ignoredFilePatterns: files });
+    await window.electronAPI?.updateSilo(siloName, {
+      ignoredFolderPatterns: folders,
+      ignoredFilePatterns: files,
+    });
     fetchSilo();
   }
 
@@ -241,7 +243,10 @@ export default function SiloDetailView() {
     setIgnoreOverridden(false);
     setFolderIgnore(defaultFolderIgnore);
     setFileIgnore(defaultFileIgnore);
-    await window.electronAPI?.updateSilo(siloName, { ignoredFolderPatterns: [], ignoredFilePatterns: [] });
+    await window.electronAPI?.updateSilo(siloName, {
+      ignoredFolderPatterns: [],
+      ignoredFilePatterns: [],
+    });
     fetchSilo();
   }
 
@@ -405,6 +410,8 @@ export default function SiloDetailView() {
               : silo.watcherState.charAt(0).toUpperCase() + silo.watcherState.slice(1)}
           </Badge>
 
+          {config.readOnly && <Badge variant="secondary">Read-only</Badge>}
+
           {silo.watcherState !== 'waiting' && !isWaking && (
             <Button variant="outline" size="sm" disabled={isStopping} onClick={handleStopToggle}>
               {isStopping ? (
@@ -422,7 +429,6 @@ export default function SiloDetailView() {
               )}
             </Button>
           )}
-
         </div>
       </div>
 
@@ -559,103 +565,110 @@ export default function SiloDetailView() {
       </section>
 
       {/* ── Danger zone ─────────────────────────────────────────────────────── */}
-      <section>
-        <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Danger Zone
-        </h2>
-        <div className="flex flex-col gap-3">
-          {/* Disconnect */}
-          {!confirmDisconnect ? (
-            <div className="flex items-center gap-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setConfirmDisconnect(true)}
-                disabled={isActive}
-              >
-                <Unplug className="h-3.5 w-3.5" /> Disconnect
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                Remove from Lodestone but keep the database file on disk.
-              </span>
-            </div>
-          ) : (
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-4">
-              <p className="text-sm text-foreground">
-                Disconnect <span className="font-semibold">{config.name}</span>?
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                This will remove the silo from Lodestone but keep the database file on disk. You can
-                reconnect it later using &ldquo;Connect existing database&rdquo; when creating a new
-                silo.
-              </p>
-              <div className="mt-3 flex gap-2">
+      {!config.managedBy && (
+        <section>
+          <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Danger Zone
+          </h2>
+          <div className="flex flex-col gap-3">
+            {/* Disconnect */}
+            {!confirmDisconnect ? (
+              <div className="flex items-center gap-3">
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setConfirmDisconnect(false)}
-                  disabled={disconnecting}
-                  autoFocus
+                  onClick={() => setConfirmDisconnect(true)}
+                  disabled={isActive}
                 >
-                  Cancel
+                  <Unplug className="h-3.5 w-3.5" /> Disconnect
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleDisconnect}
-                  disabled={disconnecting}
-                >
-                  <Unplug className="h-3.5 w-3.5" />
-                  {disconnecting ? 'Disconnecting…' : 'Disconnect'}
-                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Remove from Lodestone but keep the database file on disk.
+                </span>
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-4">
+                <p className="text-sm text-foreground">
+                  Disconnect <span className="font-semibold">{config.name}</span>?
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  This will remove the silo from Lodestone but keep the database file on disk. You
+                  can reconnect it later using &ldquo;Connect existing database&rdquo; when creating
+                  a new silo.
+                </p>
+                <div className="mt-3 flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setConfirmDisconnect(false)}
+                    disabled={disconnecting}
+                    autoFocus
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDisconnect}
+                    disabled={disconnecting}
+                  >
+                    <Unplug className="h-3.5 w-3.5" />
+                    {disconnecting ? 'Disconnecting…' : 'Disconnect'}
+                  </Button>
+                </div>
+              </div>
+            )}
 
-          {/* Delete */}
-          {!confirmDelete ? (
-            <div className="flex items-center gap-3">
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => setConfirmDelete(true)}
-                disabled={isActive}
-              >
-                <Trash2 className="h-3.5 w-3.5" /> Delete Silo
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                Permanently remove the silo and delete the database from disk.
-              </span>
-            </div>
-          ) : (
-            <div className="rounded-md border border-red-500/30 bg-red-500/5 p-4">
-              <p className="text-sm text-foreground">
-                Permanently delete <span className="font-semibold">{config.name}</span>?
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                This will remove the silo configuration, stop the file watcher, and delete the
-                vector database from disk. This action cannot be undone.
-              </p>
-              {deleteError && <p className="mt-2 text-xs text-red-400">{deleteError}</p>}
-              <div className="mt-3 flex gap-2">
+            {/* Delete */}
+            {!confirmDelete ? (
+              <div className="flex items-center gap-3">
                 <Button
-                  variant="outline"
+                  variant="destructive"
                   size="sm"
-                  onClick={() => setConfirmDelete(false)}
-                  disabled={deleting}
-                  autoFocus
+                  onClick={() => setConfirmDelete(true)}
+                  disabled={isActive}
                 >
-                  Cancel
+                  <Trash2 className="h-3.5 w-3.5" /> Delete Silo
                 </Button>
-                <Button variant="destructive" size="sm" onClick={handleDelete} disabled={deleting}>
-                  <Trash2 className="h-3.5 w-3.5" />
-                  {deleting ? 'Deleting…' : 'Delete'}
-                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Permanently remove the silo and delete the database from disk.
+                </span>
               </div>
-            </div>
-          )}
-        </div>
-      </section>
+            ) : (
+              <div className="rounded-md border border-red-500/30 bg-red-500/5 p-4">
+                <p className="text-sm text-foreground">
+                  Permanently delete <span className="font-semibold">{config.name}</span>?
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  This will remove the silo configuration, stop the file watcher, and delete the
+                  vector database from disk. This action cannot be undone.
+                </p>
+                {deleteError && <p className="mt-2 text-xs text-red-400">{deleteError}</p>}
+                <div className="mt-3 flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setConfirmDelete(false)}
+                    disabled={deleting}
+                    autoFocus
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleDelete}
+                    disabled={deleting}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {deleting ? 'Deleting…' : 'Delete'}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

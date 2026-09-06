@@ -7,9 +7,8 @@
 
 import type { EmbeddingService } from './embedding';
 import type { SiloManager } from './silo-manager';
-import type { SearchHint, ChunkHint } from '../shared/types';
+import type { SearchHint, ChunkHint, SearchParams } from '../shared/types';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
-import type { SearchParams } from '../shared/types';
 
 // ── Search Pipeline ─────────────────────────────────────────────────────────
 
@@ -36,7 +35,8 @@ export async function dispatchSearch(
   managers: Iterable<[string, SiloManager]>,
   embeddingService: EmbeddingService | null,
 ): Promise<SiloSearchResult[]> {
-  const skipEmbedding = params.mode === 'bm25' || params.mode === 'filepath' || params.mode === 'regex';
+  const skipEmbedding =
+    params.mode === 'bm25' || params.mode === 'filepath' || params.mode === 'regex';
 
   let queryVector: number[] = [];
   if (!skipEmbedding) {
@@ -46,6 +46,7 @@ export async function dispatchSearch(
 
   const raw: SiloSearchResult[] = [];
   for (const [name, manager] of managers) {
+    if (!manager.isAvailable) continue;
     try {
       const siloResults = await manager.search(queryVector, params);
       for (const r of siloResults) {
@@ -71,13 +72,8 @@ export async function dispatchSearch(
  * Merge search results from the decaying-sum pipeline across silos.
  * Scores are absolute [0,1] — just flatten, sort, truncate.
  */
-export function mergeSearchResults(
-  raw: SiloSearchResult[],
-  limit: number,
-): SiloSearchResult[] {
-  return raw
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+export function mergeSearchResults(raw: SiloSearchResult[], limit: number): SiloSearchResult[] {
+  return raw.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
 // ── Directory Exploration ───────────────────────────────────────────────────
@@ -100,6 +96,7 @@ export async function dispatchExplore(
   const raw: RawDirectoryResult[] = [];
 
   for (const [name, manager] of managers) {
+    if (!manager.isAvailable) continue;
     try {
       const siloResults = await manager.exploreDirectories(params);
       for (const r of siloResults) {
@@ -123,7 +120,5 @@ export function mergeDirectoryResults(
   raw: RawDirectoryResult[],
   limit: number,
 ): RawDirectoryResult[] {
-  return raw
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+  return raw.sort((a, b) => b.score - a.score).slice(0, limit);
 }

@@ -35,6 +35,9 @@ export interface SiloTomlConfig {
   content_description?: string;
   accent_color?: string;
   icon_name?: string;
+  read_only?: boolean;
+  managed_by?: string;
+  supports_path_search?: boolean;
 }
 
 export interface LodestoneConfig {
@@ -57,6 +60,9 @@ export interface ResolvedSiloConfig {
   contentDescription: string;
   accentColor: SiloColor;
   iconName: SiloIconName;
+  readOnly: boolean;
+  managedBy?: string;
+  supportsPathSearch: boolean;
 }
 
 const DEFAULT_CONFIG: LodestoneConfig = {
@@ -121,6 +127,9 @@ export function resolveSiloRuntimeConfig(
     contentDescription: silo.content_description ?? '',
     accentColor: validateSiloColor(silo.accent_color),
     iconName: validateSiloIcon(silo.icon_name),
+    readOnly: silo.read_only ?? false,
+    managedBy: silo.managed_by,
+    supportsPathSearch: silo.supports_path_search ?? true,
   };
 }
 
@@ -192,6 +201,9 @@ function parseSiloTomlConfig(name: string, silo: TomlObject): SiloTomlConfig {
     content_description: optionalStringField(silo.content_description),
     accent_color: optionalStringField(silo.accent_color),
     icon_name: optionalStringField(silo.icon_name),
+    read_only: optionalBooleanField(silo.read_only),
+    managed_by: optionalStringField(silo.managed_by),
+    supports_path_search: optionalBooleanField(silo.supports_path_search),
   };
 }
 
@@ -213,6 +225,10 @@ function stringArrayField(value: unknown, fallback: string[] = []): string[] {
 
 function optionalStringArrayField(value: unknown): string[] | undefined {
   return Array.isArray(value) ? (value as string[]) : undefined;
+}
+
+function optionalBooleanField(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 function numberField(value: unknown, fallback: number): number {

@@ -91,16 +91,19 @@ export default function SiloCard({
       {/* Header: status + actions row, then name + description below */}
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
-          <Badge variant={state.badgeVariant} className="gap-1.5 whitespace-nowrap">
-            <span className={cn('inline-block h-1.5 w-1.5 rounded-full', state.dotClass)} />
-            {isActive && progressPct !== null
-              ? reconcileProgress?.fileStage === 'compacting'
-                ? 'Compacting…'
-                : reconcileProgress?.fileStage === 'flushing'
-                  ? 'Saving…'
-                  : `Indexing ${progressPct}%`
-              : state.label}
-          </Badge>
+          <div className="flex items-center gap-1.5">
+            <Badge variant={state.badgeVariant} className="gap-1.5 whitespace-nowrap">
+              <span className={cn('inline-block h-1.5 w-1.5 rounded-full', state.dotClass)} />
+              {isActive && progressPct !== null
+                ? reconcileProgress?.fileStage === 'compacting'
+                  ? 'Compacting…'
+                  : reconcileProgress?.fileStage === 'flushing'
+                    ? 'Saving…'
+                    : `Indexing ${progressPct}%`
+                : state.label}
+            </Badge>
+            {config.readOnly && <Badge variant="secondary">Read-only</Badge>}
+          </div>
           <div className="flex items-center gap-1.5 shrink-0">
             {/* Search in silo */}
             {onSearchInSilo && (
@@ -206,7 +209,10 @@ export default function SiloCard({
           </div>
         </div>
         <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground truncate">
-          <SiloIcon icon={config.iconName} className={cn('h-3.5 w-3.5 shrink-0', colorClasses.text)} />
+          <SiloIcon
+            icon={config.iconName}
+            className={cn('h-3.5 w-3.5 shrink-0', colorClasses.text)}
+          />
           {config.name}
         </h3>
         {config.contentDescription && (

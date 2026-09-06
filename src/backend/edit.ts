@@ -96,6 +96,11 @@ export interface EditResult {
   destinationDirectoryListing?: string;
 }
 
+export interface WritePolicy {
+  /** Canonical paths to roots which Lodestone must not modify. */
+  readOnlyRoots: string[];
+}
+
 // ── Validation ───────────────────────────────────────────────────────────────
 
 /** Validate that a buffer contains valid UTF-8. */
@@ -121,6 +126,61 @@ function isWithinSiloBoundary(filePath: string, siloDirectories: string[]): bool
 function isSiloRoot(target: string, siloDirectories: string[]): boolean {
   const resolved = path.resolve(target);
   return siloDirectories.some((dir) => path.resolve(dir) === resolved);
+}
+
+/** Resolve symlinks in the existing portion of a path, preserving any missing suffix. */
+export function canonicalisePolicyPath(inputPath: string): string {
+  const absolute = path.resolve(inputPath);
+  const missingSegments: string[] = [];
+  let existing = absolute;
+
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    missingSegments.unshift(path.basename(existing));
+    existing = parent;
+  }
+
+  const realExisting = fs.existsSync(existing) ? fs.realpathSync.native(existing) : existing;
+  const canonical = path.resolve(realExisting, ...missingSegments).replace(/[\\/]+/g, path.sep);
+  return canonical.toLowerCase();
+}
+
+/** True when a path is a protected root, below one, or an ancestor of one. */
+export function isProtected(inputPath: string, policy: WritePolicy): boolean {
+  const candidate = canonicalisePolicyPath(inputPath);
+  return policy.readOnlyRoots.some((configuredRoot) => {
+    const root = canonicalisePolicyPath(configuredRoot);
+    return (
+      candidate === root ||
+      candidate.startsWith(root + path.sep) ||
+      root.startsWith(candidate + path.sep)
+    );
+  });
+}
+
+function protectedPaths(operation: EditOperation): string[] {
+  switch (operation.op) {
+    case 'str_replace':
+    case 'insert_at_line':
+    case 'overwrite':
+    case 'append':
+      return [operation.filePath];
+    case 'create':
+    case 'mkdir':
+      return [operation.directory];
+    case 'rename':
+      return [operation.target, path.join(path.dirname(operation.target), operation.name)];
+    case 'move':
+      return [
+        operation.target,
+        operation.destinationType === 'directory'
+          ? path.join(operation.destination, path.basename(operation.target))
+          : operation.destination,
+      ];
+    case 'delete':
+      return [operation.target];
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -785,12 +845,21 @@ async function executeDelete(
  * @param operation - The edit operation to perform
  * @param defaultContextLines - Default number of context lines from config
  * @param siloDirectories - All silo directories for boundary checking
+ * @param writePolicy - Canonical read-only roots enforced before boundary checks
  */
 export async function executeEdit(
   operation: EditOperation,
   defaultContextLines: number,
   siloDirectories: string[],
+  writePolicy: WritePolicy,
 ): Promise<EditResult> {
+  if (protectedPaths(operation).some((target) => isProtected(target, writePolicy))) {
+    return {
+      success: false,
+      error: 'This path is inside a read-only silo and cannot be modified.',
+    };
+  }
+
   switch (operation.op) {
     case 'str_replace':
       return executeStrReplace(operation, defaultContextLines, siloDirectories);

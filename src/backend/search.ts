@@ -22,11 +22,11 @@ import { tokenise } from '../shared/portable/tokeniser';
 // ── Mode → Signal mapping ───────────────────────────────────────────────────
 
 const MODE_SIGNALS: Record<string, Signal[]> = {
-  hybrid:   [semanticSignal, bm25Signal, filepathSignal],
+  hybrid: [semanticSignal, bm25Signal, filepathSignal],
   semantic: [semanticSignal],
-  bm25:     [bm25Signal],
+  bm25: [bm25Signal],
   filepath: [filepathSignal],
-  regex:    [regexSignal],
+  regex: [regexSignal],
 };
 
 // ── Result type ─────────────────────────────────────────────────────────────
@@ -62,8 +62,10 @@ const MIN_RELATIVE_SCORE = 0.5;
 function locationKey(hint: LocationHint): string {
   if (!hint) return 'null';
   switch (hint.type) {
-    case 'lines': return `lines:${hint.start}-${hint.end}`;
-    case 'page':  return `page:${hint.page}`;
+    case 'lines':
+      return `lines:${hint.start}-${hint.end}`;
+    case 'page':
+      return `page:${hint.page}`;
   }
 }
 
@@ -83,7 +85,10 @@ function collectChunks(
   if (allChunks.length === 0) return undefined;
 
   // Deduplicate by location — keep the higher score
-  const byLocation = new Map<string, { score: number; locationHint: LocationHint; sectionPath?: string[] }>();
+  const byLocation = new Map<
+    string,
+    { score: number; locationHint: LocationHint; sectionPath?: string[] }
+  >();
   for (const chunk of allChunks) {
     const key = locationKey(chunk.locationHint);
     const existing = byLocation.get(key);
@@ -100,19 +105,18 @@ function collectChunks(
   // Filter by relative threshold
   const bestScore = deduped[0].score;
   const threshold = bestScore * MIN_RELATIVE_SCORE;
-  const filtered = deduped.filter(c => c.score >= threshold);
+  const filtered = deduped.filter((c) => c.score >= threshold);
 
   if (filtered.length === 0) return undefined;
 
   // Cap and convert to absolute relevance (scaled by file score)
   const capped = filtered.slice(0, MAX_CHUNKS_PER_FILE);
   const filePercent = fileScore * 100;
-  return capped.map(c => ({
+  return capped.map((c) => ({
     locationHint: c.locationHint,
     sectionPath: c.sectionPath,
-    relevance: bestScore > 0
-      ? Math.round((c.score / bestScore) * filePercent)
-      : Math.round(filePercent),
+    relevance:
+      bestScore > 0 ? Math.round((c.score / bestScore) * filePercent) : Math.round(filePercent),
   }));
 }
 
@@ -132,7 +136,11 @@ export function search(
   params: SearchParams,
 ): FileResult[] {
   const mode = params.mode ?? 'hybrid';
-  const signals = MODE_SIGNALS[mode] ?? MODE_SIGNALS.hybrid;
+  const configuredSignals = MODE_SIGNALS[mode] ?? MODE_SIGNALS.hybrid;
+  const signals =
+    params.supportsPathSearch === false
+      ? configuredSignals.filter((signal) => signal.name !== 'filepath')
+      : configuredSignals;
   const maxResults = params.limit ?? 10;
 
   const ctx: SignalContext = {
@@ -147,7 +155,7 @@ export function search(
   };
 
   // ── Run all signals ────────────────────────────────────────────────
-  const signalResults = signals.map(s => ({
+  const signalResults = signals.map((s) => ({
     name: s.name,
     ...s.scoreAll(ctx),
   }));
@@ -170,7 +178,9 @@ export function search(
       const s = sr.scores.get(filePath);
       if (s === undefined) continue;
       if (s < 0 || s > 1) {
-        console.warn(`[search] Signal "${sr.name}" returned out-of-range score ${s.toFixed(4)} for ${filePath.slice(-40)} — expected [0, 1]. Possible bug in signal or distance conversion.`);
+        console.warn(
+          `[search] Signal "${sr.name}" returned out-of-range score ${s.toFixed(4)} for ${filePath.slice(-40)} — expected [0, 1]. Possible bug in signal or distance conversion.`,
+        );
       }
       if (s > 0) perSignal[sr.name] = s;
     }
@@ -191,7 +201,8 @@ export function search(
     }
 
     // Collect all chunk hints from all signals for multi-chunk display
-    const rawChunks: Array<{ score: number; locationHint: LocationHint; sectionPath?: string[] }> = [];
+    const rawChunks: Array<{ score: number; locationHint: LocationHint; sectionPath?: string[] }> =
+      [];
     for (const sr of signalResults) {
       const fileHints = sr.allHints?.get(filePath);
       if (!fileHints) continue;
@@ -206,16 +217,17 @@ export function search(
       }
     }
 
-
     results.push({
       filePath,
       score: summary.score,
       scoreLabel: summary.label,
       signals: perSignal,
-      hint: bestHint?.locationHint ? {
-        locationHint: bestHint.locationHint,
-        sectionPath: bestHint.sectionPath,
-      } : undefined,
+      hint: bestHint?.locationHint
+        ? {
+            locationHint: bestHint.locationHint,
+            sectionPath: bestHint.sectionPath,
+          }
+        : undefined,
       chunks: collectChunks(rawChunks, summary.score),
     });
   }

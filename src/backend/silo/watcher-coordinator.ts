@@ -96,11 +96,7 @@ export class WatcherCoordinator {
     if (!embedding) return;
 
     const config = this.deps.getConfig();
-    this.watcher = this.deps.watcherFactory(
-      config,
-      embedding,
-      this.deps.makeStoreOps(),
-    );
+    this.watcher = this.deps.watcherFactory(config, embedding, this.deps.makeStoreOps());
     this.watcher.setQueueFilledHandler(() => this.scheduleIndexing());
     this.watcher.on((event) => this.handleEvent(event));
     this.watcher.start();
@@ -149,6 +145,11 @@ export class WatcherCoordinator {
   /** True while a queue slot is queued or in-flight. Exposed for tests. */
   get hasPending(): boolean {
     return this.pendingEnqueue;
+  }
+
+  /** Events still debouncing or queued inside the watcher. */
+  get pendingEventCount(): number {
+    return this.watcher?.pendingEventCount ?? 0;
   }
 
   /** True while a watcher is active. Exposed for tests. */

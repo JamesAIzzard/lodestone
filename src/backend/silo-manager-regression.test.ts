@@ -18,7 +18,7 @@
  *     — search-quality is not asserted, only behaviour preservation.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -58,7 +58,7 @@ interface TestSiloOptions {
   queue?: IndexingQueue;
 }
 
-let cleanups: Array<() => void> = [];
+const cleanups: Array<() => void> = [];
 
 afterEach(() => {
   for (const fn of cleanups.splice(0)) {
@@ -102,6 +102,8 @@ function makeTestSilo(opts: TestSiloOptions = {}): TestSilo {
     accentColor: 'blue',
     iconName: 'database',
     ...opts.configOverrides,
+    readOnly: opts.configOverrides?.readOnly ?? false,
+    supportsPathSearch: opts.configOverrides?.supportsPathSearch ?? true,
   };
 
   const store = opts.reuseStore ?? createTempDirStoreFacade();
@@ -120,7 +122,18 @@ function makeTestSilo(opts: TestSiloOptions = {}): TestSilo {
   };
   cleanups.push(cleanup);
 
-  return { manager, store, watcher, queue, workDir, fileDir, dbDir, indexDbPath: dbPath, config, cleanup };
+  return {
+    manager,
+    store,
+    watcher,
+    queue,
+    workDir,
+    fileDir,
+    dbDir,
+    indexDbPath: dbPath,
+    config,
+    cleanup,
+  };
 }
 
 /** Wait for the next microtask flush — useful after fire-and-forget ops. */
@@ -277,6 +290,25 @@ describe('SiloManager — getStatus cached vs live paths', () => {
     expect(live.databaseSizeBytes).toBeGreaterThan(0);
     await t.manager.stop();
   });
+
+  it('reports availability and whether watcher work is fully caught up', async () => {
+    const t = makeTestSilo();
+    await t.manager.start();
+
+    expect((await t.manager.getStatus()).indexCaughtUp).toBe(true);
+
+    t.watcher.pendingEventCount = 1;
+    expect((await t.manager.getStatus()).indexCaughtUp).toBe(false);
+
+    t.watcher.pendingEventCount = 0;
+    t.manager.setAvailable(false);
+    const unavailable = await t.manager.getStatus();
+    expect(unavailable.available).toBe(false);
+    expect(await t.manager.search([], { query: 'hello', mode: 'filepath' })).toEqual([]);
+    expect(await t.manager.exploreDirectories({ query: 'files' })).toEqual([]);
+
+    await t.manager.stop();
+  });
 });
 
 describe('SiloManager — watcher events drive mtime + activity', () => {
@@ -406,7 +438,7 @@ describe('SiloManager — start cancellation honoured at each yield point (Phase
     // without ever entering runStartupReconcile.
     const startP = t.manager.start();
     const stopP = t.manager.stop();
-    await Promise.all([startP.catch(() => {}), stopP]);
+    await Promise.all([startP.catch((): void => undefined), stopP]);
 
     // runStartupReconcile was not entered — no reconcile-driven events
     // landed in the activity feed.
@@ -461,7 +493,7 @@ describe('SiloManager — start cancellation honoured at each yield point (Phase
     // Release the busy task. The queue admits ours next; the closure
     // sees stopRequested=true and bails before reconcile.
     releaseBusy();
-    await Promise.all([startP.catch(() => {}), stopP]);
+    await Promise.all([startP.catch((): void => undefined), stopP]);
 
     // Reconcile did not run — activity feed empty.
     expect(t.manager.getActivityFeed().length).toBe(0);
@@ -500,7 +532,7 @@ describe('SiloManager — start cancellation honoured at each yield point (Phase
     // Release persist. doStart resumes, hits YP5 (stopRequested=true),
     // returns without transitioning to 'ready' or starting the watcher.
     releaseSave();
-    await Promise.all([startP.catch(() => {}), stopP]);
+    await Promise.all([startP.catch((): void => undefined), stopP]);
 
     // Reconcile DID run before the bail — the activity feed has at least
     // one reconcile-driven event for the indexed file.

@@ -214,6 +214,10 @@ export interface DefaultSettings {
   maxActivityLogEntries: number;
 }
 
+export interface LlmInstructionsSettings {
+  notePath?: string;
+}
+
 // ── Server Status ────────────────────────────────────────────────────────────
 
 export interface ServerStatus {

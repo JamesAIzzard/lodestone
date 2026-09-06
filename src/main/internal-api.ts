@@ -153,6 +153,9 @@ export class InternalApi {
         case 'getDefaults':
           result = this.handleGetDefaults();
           break;
+        case 'getLlmInstructionsConfig':
+          result = this.handleGetLlmInstructionsConfig();
+          break;
         case 'notify.activity':
           result = this.handleNotifyActivity(req.params ?? {});
           break;
@@ -385,9 +388,7 @@ export class InternalApi {
     }
   }
 
-  /**
-   * Return config defaults relevant to the MCP server.
-   */
+  /** Notify the renderer about MCP activity. */
   private handleNotifyActivity(params: Record<string, unknown>): Record<string, never> {
     const channel = params.channel as 'silo';
     const siloName = params.siloName as string | undefined;
@@ -398,6 +399,10 @@ export class InternalApi {
   private handleGetDefaults(): { contextLines: number } {
     const contextLines = this.ctx.config?.defaults.edit_context_lines ?? 10;
     return { contextLines };
+  }
+
+  private handleGetLlmInstructionsConfig(): { notePath?: string } {
+    return { notePath: this.ctx.config?.llm_instructions_note_path };
   }
 
   /**

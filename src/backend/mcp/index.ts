@@ -96,8 +96,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
   registerEditTool(server, deps, puid);
 
   // Register guide tool (on-demand usage guides) and resources
-  registerGuideTool(server);
-  registerResources(server);
+  registerGuideTool(server, deps.getLlmInstructionsConfig);
+  registerResources(server, deps.getLlmInstructionsConfig);
 
   // ── Connect transport ──
   // Use custom streams when provided (named-pipe socket from mcp-wrapper),

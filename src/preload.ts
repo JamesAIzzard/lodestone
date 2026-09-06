@@ -73,6 +73,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('defaults:update', updates),
   resetAllSettings: (): Promise<unknown> => ipcRenderer.invoke('defaults:reset-all'),
 
+  // LLM instructions
+  getLlmInstructionsSettings: (): Promise<unknown> =>
+    ipcRenderer.invoke('llm-instructions:get'),
+  updateLlmInstructionsSettings: (notePath?: string): Promise<unknown> =>
+    ipcRenderer.invoke('llm-instructions:update', notePath),
+
   // Server / Settings
   getServerStatus: (): Promise<unknown> => ipcRenderer.invoke('server:status'),
   getConfigPath: (): Promise<string> => ipcRenderer.invoke('config:path'),

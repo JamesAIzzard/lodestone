@@ -44,6 +44,7 @@ import type {
   ActivityEvent,
   ServerStatus,
   DefaultSettings,
+  LlmInstructionsSettings,
   ExploreParams,
   SearchParams,
 } from '../shared/types';
@@ -586,6 +587,27 @@ function registerSettingsHandlers(ctx: AppContext): void {
         ctx.config.defaults.edit_context_lines = updates.editContextLines;
       if (updates.maxActivityLogEntries !== undefined)
         ctx.config.defaults.max_activity_log_entries = updates.maxActivityLogEntries;
+
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
+      return { success: true };
+    },
+  );
+
+  ipcMain.handle('llm-instructions:get', async (): Promise<LlmInstructionsSettings> => ({
+    notePath: ctx.config?.llm_instructions_note_path,
+  }));
+
+  ipcMain.handle(
+    'llm-instructions:update',
+    async (_event, notePath?: string): Promise<{ success: boolean }> => {
+      if (!ctx.config) return { success: false };
+
+      const trimmedPath = notePath?.trim();
+      if (trimmedPath) {
+        ctx.config.llm_instructions_note_path = trimmedPath;
+      } else {
+        delete ctx.config.llm_instructions_note_path;
+      }
 
       saveLodestoneConfig(ctx.configPath(), ctx.config);
       return { success: true };

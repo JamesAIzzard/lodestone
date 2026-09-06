@@ -17,6 +17,7 @@ export interface Folder {
   folderKey: FolderKey;
   path: string;
   role: FolderRole;
+  uidValidity: number;
 }
 
 export interface Entry {

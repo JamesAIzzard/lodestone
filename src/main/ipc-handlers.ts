@@ -55,6 +55,7 @@ import type { AppContext } from './context';
 import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
 import { ensureMailSiloConfig } from '../backend/mail/account-config';
 import { accountHash, accountUid } from '../backend/mail/identity';
+import { selectSilos, toSiloNames } from './silo-selection';
 import { createImapAdapter } from '../backend/mail/imap-adapter';
 import { SafeStorageCredentialStore, type Credential } from '../backend/mail/credential-store';
 import {
@@ -162,31 +163,18 @@ function registerSiloHandlers(ctx: AppContext): void {
 
   ipcMain.handle(
     'silos:search',
-    async (_event, params: SearchParams, siloName?: string): Promise<SearchResult[]> => {
-      // Collect searchable managers; stopped silos are skipped.
-      const ready: [string, SiloManager][] = [];
-      if (siloName) {
-        const m = ctx.siloManagers.get(siloName);
-        if (!m) throw new Error(`Silo "${siloName}" not found`);
-        if (m.isStopped) throw new Error(`Silo "${siloName}" is stopped`);
-        if (!m.isAvailable) throw new Error(`Silo "${siloName}" is temporarily unavailable.`);
-        ready.push([siloName, m]);
-      } else {
-        for (const [name, m] of ctx.siloManagers) {
-          if (!m.isStopped && m.isAvailable) ready.push([name, m]);
-        }
-      }
+    async (_event, params: SearchParams, siloName?: string | string[]): Promise<SearchResult[]> => {
+      const ready = selectSilos(ctx.siloManagers, toSiloNames(siloName));
 
       if (ready.length === 0) return [];
 
       const limit = params.limit ?? 10;
       const mode = params.mode ?? 'hybrid';
 
-      // Filepath and regex modes can search any ready silo; other modes need an embedding service
-      const searchable =
-        mode === 'regex' || mode === 'filepath'
-          ? ready
-          : ready.filter(([, m]) => m.getEmbeddingService() !== null);
+      const needsEmbedding = mode === 'hybrid' || mode === 'semantic';
+      const searchable = needsEmbedding
+        ? ready.filter(([, manager]) => manager.getEmbeddingService() !== null)
+        : ready;
 
       if (searchable.length === 0) return [];
 
@@ -210,19 +198,7 @@ function registerSiloHandlers(ctx: AppContext): void {
   ipcMain.handle(
     'silos:explore',
     async (_event, params: ExploreParams): Promise<DirectoryResult[]> => {
-      // Collect searchable managers; stopped silos are skipped.
-      const ready: [string, SiloManager][] = [];
-      if (params.silo) {
-        const m = ctx.siloManagers.get(params.silo);
-        if (!m) throw new Error(`Silo "${params.silo}" not found`);
-        if (m.isStopped) throw new Error(`Silo "${params.silo}" is stopped`);
-        if (!m.isAvailable) throw new Error(`Silo "${params.silo}" is temporarily unavailable.`);
-        ready.push([params.silo, m]);
-      } else {
-        for (const [name, m] of ctx.siloManagers) {
-          if (!m.isStopped && m.isAvailable) ready.push([name, m]);
-        }
-      }
+      const ready = selectSilos(ctx.siloManagers, toSiloNames(params.silo));
 
       if (ready.length === 0) return [];
 

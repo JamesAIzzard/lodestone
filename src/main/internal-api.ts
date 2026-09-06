@@ -23,9 +23,9 @@ import {
 } from '../backend/search-merge';
 import type { SearchResult, DirectoryResult, SiloStatus, SearchParams } from '../shared/types';
 import type { EditOperation, EditResult } from '../backend/edit';
-import type { SiloManager } from '../backend/silo-manager';
 import { MailReadError } from '../backend/mail/account';
 import { resolveMailMirrorFile } from './mail-attachment-route';
+import { selectSilos, siloWarnings, toSiloNames } from './silo-selection';
 import type {
   AttachmentContent,
   AttachmentFetchErrorCode,
@@ -200,7 +200,7 @@ export class InternalApi {
     warnings: string[];
   }> {
     const query = params.query as string;
-    const silo = params.silo as string | undefined;
+    const siloNames = toSiloNames(params.silo);
     const maxResults = (params.maxResults as number) ?? 10;
     const mode = (params.mode as SearchParams['mode']) ?? 'hybrid';
     const startPath = params.startPath as string | undefined;
@@ -223,48 +223,18 @@ export class InternalApi {
     };
 
     // Notify renderer that a silo is being queried (triggers shimmer effect)
-    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo', siloName: silo });
+    this.ctx.mainWindow?.webContents.send('mcp:activity', {
+      channel: 'silo',
+      siloName: siloNames?.length === 1 ? siloNames[0] : undefined,
+    });
 
-    // Collect managers; stopped silos are skipped.
-    const ready: [string, SiloManager][] = [];
-    const warnings: string[] = [];
+    const ready = selectSilos(this.ctx.siloManagers, siloNames);
+    const needsEmbedding = mode === 'hybrid' || mode === 'semantic';
+    const warnings = await siloWarnings(ready, needsEmbedding);
 
-    if (silo) {
-      const m = this.ctx.siloManagers.get(silo);
-      if (!m) throw new Error(`Silo "${silo}" not found`);
-      if (m.isStopped) throw new Error(`Silo "${silo}" is stopped`);
-      if (!m.isAvailable) throw new Error(`Silo "${silo}" is temporarily unavailable.`);
-      ready.push([silo, m]);
-    } else {
-      for (const [name, m] of this.ctx.siloManagers) {
-        if (!m.isStopped && m.isAvailable) ready.push([name, m]);
-      }
-    }
-
-    // Check readiness — collect warnings for partial results
-    // Regex mode doesn't need an embedding service, so skip that warning
-    for (const [name, manager] of ready) {
-      const service = manager.getEmbeddingService();
-      const status = await manager.getStatus();
-      if (mode !== 'regex' && !service) {
-        warnings.push(`Silo "${name}" is still initializing and not yet searchable.`);
-      } else if (status.watcherState === 'indexing') {
-        const prog = status.reconcileProgress;
-        if (prog) {
-          warnings.push(
-            `Silo "${name}" is indexing (${prog.current.toLocaleString()} / ${prog.total.toLocaleString()} files) — results may be incomplete.`,
-          );
-        } else {
-          warnings.push(`Silo "${name}" is indexing — results may be incomplete.`);
-        }
-      }
-    }
-
-    // Filepath and regex modes can search any ready silo; other modes need an embedding service
-    const searchable =
-      mode === 'regex' || mode === 'filepath'
-        ? ready
-        : ready.filter(([, m]) => m.getEmbeddingService() !== null);
+    const searchable = needsEmbedding
+      ? ready.filter(([, manager]) => manager.getEmbeddingService() !== null)
+      : ready;
 
     if (searchable.length === 0) {
       return { results: [], warnings };
@@ -296,45 +266,20 @@ export class InternalApi {
     warnings: string[];
   }> {
     const query = params.query as string | undefined;
-    const silo = params.silo as string | undefined;
+    const siloNames = toSiloNames(params.silo);
     const startPath = params.startPath as string | undefined;
     const maxDepth = (params.maxDepth as number) ?? 2;
     const maxResults = (params.maxResults as number) ?? 20;
     const fullContents = params.fullContents as boolean | undefined;
 
     // Notify renderer that a silo is being queried (triggers shimmer effect)
-    this.ctx.mainWindow?.webContents.send('mcp:activity', { channel: 'silo', siloName: silo });
+    this.ctx.mainWindow?.webContents.send('mcp:activity', {
+      channel: 'silo',
+      siloName: siloNames?.length === 1 ? siloNames[0] : undefined,
+    });
 
-    // Collect searchable managers
-    const ready: [string, SiloManager][] = [];
-    const warnings: string[] = [];
-
-    if (silo) {
-      const m = this.ctx.siloManagers.get(silo);
-      if (!m) throw new Error(`Silo "${silo}" not found`);
-      if (m.isStopped) throw new Error(`Silo "${silo}" is stopped`);
-      if (!m.isAvailable) throw new Error(`Silo "${silo}" is temporarily unavailable.`);
-      ready.push([silo, m]);
-    } else {
-      for (const [name, m] of this.ctx.siloManagers) {
-        if (!m.isStopped && m.isAvailable) ready.push([name, m]);
-      }
-    }
-
-    // Check readiness
-    for (const [name, manager] of ready) {
-      const status = await manager.getStatus();
-      if (status.watcherState === 'indexing') {
-        const prog = status.reconcileProgress;
-        if (prog) {
-          warnings.push(
-            `Silo "${name}" is indexing (${prog.current.toLocaleString()} / ${prog.total.toLocaleString()} files) — results may be incomplete.`,
-          );
-        } else {
-          warnings.push(`Silo "${name}" is indexing — results may be incomplete.`);
-        }
-      }
-    }
+    const ready = selectSilos(this.ctx.siloManagers, siloNames);
+    const warnings = await siloWarnings(ready, false);
 
     if (ready.length === 0) {
       return { results: [], warnings };

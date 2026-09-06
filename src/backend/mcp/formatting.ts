@@ -141,7 +141,10 @@ export function formatSearchResults(results: SearchResult[], puid: PuidManager):
     const dateDetail = resultDate
       ? ` | Date: ${formatDate(resultDate)}, ${formatTime(resultDate)}`
       : '';
-    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${scoreDetail})${dateDetail}`);
+    const siloPuid = puid.assignSiloPuid(result.siloName);
+    lines.push(
+      `Silo: ${result.siloName} (${siloPuid}) | Score: ${pct}% (${scoreDetail})${dateDetail}`,
+    );
 
     // Hint line — show location and section path if available
     if (result.hint) {
@@ -203,8 +206,9 @@ export function formatExploreResults(
     lines.push(`## ${dirPuid}: ${result.dirPath}${parentSuffix}`);
     const pct = Math.round(result.score * 100);
     const dirScorerLabel = result.axes[result.scoreSource]?.bestSignal ?? result.scoreSource;
+    const siloPuid = puid.assignSiloPuid(result.siloName);
     lines.push(
-      `Silo: ${result.siloName} | Score: ${pct}% (${result.scoreSource}, ${dirScorerLabel}) | ${result.fileCount} files \u00B7 ${result.subdirCount} subdirs`,
+      `Silo: ${result.siloName} (${siloPuid}) | Score: ${pct}% (${result.scoreSource}, ${dirScorerLabel}) | ${result.fileCount} files \u00B7 ${result.subdirCount} subdirs`,
     );
     lines.push('');
 
@@ -283,7 +287,7 @@ export const SEARCH_DESCRIPTION = [
   'For email this is the received time; for other files it is the last modified time.',
   'Compute relative windows from lodestone_get_datetime.',
   '',
-  'Use the lodestone_status tool to see available silos and their current state.',
+  'Use lodestone_status to see available silos, their s-references and their current state. silo accepts names or references, singly or as an array.',
 ].join('\n');
 
 export const READ_DESCRIPTION = [
@@ -333,7 +337,7 @@ export const EXPLORE_DESCRIPTION = [
   '  3. lodestone_read ["r5", "r8"] \u2192 read files of interest',
   '  4. lodestone_explore startPath: parent d-ID \u2192 navigate back up',
   '',
-  'Use the lodestone_status tool to see available silos and their current state.',
+  'Use lodestone_status to see available silos, their s-references and their current state. silo accepts names or references, singly or as an array.',
 ].join('\n');
 
 export const EDIT_DESCRIPTION = [

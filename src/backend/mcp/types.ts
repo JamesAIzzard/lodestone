@@ -17,7 +17,7 @@ export interface McpServerDeps {
     /** Full-text + semantic search across indexed files. */
     search: (params: {
       query: string;
-      silo?: string;
+      silo?: string[];
       maxResults?: number;
       startPath?: string;
       mode?: 'hybrid' | 'bm25' | 'semantic' | 'filepath' | 'regex';
@@ -29,7 +29,7 @@ export interface McpServerDeps {
     /** Directory exploration / browsing. */
     explore: (params: {
       query?: string;
-      silo?: string;
+      silo?: string[];
       startPath?: string;
       maxDepth?: number;
       maxResults?: number;

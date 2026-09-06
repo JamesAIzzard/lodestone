@@ -1,12 +1,13 @@
 /**
  * Session-scoped puid (persistent unique ID) tracking.
  *
- * Puids are short references (r1, r2, d1, d2) assigned during a session
- * to make it easy for LLMs to refer to files and directories.
+ * Puids are short references (r1, d1, s1) assigned during a session
+ * to make it easy for LLMs to refer to files, directories, and silos.
  *
- * Two monotonic counters — never reset during a session:
+ * Three monotonic counters — never reset during a session:
  *   r1, r2, r3... for files (from search results and explore file listings)
  *   d1, d2, d3... for directories (from explore results)
+ *   s1, s2, s3... for silos (from status, search, and explore output)
  */
 
 import { createHash } from 'node:crypto';
@@ -61,9 +62,12 @@ export function isPathWithinRoot(filePath: string, rootPath: string): boolean {
 export class PuidManager {
   private rCounter = 0;
   private dCounter = 0;
+  private sCounter = 0;
   private readonly puidMap = new Map<string, PuidRecord>(); // puid → record
   private readonly filePathToPuid = new Map<string, string>(); // absolute file path → r-puid
   private readonly dirPathToPuid_ = new Map<string, string>(); // normalised dir path → d-puid
+  private readonly siloNameToPuid = new Map<string, string>(); // silo name → s-puid
+  private readonly siloPuidToName = new Map<string, string>(); // s-puid → silo name
 
   assignFilePuid(filePath: string): string {
     const existing = this.filePathToPuid.get(filePath);
@@ -84,6 +88,20 @@ export class PuidManager {
     this.puidMap.set(puid, { filepath: dirPath });
     this.dirPathToPuid_.set(key, puid);
     return puid;
+  }
+
+  assignSiloPuid(name: string): string {
+    const existing = this.siloNameToPuid.get(name);
+    if (existing) return existing;
+    this.sCounter++;
+    const puid = `s${this.sCounter}`;
+    this.siloNameToPuid.set(name, puid);
+    this.siloPuidToName.set(puid, name);
+    return puid;
+  }
+
+  resolveSiloPuid(id: string): string | undefined {
+    return this.siloPuidToName.get(id);
   }
 
   /**
@@ -170,6 +188,10 @@ export class PuidManager {
 
   static isDirPuid(id: string): boolean {
     return /^d\d+$/.test(id);
+  }
+
+  static isSiloPuid(id: string): boolean {
+    return /^s\d+$/.test(id);
   }
 
   /** Compute SHA-256 hex digest of a file's raw bytes. */

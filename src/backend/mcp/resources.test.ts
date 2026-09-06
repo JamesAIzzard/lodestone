@@ -35,6 +35,8 @@ describe('getGuideText', () => {
     expect(guide).toContain('lag the mailbox by up to the sync interval');
     expect(guide).toContain('`lodestone_edit` cannot modify them');
     expect(guide).toContain('Every search result carries a date');
+    expect(guide).toContain('labels each silo with an s reference');
+    expect(guide).toContain('an array of them');
   });
 
   it('retrieves current configuration for each startup guide request', async () => {

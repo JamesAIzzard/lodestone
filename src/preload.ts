@@ -42,7 +42,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ): Promise<unknown> => ipcRenderer.invoke('silos:update', name, updates),
   renameSilo: (oldName: string, newName: string): Promise<unknown> =>
     ipcRenderer.invoke('silos:rename', oldName, newName),
-  search: (params: unknown, siloName?: string): Promise<unknown[]> =>
+  search: (params: unknown, siloName?: string | string[]): Promise<unknown[]> =>
     ipcRenderer.invoke('silos:search', params, siloName),
   explore: (params: unknown): Promise<unknown[]> => ipcRenderer.invoke('silos:explore', params),
 

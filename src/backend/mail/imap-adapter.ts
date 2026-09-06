@@ -175,39 +175,73 @@ class ImapFlowAdapter implements ImapMailAdapter {
     });
   }
 
-  async *listMessages(folder: Folder, receivedAfter: Date | null = null): AsyncIterable<Entry> {
+  async *listMessages(
+    folder: Folder,
+    receivedAfter: Date | null = null,
+    onCount?: (total: number) => void,
+  ): AsyncIterable<Entry> {
     try {
       await this.ensureConnected();
       const client = this.requireClient();
-      const lock = await client.getMailboxLock(folder.path, { readOnly: true });
-      try {
-        const uidValidity = currentUidValidity(client.mailbox);
-        if (uidValidity !== folder.uidValidity) {
-          throw new AdapterError('protocol', 'uidvalidity-changed');
-        }
-        const uids = await client.search(
-          receivedAfter ? { since: utcCalendarDay(receivedAfter) } : { all: true },
-          { uid: true },
-        );
-        if (!uids) return;
+      const uids = await this.searchMessageUids(client, folder, receivedAfter);
+      if (!uids) return;
+      onCount?.(uids.length);
 
-        for (const batch of batches(uids, 500)) {
-          const query: FetchQueryObject = {
-            uid: true,
-            internalDate: true,
-            flags: true,
-            ...(this.gmail ? { labels: true } : {}),
-          };
-          for await (const item of client.fetch(batch, query, { uid: true })) {
-            const entry = this.entryFromFetch(item, folder, uidValidity, receivedAfter);
-            if (entry) yield entry;
-          }
-        }
-      } finally {
-        lock.release();
+      for (const batch of batches(uids, 500)) {
+        const entries = await this.fetchEntryBatch(client, batch, folder, receivedAfter);
+        yield* entries;
       }
     } catch (error) {
       throw mapImapError(error);
+    }
+  }
+
+  private async searchMessageUids(
+    client: ImapClient,
+    folder: Folder,
+    receivedAfter: Date | null,
+  ): Promise<number[] | false> {
+    const lock = await client.getMailboxLock(folder.path, { readOnly: true });
+    try {
+      this.assertUidValidity(client, folder.uidValidity);
+      return client.search(
+        receivedAfter ? { since: utcCalendarDay(receivedAfter) } : { all: true },
+        { uid: true },
+      );
+    } finally {
+      lock.release();
+    }
+  }
+
+  private async fetchEntryBatch(
+    client: ImapClient,
+    uids: number[],
+    folder: Folder,
+    receivedAfter: Date | null,
+  ): Promise<Entry[]> {
+    const lock = await client.getMailboxLock(folder.path, { readOnly: true });
+    try {
+      this.assertUidValidity(client, folder.uidValidity);
+      const entries: Entry[] = [];
+      const query: FetchQueryObject = {
+        uid: true,
+        internalDate: true,
+        flags: true,
+        ...(this.gmail ? { labels: true } : {}),
+      };
+      for await (const item of client.fetch(uids, query, { uid: true })) {
+        const entry = this.entryFromFetch(item, folder, folder.uidValidity, receivedAfter);
+        if (entry) entries.push(entry);
+      }
+      return entries;
+    } finally {
+      lock.release();
+    }
+  }
+
+  private assertUidValidity(client: ImapClient, expected: number): void {
+    if (currentUidValidity(client.mailbox) !== expected) {
+      throw new AdapterError('protocol', 'uidvalidity-changed');
     }
   }
 
@@ -287,7 +321,10 @@ class ImapFlowAdapter implements ImapMailAdapter {
 
   private async connect(): Promise<void> {
     if (this.auth.kind === 'password') {
-      this.client ??= this.createClient({ pass: this.auth.password });
+      if (!this.client?.usable) {
+        this.client = this.createClient({ pass: this.auth.password });
+        this.connected = false;
+      }
       await this.connectClient(this.client);
       return;
     }

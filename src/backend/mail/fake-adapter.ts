@@ -31,11 +31,20 @@ export class FakeMailAdapter implements MailAdapter {
     return [...this.folders.values()].map(({ folder }) => ({ ...folder }));
   }
 
-  async *listMessages(folder: Folder, receivedAfter: Date | null = null): AsyncIterable<Entry> {
+  async *listMessages(
+    folder: Folder,
+    receivedAfter: Date | null = null,
+    onCount?: (total: number) => void,
+  ): AsyncIterable<Entry> {
     this.record(`listMessages:${folder.folderKey}`);
     const stored = this.folders.get(folder.folderKey);
     if (!stored) throw new AdapterError('not-found');
     const failAfter = this.listingFailures.get(folder.folderKey);
+    onCount?.(
+      [...stored.entries.values()].filter(
+        (entry) => !receivedAfter || entry.receivedAt >= receivedAfter,
+      ).length,
+    );
     let yielded = 0;
     for (const entry of stored.entries.values()) {
       if (receivedAfter && entry.receivedAt < receivedAfter) continue;

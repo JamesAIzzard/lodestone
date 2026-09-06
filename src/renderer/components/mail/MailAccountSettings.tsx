@@ -1,17 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 
 import type { MailAccountStatus } from '../../../backend/mail/account';
 import type { Folder } from '../../../backend/mail/types';
 import { Button } from '../ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
 import {
   dateInputToReceivedAfter,
   defaultFolderSelection,
@@ -21,15 +13,11 @@ import {
 
 interface MailAccountSettingsProps {
   account: MailAccountStatus;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
   onSaved: () => void;
 }
 
 export default function MailAccountSettings({
   account,
-  open,
-  onOpenChange,
   onSaved,
 }: MailAccountSettingsProps) {
   const [siloName, setSiloName] = useState(account.siloName);
@@ -42,9 +30,11 @@ export default function MailAccountSettings({
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const initialisedFor = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (initialisedFor.current === account.accountHash) return;
+    initialisedFor.current = account.accountHash;
     setSiloName(account.siloName);
     setSyncInterval(String(account.syncIntervalSeconds));
     setSelectionMode(account.selectionMode);
@@ -56,7 +46,7 @@ export default function MailAccountSettings({
     setAllHistory(account.receivedAfter === 'unlimited');
     setReceivedAfter(receivedAfterToDateInput(account.receivedAfter));
     setError(null);
-  }, [account, open]);
+  }, [account]);
 
   const nextReceivedAfter = allHistory ? 'unlimited' : dateInputToReceivedAfter(receivedAfter);
   const selectionChanged = useMemo(
@@ -96,7 +86,6 @@ export default function MailAccountSettings({
         setError(result?.error ?? 'Could not save mail settings.');
         return;
       }
-      onOpenChange(false);
       onSaved();
     } catch (err) {
       setError(String(err));
@@ -106,13 +95,12 @@ export default function MailAccountSettings({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Mail account settings</DialogTitle>
-          <DialogDescription>{account.displayName}</DialogDescription>
-        </DialogHeader>
-        <div className="mt-4 space-y-4">
+    <section className="mb-6">
+      <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+        Configuration
+      </h2>
+      <div className="rounded-lg border border-border bg-card p-4">
+        <div className="space-y-4">
           <Field label="Silo name" value={siloName} onChange={setSiloName} />
           <Field
             label="Sync interval (seconds)"
@@ -186,10 +174,7 @@ export default function MailAccountSettings({
           )}
         </div>
         {error && <p className="mt-3 text-xs text-red-400">{error}</p>}
-        <DialogFooter>
-          <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)} disabled={saving}>
-            Cancel
-          </Button>
+        <div className="mt-4 flex justify-end border-t border-border pt-4">
           <Button
             size="sm"
             onClick={save}
@@ -202,11 +187,11 @@ export default function MailAccountSettings({
             }
           >
             {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            Save
+            Save changes
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+      </div>
+    </section>
   );
 }
 

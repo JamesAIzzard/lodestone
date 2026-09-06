@@ -126,7 +126,12 @@ export default function SilosView() {
                 key={silo.config.name}
                 account={account}
                 silo={silo}
+                onClick={() => navigate(`/mail/${account.accountHash}`)}
                 onChanged={fetchSources}
+                onSearchInSilo={() => handleSearchInSilo(silo)}
+                onStopToggle={() => handleStopToggle(silo)}
+                isStopping={stoppingName === silo.config.name}
+                shimmerKey={siloShimmerKeys[silo.config.name] ?? 0}
               />
             ) : (
               <SiloCard

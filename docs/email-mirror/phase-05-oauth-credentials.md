@@ -9,8 +9,7 @@ client ID through a paste-back authorisation code flow, mint access tokens on de
 to the adapter as XOAUTH2, and store both credential kinds encrypted with Electron
 `safeStorage`. This phase produces no UI; it exposes functions the phase 7 form will call.
 
-The working reference is `Test-M365Imap.ps1` / `m365-imap-oauth-test.mjs` from the design
-work: the flow below is that script, restructured.
+The flow below restructures the working OAuth proof from the design work.
 
 ## Deliverables
 

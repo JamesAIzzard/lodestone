@@ -16,7 +16,7 @@ lives)
   timer; each hit is one message; the file's frontmatter carries sender, recipients, date,
   folders and attachment names; `lodestone_read` on a hit returns the whole message; results may
   lag the mailbox by up to the sync interval; `lodestone_edit` cannot modify them.
-- Keep it under ten lines. Clients read this every conversation.
+- Keep it concise and clear. Clients read this every conversation.
 
 `lodestone_status` / `handleStatus`
 - Confirm the new `available`, `indexCaughtUp`, `readOnly` and `managedBy` fields are present

@@ -79,7 +79,8 @@ export default function SiloCard({
   onSearchInSilo,
   shimmerKey,
 }: SiloCardProps) {
-  const { config, indexedFileCount, chunkCount, watcherState, reconcileProgress } = silo;
+  const { config, indexedFileCount, chunkCount, watcherState, reconcileProgress, indexCaughtUp } =
+    silo;
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const copyPath = useCallback((e: React.MouseEvent, path: string) => {
     e.stopPropagation();
@@ -98,6 +99,7 @@ export default function SiloCard({
   // Cap at 99% while indexing is in progress — the bar disappears entirely
   // when reconcileProgress is cleared, so 100% is never shown as a stale state.
   const progressPct = progressPctRaw !== null ? Math.min(progressPctRaw, 99) : null;
+  const progressComplete = indexCaughtUp && !isActive && !isWaiting;
 
   return (
     <button
@@ -233,36 +235,55 @@ export default function SiloCard({
       </div>
 
       <div className={cn((isStopped || isWaiting) && 'opacity-50')}>
-        {/* Progress bar (shown while scanning or indexing) */}
-        {isActive && reconcileProgress && reconcileProgress.total > 0 && (
-          <div className="flex flex-col gap-1">
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-amber-500 transition-[width] duration-300"
-                style={{ width: `${progressPct ?? 0}%` }}
-              />
+        {/* Persistent progress avoids flashing as polling clears completed reconciliation state. */}
+        <div className="flex flex-col gap-1">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn(
+                'relative h-full overflow-hidden rounded-full bg-amber-500 transition-[width] duration-300',
+                !progressComplete && progressPct === null && 'w-1/3 animate-pulse',
+              )}
+              style={
+                progressComplete
+                  ? { width: '100%' }
+                  : progressPct !== null
+                    ? { width: `${progressPct}%` }
+                    : undefined
+              }
+            >
+              {progressComplete && (
+                <span className="absolute inset-y-0 left-0 w-1/3 animate-progress-shimmer bg-gradient-to-r from-transparent via-white/25 to-transparent" />
+              )}
             </div>
-            <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-              <span>
-                {reconcileProgress.current.toLocaleString()} /{' '}
-                {reconcileProgress.total.toLocaleString()} files
+          </div>
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+            <span>
+              {isActive && reconcileProgress
+                ? `${reconcileProgress.current.toLocaleString()} / ${reconcileProgress.total.toLocaleString()} files`
+                : isStopped && !indexCaughtUp
+                  ? 'Index paused'
+                  : `${indexedFileCount.toLocaleString()} files indexed`}
+            </span>
+            {isActive &&
+            reconcileProgress &&
+            reconcileProgress.fileStage === 'embedding' &&
+            reconcileProgress.embedTotal != null &&
+            reconcileProgress.embedTotal > 0 ? (
+              <span className="text-muted-foreground/60">
+                {reconcileProgress.embedDone?.toLocaleString()} /{' '}
+                {reconcileProgress.embedTotal.toLocaleString()} chunks
               </span>
-              {reconcileProgress.fileStage === 'embedding' &&
-              reconcileProgress.embedTotal != null &&
-              reconcileProgress.embedTotal > 0 ? (
-                <span className="text-muted-foreground/60">
-                  {reconcileProgress.embedDone?.toLocaleString()} /{' '}
-                  {reconcileProgress.embedTotal.toLocaleString()} chunks
-                </span>
-              ) : reconcileProgress.batchChunks != null &&
-                reconcileProgress.batchChunkLimit != null ? (
-                <span className="text-muted-foreground/60">
-                  batch: {reconcileProgress.batchChunks} / {reconcileProgress.batchChunkLimit}{' '}
-                  chunks
-                </span>
-              ) : null}
-            </div>
-            {/* Stage label + current filename + file size */}
+            ) : isActive &&
+              reconcileProgress &&
+              reconcileProgress.batchChunks != null &&
+              reconcileProgress.batchChunkLimit != null ? (
+              <span className="text-muted-foreground/60">
+                batch: {reconcileProgress.batchChunks} / {reconcileProgress.batchChunkLimit} chunks
+              </span>
+            ) : null}
+          </div>
+          {/* Stage label + current filename + file size */}
+          {isActive && reconcileProgress && (
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground/60 min-w-0">
               {reconcileProgress.fileStage && stageLabels[reconcileProgress.fileStage] && (
                 <span className="shrink-0 text-muted-foreground/80 font-medium">
@@ -280,8 +301,8 @@ export default function SiloCard({
                 </span>
               )}
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
         {/* Two linked groups: database ← directories */}
         <div className="flex flex-col">

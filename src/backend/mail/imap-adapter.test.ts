@@ -121,7 +121,10 @@ describe('IMAP adapter with a stubbed ImapFlow client', () => {
     });
     const [folder] = await adapter.listFolders();
     client.mailbox.uidValidity = 77n;
-    const entries = await collect(adapter.listMessages(folder, new Date('2026-09-06T12:00:00Z')));
+    const onCount = vi.fn();
+    const entries = await collect(
+      adapter.listMessages(folder, new Date('2026-09-06T12:00:00Z'), onCount),
+    );
 
     expect(client.connect).toHaveBeenCalledTimes(1);
     expect(client.search).toHaveBeenCalledWith(
@@ -130,6 +133,7 @@ describe('IMAP adapter with a stubbed ImapFlow client', () => {
     );
     expect(client.fetch.mock.calls.map(([uids]) => uids.length)).toEqual([500, 1]);
     expect(entries).toHaveLength(500);
+    expect(onCount).toHaveBeenCalledWith(501);
     expect(entries[0].messageKey).toBe('uid:INBOX:77:2');
     expect(client.locks.every((lock) => lock.readOnly)).toBe(true);
   });
@@ -159,6 +163,23 @@ describe('IMAP adapter with a stubbed ImapFlow client', () => {
     ]);
     expect(adapter.supportsCondstore).toBe(true);
     expect(adapter.supportsQresync).toBe(true);
+  });
+
+  it('releases the listing lock before yielding entries for message fetching', async () => {
+    const client = new StubImapClient();
+    client.searchResponse = [1];
+    client.fetchResponses = [fetchedEntry(1, '2026-09-06T12:00:00Z')];
+    const adapter = adapterFor(client);
+    const folder: Folder = { folderKey: 'INBOX', path: 'INBOX', role: 'inbox', uidValidity: 1 };
+
+    const iterator = adapter.listMessages(folder)[Symbol.asyncIterator]();
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { messageKey: 'uid:INBOX:1:1' },
+    });
+
+    expect(client.locks).toHaveLength(2);
+    expect(client.locks.every((lock) => lock.released)).toBe(true);
   });
 
   it('uses STATUS when LIST cannot return UIDVALIDITY inline', async () => {
@@ -355,6 +376,36 @@ describe('IMAP adapter with a stubbed ImapFlow client', () => {
     await expect(adapter.listFolders()).rejects.toMatchObject({ kind: 'auth' });
     expect(accessToken).toHaveBeenCalledTimes(2);
     expect(accessToken.invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates a fresh password client when the previous connection is unusable', async () => {
+    const first = new StubImapClient();
+    first.listResponses = [listResponse('INBOX', '\\Inbox', 1n)];
+    const second = new StubImapClient();
+    second.listResponses = [listResponse('INBOX', '\\Inbox', 1n)];
+    const clients = [first, second];
+    const adapter = createImapAdapter(
+      {
+        host: 'imap.example.com',
+        port: 993,
+        username: 'user@example.com',
+        auth: { kind: 'password', password: 'secret' },
+        log: () => undefined,
+      },
+      () => {
+        const client = clients.shift();
+        if (!client) throw new Error('Unexpected client creation.');
+        return client;
+      },
+    );
+
+    await adapter.listFolders();
+    first.usable = false;
+    await adapter.listFolders();
+
+    expect(first.connect).toHaveBeenCalledTimes(1);
+    expect(second.connect).toHaveBeenCalledTimes(1);
+    expect(second.list).toHaveBeenCalledTimes(1);
   });
 
   it('logs out only after the connection has been used', async () => {

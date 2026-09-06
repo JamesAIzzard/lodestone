@@ -6,6 +6,7 @@ import SearchView from './views/SearchView';
 import ActivityView from './views/ActivityView';
 import SettingsView from './views/SettingsView';
 import OnboardingView from './views/OnboardingView';
+import MailSiloDetailView from './views/MailSiloDetailView';
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
                 <Routes>
                   <Route path="/" element={<SilosView />} />
                   <Route path="/silos/:name" element={<SiloDetailView />} />
+                  <Route path="/mail/:hash" element={<MailSiloDetailView />} />
                   <Route path="/search" element={<SearchView />} />
                   <Route path="/activity" element={<ActivityView />} />
                   <Route path="/settings" element={<SettingsView />} />

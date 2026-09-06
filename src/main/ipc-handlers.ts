@@ -911,19 +911,24 @@ async function renameManagedMailSilo(
     throw new Error('Managed mail silo is unavailable.');
   }
   await manager.stop();
-  await manager.updateName(trimmed);
-  try {
-    await manager.start();
-  } catch (error) {
-    await manager.stop().catch((): void => undefined);
-    await manager.updateName(oldName);
-    await manager.start().catch((): void => undefined);
-    throw error;
-  }
-  ctx.siloManagers.set(trimmed, manager);
   ctx.siloManagers.delete(oldName);
   ctx.config.silos[trimmed] = silo;
   delete ctx.config.silos[oldName];
+
+  const replacement = registerManager(ctx, trimmed, silo, { deferStart: true });
+  try {
+    if (silo.is_stopped) replacement.loadStoppedStatus();
+    else await replacement.start();
+  } catch (error) {
+    await replacement.stop().catch((): void => undefined);
+    ctx.siloManagers.delete(trimmed);
+    delete ctx.config.silos[trimmed];
+    ctx.config.silos[oldName] = silo;
+    ctx.siloManagers.set(oldName, manager);
+    if (silo.is_stopped) manager.loadStoppedStatus();
+    else await manager.start().catch((): void => undefined);
+    throw error;
+  }
 }
 
 function rendererSafeMailError(error: unknown): string {

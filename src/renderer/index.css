@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 @import './styles/_variables.scss';
 @import './styles/_keyframe-animations.scss';
 
@@ -20,7 +20,7 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -28,24 +28,24 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
+  --background: #242424;
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  --card: #2d2d2d;
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
+  --popover: #2d2d2d;
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.985 0 0);
   --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
+  --secondary: #383838;
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
+  --muted: #383838;
   --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
+  --accent: #383838;
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.396 0.141 25.723);
-  --destructive-foreground: oklch(0.637 0.237 25.331);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
+  --destructive-foreground: oklch(0.985 0 0);
+  --border: #464646;
+  --input: #464646;
   --ring: oklch(0.439 0 0);
 }
 
@@ -76,12 +76,26 @@
 }
 
 @keyframes neural-shimmer {
-  from { transform: translateX(-100%); }
-  to   { transform: translateX(250%); }
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes progress-shimmer {
+  from {
+    transform: translateX(-180%);
+  }
+  to {
+    transform: translateX(380%);
+  }
 }
 
 @theme inline {
   --animate-neural-shimmer: neural-shimmer 0.9s ease-in-out both;
+  --animate-progress-shimmer: progress-shimmer 2.8s ease-in-out infinite;
 }
 
 @layer base {

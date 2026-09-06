@@ -33,6 +33,10 @@ Lodestone searches, browses, reads, and edits files in configured silos.
 
 Use \`lodestone_search\` or \`lodestone_explore\` to locate material, then \`lodestone_read\` before editing.`;
 
+const MAIL_SILO_GUIDE = `## Mail Silos
+
+Silos named \`Mail: …\` are read-only email mirrors refreshed on a timer. Each search hit is one message; its frontmatter records the sender, recipients, date, folders and attachment names, and \`lodestone_read\` returns the whole message. Results may lag the mailbox by up to the sync interval, and \`lodestone_edit\` cannot modify them.`;
+
 const NOTES_TOOL_GUIDE = `# Lodestone Notes Guide
 
 Use \`lodestone_search\` for topic or keyword queries, \`lodestone_explore\` for directory navigation, and \`lodestone_read\` to retrieve the selected note.
@@ -62,7 +66,7 @@ export async function getGuideText(
   if (topic === 'notes') return NOTES_TOOL_GUIDE;
 
   const config = await getConfig();
-  return `${STARTUP_TOOL_GUIDE}\n\n${buildInstructionsBootstrap(config.notePath)}`;
+  return `${STARTUP_TOOL_GUIDE}\n\n${MAIL_SILO_GUIDE}\n\n${buildInstructionsBootstrap(config.notePath)}`;
 }
 
 export function registerGuideTool(server: McpServer, getConfig: GetLlmInstructionsConfig): void {

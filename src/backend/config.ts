@@ -15,6 +15,7 @@ import {
   DEFAULT_IGNORE_FILES,
 } from '../shared/app-defaults';
 import { DEFAULT_INDEX_EXTENSIONS } from '../shared/file-types';
+import { accountHash, accountUid } from './mail/identity';
 
 export interface DefaultsConfig {
   indexed_file_extensions: string[];
@@ -40,11 +41,37 @@ export interface SiloTomlConfig {
   supports_path_search?: boolean;
 }
 
+export type MailCredentialKind = 'password' | 'oauth';
+export type MailSelectionMode = 'default' | 'explicit';
+
+export interface MailAccountTomlConfig {
+  host: string;
+  port: number;
+  username: string;
+  display_name: string;
+  credential_kind: MailCredentialKind;
+  oauth_client_id?: string;
+  silo_name: string;
+  received_after: string;
+  selection_mode: MailSelectionMode;
+  selected_folders: string[];
+  sync_interval_seconds: number;
+}
+
 export interface LodestoneConfig {
   server_name: string;
   llm_instructions_note_path?: string;
   defaults: DefaultsConfig;
   silos: Record<string, SiloTomlConfig>;
+  mail_accounts: Record<string, MailAccountTomlConfig>;
+}
+
+export interface MailDataPaths {
+  root: string;
+  mirror: string;
+  tmp: string;
+  manifest: string;
+  credential: string;
 }
 
 export interface ResolvedSiloConfig {
@@ -76,6 +103,7 @@ const DEFAULT_CONFIG: LodestoneConfig = {
     max_activity_log_entries: DEFAULT_ACTIVITY_LOG_LIMIT,
   },
   silos: {},
+  mail_accounts: {},
 };
 
 type TomlObject = Record<string, unknown>;
@@ -88,6 +116,7 @@ export function loadLodestoneConfig(configPath: string): LodestoneConfig {
     llm_instructions_note_path: optionalStringField(parsed.llm_instructions_note_path),
     defaults: parseDefaultsConfig(parsed.defaults),
     silos: parseSilosConfig(parsed.silos),
+    mail_accounts: parseMailAccountsConfig(parsed.mail_accounts),
   };
 }
 
@@ -107,6 +136,17 @@ export function getDefaultLodestoneConfigPath(userDataDir: string): string {
 
 export function lodestoneConfigFileExists(configPath: string): boolean {
   return fs.existsSync(configPath);
+}
+
+export function mailDataDir(userDataDir: string, hash: string): MailDataPaths {
+  const root = path.join(userDataDir, 'mail', hash);
+  return {
+    root,
+    mirror: path.join(root, 'mirror'),
+    tmp: path.join(root, 'tmp'),
+    manifest: path.join(root, 'manifest.sqlite'),
+    credential: path.join(root, 'credential.bin'),
+  };
 }
 
 export function resolveSiloRuntimeConfig(
@@ -180,6 +220,87 @@ function parseSilosConfig(rawSilos: unknown): Record<string, SiloTomlConfig> {
   );
 }
 
+export function parseMailAccountsConfig(
+  rawAccounts: unknown,
+): Record<string, MailAccountTomlConfig> {
+  const accounts = objectField(rawAccounts);
+  return Object.fromEntries(
+    Object.entries(accounts).map(([hash, rawAccount]) => {
+      const account = parseMailAccountTomlConfig(hash, objectField(rawAccount));
+      const expectedHash = accountHash(accountUid(account.host, account.port, account.username));
+      if (hash !== expectedHash) {
+        throw new Error(`Mail account hash "${hash}" does not match its identity`);
+      }
+      return [hash, account];
+    }),
+  );
+}
+
+function parseMailAccountTomlConfig(hash: string, raw: TomlObject): MailAccountTomlConfig {
+  const host = requiredNonEmptyString(raw.host, `Mail account "${hash}" must have a host`);
+  const username = requiredNonEmptyString(
+    raw.username,
+    `Mail account "${hash}" must have a username`,
+  );
+  const port = raw.port;
+  if (!Number.isInteger(port) || (port as number) < 1 || (port as number) > 65_535) {
+    throw new Error(`Mail account "${hash}" port must be an integer from 1 to 65535`);
+  }
+
+  const credentialKind = raw.credential_kind;
+  if (credentialKind !== 'password' && credentialKind !== 'oauth') {
+    throw new Error(`Mail account "${hash}" has an invalid credential_kind`);
+  }
+  const oauthClientId = optionalStringField(raw.oauth_client_id)?.trim() || undefined;
+  if (credentialKind === 'oauth' && !oauthClientId) {
+    throw new Error(`Mail account "${hash}" must have an oauth_client_id`);
+  }
+
+  const siloName = requiredNonEmptyString(
+    raw.silo_name,
+    `Mail account "${hash}" must have a silo_name`,
+  );
+  const receivedAfter = stringField(raw.received_after);
+  if (!validReceivedAfter(receivedAfter)) {
+    throw new Error(`Mail account "${hash}" received_after must be RFC 3339 or "unlimited"`);
+  }
+
+  const selectionMode = raw.selection_mode;
+  if (selectionMode !== 'default' && selectionMode !== 'explicit') {
+    throw new Error(`Mail account "${hash}" has an invalid selection_mode`);
+  }
+  if (
+    raw.selected_folders !== undefined &&
+    (!Array.isArray(raw.selected_folders) ||
+      raw.selected_folders.some((folder) => typeof folder !== 'string'))
+  ) {
+    throw new Error(`Mail account "${hash}" selected_folders must contain only strings`);
+  }
+  const selectedFolders = stringArrayField(raw.selected_folders);
+  if (selectionMode === 'explicit' && selectedFolders.length === 0) {
+    throw new Error(`Mail account "${hash}" explicit selection must include a folder`);
+  }
+
+  const syncInterval = raw.sync_interval_seconds;
+  if (!Number.isInteger(syncInterval) || (syncInterval as number) < 1) {
+    throw new Error(`Mail account "${hash}" sync_interval_seconds must be a positive integer`);
+  }
+
+  return {
+    host,
+    port: port as number,
+    username,
+    display_name: stringField(raw.display_name, username),
+    credential_kind: credentialKind,
+    oauth_client_id: oauthClientId,
+    silo_name: siloName,
+    received_after: receivedAfter,
+    selection_mode: selectionMode,
+    selected_folders: selectedFolders,
+    sync_interval_seconds: syncInterval as number,
+  };
+}
+
 function parseSiloTomlConfig(name: string, silo: TomlObject): SiloTomlConfig {
   const indexedDirectories = stringArrayField(silo.indexed_directories);
   const indexDbPath = stringField(silo.index_db_path);
@@ -220,7 +341,9 @@ function optionalStringField(value: unknown): string | undefined {
 }
 
 function stringArrayField(value: unknown, fallback: string[] = []): string[] {
-  return Array.isArray(value) ? (value as string[]) : fallback;
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+    ? (value as string[])
+    : fallback;
 }
 
 function optionalStringArrayField(value: unknown): string[] | undefined {
@@ -233,4 +356,18 @@ function optionalBooleanField(value: unknown): boolean | undefined {
 
 function numberField(value: unknown, fallback: number): number {
   return typeof value === 'number' ? value : fallback;
+}
+
+function requiredNonEmptyString(value: unknown, message: string): string {
+  const result = stringField(value).trim();
+  if (!result) throw new Error(message);
+  return result;
+}
+
+function validReceivedAfter(value: string): boolean {
+  if (value === 'unlimited') return true;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(value));
 }

@@ -4,7 +4,9 @@ import {
   saveLodestoneConfig,
   createDefaultLodestoneConfig,
   resolveSiloRuntimeConfig,
+  mailDataDir,
 } from './config';
+import { accountHash, accountUid } from './mail/identity';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -127,5 +129,87 @@ index_db_path = "/tmp/notes.db"
     expect(saved).not.toContain('read_only');
     expect(saved).not.toContain('managed_by');
     expect(saved).not.toContain('supports_path_search');
+  });
+
+  it('parses, validates and round-trips mail accounts independently of silos', () => {
+    const hash = accountHash(accountUid('OUTLOOK.Office365.com', 993, 'Case@Example.com'));
+    const p = writeConfig(`
+server_name = "test"
+
+[mail_accounts.${hash}]
+host = "OUTLOOK.Office365.com"
+port = 993
+username = "Case@Example.com"
+display_name = "Work"
+credential_kind = "oauth"
+oauth_client_id = "client-id"
+silo_name = "Mail: Work"
+received_after = "2025-09-06T00:00:00Z"
+selection_mode = "explicit"
+selected_folders = ["INBOX"]
+sync_interval_seconds = 300
+`);
+
+    const config = loadLodestoneConfig(p);
+    expect(config.mail_accounts[hash]).toMatchObject({
+      host: 'OUTLOOK.Office365.com',
+      username: 'Case@Example.com',
+      selection_mode: 'explicit',
+      selected_folders: ['INBOX'],
+    });
+    saveLodestoneConfig(p, config);
+    expect(loadLodestoneConfig(p).mail_accounts).toEqual(config.mail_accounts);
+  });
+
+  it.each([
+    ['invalid port', 'port = 0', 'port must be an integer'],
+    ['missing OAuth client', 'oauth_client_id = ""', 'oauth_client_id'],
+    ['empty explicit selection', 'selected_folders = []', 'explicit selection'],
+    ['invalid cutoff', 'received_after = "last year"', 'received_after'],
+  ])('rejects mail config with %s', (_name, replacement, expected) => {
+    const username = 'user@example.com';
+    const hash = accountHash(accountUid('imap.example.com', 993, username));
+    const source = `
+[mail_accounts.${hash}]
+host = "imap.example.com"
+port = 993
+username = "${username}"
+credential_kind = "oauth"
+oauth_client_id = "client-id"
+silo_name = "Mail: Example"
+received_after = "unlimited"
+selection_mode = "explicit"
+selected_folders = ["INBOX"]
+sync_interval_seconds = 300
+`;
+    const field = replacement.split(' = ')[0];
+    const p = writeConfig(source.replace(new RegExp(`${field} = [^\\n]+`), replacement));
+    expect(() => loadLodestoneConfig(p)).toThrow(expected);
+  });
+
+  it('rejects a mail account whose table key does not match its identity hash', () => {
+    const p = writeConfig(`
+[mail_accounts.00000000000000000000000000000000]
+host = "imap.example.com"
+port = 993
+username = "user@example.com"
+credential_kind = "password"
+silo_name = "Mail: Example"
+received_after = "unlimited"
+selection_mode = "default"
+selected_folders = []
+sync_interval_seconds = 300
+`);
+    expect(() => loadLodestoneConfig(p)).toThrow('does not match its identity');
+  });
+
+  it('resolves every path below the account data directory', () => {
+    expect(mailDataDir('C:\\Data', 'abc')).toEqual({
+      root: path.join('C:\\Data', 'mail', 'abc'),
+      mirror: path.join('C:\\Data', 'mail', 'abc', 'mirror'),
+      tmp: path.join('C:\\Data', 'mail', 'abc', 'tmp'),
+      manifest: path.join('C:\\Data', 'mail', 'abc', 'manifest.sqlite'),
+      credential: path.join('C:\\Data', 'mail', 'abc', 'credential.bin'),
+    });
   });
 });

@@ -13,6 +13,9 @@ import {
   createDefaultLodestoneConfig,
   resolveSiloRuntimeConfig,
   type SiloTomlConfig,
+  parseMailAccountsConfig,
+  mailDataDir,
+  type MailAccountTomlConfig,
 } from '../backend/config';
 import { autoAssignColor, validateSiloColor, validateSiloIcon } from '../shared/silo-appearance';
 import type { SiloManager } from '../backend/silo-manager';
@@ -50,6 +53,21 @@ import type {
 } from '../shared/types';
 import type { AppContext } from './context';
 import { stopSilo, wakeSilo, registerManager, notifySilosChanged } from './lifecycle';
+import { ensureMailSiloConfig } from '../backend/mail/account-config';
+import { accountHash, accountUid } from '../backend/mail/identity';
+import { createImapAdapter } from '../backend/mail/imap-adapter';
+import { SafeStorageCredentialStore, type Credential } from '../backend/mail/credential-store';
+import {
+  beginAuthorisation,
+  completeAuthorisation,
+  MICROSOFT_THUNDERBIRD,
+  type PendingAuthorisation,
+} from '../backend/mail/oauth';
+import { MailAccount } from '../backend/mail/account';
+import { openManifest } from '../backend/mail/manifest';
+import { repairManifest } from '../backend/mail/startup-repair';
+import { ensureDirs } from '../backend/mail/mirror-files';
+import type { Folder } from '../backend/mail/types';
 
 // ── Domain-grouped handler registrations ────────────────────────────────
 
@@ -542,6 +560,365 @@ function registerSiloHandlers(ctx: AppContext): void {
   );
 }
 
+type MailCredentialInput =
+  | { kind: 'password'; password: string }
+  | { kind: 'oauth'; callbackUrl?: string };
+
+interface MailConnectionRequest {
+  host: string;
+  port: number;
+  username: string;
+  auth: MailCredentialInput & { clientId?: string };
+}
+
+type MailAccountInput = MailAccountTomlConfig;
+
+function registerMailHandlers(ctx: AppContext): void {
+  const pendingAuthorisations = new Map<
+    string,
+    { pending: PendingAuthorisation; clientId: string }
+  >();
+  const testedOAuthCredentials = new Map<string, Credential>();
+
+  ipcMain.handle('mail:list', () =>
+    [...ctx.mailAccounts.values()].map((account) => account.status()),
+  );
+
+  ipcMain.handle(
+    'mail:begin-oauth',
+    async (_event, input: { clientId: string; loginHint: string }): Promise<{ url: string }> => {
+      const clientId = input.clientId.trim();
+      if (!clientId) throw new Error('OAuth client ID is required.');
+      const pending = beginAuthorisation({ ...MICROSOFT_THUNDERBIRD, clientId }, input.loginHint);
+      pendingAuthorisations.set(pending.state, { pending, clientId });
+      await shell.openExternal(pending.url);
+      return { url: pending.url };
+    },
+  );
+
+  ipcMain.handle(
+    'mail:test-connection',
+    async (
+      _event,
+      request: MailConnectionRequest,
+    ): Promise<{ ok: boolean; folders?: Folder[]; error?: string }> => {
+      let adapter: ReturnType<typeof createImapAdapter> | null = null;
+      try {
+        const uid = accountUid(request.host, request.port, request.username);
+        const resolvedCredential = await credentialFromInput(
+          request.auth,
+          pendingAuthorisations,
+          request.auth.clientId,
+        );
+        const credential = resolvedCredential.credential;
+        const oauthAccessToken = resolvedCredential.accessToken;
+        const auth =
+          credential.kind === 'password'
+            ? ({ kind: 'password', password: credential.password } as const)
+            : oauthAuth(oauthAccessToken);
+        adapter = createImapAdapter({
+          host: request.host,
+          port: request.port,
+          username: request.username,
+          auth,
+          log: () => undefined,
+        });
+        const folders = await adapter.listFolders();
+        if (credential.kind === 'oauth') testedOAuthCredentials.set(uid, credential);
+        return { ok: true, folders };
+      } catch (error) {
+        return { ok: false, error: rendererSafeMailError(error) };
+      } finally {
+        await adapter?.close().catch((): void => undefined);
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'mail:create',
+    async (
+      _event,
+      input: { config: MailAccountInput; credential: MailCredentialInput },
+    ): Promise<{ success: boolean; hash?: string; error?: string }> => {
+      if (!ctx.config) return { success: false, error: 'Config not loaded' };
+      const uid = accountUid(input.config.host, input.config.port, input.config.username);
+      const hash = accountHash(uid);
+      if (ctx.mailAccounts.has(hash)) {
+        return { success: false, error: 'That mail account is already connected.' };
+      }
+
+      let createdManager: SiloManager | undefined;
+      let createdManifest: ReturnType<typeof openManifest> | undefined;
+      let createdSiloName: string | undefined;
+      const store = new SafeStorageCredentialStore(ctx.getUserDataDir());
+      const paths = mailDataDir(ctx.getUserDataDir(), hash);
+      try {
+        const config = parseMailAccountsConfig({ [hash]: input.config })[hash];
+        const testedOAuthCredential = testedOAuthCredentials.get(uid);
+        const credential =
+          input.credential.kind === 'oauth'
+            ? ((testedOAuthCredential?.kind === 'oauth' &&
+              testedOAuthCredential.clientId === config.oauth_client_id
+                ? testedOAuthCredential
+                : undefined) ??
+              (
+                await credentialFromInput(
+                  input.credential,
+                  pendingAuthorisations,
+                  config.oauth_client_id,
+                )
+              ).credential)
+            : input.credential;
+        await ensureDirs(paths);
+        await store.save(hash, credential);
+        ctx.config.mail_accounts[hash] = config;
+        ensureMailSiloConfig(ctx.config, ctx.getUserDataDir(), hash, config);
+        createdSiloName = config.silo_name;
+        saveLodestoneConfig(ctx.configPath(), ctx.config);
+
+        const manager = registerManager(ctx, config.silo_name, ctx.config.silos[config.silo_name], {
+          deferStart: true,
+        });
+        createdManager = manager;
+        await manager.start();
+        const manifest = openManifest(paths.manifest);
+        createdManifest = manifest;
+        await repairManifest(manifest, paths);
+        const account = new MailAccount({
+          accountHash: hash,
+          config,
+          manifest,
+          dirs: paths,
+          credentialStore: store,
+          silo: manager,
+        });
+        ctx.mailAccounts.set(hash, account);
+        testedOAuthCredentials.delete(uid);
+        account.start();
+        notifySilosChanged(ctx);
+        return { success: true, hash };
+      } catch (error) {
+        try {
+          createdManifest?.close();
+        } catch {
+          // Best-effort rollback continues with the remaining artefacts.
+        }
+        await createdManager?.stop().catch((): void => undefined);
+        if (createdManager && createdSiloName) ctx.siloManagers.delete(createdSiloName);
+        if (createdSiloName && ctx.config.silos[createdSiloName]?.managed_by === `mail:${hash}`) {
+          delete ctx.config.silos[createdSiloName];
+        }
+        delete ctx.config.mail_accounts[hash];
+        saveLodestoneConfig(ctx.configPath(), ctx.config);
+        await store.delete(hash).catch((): void => undefined);
+        await fs.promises
+          .rm(paths.root, { recursive: true, force: true })
+          .catch((): void => undefined);
+        return { success: false, error: rendererSafeMailError(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'mail:update-settings',
+    async (
+      _event,
+      input: {
+        hash: string;
+        patch: Partial<
+          Pick<
+            MailAccountTomlConfig,
+            | 'sync_interval_seconds'
+            | 'silo_name'
+            | 'received_after'
+            | 'selection_mode'
+            | 'selected_folders'
+          >
+        >;
+      },
+    ): Promise<{ success: boolean; error?: string }> => {
+      if (!ctx.config) return { success: false, error: 'Config not loaded' };
+      const account = ctx.mailAccounts.get(input.hash);
+      const current = ctx.config.mail_accounts[input.hash];
+      if (!account || !current) return { success: false, error: 'Mail account not found.' };
+      try {
+        const next = parseMailAccountsConfig({
+          [input.hash]: { ...current, ...input.patch },
+        })[input.hash];
+        if (next.silo_name !== current.silo_name) {
+          await renameManagedMailSilo(ctx, current.silo_name, next.silo_name, input.hash);
+        }
+        const selectionChanged =
+          next.received_after !== current.received_after ||
+          next.selection_mode !== current.selection_mode ||
+          JSON.stringify(next.selected_folders) !== JSON.stringify(current.selected_folders);
+        Object.assign(current, next);
+        Object.assign(account.config, next);
+        account.setSyncInterval(next.sync_interval_seconds);
+        saveLodestoneConfig(ctx.configPath(), ctx.config);
+        if (selectionChanged) {
+          await account.applySelection({
+            receivedAfter:
+              next.received_after === 'unlimited' ? null : new Date(next.received_after),
+            mode: next.selection_mode,
+            folderKeys: next.selected_folders,
+          });
+        }
+        notifySilosChanged(ctx);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: rendererSafeMailError(error) };
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'mail:reconnect',
+    async (
+      _event,
+      input: { hash: string; credential: MailCredentialInput },
+    ): Promise<{ success: boolean; error?: string }> => {
+      const account = ctx.mailAccounts.get(input.hash);
+      if (!account) return { success: false, error: 'Mail account not found.' };
+      try {
+        const credential = (
+          await credentialFromInput(
+            input.credential,
+            pendingAuthorisations,
+            account.config.oauth_client_id,
+          )
+        ).credential;
+        await account.reconnect(credential);
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: rendererSafeMailError(error) };
+      }
+    },
+  );
+
+  ipcMain.handle('mail:sync-now', async (_event, input: { hash: string }) => {
+    const account = ctx.mailAccounts.get(input.hash);
+    if (!account) return { success: false, error: 'Mail account not found.' };
+    void account.syncNow();
+    return { success: true };
+  });
+
+  const remove = async (hash: string): Promise<{ success: boolean; error?: string }> => {
+    if (!ctx.config) return { success: false, error: 'Config not loaded' };
+    const account = ctx.mailAccounts.get(hash);
+    if (!account) return { success: false, error: 'Mail account not found.' };
+    let step: import('../backend/mail/account').RemovalStep = 'stop-scheduler';
+    try {
+      await account.remove();
+      const siloName = account.config.silo_name;
+      const manager = ctx.siloManagers.get(siloName);
+      const indexPath = manager ? (await manager.getStatus()).resolvedDbPath : undefined;
+      step = 'stop-silo';
+      await manager?.stop();
+      if (indexPath) {
+        step = 'delete-index';
+        await Promise.all(
+          ['', '-wal', '-shm'].map((suffix) => fs.promises.rm(indexPath + suffix, { force: true })),
+        );
+      }
+      ctx.siloManagers.delete(siloName);
+      delete ctx.config.silos[siloName];
+      delete ctx.config.mail_accounts[hash];
+      step = 'save-config';
+      saveLodestoneConfig(ctx.configPath(), ctx.config);
+      step = 'delete-account-data';
+      await fs.promises.rm(mailDataDir(ctx.getUserDataDir(), hash).root, {
+        recursive: true,
+        force: true,
+      });
+      ctx.mailAccounts.delete(hash);
+      notifySilosChanged(ctx);
+      return { success: true };
+    } catch (error) {
+      account.recordRemovalFailure(step);
+      return { success: false, error: rendererSafeMailError(error) };
+    }
+  };
+  ipcMain.handle('mail:remove', (_event, input: { hash: string }) => remove(input.hash));
+  ipcMain.handle('mail:retry-remove', (_event, input: { hash: string }) => remove(input.hash));
+}
+
+async function credentialFromInput(
+  input: MailCredentialInput,
+  pending: Map<string, { pending: PendingAuthorisation; clientId: string }>,
+  clientId?: string,
+): Promise<{ credential: Credential; accessToken?: string }> {
+  if (input.kind === 'password') return { credential: input };
+  if (!input.callbackUrl) throw new Error('Complete Microsoft sign-in first.');
+  let state: string | null;
+  try {
+    state = new URL(input.callbackUrl.trim()).searchParams.get('state');
+  } catch {
+    throw new Error('The pasted Microsoft callback URL is invalid.');
+  }
+  const stored = state ? pending.get(state) : undefined;
+  if (!stored) throw new Error('The Microsoft sign-in has expired or does not match.');
+  pending.delete(stored.pending.state);
+  const provider = { ...MICROSOFT_THUNDERBIRD, clientId: clientId ?? stored.clientId };
+  const tokens = await completeAuthorisation(provider, stored.pending, input.callbackUrl);
+  return {
+    credential: {
+      kind: 'oauth',
+      refreshToken: tokens.refreshToken,
+      clientId: provider.clientId,
+    },
+    accessToken: tokens.accessToken,
+  };
+}
+
+async function renameManagedMailSilo(
+  ctx: AppContext,
+  oldName: string,
+  newName: string,
+  hash: string,
+): Promise<void> {
+  if (!ctx.config) throw new Error('Config not loaded');
+  const trimmed = newName.trim();
+  if (!trimmed) throw new Error('Silo name cannot be empty.');
+  if (ctx.siloManagers.has(trimmed) || ctx.config.silos[trimmed]) {
+    throw new Error(`A silo named "${trimmed}" already exists.`);
+  }
+  const manager = ctx.siloManagers.get(oldName);
+  const silo = ctx.config.silos[oldName];
+  if (!manager || !silo || silo.managed_by !== `mail:${hash}`) {
+    throw new Error('Managed mail silo is unavailable.');
+  }
+  await manager.stop();
+  await manager.updateName(trimmed);
+  try {
+    await manager.start();
+  } catch (error) {
+    await manager.stop().catch((): void => undefined);
+    await manager.updateName(oldName);
+    await manager.start().catch((): void => undefined);
+    throw error;
+  }
+  ctx.siloManagers.set(trimmed, manager);
+  ctx.siloManagers.delete(oldName);
+  ctx.config.silos[trimmed] = silo;
+  delete ctx.config.silos[oldName];
+}
+
+function rendererSafeMailError(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Mail operation failed.';
+  return message.includes('@') ? 'Mail operation failed.' : message;
+}
+
+function oauthAuth(accessToken: string | undefined) {
+  if (!accessToken) throw new Error('Microsoft sign-in did not return an access token.');
+  return {
+    kind: 'xoauth2' as const,
+    accessToken: Object.assign(async (): Promise<string> => accessToken, {
+      invalidate: (): void => undefined,
+    }),
+  };
+}
+
 function registerSettingsHandlers(ctx: AppContext): void {
   ipcMain.handle('server:status', async (): Promise<ServerStatus> => {
     const uptimeSeconds = Math.floor((Date.now() - ctx.startTime) / 1000);
@@ -812,5 +1189,6 @@ export function registerIpcHandlers(ctx: AppContext): void {
   registerDialogHandlers();
   registerSiloHandlers(ctx);
   registerSettingsHandlers(ctx);
+  registerMailHandlers(ctx);
   registerMcpHandlers();
 }

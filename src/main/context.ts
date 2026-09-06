@@ -12,6 +12,7 @@ import type { LodestoneConfig } from '../backend/config';
 import { getDefaultLodestoneConfigPath } from '../backend/config';
 import { createEmbeddingService, type EmbeddingService } from '../backend/embedding';
 import type { SiloManager } from '../backend/silo-manager';
+import type { MailAccount } from '../backend/mail/account';
 import { IndexingQueue } from '../backend/indexing-queue';
 import type { InternalApi } from './internal-api';
 import { resolveBundledModelDir } from './embedding-model-path';
@@ -19,6 +20,7 @@ import { resolveBundledModelDir } from './embedding-model-path';
 export interface AppContext {
   config: LodestoneConfig | null;
   siloManagers: Map<string, SiloManager>;
+  mailAccounts: Map<string, MailAccount>;
   embeddingService: EmbeddingService | null;
   mainWindow: BrowserWindow | null;
   tray: Tray | null;
@@ -39,6 +41,7 @@ export function createAppContext(): AppContext {
   const ctx: AppContext = {
     config: null,
     siloManagers: new Map(),
+    mailAccounts: new Map(),
     embeddingService: null,
     mainWindow: null,
     tray: null,

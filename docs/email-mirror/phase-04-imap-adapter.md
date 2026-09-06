@@ -78,6 +78,16 @@ Command allowlist enforcement
 - Running phase 3's `Synchroniser` with this adapter against a real Gmail account produces a
   mirror directory whose files render identically on a second run (zero writes).
 
+## Deferred live verification
+
+Do not request or persist real account credentials during this phase. Keep the credential-gated
+integration tests skipped while phases 5 to 7 provide encrypted credential storage, Microsoft
+OAuth, account wiring and the account UI. Phase 8 owns the live run of this phase's done criteria,
+including Gmail, a non-Gmail server, the command/`PEEK` protocol trace, the large-attachment
+transfer bound and the two-round zero-write check.
+These live items do not block merging the phase 4 implementation; they remain open acceptance
+items until phase 8 records their results.
+
 ## Notes
 
 `imapflow` is a new runtime dependency. It is pure JavaScript with no native build, so

@@ -71,3 +71,12 @@ work: the flow below is that script, restructured.
   Microsoft 365 mailboxes headlessly, and still does so after the access token has expired.
 - The scope requested is exactly `https://outlook.office365.com/IMAP.AccessAsUser.All offline_access`;
   grep the codebase for any other Microsoft scope string and find none.
+
+## Deferred live verification
+
+The stubbed OAuth, token-source and credential-store tests remain part of this phase. Defer the
+real Microsoft 365 sign-in, reconnection after access-token expiry and headless restart checks to
+phase 8, after phases 6 and 7 provide the normal application lifecycle and credential-entry path.
+Do not collect a user's Microsoft password; the live flow must use OAuth.
+These live items do not block merging the phase 5 implementation; they remain open acceptance
+items until phase 8 records their results.

@@ -26,6 +26,11 @@ lives)
 Acceptance run
 - Work through every bullet in the design's acceptance list. For each, note the command or
   action, the observed result, and pass/fail, in `docs/email-mirror/acceptance-<date>.md`.
+- Pick up the live checks deliberately deferred from phases 4 and 5: Gmail app-password login,
+  Microsoft 365 OAuth login, a non-Gmail IMAP round, the command/`PEEK` protocol trace, transfer
+  below 3 MiB for a message with a large attachment, and two unchanged Gmail rounds with zero
+  writes on the second round. Obtain credentials through the finished application's encrypted
+  credential path rather than test-only environment variables where possible.
 - The protocol-trace bullet: enable ImapFlow's logger to a file for one full round on the
   Swansea account and grep it for any command outside the allowlist and any `FETCH` without
   `PEEK`. Attach the grep, not the trace, since the trace contains subjects.

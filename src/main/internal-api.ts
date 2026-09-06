@@ -205,6 +205,8 @@ export class InternalApi {
     const mode = (params.mode as SearchParams['mode']) ?? 'hybrid';
     const startPath = params.startPath as string | undefined;
     const filePattern = params.filePattern as string | undefined;
+    const dateFromMs = params.dateFromMs as number | undefined;
+    const dateToMs = params.dateToMs as number | undefined;
     const regexFlags = params.regexFlags as string | undefined;
 
     if (!query) throw new Error('Missing required parameter: query');
@@ -215,6 +217,8 @@ export class InternalApi {
       limit: maxResults,
       startPath,
       filePattern,
+      dateFromMs,
+      dateToMs,
       regexFlags,
     };
 

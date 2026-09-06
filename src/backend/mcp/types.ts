@@ -22,6 +22,8 @@ export interface McpServerDeps {
       startPath?: string;
       mode?: 'hybrid' | 'bm25' | 'semantic' | 'filepath' | 'regex';
       filePattern?: string;
+      dateFromMs?: number;
+      dateToMs?: number;
       regexFlags?: string;
     }) => Promise<{ results: SearchResult[]; warnings: string[] }>;
     /** Directory exploration / browsing. */

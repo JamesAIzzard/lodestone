@@ -15,6 +15,16 @@ export function formatTimeWithSeconds(isoString: string): string {
   return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+export function formatDateTime(dateMs: number): string {
+  return new Date(dateMs).toLocaleString([], {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export function abbreviatePath(p: string): string {
   return p
     .replace(/^[A-Z]:\\Users\\[^\\]+/, '~')

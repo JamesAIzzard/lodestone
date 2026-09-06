@@ -1,6 +1,6 @@
 # Date Filter: Implementation Overview
 
-Status: phases 1 to 3 merged, phases 4 and 5 ready to implement · Branch: `develop` · Last updated: 2026-09-06
+Status: phases 1 to 5 implemented · Branch: `develop` · Last updated: 2026-09-06
 
 ## What this feature is
 

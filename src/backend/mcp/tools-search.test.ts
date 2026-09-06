@@ -6,22 +6,24 @@ import { registerExploreTool, registerSearchTool, registerStatusTool } from './t
 import type { McpServerDeps } from './types';
 
 type SearchInput = {
-  query: string;
+  query?: string;
   silo?: string | string[];
   since?: string;
   until?: string;
+  offset?: number;
 };
 
 function fixture() {
   const search = vi.fn(async () => ({ results: [], warnings: [] }));
+  const listByDate = vi.fn(async () => ({ results: [], warnings: [], total: 0 }));
   const notifyActivity = vi.fn();
   const tool = vi.fn();
   const server = { tool } as unknown as McpServer;
-  const deps = { silo: { search }, notifyActivity } as unknown as McpServerDeps;
+  const deps = { silo: { search, listByDate }, notifyActivity } as unknown as McpServerDeps;
   const puid = new PuidManager();
   registerSearchTool(server, deps, puid);
   const handler = tool.mock.calls[0][3] as (input: SearchInput) => Promise<CallToolResult>;
-  return { handler, search, notifyActivity, puid };
+  return { handler, search, listByDate, notifyActivity, puid };
 }
 
 function firstText(result: CallToolResult): string {
@@ -53,6 +55,70 @@ describe('lodestone_search date bounds', () => {
     );
     expect(search).not.toHaveBeenCalled();
     expect(notifyActivity).not.toHaveBeenCalled();
+  });
+});
+
+describe('lodestone_search listing', () => {
+  it.each([undefined, '   '])(
+    'lists a bounded window for blank query %j without ranked search',
+    async (query) => {
+      const { handler, search, listByDate } = fixture();
+
+      await handler({ query, since: '2026-08-01' });
+
+      expect(listByDate).toHaveBeenCalledWith({
+        silo: undefined,
+        startPath: undefined,
+        filePattern: undefined,
+        dateFromMs: new Date(2026, 7, 1).getTime(),
+        dateToMs: undefined,
+        limit: 10,
+        offset: 0,
+      });
+      expect(search).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects a blank unbounded query without calling or notifying', async () => {
+    const { handler, search, listByDate, notifyActivity } = fixture();
+
+    const response = await handler({});
+
+    expect(firstText(response)).toBe(
+      'Error: Provide a query, or set since or until to list every file in a date window.',
+    );
+    expect(search).not.toHaveBeenCalled();
+    expect(listByDate).not.toHaveBeenCalled();
+    expect(notifyActivity).not.toHaveBeenCalled();
+  });
+
+  it('rejects offset with a ranked query', async () => {
+    const { handler, search, listByDate, notifyActivity } = fixture();
+
+    const response = await handler({ query: 'test', offset: 1 });
+
+    expect(firstText(response)).toBe('Error: offset applies only when listing without a query.');
+    expect(search).not.toHaveBeenCalled();
+    expect(listByDate).not.toHaveBeenCalled();
+    expect(notifyActivity).not.toHaveBeenCalled();
+  });
+
+  it('prepends warnings above the listing header', async () => {
+    const { handler, listByDate } = fixture();
+    listByDate.mockResolvedValue({ results: [], warnings: ['Mail is unavailable.'], total: 0 });
+
+    const response = firstText(await handler({ since: '2026-08-01' }));
+
+    expect(response).toMatch(/^> Mail is unavailable\.\n\nNo files dated on or after 2026-08-01\./);
+  });
+
+  it('resolves a mixed silo subset before listing', async () => {
+    const { handler, listByDate, puid } = fixture();
+    puid.assignSiloPuid('alpha');
+
+    await handler({ since: '2026-08-01', silo: ['s1', 'notes'] });
+
+    expect(listByDate).toHaveBeenCalledWith(expect.objectContaining({ silo: ['alpha', 'notes'] }));
   });
 });
 

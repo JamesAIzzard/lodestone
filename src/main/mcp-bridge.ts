@@ -196,6 +196,10 @@ function startProxiedMcpServer(
     silo: {
       search: (params) =>
         gui.call<{ results: SearchResult[]; warnings: string[] }>('search', params),
+      listByDate: (params) =>
+        gui.call<{ results: SearchResult[]; warnings: string[]; total: number }>('listByDate', {
+          ...params,
+        }),
       explore: (params) =>
         gui.call<{ results: DirectoryResult[]; warnings: string[] }>('explore', params),
       status: () => gui.call<{ silos: SiloStatus[] }>('status'),

@@ -26,7 +26,13 @@ vi.mock('./scorers/filepath-signal', () => ({ filepathSignal: signals.filepath }
 vi.mock('./scorers/regex-signal', () => ({ regexSignal: signals.regex }));
 
 import { search } from './search';
-import { dispatchExplore, dispatchSearch } from './search-merge';
+import {
+  dispatchExplore,
+  dispatchListing,
+  dispatchSearch,
+  mergeListing,
+  type SiloSearchResult,
+} from './search-merge';
 import type { SiloManager } from './silo-manager';
 
 describe('search silo policies', () => {
@@ -86,5 +92,60 @@ describe('search silo policies', () => {
     await expect(dispatchExplore({ query: 'mail' }, [['mail', manager]])).resolves.toEqual([]);
     expect(searchManager).not.toHaveBeenCalled();
     expect(exploreManager).not.toHaveBeenCalled();
+  });
+});
+
+describe('date listing dispatch and merge', () => {
+  it('does not need embeddings, skips unavailable managers and sums totals', async () => {
+    const first = vi.fn(async () => ({
+      total: 2,
+      results: [
+        {
+          filePath: 'C:\\mail\\one.md',
+          dateMs: 2000,
+          score: 1,
+          scoreLabel: 'date',
+          signals: { date: 1 },
+        },
+      ],
+    }));
+    const second = vi.fn(async () => ({ total: 3, results: [] }));
+    const skipped = vi.fn();
+    const managers = [
+      ['mail', { isAvailable: true, listByDate: first } as unknown as SiloManager],
+      ['notes', { isAvailable: true, listByDate: second } as unknown as SiloManager],
+      ['offline', { isAvailable: false, listByDate: skipped } as unknown as SiloManager],
+    ] as Array<[string, SiloManager]>;
+
+    const listing = await dispatchListing({ dateFromMs: 1000 }, managers);
+
+    expect(listing.total).toBe(5);
+    expect(listing.raw).toEqual([
+      expect.objectContaining({ siloName: 'mail', filePath: 'C:\\mail\\one.md' }),
+    ]);
+    expect(first).toHaveBeenCalledWith({ dateFromMs: 1000 });
+    expect(skipped).not.toHaveBeenCalled();
+  });
+
+  it('orders by date, silo and path before applying the global page', () => {
+    const result = (dateMs: number, siloName: string, filePath: string): SiloSearchResult => ({
+      filePath,
+      siloName,
+      dateMs,
+      score: 1,
+      scoreLabel: 'date',
+      signals: { date: 1 },
+    });
+    const raw = [
+      result(1000, 'beta', 'b.md'),
+      result(2000, 'beta', 'z.md'),
+      result(2000, 'alpha', 'z.md'),
+      result(2000, 'alpha', 'a.md'),
+    ];
+
+    expect(mergeListing(raw, 1, 2).map((item) => [item.siloName, item.filePath])).toEqual([
+      ['alpha', 'z.md'],
+      ['beta', 'z.md'],
+    ]);
   });
 });

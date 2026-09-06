@@ -7,6 +7,7 @@ import type {
   DefaultSettings,
   LlmInstructionsSettings,
   ExploreParams,
+  ListingParams,
   SearchParams,
 } from './types';
 import type { MailAccountTomlConfig } from '../backend/config';
@@ -126,6 +127,10 @@ export interface ElectronAPI {
     },
   ) => Promise<{ success: boolean; error?: string }>;
   search: (params: SearchParams, siloName?: string | string[]) => Promise<SearchResult[]>;
+  listByDate: (
+    params: ListingParams,
+    siloName?: string | string[],
+  ) => Promise<{ results: SearchResult[]; total: number }>;
   explore: (params: ExploreParams) => Promise<DirectoryResult[]>;
 
   // ── Activity ───────────────────────────────────────────────────────────────

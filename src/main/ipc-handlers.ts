@@ -24,6 +24,8 @@ import {
   mergeDirectoryResults,
   dispatchSearch,
   mergeSearchResults,
+  dispatchListing,
+  mergeListing,
 } from '../backend/search-merge';
 import {
   configureClaudeDesktop,
@@ -49,6 +51,7 @@ import type {
   DefaultSettings,
   LlmInstructionsSettings,
   ExploreParams,
+  ListingParams,
   SearchParams,
 } from '../shared/types';
 import type { AppContext } from './context';
@@ -192,6 +195,21 @@ function registerSiloHandlers(ctx: AppContext): void {
         hint: r.hint,
         chunks: r.chunks,
       }));
+    },
+  );
+
+  ipcMain.handle(
+    'silos:listByDate',
+    async (
+      _event,
+      params: ListingParams,
+      siloName?: string | string[],
+    ): Promise<{ results: SearchResult[]; total: number }> => {
+      const ready = selectSilos(ctx.siloManagers, toSiloNames(siloName));
+      const limit = params.limit ?? 10;
+      const offset = params.offset ?? 0;
+      const { raw, total } = await dispatchListing({ ...params, limit, offset }, ready);
+      return { results: mergeListing(raw, offset, limit), total };
     },
   );
 

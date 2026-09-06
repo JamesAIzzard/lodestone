@@ -37,6 +37,8 @@ describe('getGuideText', () => {
     expect(guide).toContain('Every search result carries a date');
     expect(guide).toContain('labels each silo with an s reference');
     expect(guide).toContain('an array of them');
+    expect(guide).toContain('Omit the query');
+    expect(guide).toContain('search with `since` and `until` and no query');
   });
 
   it('retrieves current configuration for each startup guide request', async () => {

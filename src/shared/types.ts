@@ -162,7 +162,7 @@ export interface SearchResult {
   dateMs: number | null;
   /** Final decaying-sum score [0, 1]. */
   score: number;
-  /** Human-readable score label: signal name (e.g. "semantic") or "convergence". */
+  /** Human-readable score label: signal name, "convergence", or "date" for listings. */
   scoreLabel: string;
   /** Per-signal raw scores: { semantic: 0.6, bm25: 0.55, filepath: 0.5 }. */
   signals: Record<string, number>;
@@ -195,6 +195,21 @@ export interface SearchParams {
   limit?: number;
   /** Internal per-silo policy. Defaults to true. */
   supportsPathSearch?: boolean;
+}
+
+export interface ListingParams {
+  /** Glob pattern to filter results to matching file paths (e.g. "*.ts" or "src/**"). */
+  filePattern?: string;
+  /** Filter results to files under this directory path (already resolved to stored key by silo-manager). */
+  startPath?: string;
+  /** Inclusive lower bound for the file date, as epoch milliseconds. */
+  dateFromMs?: number;
+  /** Inclusive upper bound for the file date, as epoch milliseconds. */
+  dateToMs?: number;
+  /** Maximum results to return. Default: 10. */
+  limit?: number;
+  /** Number of globally ordered results to skip. Default: 0. */
+  offset?: number;
 }
 
 // ── Activity ──────────────────────────────────────────────────────────────────

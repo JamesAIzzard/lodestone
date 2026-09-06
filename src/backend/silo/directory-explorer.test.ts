@@ -104,6 +104,7 @@ function createRecordingStore(): RecordingStore {
     checkpoint: unimplemented('checkpoint') as StoreFacade['checkpoint'],
     vacuum: unimplemented('vacuum') as StoreFacade['vacuum'],
     search: unimplemented('search') as StoreFacade['search'],
+    listByDate: unimplemented('listByDate') as StoreFacade['listByDate'],
     insertDirEntry: unimplemented('insertDirEntry') as StoreFacade['insertDirEntry'],
     deleteDirEntry: unimplemented('deleteDirEntry') as StoreFacade['deleteDirEntry'],
     syncDirectoriesWithDisk: unimplemented('syncDirectoriesWithDisk') as StoreFacade['syncDirectoriesWithDisk'],

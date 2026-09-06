@@ -7,7 +7,7 @@
 
 import type { EmbeddingService } from './embedding';
 import type { SiloManager } from './silo-manager';
-import type { SearchHint, ChunkHint, SearchParams } from '../shared/types';
+import type { SearchHint, ChunkHint, ListingParams, SearchParams } from '../shared/types';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 
 // ── Search Pipeline ─────────────────────────────────────────────────────────
@@ -76,6 +76,42 @@ export async function dispatchSearch(
  */
 export function mergeSearchResults(raw: SiloSearchResult[], limit: number): SiloSearchResult[] {
   return raw.sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+export async function dispatchListing(
+  params: ListingParams,
+  managers: Iterable<[string, SiloManager]>,
+): Promise<{ raw: SiloSearchResult[]; total: number }> {
+  const raw: SiloSearchResult[] = [];
+  let total = 0;
+  for (const [name, manager] of managers) {
+    if (!manager.isAvailable) continue;
+    try {
+      const listing = await manager.listByDate(params);
+      total += listing.total;
+      for (const result of listing.results) {
+        raw.push({ ...result, siloName: name });
+      }
+    } catch (err) {
+      console.error(`[listing] Error in silo "${name}":`, err);
+    }
+  }
+  return { raw, total };
+}
+
+export function mergeListing(
+  raw: SiloSearchResult[],
+  offset: number,
+  limit: number,
+): SiloSearchResult[] {
+  return raw
+    .sort(
+      (a, b) =>
+        (b.dateMs ?? -Infinity) - (a.dateMs ?? -Infinity) ||
+        a.siloName.localeCompare(b.siloName) ||
+        a.filePath.localeCompare(b.filePath),
+    )
+    .slice(offset, offset + limit);
 }
 
 // ── Directory Exploration ───────────────────────────────────────────────────

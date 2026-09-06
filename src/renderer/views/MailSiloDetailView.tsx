@@ -120,7 +120,7 @@ export default function MailSiloDetailView() {
         <Stat label="Folders" value={account.selectionSummary} />
       </div>
 
-      <MailAccountSettings account={account} onSaved={fetchSource} />
+      <MailAccountSettings account={account} silo={silo} onSaved={fetchSource} />
 
       <section className="mb-6">
         <h2 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">

@@ -257,12 +257,15 @@ export default function SiloCard({
             </div>
           </div>
           <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-            <span>
-              {isActive && reconcileProgress
-                ? `${reconcileProgress.current.toLocaleString()} / ${reconcileProgress.total.toLocaleString()} files`
-                : isStopped && !indexCaughtUp
-                  ? 'Index paused'
-                  : `${indexedFileCount.toLocaleString()} files indexed`}
+            <span className="flex min-w-0 items-center gap-1">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+              <span className="truncate">
+                {isActive && reconcileProgress
+                  ? `${reconcileProgress.current.toLocaleString()} / ${reconcileProgress.total.toLocaleString()} files`
+                  : isStopped && !indexCaughtUp
+                    ? 'Index paused'
+                    : `${indexedFileCount.toLocaleString()} files indexed`}
+              </span>
             </span>
             {isActive &&
             reconcileProgress &&
@@ -305,7 +308,7 @@ export default function SiloCard({
         </div>
 
         {/* Two linked groups: database ← directories */}
-        <div className="flex flex-col">
+        <div className="mt-2 flex flex-col">
           {/* Database group */}
           <div className="flex items-start gap-1.5 text-xs text-muted-foreground min-w-0">
             <Database className="h-3.5 w-3.5 mt-px shrink-0" />

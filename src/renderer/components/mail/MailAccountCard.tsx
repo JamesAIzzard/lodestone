@@ -1,9 +1,20 @@
-import { useState } from 'react';
-import { AlertTriangle, Loader2, Mail, Pause, Play, RefreshCw, Search } from 'lucide-react';
+import { useCallback, useState } from 'react';
+import {
+  AlertTriangle,
+  Copy,
+  Database,
+  Loader2,
+  Mail,
+  Pause,
+  Play,
+  RefreshCw,
+  Search,
+} from 'lucide-react';
 
 import type { MailAccountStatus } from '../../../backend/mail/account';
 import type { SiloStatus } from '../../../shared/types';
 import { SILO_COLOR_MAP } from '../../../shared/silo-appearance';
+import { formatBytes } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { Badge } from '../ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
@@ -31,10 +42,20 @@ export default function MailAccountCard({
 }: MailAccountCardProps) {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const color = SILO_COLOR_MAP[silo.config.accentColor];
   const stopped = silo.watcherState === 'stopped' || account.syncState === 'paused';
   const mirrorProgress = account.mirrorProgress;
   const state = combinedState(account, silo);
+  const copyDatabasePath = useCallback(
+    (event: React.MouseEvent) => {
+      event.stopPropagation();
+      navigator.clipboard.writeText(silo.resolvedDbPath).catch((): void => undefined);
+      setCopiedPath(silo.resolvedDbPath);
+      setTimeout(() => setCopiedPath(null), 2_000);
+    },
+    [silo.resolvedDbPath],
+  );
 
   async function syncNow() {
     setSyncing(true);
@@ -104,12 +125,16 @@ export default function MailAccountCard({
           <Mail className={cn('h-3.5 w-3.5 shrink-0', color.text)} />
           {silo.config.name}
         </h3>
-        <p className="truncate text-xs text-muted-foreground/70">{account.username}</p>
+        {silo.config.contentDescription && (
+          <p className="truncate text-xs text-muted-foreground/70">
+            {silo.config.contentDescription}
+          </p>
+        )}
       </div>
 
       <div className={cn('space-y-3', stopped && 'opacity-50')}>
-        <Progress
-          label={
+        <DualProgress
+          mirrorLabel={
             account.syncState === 'syncing'
               ? mirrorProgress?.phase === 'finalising'
                 ? 'Finalising mirror'
@@ -118,36 +143,58 @@ export default function MailAccountCard({
                 ? 'Mirror paused'
                 : 'Mirror up to date'
           }
-          current={mirrorProgress?.current ?? account.messageCount}
-          total={
+          mirrorCurrent={mirrorProgress?.current ?? account.messageCount}
+          mirrorTotal={
             mirrorProgress?.total ?? (account.lastRoundCompletedAt ? account.messageCount : null)
           }
-          colour="bg-violet-500"
-          complete={
+          mirrorComplete={
             account.syncState === 'idle' || (stopped && account.lastRoundCompletedAt !== null)
           }
-        />
-        <Progress
-          label={
+          indexLabel={
             silo.watcherState === 'indexing'
               ? 'Indexing messages'
               : stopped
                 ? 'Index paused'
                 : 'Index up to date'
           }
-          current={silo.indexedFileCount}
-          total={Math.max(account.messageCount, silo.indexedFileCount)}
-          colour="bg-amber-500"
-          complete={silo.indexCaughtUp}
+          indexCurrent={silo.indexedFileCount}
+          indexTotal={Math.max(account.messageCount, silo.indexedFileCount)}
+          indexComplete={silo.indexCaughtUp}
         />
 
-        <div className="space-y-1 text-xs text-muted-foreground">
-          <div className="flex items-center justify-between gap-3">
-            <span>{account.messageCount.toLocaleString()} items mirrored</span>
-            <span>{silo.indexedFileCount.toLocaleString()} indexed</span>
+        <div className="flex flex-col">
+          <div className="flex min-w-0 items-start gap-1.5 text-xs text-muted-foreground">
+            <Database className="mt-px h-3.5 w-3.5 shrink-0" />
+            <div className="min-w-0">
+              <TooltipProvider delayDuration={300}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span
+                      className="group flex min-w-0 cursor-pointer items-center gap-1 transition-colors hover:text-foreground/80"
+                      onClick={copyDatabasePath}
+                    >
+                      <span className="flex-1 truncate">{silo.resolvedDbPath}</span>
+                      <Copy className="h-2.5 w-2.5 shrink-0 opacity-0 transition-opacity group-hover:opacity-50" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    {copiedPath === silo.resolvedDbPath ? '✓ Copied!' : 'Click to copy path'}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <span className="mt-0.5 block text-muted-foreground/60">
+                {silo.indexedFileCount.toLocaleString()} messages ·{' '}
+                {silo.chunkCount.toLocaleString()} chunks · {formatBytes(silo.databaseSizeBytes)}
+              </span>
+            </div>
           </div>
-          <p className="truncate">{account.selectionSummary}</p>
-          <p>Last mirror round: {relativeTime(account.lastRoundCompletedAt)}</p>
+
+          <div className="ml-[6.5px] my-1.5 h-3 w-px bg-border" />
+
+          <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground/70">
+            <Mail className="h-3.5 w-3.5 shrink-0" />
+            <span className="flex-1 truncate">{account.username}</span>
+          </div>
         </div>
       </div>
 
@@ -216,18 +263,70 @@ function CardAction({
   );
 }
 
-function Progress({
-  label,
+function DualProgress({
+  mirrorLabel,
+  mirrorCurrent,
+  mirrorTotal,
+  mirrorComplete,
+  indexLabel,
+  indexCurrent,
+  indexTotal,
+  indexComplete,
+}: {
+  mirrorLabel: string;
+  mirrorCurrent: number;
+  mirrorTotal: number | null;
+  mirrorComplete: boolean;
+  indexLabel: string;
+  indexCurrent: number;
+  indexTotal: number;
+  indexComplete: boolean;
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="space-y-0.5">
+        <ProgressTrack
+          current={mirrorCurrent}
+          total={mirrorTotal}
+          colour="bg-violet-500"
+          complete={mirrorComplete}
+        />
+        <ProgressTrack
+          current={indexCurrent}
+          total={indexTotal}
+          colour="bg-amber-500"
+          complete={indexComplete}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-3 text-[10px] text-muted-foreground">
+        <ProgressLegend
+          label={mirrorLabel}
+          current={mirrorCurrent}
+          total={mirrorTotal}
+          dotClass="bg-violet-500"
+        />
+        <ProgressLegend
+          label={indexLabel}
+          current={indexCurrent}
+          total={indexTotal}
+          dotClass="bg-amber-500"
+          align="right"
+        />
+      </div>
+    </div>
+  );
+}
+
+function ProgressTrack({
   current,
   total,
   colour,
-  complete = false,
+  complete,
 }: {
-  label: string;
   current: number;
   total: number | null;
   colour: string;
-  complete?: boolean;
+  complete: boolean;
 }) {
   const percent = complete
     ? 100
@@ -235,28 +334,46 @@ function Progress({
       ? Math.min(Math.round((current / total) * 100), 99)
       : null;
   return (
-    <div className="space-y-1">
-      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            'relative h-full overflow-hidden rounded-full transition-[width] duration-300',
-            colour,
-            percent === null && 'w-1/3 animate-pulse',
-          )}
-          style={percent === null ? undefined : { width: `${percent}%` }}
-        >
-          {complete && (
-            <span className="absolute inset-y-0 left-0 w-1/3 animate-progress-shimmer bg-gradient-to-r from-transparent via-white/25 to-transparent" />
-          )}
-        </div>
+    <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+      <div
+        className={cn(
+          'relative h-full overflow-hidden rounded-full transition-[width] duration-300',
+          colour,
+          percent === null && 'w-1/3 animate-pulse',
+        )}
+        style={percent === null ? undefined : { width: `${percent}%` }}
+      >
+        {complete && (
+          <span className="absolute inset-y-0 left-0 w-1/3 animate-progress-shimmer bg-gradient-to-r from-transparent via-white/25 to-transparent" />
+        )}
       </div>
-      <div className="flex justify-between gap-2 text-[10px] text-muted-foreground">
-        <span className="truncate">{label}</span>
-        <span className="shrink-0">
-          {current.toLocaleString()}
-          {total !== null ? ` / ${total.toLocaleString()}` : ''}
-        </span>
-      </div>
+    </div>
+  );
+}
+
+function ProgressLegend({
+  label,
+  current,
+  total,
+  dotClass,
+  align = 'left',
+}: {
+  label: string;
+  current: number;
+  total: number | null;
+  dotClass: string;
+  align?: 'left' | 'right';
+}) {
+  return (
+    <div className={cn('flex min-w-0 items-center gap-1', align === 'right' && 'justify-end')}>
+      <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', dotClass)} />
+      <span className="truncate" title={label}>
+        {label}
+      </span>
+      <span className="shrink-0 text-muted-foreground/70">
+        {current.toLocaleString()}
+        {total !== null ? `/${total.toLocaleString()}` : ''}
+      </span>
     </div>
   );
 }
@@ -279,22 +396,4 @@ function combinedState(account: MailAccountStatus, silo: SiloStatus) {
       variant: 'default' as const,
     };
   return { label: 'Ready', dotClass: 'bg-emerald-500', variant: 'secondary' as const };
-}
-
-function relativeTime(value: string | null): string {
-  if (!value) return 'Not completed yet';
-  const elapsedSeconds = Math.round((new Date(value).getTime() - Date.now()) / 1_000);
-  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
-    ['day', 86_400],
-    ['hour', 3_600],
-    ['minute', 60],
-  ];
-  const [unit, seconds] = units.find(([, threshold]) => Math.abs(elapsedSeconds) >= threshold) ?? [
-    'second',
-    1,
-  ];
-  return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(
-    Math.round(elapsedSeconds / seconds),
-    unit,
-  );
 }

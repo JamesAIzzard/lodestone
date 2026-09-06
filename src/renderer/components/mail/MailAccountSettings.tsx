@@ -3,6 +3,7 @@ import { AlertTriangle, Loader2 } from 'lucide-react';
 
 import type { MailAccountStatus } from '../../../backend/mail/account';
 import type { Folder } from '../../../backend/mail/types';
+import type { SiloStatus } from '../../../shared/types';
 import { Button } from '../ui/button';
 import {
   dateInputToReceivedAfter,
@@ -13,14 +14,13 @@ import {
 
 interface MailAccountSettingsProps {
   account: MailAccountStatus;
+  silo: SiloStatus;
   onSaved: () => void;
 }
 
-export default function MailAccountSettings({
-  account,
-  onSaved,
-}: MailAccountSettingsProps) {
+export default function MailAccountSettings({ account, silo, onSaved }: MailAccountSettingsProps) {
   const [siloName, setSiloName] = useState(account.siloName);
+  const [description, setDescription] = useState(silo.config.contentDescription || '');
   const [syncInterval, setSyncInterval] = useState(String(account.syncIntervalSeconds));
   const [selectionMode, setSelectionMode] = useState(account.selectionMode);
   const [selectedFolders, setSelectedFolders] = useState<string[]>([]);
@@ -36,6 +36,7 @@ export default function MailAccountSettings({
     if (initialisedFor.current === account.accountHash) return;
     initialisedFor.current = account.accountHash;
     setSiloName(account.siloName);
+    setDescription(silo.config.contentDescription || '');
     setSyncInterval(String(account.syncIntervalSeconds));
     setSelectionMode(account.selectionMode);
     setSelectedFolders(
@@ -46,7 +47,7 @@ export default function MailAccountSettings({
     setAllHistory(account.receivedAfter === 'unlimited');
     setReceivedAfter(receivedAfterToDateInput(account.receivedAfter));
     setError(null);
-  }, [account]);
+  }, [account, silo.config.contentDescription]);
 
   const nextReceivedAfter = allHistory ? 'unlimited' : dateInputToReceivedAfter(receivedAfter);
   const selectionChanged = useMemo(
@@ -86,6 +87,13 @@ export default function MailAccountSettings({
         setError(result?.error ?? 'Could not save mail settings.');
         return;
       }
+      const descriptionResult = await window.electronAPI?.updateSilo(siloName.trim(), {
+        contentDescription: description,
+      });
+      if (!descriptionResult?.success) {
+        setError(descriptionResult?.error ?? 'Could not save the silo description.');
+        return;
+      }
       onSaved();
     } catch (err) {
       setError(String(err));
@@ -102,6 +110,16 @@ export default function MailAccountSettings({
       <div className="rounded-lg border border-border bg-card p-4">
         <div className="space-y-4">
           <Field label="Silo name" value={siloName} onChange={setSiloName} />
+          <label className="block">
+            <span className="mb-1.5 block text-sm text-muted-foreground">Description</span>
+            <textarea
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="Describe what this mail silo contains..."
+              rows={2}
+              className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:ring-2 focus:ring-ring"
+            />
+          </label>
           <Field
             label="Sync interval (seconds)"
             value={syncInterval}

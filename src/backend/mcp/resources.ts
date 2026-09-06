@@ -1,22 +1,26 @@
 /**
- * MCP Resources: exposes usage guide documents as MCP resources.
+ * MCP Resources: exposes the startup usage guide as a tool and a resource.
  *
- * Two resources cover the lodestone-files use cases:
- *   lodestone://guide/startup - session startup pattern
- *   lodestone://guide/notes   - knowledge base search and file editing
+ *   lodestone://guide/startup - tools, configured silos, mail mechanics, and
+ *                               where to find the user's LLM instructions note
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import type { SiloStatus } from '../../shared/types';
 import { buildDatetime } from './formatting';
-
-export type GuideTopic = 'startup' | 'notes';
 
 export interface LlmInstructionsConfig {
   notePath?: string;
 }
 
 export type GetLlmInstructionsConfig = () => Promise<LlmInstructionsConfig>;
+export type GetSilos = () => Promise<{ silos: SiloStatus[] }>;
+
+export interface GuideDeps {
+  getLlmInstructionsConfig: GetLlmInstructionsConfig;
+  getSilos: GetSilos;
+}
 
 const STARTUP_TOOL_GUIDE = `# lodestone-files - Startup Guide
 
@@ -28,32 +32,42 @@ Lodestone searches, browses, reads, and edits files in configured silos.
 - \`lodestone_explore\` browses indexed directory structures.
 - \`lodestone_read\` reads a search result reference or absolute path.
 - \`lodestone_edit\` creates, changes, moves, renames, or trashes indexed files.
-- \`lodestone_status\` reports silo availability and indexing state.
+- \`lodestone_status\` lists silos with their descriptions, s references, and indexing state.
 - \`lodestone_get_datetime\` returns the current local date and time.
 
-\`lodestone_status\` labels each silo with an s reference. \`silo\` on search and explore takes a name or a reference, or an array of them.
-
-Use \`lodestone_search\` or \`lodestone_explore\` to locate material, then \`lodestone_read\` before editing. Every search result carries a date, and \`lodestone_search\` accepts inclusive \`since\` and \`until\` bounds. Omit the query, keeping \`since\` or \`until\`, to list every file in the window newest first with a total count.`;
+Use \`lodestone_search\` or \`lodestone_explore\` to locate material, then \`lodestone_read\` before editing. Every search result carries a date, and \`lodestone_search\` accepts inclusive \`since\` and \`until\` bounds; with no query it lists everything in that window. \`silo\` on search and explore takes a silo name or s reference, or an array of them.`;
 
 const MAIL_SILO_GUIDE = `## Mail Silos
 
-Silos named \`Mail: …\` are read-only email mirrors refreshed on a timer. Each search hit is one message and shows its received date; \`since\` and \`until\` filter on that date. To see all mail on a day or in a window, search with \`since\` and \`until\` and no query. Its frontmatter records the sender, recipients, date, folders and attachment names, and \`lodestone_read\` returns the whole message. Attachment names are metadata until you call \`lodestone_read_email_attachment\` with the email reference and its one-based attachment position. Supported attachments are fetched on demand, returned without being indexed or retained, and may be rejected by type or size. Client output limits may also reject long extracted text or images close to 5 MiB. Results may lag the mailbox by up to the sync interval, and \`lodestone_edit\` cannot modify them.`;
+Mail silos are read-only mirrors of an email account, refreshed on a timer. Results may lag the mailbox by up to the sync interval, and \`lodestone_edit\` cannot modify them. Each search hit is one message dated by its received time. Its frontmatter records the sender, recipients, date, folders and attachment names, and \`lodestone_read\` returns the whole message. Attachment names are metadata until you call \`lodestone_read_email_attachment\`.`;
 
-const NOTES_TOOL_GUIDE = `# Lodestone Notes Guide
+function isMailSilo(silo: SiloStatus): boolean {
+  return silo.config.managedBy?.startsWith('mail:') ?? false;
+}
 
-Use \`lodestone_search\` for topic or keyword queries, \`lodestone_explore\` for directory navigation, and \`lodestone_read\` to retrieve the selected note.
+function buildSiloSection(silos: SiloStatus[] | null): string {
+  if (silos === null) return '## Silos\n\nThe silo list is unavailable; call `lodestone_status`.';
+  if (silos.length === 0) return '## Silos\n\nNo silos are configured.';
 
-Use \`lodestone_edit\` for note changes. Always read a note before editing it. Staleness detection rejects an edit if the file changed externally after it was read. When this happens, read the note again and retry a narrow edit against the refreshed content.`;
+  const lines = silos.map((silo) => {
+    const flags: string[] = [];
+    if (isMailSilo(silo)) flags.push('mail');
+    if (silo.config.readOnly) flags.push('read-only');
+    const suffix = flags.length > 0 ? ` (${flags.join(', ')})` : '';
+    const description = (silo.config.contentDescription ?? '').trim();
+    const head = `- \`${silo.config.name}\`${suffix}`;
+    return description ? `${head}: ${description}` : head;
+  });
+  return `## Silos\n\n${lines.join('\n')}`;
+}
 
 function buildInstructionsBootstrap(notePath?: string): string {
   if (notePath) {
     return `## LLM User Instructions
 
-Before substantive work, open the configured instructions note with \`lodestone_read\`:
+Before substantive work, read the configured instructions note with \`lodestone_read\`:
 
-\`${notePath}\`
-
-Follow its links only as far as the current task requires. More specific project instructions and current source material take precedence.`;
+\`${notePath}\``;
   }
 
   return `## LLM User Instructions
@@ -61,34 +75,43 @@ Follow its links only as far as the current task requires. More specific project
 No instructions note is configured. Use \`lodestone_search\` to look for a likely note containing LLM user instructions before substantive work.`;
 }
 
-export async function getGuideText(
-  topic: GuideTopic,
-  getConfig: GetLlmInstructionsConfig,
-): Promise<string> {
-  if (topic === 'notes') return NOTES_TOOL_GUIDE;
-
-  const config = await getConfig();
-  return `${STARTUP_TOOL_GUIDE}\n\n${MAIL_SILO_GUIDE}\n\n${buildInstructionsBootstrap(config.notePath)}`;
+async function loadSilos(getSilos: GetSilos): Promise<SiloStatus[] | null> {
+  try {
+    return (await getSilos()).silos;
+  } catch {
+    return null;
+  }
 }
 
-export function registerGuideTool(server: McpServer, getConfig: GetLlmInstructionsConfig): void {
+export async function getStartupGuide(deps: GuideDeps): Promise<string> {
+  const [config, silos] = await Promise.all([
+    deps.getLlmInstructionsConfig(),
+    loadSilos(deps.getSilos),
+  ]);
+
+  const sections = [STARTUP_TOOL_GUIDE, buildSiloSection(silos)];
+  if (silos === null || silos.some(isMailSilo)) sections.push(MAIL_SILO_GUIDE);
+  sections.push(buildInstructionsBootstrap(config.notePath));
+  return sections.join('\n\n');
+}
+
+export function registerGuideTool(server: McpServer, deps: GuideDeps): void {
   server.tool(
     'lodestone_guide',
     [
-      'Retrieve a detailed usage guide for the lodestone-files toolset.',
+      'Retrieve the usage guide for the lodestone-files toolset: the available tools,',
+      "the configured silos with their descriptions, mail silo mechanics, and where to find the user's LLM instructions note.",
       '',
-      'Call this at the start of a conversation to understand available tools,',
-      'or on demand when you need instructions for a specific capability.',
-      '',
-      'Topics:',
-      '  startup - Overview of file search/edit tools.',
-      '  notes   - Knowledge base search and editing mechanics.',
+      'Call this at the start of a conversation.',
     ].join('\n'),
     {
-      topic: z.enum(['startup', 'notes']).describe('Guide topic to retrieve.'),
+      topic: z
+        .enum(['startup'])
+        .optional()
+        .describe('Guide topic. Only `startup` exists and it may be omitted.'),
     },
-    async ({ topic }) => ({
-      content: [{ type: 'text' as const, text: await getGuideText(topic, getConfig) }],
+    async () => ({
+      content: [{ type: 'text' as const, text: await getStartupGuide(deps) }],
     }),
   );
 }
@@ -103,34 +126,20 @@ export function registerDateTimeTool(server: McpServer): void {
   );
 }
 
-export function registerResources(server: McpServer, getConfig: GetLlmInstructionsConfig): void {
+export function registerResources(server: McpServer, deps: GuideDeps): void {
   server.resource(
     'guide-startup',
     'lodestone://guide/startup',
-    { description: 'Session startup: file search/edit tools.' },
-    async (uri) => ({
-      contents: [
-        {
-          uri: uri.href,
-          mimeType: 'text/markdown',
-          text: await getGuideText('startup', getConfig),
-        },
-      ],
-    }),
-  );
-
-  server.resource(
-    'guide-notes',
-    'lodestone://guide/notes',
     {
-      description: 'Knowledge base search, browsing, and file editing mechanics.',
+      description:
+        "Session startup: tools, configured silos, mail mechanics, and the user's LLM instructions note.",
     },
     async (uri) => ({
       contents: [
         {
           uri: uri.href,
           mimeType: 'text/markdown',
-          text: await getGuideText('notes', getConfig),
+          text: await getStartupGuide(deps),
         },
       ],
     }),

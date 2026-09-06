@@ -29,6 +29,8 @@ const DEFAULT_CONFIG: ResolvedSiloConfig = {
   contentDescription: '',
   accentColor: 'blue',
   iconName: 'database',
+  readOnly: false,
+  supportsPathSearch: true,
 };
 
 interface SaveCall {
@@ -169,7 +171,11 @@ describe('SiloConfigStore — apply (in-memory mutation)', () => {
 
   it('apply with multiple fields applies all of them in one mutation', () => {
     const { store } = makeStore();
-    store.apply({ contentDescription: 'multi', accentColor: 'rose', indexedFileExtensions: ['.md', '.org'] });
+    store.apply({
+      contentDescription: 'multi',
+      accentColor: 'rose',
+      indexedFileExtensions: ['.md', '.org'],
+    });
     expect(store.current.contentDescription).toBe('multi');
     expect(store.current.accentColor).toBe('rose');
     expect(store.current.indexedFileExtensions).toEqual(['.md', '.org']);

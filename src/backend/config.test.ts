@@ -80,4 +80,52 @@ embedding_model_key = "nomic-embed-text-v1.5"
     expect(resolved.indexedDirectories).toEqual(['/tmp/notes']);
     expect((resolved as unknown as Record<string, unknown>).embeddingModelKey).toBeUndefined();
   });
+
+  it('round-trips silo policies and resolves their runtime defaults', () => {
+    const p = writeConfig(`
+server_name = "test"
+
+[silos.mail]
+indexed_directories = ["/tmp/mail"]
+index_db_path = "/tmp/mail.db"
+read_only = true
+managed_by = "mail:abc123"
+supports_path_search = false
+`);
+    const config = loadLodestoneConfig(p);
+    const resolved = resolveSiloRuntimeConfig('mail', config.silos.mail, config);
+
+    expect(resolved.readOnly).toBe(true);
+    expect(resolved.managedBy).toBe('mail:abc123');
+    expect(resolved.supportsPathSearch).toBe(false);
+
+    saveLodestoneConfig(p, config);
+    expect(loadLodestoneConfig(p).silos.mail).toMatchObject({
+      read_only: true,
+      managed_by: 'mail:abc123',
+      supports_path_search: false,
+    });
+  });
+
+  it('defaults silo policies without writing absent keys', () => {
+    const p = writeConfig(`
+server_name = "test"
+
+[silos.notes]
+indexed_directories = ["/tmp/notes"]
+index_db_path = "/tmp/notes.db"
+`);
+    const config = loadLodestoneConfig(p);
+    const resolved = resolveSiloRuntimeConfig('notes', config.silos.notes, config);
+
+    expect(resolved.readOnly).toBe(false);
+    expect(resolved.managedBy).toBeUndefined();
+    expect(resolved.supportsPathSearch).toBe(true);
+
+    saveLodestoneConfig(p, config);
+    const saved = fs.readFileSync(p, 'utf-8');
+    expect(saved).not.toContain('read_only');
+    expect(saved).not.toContain('managed_by');
+    expect(saved).not.toContain('supports_path_search');
+  });
 });

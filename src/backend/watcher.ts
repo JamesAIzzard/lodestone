@@ -64,6 +64,7 @@ export interface SiloWatcherLike {
     shouldStop?: () => boolean,
   ): Promise<void>;
   readonly queueLength: number;
+  readonly pendingEventCount: number;
 }
 
 /**
@@ -171,6 +172,11 @@ export class SiloWatcher implements SiloWatcherLike {
   /** Number of items (files + dirs) waiting in the queue. */
   get queueLength(): number {
     return this.queue.length + this.dirAddQueue.length + this.dirRemoveQueue.length;
+  }
+
+  /** Debouncing and queued events which are not yet reflected in the index. */
+  get pendingEventCount(): number {
+    return this.debounceTimers.size + this.queueLength;
   }
 
   // ── Internal ─────────────────────────────────────────────────────────────

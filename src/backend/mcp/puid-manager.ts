@@ -46,6 +46,18 @@ function normaliseDirPath(p: string): string {
   return p.replace(/[\\/]+$/, '');
 }
 
+/** Compare an existing file path to a configured root through junctions and symlinks. */
+export function isPathWithinRoot(filePath: string, rootPath: string): boolean {
+  const canonical = (candidate: string): string => {
+    const resolved = path.resolve(candidate);
+    const real = fs.existsSync(resolved) ? fs.realpathSync.native(resolved) : resolved;
+    return real.replace(/[\\/]+/g, path.sep).toLowerCase();
+  };
+  const file = canonical(filePath);
+  const root = canonical(rootPath);
+  return file === root || file.startsWith(root + path.sep);
+}
+
 export class PuidManager {
   private rCounter = 0;
   private dCounter = 0;

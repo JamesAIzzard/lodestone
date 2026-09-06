@@ -30,6 +30,7 @@ export class FakeSiloWatcher implements SiloWatcherLike {
   stopped = false;
   /** Mutable so tests can drive the "no items left" branch in scheduleWatcherIndexing. */
   queueLength = 0;
+  pendingEventCount = 0;
   /**
    * Override to control how `runQueue()` resolves. Default: resolves immediately.
    * Tests that want to drive progress can replace this.

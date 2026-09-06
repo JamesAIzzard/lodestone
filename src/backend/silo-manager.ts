@@ -65,6 +65,8 @@ export interface SiloManagerStatus {
   };
   /** Absolute path to the silo's SQLite database file */
   resolvedDbPath: string;
+  available: boolean;
+  indexCaughtUp: boolean;
 }
 
 // ── SiloManager ──────────────────────────────────────────────────────────────
@@ -72,6 +74,7 @@ export interface SiloManagerStatus {
 const MAX_ACTIVITY_EVENTS = 200;
 
 export class SiloManager {
+  private available = true;
   private embeddingService: EmbeddingService | null = null;
   /** True when this silo has an open database in the store worker. */
   private dbOpen = false;
@@ -116,7 +119,11 @@ export class SiloManager {
       MAX_ACTIVITY_EVENTS,
       () => this.config.maxActivityLogEntries,
     );
-    this.explorer = new DirectoryExplorer(config.name, this.store, () => this.config.indexedDirectories);
+    this.explorer = new DirectoryExplorer(
+      config.name,
+      this.store,
+      () => this.config.indexedDirectories,
+    );
     this.watcherCoord = new WatcherCoordinator({
       lifecycle: this.lifecycle,
       mtimes: this.mtimes,
@@ -327,7 +334,9 @@ export class SiloManager {
     const state = peekIndexState(dbPath);
     if (state !== 'unusable') return;
 
-    console.log(`[silo:${this.config.name}] Existing index is unusable; deleting for automatic rebuild`);
+    console.log(
+      `[silo:${this.config.name}] Existing index is unusable; deleting for automatic rebuild`,
+    );
     this.deleteDatabaseFiles(dbPath);
     this.cachedFileCount = 0;
     this.cachedChunkCount = 0;
@@ -554,9 +563,24 @@ export class SiloManager {
     return this.lifecycle.watcherState();
   }
 
+  get isAvailable(): boolean {
+    return this.available;
+  }
+
+  setAvailable(available: boolean): void {
+    if (this.available === available) return;
+    this.available = available;
+    this.stateChangeListener?.();
+  }
+
   /** Decaying-sum search with a pre-computed query vector. */
   async search(queryVector: number[], params: SearchParams): Promise<FileResult[]> {
-    if (!this.dbOpen) return [];
+    if (
+      !this.available ||
+      !this.dbOpen ||
+      (params.mode === 'filepath' && !this.config.supportsPathSearch)
+    )
+      return [];
     // Convert absolute startPath → stored key prefix for DB filtering
     let storedStartPath = params.startPath;
     if (params.startPath) {
@@ -573,6 +597,7 @@ export class SiloManager {
     const results = await this.store.search(this.siloId, queryVector, {
       ...params,
       startPath: storedStartPath,
+      supportsPathSearch: this.config.supportsPathSearch,
     });
     // Resolve stored keys back to absolute file paths
     return results.map((r) => ({
@@ -611,7 +636,7 @@ export class SiloManager {
    * No embeddings needed — scoring operates on the query string directly.
    */
   async exploreDirectories(params: DirectorySearchParams): Promise<SiloDirectorySearchResult[]> {
-    if (!this.dbOpen) return [];
+    if (!this.available || !this.dbOpen) return [];
     return this.explorer.explore(params);
   }
 
@@ -619,6 +644,11 @@ export class SiloManager {
   async getStatus(): Promise<SiloManagerStatus> {
     const phase = this.lifecycle.phase();
     const inMaintenance = phase === 'maintenance';
+    const indexCaughtUp =
+      phase === 'ready' &&
+      this.reconcileProgress === undefined &&
+      !this.watcherCoord.hasPending &&
+      this.watcherCoord.pendingEventCount === 0;
     // When the worker is blocked (stopped, waiting, or maintenance), return
     // cached stats immediately to prevent the UI from hanging.
     if (phase === 'stopped' || phase === 'waiting' || inMaintenance) {
@@ -632,6 +662,8 @@ export class SiloManager {
         errorMessage: this.errorMessage,
         reconcileProgress: this.reconcileProgress,
         resolvedDbPath: this.resolveDbPath(),
+        available: this.available,
+        indexCaughtUp,
       };
     }
 
@@ -648,6 +680,8 @@ export class SiloManager {
       errorMessage: this.errorMessage,
       reconcileProgress: this.reconcileProgress,
       resolvedDbPath: this.resolveDbPath(),
+      available: this.available,
+      indexCaughtUp,
     };
   }
 

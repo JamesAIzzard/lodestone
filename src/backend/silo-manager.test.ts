@@ -20,6 +20,8 @@ function makeConfig(indexDbPath: string): ResolvedSiloConfig {
     contentDescription: '',
     accentColor: 'blue',
     iconName: 'database',
+    readOnly: false,
+    supportsPathSearch: true,
   };
 }
 

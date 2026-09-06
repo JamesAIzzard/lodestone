@@ -131,5 +131,5 @@ function readGolden(name: string): string {
   return readFileSync(
     fileURLToPath(new URL(`./fixtures/${name}.expected.md`, import.meta.url)),
     'utf8',
-  );
+  ).replace(/\r\n?/g, '\n');
 }

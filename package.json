@@ -79,6 +79,8 @@
     "electron-squirrel-startup": "^1.0.1",
     "gray-matter": "^4.0.3",
     "html-to-text": "^10.0.1",
+    "imapflow": "^1.7.8",
+    "libmime": "^5.4.3",
     "lodash.throttle": "^4.1.1",
     "lucide-react": "^0.575.0",
     "mdast-util-to-string": "^4.0.0",

@@ -115,4 +115,4 @@ export interface StoreResponse {
 }
 
 /** Schema version — bump this when the schema changes in a breaking way. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;

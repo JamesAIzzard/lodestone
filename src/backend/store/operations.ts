@@ -14,6 +14,7 @@ import type { SiloDatabase, FlushUpsert, FlushDelete, FlushResult, SiloMeta, Sto
 import { SCHEMA_VERSION } from './types';
 import { TermCache } from './term-cache';
 import { compressText, quantizeInt8, hashToBlob } from './compression';
+import { deriveDateMs } from './date';
 import { extractDirectoryPaths, fileBasename } from './paths';
 import { tokenise } from '../../shared/portable/tokeniser';
 
@@ -46,8 +47,8 @@ export function flushPreparedFiles(
   // ── Prepared statements (reused across all sub-transactions) ──────────
 
   const upsertFile = db.prepare(`
-    INSERT INTO files (stored_key, file_name, mtime_ms, file_metadata) VALUES (?, ?, ?, ?)
-    ON CONFLICT(stored_key) DO UPDATE SET mtime_ms = excluded.mtime_ms, file_metadata = excluded.file_metadata
+    INSERT INTO files (stored_key, file_name, mtime_ms, date_ms, file_metadata) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(stored_key) DO UPDATE SET mtime_ms = excluded.mtime_ms, date_ms = excluded.date_ms, file_metadata = excluded.file_metadata
     RETURNING id
   `);
   const selectFileId = db.prepare(
@@ -93,6 +94,7 @@ export function flushPreparedFiles(
         up.storedKey,
         fileBasename(up.storedKey),
         up.mtimeMs ?? null,
+        deriveDateMs(up.fileMetadata, up.mtimeMs),
         fileMetaJson,
       ) as { id: number };
       upsertFileIds.push(fileRow.id);
@@ -270,7 +272,6 @@ export function flushPreparedFiles(
 
   return { upserted, cleared, deleted, durationMs: performance.now() - t };
 }
-
 // ── Mtime Operations (merged into files table) ───────────────────────────────
 
 /**
@@ -286,12 +287,24 @@ export function loadMtimes(db: SiloDatabase): Map<string, number> {
 
 /** Update a single file's modification time. File row must already exist. */
 export function setMtime(db: SiloDatabase, storedKey: string, mtimeMs: number): void {
-  db.prepare('UPDATE files SET mtime_ms = ? WHERE stored_key = ?').run(mtimeMs, storedKey);
+  const row = db.prepare(
+    'SELECT file_metadata FROM files WHERE stored_key = ?',
+  ).get(storedKey) as { file_metadata: string } | undefined;
+  if (!row) return;
+
+  const fileMetadata = JSON.parse(row.file_metadata) as Record<string, unknown>;
+  db.prepare('UPDATE files SET mtime_ms = ?, date_ms = ? WHERE stored_key = ?').run(
+    mtimeMs,
+    deriveDateMs(fileMetadata, mtimeMs),
+    storedKey,
+  );
 }
 
 /** Clear a file's modification time (set to NULL). */
 export function deleteMtime(db: SiloDatabase, storedKey: string): void {
-  db.prepare('UPDATE files SET mtime_ms = NULL WHERE stored_key = ?').run(storedKey);
+  db.prepare('UPDATE files SET mtime_ms = NULL, date_ms = NULL WHERE stored_key = ?').run(
+    storedKey,
+  );
 }
 
 /** Count files with a non-null mtime (i.e. indexed files). */

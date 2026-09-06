@@ -9,6 +9,7 @@
 export * from './types';
 export * from './paths';
 export * from './compression';
+export * from './date';
 export * from './term-cache';
 export * from './peek';
 export * from './schema';

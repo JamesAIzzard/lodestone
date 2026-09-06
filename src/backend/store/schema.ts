@@ -43,8 +43,10 @@ export function createSiloDatabase(dbPath: string, dimensions: number): SiloData
       stored_key    TEXT UNIQUE NOT NULL,
       file_name     TEXT NOT NULL,
       mtime_ms      REAL,
+      date_ms       REAL,
       file_metadata TEXT NOT NULL DEFAULT '{}'
     );
+    CREATE INDEX IF NOT EXISTS idx_files_date_ms ON files(date_ms);
 
     CREATE TABLE IF NOT EXISTS chunks (
       id            INTEGER PRIMARY KEY,

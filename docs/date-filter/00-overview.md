@@ -1,6 +1,6 @@
 # Date Filter: Implementation Overview
 
-Status: ready to implement · Branch: `develop` · Last updated: 2026-09-06
+Status: phases 1 to 3 merged, phases 4 and 5 ready to implement · Branch: `develop` · Last updated: 2026-09-06
 
 ## What this feature is
 
@@ -8,7 +8,11 @@ Let a search be restricted to a date window. Every indexed file gets one date: f
 ordinary silo it is the time the file was last touched on disk, and for a mirrored email it is
 the time the message was received. `lodestone_search` and the app's search view accept `since`
 and `until` bounds, and the window is applied before candidate selection, so a narrow window over
-a large silo still returns the best matches inside that window rather than nothing.
+a large silo still returns the best matches inside that window rather than nothing. A search with
+no query and a window lists everything in the window newest first, with the total count, so a
+client can answer "what arrived on Tuesday" without inventing a query. On the way there, silos
+gain session references (`s1`, `s2`) alongside the existing `r` and `d` ones, and the `silo`
+parameter accepts a subset of silos rather than one or all.
 
 The date is a promoted column on the `files` table, populated at index time from data the index
 already holds. Nothing new is read from disk or from mail servers. Because the column changes the
@@ -27,11 +31,17 @@ Each phase is independently mergeable and leaves the app working.
 | 1 | [phase-01-date-column-and-migration.md](phase-01-date-column-and-migration.md) | `files.date_ms`, schema version 6, the derivation rule, population on every write path, the migration script | none |
 | 2 | [phase-02-filtered-search.md](phase-02-filtered-search.md) | `dateFromMs`/`dateToMs` on `SearchParams`, one shared file predicate for all signals, KNN pre-filter, date on every result | 1 |
 | 3 | [phase-03-surfaces-and-acceptance.md](phase-03-surfaces-and-acceptance.md) | `since`/`until` on the MCP tool, bound parsing, guide and description text, date in tool output, date inputs and date display in the search view, acceptance pass | 2 |
+| 4 | [phase-04-silo-references-and-subsets.md](phase-04-silo-references-and-subsets.md) | `s` references for silos in status and result output, `silo` as a name, reference or array on search and explore, one shared silo-selection helper in the main process | 3 |
+| 5 | [phase-05-listing-without-a-query.md](phase-05-listing-without-a-query.md) | Optional `query` on the MCP tool, a date-ordered listing path with a total count and `offset` paging, listing in the search view, guide text | 4 |
 
 ```mermaid
 flowchart LR
-  P1[1 Column and migration] --> P2[2 Filtered search] --> P3[3 Surfaces and acceptance]
+  P1[1 Column and migration] --> P2[2 Filtered search] --> P3[3 Surfaces and acceptance] --> P4[4 Silo references and subsets] --> P5[5 Listing without a query]
 ```
+
+Phase 4 is not about dates. It sits here because the listing in phase 5 needs a third copy of
+the silo-selection block otherwise, and because the subset request came out of the same
+"find all the mail in this window" conversation.
 
 ## Conventions for every phase
 
@@ -62,6 +72,8 @@ sequence that gives one installer build and no silo rebuilds:
 Launching the new build before running the script does no harm beyond a rebuild of every silo,
 which is the outcome the script exists to avoid.
 
+Phases 4 and 5 change no schema. Install them as normal builds, with no script step.
+
 ## Decisions taken while splitting the design into phases
 
 - The column is populated inside `flushPreparedFiles` from the metadata and mtime already on
@@ -75,5 +87,12 @@ which is the outcome the script exists to avoid.
   `SearchParams` inward sees numbers only.
 - The date shown on results and used for filtering are the same column. There is no separate
   display date.
-- Sorting results by date is out of scope. It is a cheap follow-on once the column and the
-  per-result date exist, and is noted as such in the design.
+- Silo references resolve to names in the MCP process, so nothing behind the pipe learns about
+  `s` numbers. An unknown name anywhere in a subset fails the whole call; a partial subset would
+  be a silent wrong answer.
+- Ranked results are never sorted by date. The only date-ordered output is the query-less
+  listing in phase 5, which bypasses the signal pipeline rather than adding a date signal to it,
+  so a blank query cannot change what a ranked search returns.
+- The listing reports a total and pages with `offset` rather than a date cursor. Result dates
+  print at minute resolution, so a cursor built from the last date shown would skip files within
+  that minute; an offset over a stable order has no such gap.

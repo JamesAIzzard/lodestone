@@ -19,10 +19,11 @@ embedder, the mail synchroniser or the mirror files. Mail mirror files already c
 `received_at` in their frontmatter, and the markdown extractor already lifts frontmatter into
 `file_metadata`, so no extractor changes are needed.
 
-Out of scope: sorting by date, a separate created-versus-modified distinction for filesystem
-files, dates from frontmatter keys other than `received_at`, dates from PDF properties, relative
-date expressions in the tool contract (clients compute those from `lodestone_get_datetime`), and
-date filters on `lodestone_explore`.
+Out of scope: sorting ranked results by date (the query-less listing below is date-ordered, a
+ranked search never is), a separate created-versus-modified distinction for filesystem files,
+dates from frontmatter keys other than `received_at`, dates from PDF properties, relative date
+expressions in the tool contract (clients compute those from `lodestone_get_datetime`), and date
+filters on `lodestone_explore`.
 
 ## What the date is
 
@@ -168,15 +169,68 @@ sorted and truncated, it fetches `date_ms` for the surviving stored keys in one 
 date and time, and the renderer shows it on the result card. This is the same column the filter
 uses, so a client can confirm a window did what it asked.
 
+## Silo references and subsets
+
+Silos get session references `s1`, `s2`, and so on, assigned the first time a silo's name
+appears in any tool output and never reset, exactly as `r` and `d` behave for files and
+directories. `lodestone_status` headings and every result's silo line show the reference next
+to the name.
+
+The `silo` parameter on `lodestone_search`, `lodestone_explore` and the listing below accepts a
+name or a reference, or a non-empty array of them, so a client can cover three of ten silos in
+one call and get one merged, truncated result set. References resolve to names in the MCP
+process; nothing behind the pipe sees an `s` number. An unknown reference is rejected before any
+call with `Unknown silo reference "s9". Use lodestone_status to obtain a fresh reference.`
+An unknown, stopped or unavailable name anywhere in the array fails the whole call with the
+existing message for that condition. There are no partial subsets.
+
+Selection lives in one helper in the main process, used by the search, explore and listing
+handlers on both the IPC and pipe paths. The app's silo dropdown stays single-select.
+
+## Listing without a query
+
+Some questions have no query to rank against: all mail received on a day, everything that
+changed this week. For these, `lodestone_search` and the app accept a blank query when at least
+one of `since`/`until` is set, and return a listing instead of a ranking.
+
+- A listing is every file passing the window, `startPath` and `filePattern`, ordered by
+  `date_ms` descending with ties broken by `stored_key`, then merged across silos by date, silo
+  name and path. Null-dated files are excluded, as for any bounded search.
+- It is served by a separate per-silo store call over `files` using `idx_files_date_ms`, not by
+  the signal runner. No embedding is computed, so a listing works while a silo's model is still
+  loading, and a blank query can never reach a signal.
+- Every listing carries `total`, the count of files passing the filters before truncation. The
+  MCP response opens with a header stating the total, the range shown and the next `offset`;
+  the app shows a count line. Without the total a client asked for "all the mail in August"
+  reports the result cap as the answer.
+- `offset` pages a listing over the stable order above. It is an integer, minimum 0, default 0,
+  and is rejected with a query: `offset applies only when listing without a query.` A date
+  cursor was considered and rejected because result dates print at minute resolution, so a
+  cursor built from the last date shown would skip files within that minute.
+- A blank query with no bound is rejected:
+  `Provide a query, or set since or until to list every file in a date window.` Blank means
+  undefined or whitespace only. `lodestone_explore` already lists a directory, so a listing on
+  path or pattern alone is not offered.
+- Listing results use the `SearchResult` shape with `score: 1`, `scoreLabel: 'date'` and
+  `signals: { date: 1 }`, no hint and no chunks. `'date'` marks a listing; both formatters omit
+  the score for it. `mode` and `regexFlags` are ignored for a listing.
+
 ## Tool contract
 
 ```text
-lodestone_search({ query, since?: "2026-08-01", until?: "2026-08-31", ... })
+lodestone_search({ query, since?: "2026-08-01", until?: "2026-08-31", silo?: "s2" | ["s1", "notes"], ... })
+lodestone_search({ since: "2026-08-01", until: "2026-08-31", offset?: 50, ... })
 ```
 
+- `silo`: optional name or `s` reference, or a non-empty array of them. Also on
+  `lodestone_explore`.
 - `since`, `until`: optional strings in either form above. Both inclusive.
-- The description text explains what the date means for mail versus files and says that
-  relative windows should be computed from `lodestone_get_datetime`.
+- `query`: optional. Omitted or blank with a bound set gives a listing, newest first, with the
+  total count.
+- `offset`: optional integer, listing only, for paging.
+- The description text explains what the date means for mail versus files, says that relative
+  windows should be computed from `lodestone_get_datetime`, and says how to list without a
+  query.
 - Everything else about the tool is unchanged.
 
 ## Acceptance
@@ -200,3 +254,35 @@ sequence in the overview.
   rendered in local time.
 - In the app, the two date inputs filter the results, persist across a view change within the
   session, and clear with their clear buttons.
+
+Silo references and subsets (phase 4), against the installed build after a normal install:
+
+- `lodestone_status` shows `s1` to `sN` headings. A search with `silo: ["s1", "s3"]` returns
+  hits only from those two silos, and their result lines show `(s1)` and `(s3)`.
+- The same with one name and one reference mixed.
+- `silo: "s99"` returns the unknown-reference error. `silo: ["s1", "nope"]` returns
+  `Silo "nope" not found` and no results.
+- `lodestone_explore` with an array of two silos lists directories from both.
+- Renaming a silo in the app, then searching with its old reference, fails as not found. A fresh
+  status call shows it under a new reference.
+- The app's silo dropdown behaves as before.
+
+Listing without a query (phase 5), against the installed build after a normal install:
+
+- On a mail silo, `since` and `until` both set to one weekday and no query returns every message
+  received that day, newest first, and the header total equals the count for that day in the
+  mail client. Check the first and last by reading them.
+- On the largest mailbox, a one-month window with `maxResults: 50` returns a header with a
+  total above 50 and a next-`offset` hint. Two consecutive pages, taken while nothing new
+  arrives, have no gap and no duplicate at the boundary.
+- On a filesystem silo, `since` set to yesterday with `startPath` on a project folder and no
+  query returns files modified since then, newest first. Check two against the file's
+  properties.
+- A blank query with no bounds returns the gate message. A query with `offset` returns the
+  offset message.
+- Immediately after launching the app, before the embedding model reports ready, a listing on a
+  mail silo returns results and no "still initializing" warning.
+- A search with a query, with and without a window, returns what it returned before phase 5.
+- In the app, a date and a blank query list the window with a count line and no score bars.
+  Clearing the dates and pressing Enter with a blank query shows the gate message and runs
+  nothing.

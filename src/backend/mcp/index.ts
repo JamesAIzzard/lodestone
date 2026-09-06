@@ -79,6 +79,8 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
         tools: {},
         resources: {},
       },
+      instructions:
+        "Call lodestone_guide first. It lists the tools, the configured silos with their descriptions, and the location of the user's LLM instructions note.",
     },
   );
 
@@ -97,9 +99,13 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
   registerEditTool(server, deps, puid);
   registerAttachmentTool(server, deps, puid);
 
-  // Register guide tool (on-demand usage guides) and resources
-  registerGuideTool(server, deps.getLlmInstructionsConfig);
-  registerResources(server, deps.getLlmInstructionsConfig);
+  // Register the startup guide as a tool and as a resource
+  const guideDeps = {
+    getLlmInstructionsConfig: deps.getLlmInstructionsConfig,
+    getSilos: deps.silo.status,
+  };
+  registerGuideTool(server, guideDeps);
+  registerResources(server, guideDeps);
 
   // ── Connect transport ──
   // Use custom streams when provided (named-pipe socket from mcp-wrapper),

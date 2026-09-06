@@ -378,7 +378,7 @@ export function registerStatusTool(
 ): void {
   server.tool(
     'lodestone_status',
-    'Get the current status of all Lodestone silos \u2014 file counts, index sizes, and watcher states.',
+    'List all Lodestone silos with their descriptions, s references, indexing state, file counts, and index sizes.',
     async () => {
       try {
         const { silos } = await deps.silo.status();

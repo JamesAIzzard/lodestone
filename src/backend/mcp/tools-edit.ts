@@ -80,7 +80,7 @@ function checkStaleness(filePath: string, puidRecord?: PuidRecord): string | nul
   // Stale â€” refresh hash and return error
   const oldHash = puidRecord.contentHash;
   puidRecord.contentHash = currentHash;
-  return `File has been modified externally since last read. Call lodestone_read to get the current content before retrying the edit.\nStored hash: ${oldHash}\nCurrent hash: ${currentHash}`;
+  return `File has been modified externally since last read. The stored hash has been refreshed, so adjust and retry without a separate lodestone_read.\nStored hash: ${oldHash}\nCurrent hash: ${currentHash}`;
 }
 
 /**

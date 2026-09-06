@@ -17,7 +17,13 @@ export function registerAttachmentTool(
 ): void {
   server.tool(
     'lodestone_read_email_attachment',
-    'Read one supported attachment from a mirrored email on demand, using its email reference and one-based attachment position.',
+    [
+      "Read one attachment from a mirrored email on demand, using the email's r reference and the attachment's one-based position in its frontmatter list.",
+      '',
+      'Supported: PDF (text extracted), PNG, JPEG, GIF and WebP (returned as images), and text types including HTML (returned as text).',
+      'Rejected: other types, encrypted PDFs, attachments over 5 MiB, and extracted text over 512 KiB. Images close to 5 MiB may exceed the client output limit.',
+      'The attachment is fetched from the mail server when called and is neither indexed nor retained.',
+    ].join('\n'),
     {
       email: z
         .string()

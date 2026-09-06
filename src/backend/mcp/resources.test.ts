@@ -1,63 +1,144 @@
 import { describe, expect, it } from 'vitest';
-import { getGuideText } from './resources';
+import type { SiloStatus } from '../../shared/types';
+import { getStartupGuide, type GuideDeps } from './resources';
 
-describe('getGuideText', () => {
-  it('points startup guidance to the exact configured note', async () => {
-    const guide = await getGuideText('startup', async () => ({
-      notePath: 'C:\\Notes\\LLM User Instructions.md',
-    }));
+function silo(
+  name: string,
+  overrides: { contentDescription?: string; readOnly?: boolean; managedBy?: string } = {},
+): SiloStatus {
+  return {
+    config: {
+      name,
+      indexedDirectories: [],
+      contentDescription: overrides.contentDescription ?? '',
+      readOnly: overrides.readOnly ?? false,
+      managedBy: overrides.managedBy,
+    },
+    available: true,
+    indexCaughtUp: true,
+    indexedFileCount: 0,
+    chunkCount: 0,
+    lastUpdated: null,
+    databaseSizeBytes: 0,
+    watcherState: 'ready',
+  } as unknown as SiloStatus;
+}
+
+const WORKSPACE = silo('workspace', {
+  contentDescription: 'Personal and business notes, and knowledge base.',
+});
+const MAIL = silo('james@example.com', {
+  contentDescription: 'Personal email account.',
+  readOnly: true,
+  managedBy: 'mail:abc123',
+});
+const BARE = silo('scratch');
+
+function deps(
+  silos: SiloStatus[] | (() => Promise<{ silos: SiloStatus[] }>),
+  notePath?: string,
+): GuideDeps {
+  return {
+    getLlmInstructionsConfig: async () => (notePath ? { notePath } : {}),
+    getSilos: typeof silos === 'function' ? silos : async () => ({ silos }),
+  };
+}
+
+describe('getStartupGuide', () => {
+  it('points to the exact configured note and nothing more', async () => {
+    const guide = await getStartupGuide(deps([], 'C:\\Notes\\LLM User Instructions.md'));
 
     expect(guide).toContain('C:\\Notes\\LLM User Instructions.md');
     expect(guide).toContain('lodestone_read');
-    expect(guide).not.toContain('MathJax');
-    expect(guide).not.toContain('Paragraphs are preferred');
+    expect(guide).not.toContain('Follow its links');
+    expect(guide).not.toContain('take precedence');
   });
 
   it('suggests searching for user instructions when no note is configured', async () => {
-    const guide = await getGuideText('startup', async () => ({}));
+    const guide = await getStartupGuide(deps([]));
 
     expect(guide).toContain('lodestone_search');
     expect(guide).toContain('LLM user instructions');
   });
 
-  it('explains how clients should use mail silos', async () => {
-    const guide = await getGuideText('startup', async () => ({}));
+  it('lists each silo with its description and flags', async () => {
+    const guide = await getStartupGuide(deps([WORKSPACE, MAIL, BARE]));
 
-    expect(guide).toContain('Silos named `Mail: …` are read-only email mirrors');
-    expect(guide).toContain('shows its received date');
-    expect(guide).toContain('`since` and `until` filter on that date');
-    expect(guide).toContain(
+    expect(guide).toContain('## Silos');
+    expect(guide).toContain('- `workspace`: Personal and business notes, and knowledge base.');
+    expect(guide).toContain('- `james@example.com` (mail, read-only): Personal email account.');
+    expect(guide).toContain('- `scratch`\n');
+    expect(guide).not.toContain('- `scratch`:');
+  });
+
+  it('reports when no silos are configured', async () => {
+    const guide = await getStartupGuide(deps([]));
+
+    expect(guide).toContain('No silos are configured.');
+  });
+
+  it('falls back to lodestone_status when the silo list cannot be loaded', async () => {
+    const guide = await getStartupGuide(
+      deps(async () => {
+        throw new Error('gui offline');
+      }),
+    );
+
+    expect(guide).toContain('The silo list is unavailable; call `lodestone_status`.');
+    expect(guide).toContain('## Mail Silos');
+  });
+
+  it('explains mail silo mechanics only when a mail silo exists', async () => {
+    const withMail = await getStartupGuide(deps([WORKSPACE, MAIL]));
+    const withoutMail = await getStartupGuide(deps([WORKSPACE]));
+
+    expect(withMail).toContain('## Mail Silos');
+    expect(withMail).toContain('read-only mirrors of an email account');
+    expect(withMail).toContain('dated by its received time');
+    expect(withMail).toContain(
       'frontmatter records the sender, recipients, date, folders and attachment names',
     );
-    expect(guide).toContain('`lodestone_read` returns the whole message');
-    expect(guide).toContain('`lodestone_read_email_attachment`');
-    expect(guide).toContain('without being indexed or retained');
-    expect(guide).toContain('lag the mailbox by up to the sync interval');
-    expect(guide).toContain('`lodestone_edit` cannot modify them');
-    expect(guide).toContain('Every search result carries a date');
-    expect(guide).toContain('labels each silo with an s reference');
-    expect(guide).toContain('an array of them');
-    expect(guide).toContain('Omit the query');
-    expect(guide).toContain('search with `since` and `until` and no query');
+    expect(withMail).toContain('`lodestone_read` returns the whole message');
+    expect(withMail).toContain('`lodestone_read_email_attachment`');
+    expect(withMail).toContain('lag the mailbox by up to the sync interval');
+    expect(withMail).toContain('`lodestone_edit` cannot modify them');
+    expect(withoutMail).not.toContain('## Mail Silos');
   });
 
-  it('retrieves current configuration for each startup guide request', async () => {
-    const currentConfig: { notePath?: string } = {};
-    const getConfig = async () => currentConfig;
+  it('leaves attachment limits and mail naming to the tool descriptions', async () => {
+    const guide = await getStartupGuide(deps([MAIL]));
 
-    const first = await getGuideText('startup', getConfig);
-    currentConfig.notePath = 'C:\\Notes\\Current Instructions.md';
-    const second = await getGuideText('startup', getConfig);
+    expect(guide).not.toContain('Mail: …');
+    expect(guide).not.toContain('5 MiB');
+    expect(guide).not.toContain('without being indexed or retained');
+  });
+
+  it('mentions date bounds and silo references once in the tool overview', async () => {
+    const guide = await getStartupGuide(deps([WORKSPACE]));
+
+    expect(guide).toContain('Every search result carries a date');
+    expect(guide).toContain('`since` and `until` bounds');
+    expect(guide).toContain('with no query it lists everything in that window');
+    expect(guide).toContain('silo name or s reference, or an array of them');
+    expect(guide.match(/`since` and `until`/g)).toHaveLength(1);
+  });
+
+  it('retrieves current configuration and silos for each request', async () => {
+    const config: { notePath?: string } = {};
+    const silos: SiloStatus[] = [];
+    const live: GuideDeps = {
+      getLlmInstructionsConfig: async () => config,
+      getSilos: async () => ({ silos }),
+    };
+
+    const first = await getStartupGuide(live);
+    config.notePath = 'C:\\Notes\\Current Instructions.md';
+    silos.push(WORKSPACE);
+    const second = await getStartupGuide(live);
 
     expect(first).toContain('LLM user instructions');
+    expect(first).toContain('No silos are configured.');
     expect(second).toContain('C:\\Notes\\Current Instructions.md');
-  });
-
-  it('keeps the notes guide limited to Lodestone mechanics', async () => {
-    const guide = await getGuideText('notes', async () => ({}));
-
-    expect(guide).toContain('Staleness detection');
-    expect(guide).not.toContain('Note-Writing Conventions');
-    expect(guide).not.toContain('MathJax');
+    expect(second).toContain('- `workspace`:');
   });
 });

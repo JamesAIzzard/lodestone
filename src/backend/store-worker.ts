@@ -24,8 +24,9 @@ import {
   insertActivityEvent, loadActivityLog,
 } from './store/operations';
 import { search, type FileResult } from './search';
+import { listByDate } from './search-listing';
 import { directorySearchSilo, expandTree, type DirectorySearchParams, type SiloDirectorySearchResult } from './directory-search';
-import type { SearchParams } from '../shared/types';
+import type { ListingParams, SearchParams } from '../shared/types';
 
 // ── Per-silo state ───────────────────────────────────────────────────────────
 
@@ -148,6 +149,8 @@ function dispatch(msg: StoreRequest): unknown {
     // ── Search ────────────────────────────────────────────────────────
     case 'search':
       return search(db, args[0] as number[], args[1] as SearchParams);
+    case 'listByDate':
+      return listByDate(db, args[0] as ListingParams);
     case 'directorySearch':
       return directorySearchSilo(db, args[0] as DirectorySearchParams);
     case 'expandTree':

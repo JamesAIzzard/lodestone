@@ -41,8 +41,9 @@ import type {
   SiloDatabase,
 } from '../store/types';
 import type { ActivityRow } from '../store/operations';
-import type { SearchParams, DirectoryTreeNode } from '../../shared/types';
+import type { ListingParams, SearchParams, DirectoryTreeNode } from '../../shared/types';
 import { search, type FileResult } from '../search';
+import { listByDate, type ListingResult } from '../search-listing';
 import {
   directorySearchSilo,
   expandTree as expandTreeImpl,
@@ -185,6 +186,10 @@ export class LocalStoreFacade implements StoreFacade {
     params: SearchParams,
   ): Promise<FileResult[]> {
     return search(this.state(siloId).db, queryVector, params);
+  }
+
+  async listByDate(siloId: string, params: ListingParams): Promise<ListingResult> {
+    return listByDate(this.state(siloId).db, params);
   }
 
   async directorySearch(

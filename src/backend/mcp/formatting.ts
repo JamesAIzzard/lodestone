@@ -124,27 +124,28 @@ export function formatSearchResults(results: SearchResult[], puid: PuidManager):
   for (const result of results) {
     const id = puid.assignFilePuid(result.filePath);
     lines.push(`## ${id}: ${result.filePath}`);
-    const pct = Math.round(result.score * 100);
-
-    // Build score parenthetical — show signal name or convergence breakdown
-    let scoreDetail: string;
-    if (result.scoreLabel === 'convergence') {
-      const parts = Object.entries(result.signals)
-        .sort(([, a], [, b]) => b - a)
-        .map(([name, s]) => `${name} ${Math.round(s * 100)}%`);
-      scoreDetail = `convergence: ${parts.join(', ')}`;
-    } else {
-      scoreDetail = result.scoreLabel;
-    }
-
     const resultDate = result.dateMs === null ? null : new Date(result.dateMs);
     const dateDetail = resultDate
       ? ` | Date: ${formatDate(resultDate)}, ${formatTime(resultDate)}`
       : '';
     const siloPuid = puid.assignSiloPuid(result.siloName);
-    lines.push(
-      `Silo: ${result.siloName} (${siloPuid}) | Score: ${pct}% (${scoreDetail})${dateDetail}`,
-    );
+    if (result.scoreLabel === 'date') {
+      lines.push(`Silo: ${result.siloName} (${siloPuid})${dateDetail}`);
+    } else {
+      const pct = Math.round(result.score * 100);
+      let scoreDetail: string;
+      if (result.scoreLabel === 'convergence') {
+        const parts = Object.entries(result.signals)
+          .sort(([, a], [, b]) => b - a)
+          .map(([name, s]) => `${name} ${Math.round(s * 100)}%`);
+        scoreDetail = `convergence: ${parts.join(', ')}`;
+      } else {
+        scoreDetail = result.scoreLabel;
+      }
+      lines.push(
+        `Silo: ${result.siloName} (${siloPuid}) | Score: ${pct}% (${scoreDetail})${dateDetail}`,
+      );
+    }
 
     // Hint line — show location and section path if available
     if (result.hint) {
@@ -175,6 +176,26 @@ export function formatSearchResults(results: SearchResult[], puid: PuidManager):
   }
 
   return lines.join('\n');
+}
+
+export function formatListingHeader(
+  total: number,
+  shown: number,
+  offset: number,
+  since?: string,
+  until?: string,
+): string {
+  const window =
+    since && until
+      ? `dated ${since} to ${until}`
+      : since
+        ? `dated on or after ${since}`
+        : `dated on or before ${until}`;
+  if (total === 0) return `No files ${window}.`;
+  if (offset >= total) return `${total} files ${window}; none at offset ${offset}.`;
+  if (offset === 0 && shown >= total) return `${total} files ${window}, newest first.`;
+  const nextOffset = offset + shown;
+  return `${total} files ${window}, showing ${offset + 1}\u2013${nextOffset}, newest first. Pass offset: ${nextOffset} for the next page.`;
 }
 
 /**
@@ -286,6 +307,8 @@ export const SEARCH_DESCRIPTION = [
   'Use since and until to restrict results to an inclusive date window.',
   'For email this is the received time; for other files it is the last modified time.',
   'Compute relative windows from lodestone_get_datetime.',
+  'Omit query, with since and/or until, to list every file in the window newest first with the total count; offset pages a listing.',
+  'mode is ignored for a listing.',
   '',
   'Use lodestone_status to see available silos, their s-references and their current state. silo accepts names or references, singly or as an array.',
 ].join('\n');

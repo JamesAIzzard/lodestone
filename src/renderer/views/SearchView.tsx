@@ -59,6 +59,7 @@ const SIGNAL_COLORS: Record<string, { bar: string; badge: string; label: string 
   bm25: { bar: 'bg-amber-400', badge: 'bg-amber-500/15 text-amber-400', label: 'bm25' },
   filepath: { bar: 'bg-cyan-400', badge: 'bg-cyan-500/15 text-cyan-400', label: 'filepath' },
   regex: { bar: 'bg-orange-400', badge: 'bg-orange-500/15 text-orange-400', label: 'regex' },
+  date: { bar: 'bg-gray-400', badge: 'bg-gray-500/15 text-gray-400', label: 'date' },
   convergence: {
     bar: 'bg-purple-400',
     badge: 'bg-purple-500/15 text-purple-400',
@@ -134,6 +135,7 @@ export default function SearchView() {
   const [since, setSince] = useSessionState('search.since', '');
   const [until, setUntil] = useSessionState('search.until', '');
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [listingTotal, setListingTotal] = useState<number | null>(null);
   const [depthSetting, setDepthSetting] = useSessionState('search.depthSetting', 2);
 
   useEffect(() => {
@@ -163,7 +165,17 @@ export default function SearchView() {
       sinceValue?: string,
       untilValue?: string,
     ) => {
-      if (!q.trim()) return;
+      const listing = !q.trim();
+      if (listing && !sinceValue && !untilValue) {
+        setHasSearched(true);
+        setResults([]);
+        setDirectoryResults([]);
+        setListingTotal(null);
+        setSearchError(
+          'Provide a query, or set since or until to list every file in a date window.',
+        );
+        return;
+      }
       let dateWindow: ReturnType<typeof parseDateWindow>;
       try {
         dateWindow = parseDateWindow(sinceValue || undefined, untilValue || undefined);
@@ -171,6 +183,7 @@ export default function SearchView() {
         setHasSearched(true);
         setResults([]);
         setDirectoryResults([]);
+        setListingTotal(null);
         setSearchError(err instanceof Error ? err.message : String(err));
         return;
       }
@@ -180,18 +193,33 @@ export default function SearchView() {
       setSearchError(null);
       setExpandedResults(new Set());
       try {
-        const res =
-          (await window.electronAPI?.search(
+        if (listing) {
+          const response = await window.electronAPI?.listByDate(
             {
-              query: q,
               startPath: sp || undefined,
               filePattern: fp || undefined,
               ...dateWindow,
-              mode: mode ?? 'hybrid',
+              limit: 50,
             },
             silo || undefined,
-          )) ?? [];
-        setResults(res);
+          );
+          setResults(response?.results ?? []);
+          setListingTotal(response?.total ?? 0);
+        } else {
+          const res =
+            (await window.electronAPI?.search(
+              {
+                query: q,
+                startPath: sp || undefined,
+                filePattern: fp || undefined,
+                ...dateWindow,
+                mode: mode ?? 'hybrid',
+              },
+              silo || undefined,
+            )) ?? [];
+          setResults(res);
+          setListingTotal(null);
+        }
         setDirectoryResults([]);
       } finally {
         setSearching(false);
@@ -216,6 +244,7 @@ export default function SearchView() {
         const res = (await window.electronAPI?.explore(params)) ?? [];
         setDirectoryResults(res);
         setResults([]);
+        setListingTotal(null);
       } finally {
         setSearching(false);
       }
@@ -224,7 +253,6 @@ export default function SearchView() {
   );
 
   async function handleSearch() {
-    if (searchMode === 'file' && !query.trim()) return;
     if (searching) return;
     const silo = selectedSilo === 'all' ? undefined : selectedSilo;
     if (searchMode === 'directory') {
@@ -240,6 +268,7 @@ export default function SearchView() {
     setResults([]);
     setDirectoryResults([]);
     setSearchError(null);
+    setListingTotal(null);
     setExpandedResults(new Set());
   }
 
@@ -446,7 +475,7 @@ export default function SearchView() {
           <p className="text-sm text-muted-foreground">
             {isDirectoryMode
               ? 'Enter a query and press Enter to explore directories, or press Enter with an empty query for a structural overview.'
-              : 'Enter a query and press Enter to search.'}
+              : 'Enter a query and press Enter to search. Set a date and press Enter with no query to list files in that window, newest first.'}
           </p>
         )}
 
@@ -465,6 +494,7 @@ export default function SearchView() {
             silos={silos}
             selectedSilo={selectedSilo}
             searchError={searchError}
+            listingTotal={listingTotal}
             siloColorMap={siloColorMap}
             expandedResults={expandedResults}
             toggleExpand={toggleExpand}
@@ -482,6 +512,7 @@ function FileResultsView({
   silos,
   selectedSilo,
   searchError,
+  listingTotal,
   siloColorMap,
   expandedResults,
   toggleExpand,
@@ -490,6 +521,7 @@ function FileResultsView({
   silos: SiloStatus[];
   selectedSilo: string;
   searchError: string | null;
+  listingTotal: number | null;
   siloColorMap: Map<string, SiloColor>;
   expandedResults: Set<number>;
   toggleExpand: (i: number) => void;
@@ -504,11 +536,20 @@ function FileResultsView({
       ? `${stoppedSkipped.map((s) => s.config.name).join(', ')} ${stoppedSkipped.length === 1 ? 'is' : 'are'} stopped and ${stoppedSkipped.length === 1 ? 'was' : 'were'} not searched.`
       : null;
 
+  const listingSummary =
+    listingTotal === null
+      ? null
+      : listingTotal === 0
+        ? 'No files in this window.'
+        : listingTotal > results.length
+          ? `${listingTotal} files in this window, showing the newest 50.`
+          : `${listingTotal} files in this window, newest first.`;
+
   if (results.length === 0) {
     return (
       <div>
         <p className={cn('text-sm', searchError ? 'text-destructive' : 'text-muted-foreground')}>
-          {searchError ?? 'No results found.'}
+          {searchError ?? listingSummary ?? 'No results found.'}
         </p>
         {stoppedHint && <p className="mt-1 text-xs text-muted-foreground/50">{stoppedHint}</p>}
       </div>
@@ -519,7 +560,7 @@ function FileResultsView({
     <div className="flex flex-col gap-1">
       <div className="mb-3">
         <p className="text-xs text-muted-foreground">
-          {results.length} result{results.length !== 1 && 's'}
+          {listingSummary ?? `${results.length} result${results.length !== 1 ? 's' : ''}`}
         </p>
         {stoppedHint && (
           <p className="mt-0.5 text-[10px] text-muted-foreground/50">{stoppedHint}</p>
@@ -585,17 +626,19 @@ function FileResultsView({
               </div>
 
               {/* Score bar + percentage */}
-              <div className="flex items-center gap-2 shrink-0">
-                <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
-                  <div
-                    className={cn('h-full rounded-full', sigColor.bar)}
-                    style={{ width: `${Math.round(result.score * 100)}%` }}
-                  />
+              {result.scoreLabel !== 'date' && (
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={cn('h-full rounded-full', sigColor.bar)}
+                      style={{ width: `${Math.round(result.score * 100)}%` }}
+                    />
+                  </div>
+                  <span className="w-8 text-right text-xs text-muted-foreground">
+                    {scorePercent(result.score)}
+                  </span>
                 </div>
-                <span className="w-8 text-right text-xs text-muted-foreground">
-                  {scorePercent(result.score)}
-                </span>
-              </div>
+              )}
 
               <ExternalLink
                 className="h-3.5 w-3.5 shrink-0 text-muted-foreground/30 opacity-0 transition-opacity group-hover:opacity-100"
@@ -610,29 +653,31 @@ function FileResultsView({
             {isExpanded && (
               <div className="ml-[26px] border-l-2 border-accent/40 pl-4 pb-2">
                 {/* Per-signal score bars */}
-                <div className="mt-2 space-y-1">
-                  {Object.entries(result.signals)
-                    .sort(([, a], [, b]) => b - a)
-                    .map(([name, score]) => {
-                      const sc = SIGNAL_COLORS[name] ?? DEFAULT_SIGNAL_COLOR;
-                      return (
-                        <div key={name} className="flex items-center gap-2">
-                          <span className="w-16 text-[10px] text-muted-foreground/60 text-right">
-                            {sc.label}
-                          </span>
-                          <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
-                            <div
-                              className={cn('h-full rounded-full', sc.bar)}
-                              style={{ width: `${Math.round(score * 100)}%` }}
-                            />
+                {result.scoreLabel !== 'date' && (
+                  <div className="mt-2 space-y-1">
+                    {Object.entries(result.signals)
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([name, score]) => {
+                        const sc = SIGNAL_COLORS[name] ?? DEFAULT_SIGNAL_COLOR;
+                        return (
+                          <div key={name} className="flex items-center gap-2">
+                            <span className="w-16 text-[10px] text-muted-foreground/60 text-right">
+                              {sc.label}
+                            </span>
+                            <div className="flex-1 h-1 rounded-full bg-muted overflow-hidden">
+                              <div
+                                className={cn('h-full rounded-full', sc.bar)}
+                                style={{ width: `${Math.round(score * 100)}%` }}
+                              />
+                            </div>
+                            <span className="w-8 text-[10px] text-muted-foreground/50 text-right">
+                              {scorePercent(score)}
+                            </span>
                           </div>
-                          <span className="w-8 text-[10px] text-muted-foreground/50 text-right">
-                            {scorePercent(score)}
-                          </span>
-                        </div>
-                      );
-                    })}
-                </div>
+                        );
+                      })}
+                  </div>
+                )}
 
                 {/* Hint — location + section path (shown when no multi-chunk data) */}
                 {result.hint &&

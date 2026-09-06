@@ -23,13 +23,13 @@ import type {
   StoredSiloConfig,
   DirEntry,
 } from './store/types';
-import type { SearchParams } from '../shared/types';
+import type { DirectoryTreeNode, ListingParams, SearchParams } from '../shared/types';
 import type { FileResult } from './search';
+import type { ListingResult } from './search-listing';
 import type {
   DirectorySearchParams,
   SiloDirectorySearchResult,
 } from './directory-search';
-import type { DirectoryTreeNode } from '../shared/types';
 
 // ── Worker lifecycle ──────────────────────────────────────────────────────────
 
@@ -234,6 +234,10 @@ export function search(
   params: SearchParams,
 ): Promise<FileResult[]> {
   return call<FileResult[]>('search', siloId, queryVector, params);
+}
+
+export function listByDate(siloId: string, params: ListingParams): Promise<ListingResult> {
+  return call<ListingResult>('listByDate', siloId, params);
 }
 
 export function directorySearch(

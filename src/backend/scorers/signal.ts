@@ -48,6 +48,11 @@ export interface SignalContext {
   regexFlags?: string;
 }
 
+export type FileFilters = Pick<
+  SignalContext,
+  'startPath' | 'filePatternRe' | 'dateFromMs' | 'dateToMs'
+>;
+
 // ── Signal ──────────────────────────────────────────────────────────────────
 
 /** Output of a signal: per-file scores and per-file hints. */
@@ -70,13 +75,15 @@ export interface Signal {
 
 /** Apply every file-level filter shared by the search signals. */
 export function passesFileFilters(
-  ctx: SignalContext,
+  filters: FileFilters,
   storedKey: string,
   dateMs: number | null,
 ): boolean {
-  if (ctx.startPath && !storedKey.startsWith(ctx.startPath)) return false;
-  if (ctx.filePatternRe && !ctx.filePatternRe.test(extractRelPath(storedKey))) return false;
-  if (ctx.dateFromMs !== undefined && (dateMs === null || dateMs < ctx.dateFromMs)) return false;
-  if (ctx.dateToMs !== undefined && (dateMs === null || dateMs > ctx.dateToMs)) return false;
+  if (filters.startPath && !storedKey.startsWith(filters.startPath)) return false;
+  if (filters.filePatternRe && !filters.filePatternRe.test(extractRelPath(storedKey))) return false;
+  if (filters.dateFromMs !== undefined && (dateMs === null || dateMs < filters.dateFromMs))
+    return false;
+  if (filters.dateToMs !== undefined && (dateMs === null || dateMs > filters.dateToMs))
+    return false;
   return true;
 }

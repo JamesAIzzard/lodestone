@@ -30,12 +30,10 @@ import type {
   DirEntry,
 } from './store/types';
 import type { ActivityRow } from './store/operations';
-import type { SearchParams, DirectoryTreeNode } from '../shared/types';
+import type { ListingParams, SearchParams, DirectoryTreeNode } from '../shared/types';
 import type { FileResult } from './search';
-import type {
-  DirectorySearchParams,
-  SiloDirectorySearchResult,
-} from './directory-search';
+import type { ListingResult } from './search-listing';
+import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 
 export interface StoreFacade {
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -75,6 +73,7 @@ export interface StoreFacade {
 
   // ── Search ────────────────────────────────────────────────────────────────
   search(siloId: string, queryVector: number[], params: SearchParams): Promise<FileResult[]>;
+  listByDate(siloId: string, params: ListingParams): Promise<ListingResult>;
   directorySearch(
     siloId: string,
     params: DirectorySearchParams,
@@ -121,6 +120,7 @@ export const proxyStoreFacade: StoreFacade = {
   checkpoint: storeProxy.checkpoint,
   vacuum: storeProxy.vacuum,
   search: storeProxy.search,
+  listByDate: storeProxy.listByDate,
   directorySearch: storeProxy.directorySearch,
   expandTree: storeProxy.expandTree,
   getFilesInDirectory: storeProxy.getFilesInDirectory,

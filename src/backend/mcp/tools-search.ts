@@ -19,6 +19,7 @@ import {
   formatBytes,
   MAX_READ_BYTES,
   PREVIEW_LINES,
+  formatListingHeader,
 } from './formatting';
 import { textResponse, errorResponse, resolveDirPuid, resolveSiloRefs } from './response-helpers';
 import { parseDateWindow } from '../../shared/portable/date-bounds';
@@ -32,7 +33,12 @@ export function registerSearchTool(
     'lodestone_search',
     SEARCH_DESCRIPTION,
     {
-      query: z.string().describe('The search query \u2014 use natural language or code snippets'),
+      query: z
+        .string()
+        .optional()
+        .describe(
+          'The search query, in natural language or code. Omit it, with since and/or until set, to list every file in the window newest first.',
+        ),
       silo: z
         .union([z.string(), z.array(z.string()).min(1)])
         .optional()
@@ -73,17 +79,45 @@ export function registerSearchTool(
         .describe(
           'Only return files dated on or before this (YYYY-MM-DD or ISO 8601). For email this is the received time; for files it is the last modified time. Compute relative windows from lodestone_get_datetime.',
         ),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          'Listing only: skip this many files before returning results. Use the "next page" hint from a listing response.',
+        ),
       regexFlags: z
         .string()
         .optional()
         .describe('JavaScript regex flags for regex mode (default: "i")'),
     },
-    async ({ query, silo, maxResults, startPath, mode, filePattern, since, until, regexFlags }) => {
+    async ({
+      query,
+      silo,
+      maxResults,
+      startPath,
+      mode,
+      filePattern,
+      since,
+      until,
+      offset,
+      regexFlags,
+    }) => {
       try {
         const siloResult = resolveSiloRefs(silo, puid);
         if (siloResult !== undefined && !Array.isArray(siloResult)) return siloResult;
         const siloNames = siloResult as string[] | undefined;
         const { dateFromMs, dateToMs } = parseDateWindow(since, until);
+        const listing = !query?.trim();
+        if (listing && dateFromMs === undefined && dateToMs === undefined) {
+          return errorResponse(
+            'Provide a query, or set since or until to list every file in a date window.',
+          );
+        }
+        if (!listing && offset !== undefined) {
+          return errorResponse('offset applies only when listing without a query.');
+        }
         deps.notifyActivity?.({
           channel: 'silo',
           siloName: siloNames?.length === 1 ? siloNames[0] : undefined,
@@ -96,19 +130,35 @@ export function registerSearchTool(
           resolvedStartPath = dirResult;
         }
 
-        const { results, warnings } = await deps.silo.search({
-          query,
-          silo: siloNames,
-          maxResults: maxResults ?? 10,
-          startPath: resolvedStartPath,
-          mode,
-          filePattern,
-          dateFromMs,
-          dateToMs,
-          regexFlags,
-        });
-
-        let text = formatSearchResults(results, puid);
+        let text: string;
+        let warnings: string[];
+        if (listing) {
+          const response = await deps.silo.listByDate({
+            silo: siloNames,
+            startPath: resolvedStartPath,
+            filePattern,
+            dateFromMs,
+            dateToMs,
+            limit: maxResults ?? 10,
+            offset: offset ?? 0,
+          });
+          warnings = response.warnings;
+          text = `${formatListingHeader(response.total, response.results.length, offset ?? 0, since, until)}\n\n${formatSearchResults(response.results, puid)}`;
+        } else {
+          const response = await deps.silo.search({
+            query,
+            silo: siloNames,
+            maxResults: maxResults ?? 10,
+            startPath: resolvedStartPath,
+            mode,
+            filePattern,
+            dateFromMs,
+            dateToMs,
+            regexFlags,
+          });
+          warnings = response.warnings;
+          text = formatSearchResults(response.results, puid);
+        }
 
         // Prepend readiness warnings so the caller knows about partial results
         if (warnings.length > 0) {

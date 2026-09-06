@@ -3,7 +3,7 @@
  */
 
 import type { Readable, Writable } from 'node:stream';
-import type { SearchResult, DirectoryResult, SiloStatus } from '../../shared/types';
+import type { SearchResult, DirectoryResult, ListingParams, SiloStatus } from '../../shared/types';
 import type { EditOperation, EditResult } from '../edit';
 import type { AttachmentFetchResponse } from '../mail/attachment';
 
@@ -26,6 +26,10 @@ export interface McpServerDeps {
       dateToMs?: number;
       regexFlags?: string;
     }) => Promise<{ results: SearchResult[]; warnings: string[] }>;
+    /** Date-ordered listing across indexed files. */
+    listByDate: (
+      params: ListingParams & { silo?: string[] },
+    ) => Promise<{ results: SearchResult[]; warnings: string[]; total: number }>;
     /** Directory exploration / browsing. */
     explore: (params: {
       query?: string;

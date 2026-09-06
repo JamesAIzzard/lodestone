@@ -31,8 +31,9 @@ import {
   type ReconcileResult,
   type ReconcileStoreOps,
 } from './reconcile';
-import type { WatcherState, SearchParams } from '../shared/types';
+import type { ListingParams, WatcherState, SearchParams } from '../shared/types';
 import type { FileResult } from './search';
+import type { ListingResult } from './search-listing';
 import type { DirectorySearchParams, SiloDirectorySearchResult } from './directory-search';
 import { IndexingQueue } from './indexing-queue';
 import { MtimeIndex } from './silo/mtime-index';
@@ -581,19 +582,7 @@ export class SiloManager {
       (params.mode === 'filepath' && !this.config.supportsPathSearch)
     )
       return [];
-    // Convert absolute startPath → stored key prefix for DB filtering
-    let storedStartPath = params.startPath;
-    if (params.startPath) {
-      const key = makeStoredDirKey(params.startPath, this.config.indexedDirectories);
-      if (key) {
-        storedStartPath = key;
-      } else {
-        const rootIdx = this.config.indexedDirectories.indexOf(params.startPath);
-        if (rootIdx >= 0) {
-          storedStartPath = `${rootIdx}:`;
-        }
-      }
-    }
+    const storedStartPath = this.toStoredStartPath(params.startPath);
     const results = await this.store.search(this.siloId, queryVector, {
       ...params,
       startPath: storedStartPath,
@@ -604,6 +593,29 @@ export class SiloManager {
       ...r,
       filePath: resolveStoredKey(r.filePath, this.config.indexedDirectories),
     }));
+  }
+
+  async listByDate(params: ListingParams): Promise<ListingResult> {
+    if (!this.available || !this.dbOpen) return { results: [], total: 0 };
+    const listing = await this.store.listByDate(this.siloId, {
+      ...params,
+      startPath: this.toStoredStartPath(params.startPath),
+    });
+    return {
+      total: listing.total,
+      results: listing.results.map((result) => ({
+        ...result,
+        filePath: resolveStoredKey(result.filePath, this.config.indexedDirectories),
+      })),
+    };
+  }
+
+  private toStoredStartPath(startPath?: string): string | undefined {
+    if (!startPath) return startPath;
+    const key = makeStoredDirKey(startPath, this.config.indexedDirectories);
+    if (key) return key;
+    const rootIdx = this.config.indexedDirectories.indexOf(startPath);
+    return rootIdx >= 0 ? `${rootIdx}:` : startPath;
   }
 
   /**

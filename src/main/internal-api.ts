@@ -20,8 +20,16 @@ import {
   mergeDirectoryResults,
   dispatchSearch,
   mergeSearchResults,
+  dispatchListing,
+  mergeListing,
 } from '../backend/search-merge';
-import type { SearchResult, DirectoryResult, SiloStatus, SearchParams } from '../shared/types';
+import type {
+  SearchResult,
+  DirectoryResult,
+  SiloStatus,
+  ListingParams,
+  SearchParams,
+} from '../shared/types';
 import type { EditOperation, EditResult } from '../backend/edit';
 import { MailReadError } from '../backend/mail/account';
 import { resolveMailMirrorFile } from './mail-attachment-route';
@@ -150,6 +158,9 @@ export class InternalApi {
         case 'search':
           result = await this.handleSearch(req.params ?? {});
           break;
+        case 'listByDate':
+          result = await this.handleListByDate(req.params ?? {});
+          break;
         case 'explore':
           result = await this.handleExplore(req.params ?? {});
           break;
@@ -256,6 +267,35 @@ export class InternalApi {
     }));
 
     return { results, warnings };
+  }
+
+  private async handleListByDate(params: Record<string, unknown>): Promise<{
+    results: SearchResult[];
+    warnings: string[];
+    total: number;
+  }> {
+    const siloNames = toSiloNames(params.silo);
+    const limit = (params.limit as number) ?? 10;
+    const offset = (params.offset as number) ?? 0;
+    const listingParams: ListingParams = {
+      startPath: params.startPath as string | undefined,
+      filePattern: params.filePattern as string | undefined,
+      dateFromMs: params.dateFromMs as number | undefined,
+      dateToMs: params.dateToMs as number | undefined,
+      limit,
+      offset,
+    };
+
+    this.ctx.mainWindow?.webContents.send('mcp:activity', {
+      channel: 'silo',
+      siloName: siloNames?.length === 1 ? siloNames[0] : undefined,
+    });
+
+    const ready = selectSilos(this.ctx.siloManagers, siloNames);
+    const warnings = await siloWarnings(ready, false);
+    const { raw, total } = await dispatchListing(listingParams, ready);
+    const results = mergeListing(raw, offset, limit);
+    return { results, warnings, total };
   }
 
   /**

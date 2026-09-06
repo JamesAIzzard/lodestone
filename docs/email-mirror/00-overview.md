@@ -7,7 +7,8 @@ Status: ready to implement · Branch: `develop` · Last updated: 2026-09-06
 Mirror selected email into local Markdown files, one file per message, inside a read-only
 Lodestone silo per mailbox. The existing watcher, chunker, embedder and ranker index the mirror
 like any other folder, so email hits appear in the same ranked result set as files and
-`lodestone_read` returns a message like any note. No new MCP tools.
+`lodestone_read` returns a message like any note. Phase 9 adds an explicit on-demand read for one
+supported attachment without adding attachment content to the mirror or index.
 
 All mailboxes are reached over IMAP. Microsoft 365 mailboxes authenticate with XOAUTH2 using
 Thunderbird's registered client ID, which both target tenants have been verified to accept.
@@ -30,6 +31,7 @@ ones as shown.
 | 6 | [phase-06-account-wiring.md](phase-06-account-wiring.md) | `[mail_accounts.*]` config, account registry, scheduler, managed silo registration, removal, IPC | 1, 3, 4, 5 |
 | 7 | [phase-07-sources-ui.md](phase-07-sources-ui.md) | Add source flow, email form, account card, settings, remove | 6 |
 | 8 | [phase-08-guide-and-acceptance.md](phase-08-guide-and-acceptance.md) | `lodestone_guide` text, manual acceptance pass | 7 |
+| 9 | [phase-09-on-demand-attachment-reads.md](phase-09-on-demand-attachment-reads.md) | Explicit whole-attachment retrieval for supported PDFs, text and images; no caching or indexing | 8 |
 
 ```mermaid
 flowchart LR
@@ -42,6 +44,7 @@ flowchart LR
   P5 --> P6
   P6 --> P7[7 Sources UI]
   P7 --> P8[8 Guide and acceptance]
+  P8 --> P9[9 On-demand attachments]
 ```
 
 Phases 1 and 2 have no dependencies and can be done in either order or in parallel. Phase 2

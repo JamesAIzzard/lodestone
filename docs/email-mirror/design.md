@@ -11,7 +11,9 @@ Build a Windows-only module that mirrors selected email into local Markdown file
 message, inside a read-only Lodestone silo per mailbox. Nothing else changes: the existing
 watcher, chunker, embedder and ranker index the mirror like any other folder, so email hits appear
 in the same ranked result set as files, and `lodestone_read` reads a message the same way it
-reads a note. The module adds no MCP tools.
+reads a note. Routine mirroring adds no attachment content to that index. Phase 9 adds one
+explicit MCP tool that can retrieve and read one supported attachment on demand without
+retaining it.
 
 The module never sends mail and never changes anything on the server. Its credentials are
 ordinary IMAP credentials, which are not read-only by nature; the read-only guarantee comes from
@@ -25,18 +27,20 @@ is a tested dependency, not a general guarantee: on 2026-09-06 both the Swansea 
 tenants issued a token for it with the IMAP scope, and `outlook.office365.com:993` accepted each
 token.
 
-Out of scope: calendar, attachment download, live reads, threading tools, Microsoft Graph,
-Gmail's native API, EWS, Exchange on-premises, shared mailboxes, and any server write operation.
+Out of scope: calendar, automatic attachment mirroring or indexing, attachment caching, live
+message reads, threading tools, Microsoft Graph, Gmail's native API, EWS, Exchange on-premises,
+shared mailboxes, and any server write operation.
 
 ## Adapter
 
 One IMAP adapter, built on `ImapFlow`, is constructed for one account with its decrypted
-credential and exposes three operations.
+credential and exposes four operations after phase 9.
 
 ```text
 listFolders()                    -> Folder[]
 listMessages(folder)             -> AsyncIterable<Entry>
 fetchMessage(message_key)        -> Message
+fetchAttachment(message_key, attachment_index, max_bytes) -> AttachmentContent
 ```
 
 A `Folder` has an opaque `folder_key`, a display `path`, and a `role` of `inbox`, `sent`,
@@ -68,9 +72,11 @@ prefer plain), and fetches only that part with a partial fetch `BODY.PEEK[<secti
 If the part's declared size exceeds 2 MiB the body is `truncated`. If no text leaf exists the
 body is `unsupported`; if the only candidates are `multipart/encrypted` or
 `application/pkcs7-mime` it is `encrypted`. The attachment list is read from `BODYSTRUCTURE`
-(disposition `attachment`, or any non-text leaf with a filename); attachment bytes never leave
-the server. The adapter decodes the part's content-transfer-encoding and charset and returns
-text.
+(disposition `attachment`, or any non-text leaf with a filename); routine mirroring never fetches
+attachment bytes. Phase 9 may fetch one complete attachment part only after an explicit MCP
+request, using `BODY.PEEK`, a hard byte limit and the same read-only command allowlist. The bytes
+are converted in memory and discarded after the response. The adapter decodes transfer encoding;
+the attachment reader applies charset decoding only to supported textual content.
 
 `message_key` is `uid:<folder_key>:<UIDVALIDITY>:<UID>`, where `folder_key` is the
 UTF-7-decoded mailbox path. A message copied into two folders yields two mirror files; accept
@@ -322,7 +328,9 @@ Silo naming: the connection form asks for a silo name and suggests `Mail: <displ
 name is what MCP clients see in `lodestone_status`, so it must identify the mailbox. The
 `lodestone_guide` startup text says that silos named `Mail: …` are read-only mirrors refreshed on
 a timer, that their frontmatter carries sender and date, and that `lodestone_read` on a hit
-returns the whole message.
+returns the whole message. After phase 9 it also says that attachment names are metadata until
+the client explicitly calls `lodestone_read_email_attachment`, which returns a supported
+attachment on demand without indexing or retaining it.
 
 ## Sources UI
 
@@ -355,9 +363,11 @@ Routine logs identify accounts by `account_hash`, never by `account_uid`, and co
 round timings, counts and error codes. They never contain queries, addresses, subjects, bodies,
 attachment filenames, tokens, passwords or raw server error text.
 
-Message content is inert text. The module never renders HTML, never follows links and never
-downloads attachments. The mirror is readable by any local process; only the credential is
-encrypted, and the connection summary says so.
+Message content is inert text. The module never renders active HTML or follows links. Routine
+mirroring does not download attachments; phase 9 downloads one supported attachment only after
+an explicit client request, returns an inert representation, and does not retain it. The mirror
+is readable by any local process; only the credential is encrypted, and the connection summary
+says so.
 
 ## Acceptance
 
@@ -375,6 +385,9 @@ real accounts for a manual pass:
   `IMAP.AccessAsUser.All offline_access` only.
 - A message with a 50 MiB attachment is mirrored with correct attachment metadata while
   transferring only its headers and text part.
+- An explicit `lodestone_read_email_attachment` call retrieves only the selected supported MIME
+  part with `PEEK`, returns its complete usable representation, and leaves no cached or indexed
+  attachment content. Unsupported and oversized attachments fail without partial content.
 - Every write route in Lodestone rejects operations under, or on an ancestor of, a mail silo
   root, including via overlapping silos, junctions and both ends of a move.
 - A crash injected between file rename and manifest commit, and between membership update and

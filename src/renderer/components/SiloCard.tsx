@@ -38,6 +38,28 @@ const stateConfig: Record<
   waiting: { label: 'Waiting', dotClass: 'bg-gray-400 animate-pulse', badgeVariant: 'secondary' },
 };
 
+export function SiloIndexBadge({ silo }: { silo: SiloStatus }) {
+  const state = stateConfig[silo.watcherState];
+  const progress = silo.reconcileProgress;
+  const progressPct =
+    progress && progress.total > 0
+      ? Math.min(Math.round((progress.current / progress.total) * 100), 99)
+      : null;
+
+  return (
+    <Badge variant={state.badgeVariant} className="gap-1.5 whitespace-nowrap">
+      <span className={cn('inline-block h-1.5 w-1.5 rounded-full', state.dotClass)} />
+      {silo.watcherState === 'indexing' && progressPct !== null
+        ? progress?.fileStage === 'compacting'
+          ? 'Compacting…'
+          : progress?.fileStage === 'flushing'
+            ? 'Saving…'
+            : `Indexing ${progressPct}%`
+        : state.label}
+    </Badge>
+  );
+}
+
 interface SiloCardProps {
   silo: SiloStatus;
   onClick: () => void;
@@ -65,7 +87,6 @@ export default function SiloCard({
     setCopiedPath(path);
     setTimeout(() => setCopiedPath(null), 2000);
   }, []);
-  const state = stateConfig[watcherState];
   const colorClasses = SILO_COLOR_MAP[config.accentColor];
   const isStopped = watcherState === 'stopped';
   const isWaiting = watcherState === 'waiting';
@@ -92,16 +113,7 @@ export default function SiloCard({
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5">
-            <Badge variant={state.badgeVariant} className="gap-1.5 whitespace-nowrap">
-              <span className={cn('inline-block h-1.5 w-1.5 rounded-full', state.dotClass)} />
-              {isActive && progressPct !== null
-                ? reconcileProgress?.fileStage === 'compacting'
-                  ? 'Compacting…'
-                  : reconcileProgress?.fileStage === 'flushing'
-                    ? 'Saving…'
-                    : `Indexing ${progressPct}%`
-                : state.label}
-            </Badge>
+            <SiloIndexBadge silo={silo} />
             {config.readOnly && <Badge variant="secondary">Read-only</Badge>}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">

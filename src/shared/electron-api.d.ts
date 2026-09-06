@@ -12,6 +12,7 @@ import type {
 import type { MailAccountTomlConfig } from '../backend/config';
 import type { MailAccountStatus } from '../backend/mail/account';
 import type { Folder } from '../backend/mail/types';
+import type { SiloColor, SiloIconName } from './silo-appearance';
 
 export type MailCredentialInput =
   | { kind: 'password'; password: string }
@@ -26,9 +27,11 @@ export interface LodestoneMailAPI {
     username: string;
     auth: MailCredentialInput & { clientId?: string };
   }) => Promise<{ ok: boolean; folders?: Folder[]; error?: string }>;
+  cancelSetup: (input: { host: string; port: number; username: string }) => Promise<void>;
   create: (input: {
     config: MailAccountTomlConfig;
     credential: MailCredentialInput;
+    appearance?: { accentColor: SiloColor; iconName: SiloIconName };
   }) => Promise<{ success: boolean; hash?: string; error?: string }>;
   updateSettings: (input: {
     hash: string;
@@ -90,6 +93,7 @@ export interface ElectronAPI {
   selectDbFile: () => Promise<string | null>;
   saveDbFile: (defaultName: string) => Promise<string | null>;
   openPath: (path: string) => Promise<void>;
+  openExternal: (url: string) => Promise<void>;
   showItemInFolder: (path: string) => Promise<void>;
   readDbConfig: (dbPath: string) => Promise<StoredSiloConfigResponse | null>;
 

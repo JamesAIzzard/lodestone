@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveDbFile: (defaultName: string): Promise<string | null> =>
     ipcRenderer.invoke('dialog:saveDbFile', defaultName),
   openPath: (path: string): Promise<void> => ipcRenderer.invoke('shell:openPath', path),
+  openExternal: (url: string): Promise<void> => ipcRenderer.invoke('shell:openExternal', url),
   showItemInFolder: (path: string): Promise<void> =>
     ipcRenderer.invoke('shell:showItemInFolder', path),
   readDbConfig: (dbPath: string): Promise<unknown> => ipcRenderer.invoke('db:readConfig', dbPath),
@@ -102,6 +103,7 @@ contextBridge.exposeInMainWorld('lodestone', {
       ipcRenderer.invoke('mail:begin-oauth', input),
     testConnection: (input: unknown): Promise<unknown> =>
       ipcRenderer.invoke('mail:test-connection', input),
+    cancelSetup: (input: unknown): Promise<void> => ipcRenderer.invoke('mail:cancel-setup', input),
     create: (input: unknown): Promise<unknown> => ipcRenderer.invoke('mail:create', input),
     updateSettings: (input: unknown): Promise<unknown> =>
       ipcRenderer.invoke('mail:update-settings', input),

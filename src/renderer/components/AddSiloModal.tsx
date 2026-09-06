@@ -8,7 +8,7 @@ import {
   DialogFooter,
 } from './ui/dialog';
 import { Button } from './ui/button';
-import { FolderOpen, Plus, X, HardDrive, DatabaseZap } from 'lucide-react';
+import { FolderOpen, Plus, X, HardDrive, DatabaseZap, Mail } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toSlug } from '@/lib/format';
 import ExtensionPicker from './ExtensionPicker';
@@ -22,6 +22,7 @@ import {
   type SiloIconName,
 } from '../../shared/silo-appearance';
 import type { StoredSiloConfigResponse } from '../../shared/electron-api';
+import AddMailAccountWizard from './mail/AddMailAccountWizard';
 
 const NEW_STEPS = ['Mode', 'Name', 'Directories', 'Extensions', 'Storage'] as const;
 const EXISTING_STEPS = ['Mode', 'Storage', 'Name', 'Directories', 'Extensions'] as const;
@@ -34,6 +35,8 @@ interface AddSiloModalProps {
 }
 
 export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloModalProps) {
+  const [sourceType, setSourceType] = useState<'files' | 'mail' | null>(null);
+  const [sourceChoice, setSourceChoice] = useState<'files' | 'mail' | null>(null);
   const [stepIndex, setStepIndex] = useState(0);
   const [mode, setMode] = useState<'new' | 'existing' | null>(null);
   const [name, setName] = useState('');
@@ -55,7 +58,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
 
   const steps = mode === 'existing' ? EXISTING_STEPS : NEW_STEPS;
   const step: Step = steps[stepIndex];
-  const isFirst = stepIndex === 0;
+  const isFirst = sourceType === null;
   const isLast = stepIndex === steps.length - 1;
 
   // Fetch defaults and auto-assign colour on mount
@@ -80,6 +83,8 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
 
   function reset() {
     setStepIndex(0);
+    setSourceType(null);
+    setSourceChoice(null);
     setMode(null);
     setName('');
     setDescription('');
@@ -100,6 +105,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   }
 
   function canAdvance(): boolean {
+    if (sourceType === null) return sourceChoice !== null;
     switch (step) {
       case 'Mode':
         return mode !== null;
@@ -115,6 +121,10 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
   }
 
   async function handleNext() {
+    if (sourceType === null) {
+      setSourceType(sourceChoice);
+      return;
+    }
     if (isLast) {
       setCreating(true);
       setError(null);
@@ -179,30 +189,90 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
     }
   }
 
+  if (sourceType === 'mail') {
+    return <AddMailAccountWizard open={open} onOpenChange={handleClose} onCreated={onCreated} />;
+  }
+
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{mode === 'existing' ? 'Connect Database' : 'Create Silo'}</DialogTitle>
+          <DialogTitle>
+            {sourceType === null
+              ? 'Add source'
+              : mode === 'existing'
+                ? 'Connect Database'
+                : 'Create Silo'}
+          </DialogTitle>
           <DialogDescription>
-            Step {stepIndex + 1} of {steps.length}: {step}
+            {sourceType === null
+              ? 'Choose the kind of source to add.'
+              : `Step ${stepIndex + 2} of ${steps.length + 1}: ${step}`}
           </DialogDescription>
         </DialogHeader>
 
         {/* Step indicator */}
         <div className="mt-2 flex gap-1">
-          {steps.map((_, i) => (
+          {(sourceType === null ? ['Source'] : ['Source', ...steps]).map((_, i) => (
             <div
               key={i}
-              className={cn('h-1 flex-1 rounded-full', i <= stepIndex ? 'bg-primary' : 'bg-muted')}
+              className={cn(
+                'h-1 flex-1 rounded-full',
+                i <= (sourceType === null ? 0 : stepIndex + 1) ? 'bg-primary' : 'bg-muted',
+              )}
             />
           ))}
         </div>
 
         {/* Step content */}
         <div className="mt-4 min-h-[140px]">
+          {sourceType === null && (
+            <div>
+              <label className="mb-3 block text-sm text-muted-foreground">
+                What would you like Lodestone to index?
+              </label>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => setSourceChoice('files')}
+                  className={cn(
+                    'flex items-center gap-3 rounded-md border px-4 py-3 text-left text-sm transition-colors',
+                    sourceChoice === 'files'
+                      ? 'border-primary bg-primary/10'
+                      : 'border-border hover:border-foreground/20',
+                  )}
+                >
+                  <FolderOpen className="h-5 w-5" />
+                  <div>
+                    <div className="font-medium">Files and folders</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Create or reconnect a file silo
+                    </div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSourceChoice('mail')}
+                  className={cn(
+                    'flex items-center gap-3 rounded-md border px-4 py-3 text-left text-sm transition-colors',
+                    sourceChoice === 'mail'
+                      ? 'border-primary bg-primary/10'
+                      : 'border-border hover:border-foreground/20',
+                  )}
+                >
+                  <Mail className="h-5 w-5" />
+                  <div>
+                    <div className="font-medium">Email account</div>
+                    <div className="text-[11px] text-muted-foreground">
+                      Mirror a read-only IMAP mailbox
+                    </div>
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
           {/* ── Mode ─────────────────────────────────────────────── */}
-          {step === 'Mode' && (
+          {sourceType === 'files' && step === 'Mode' && (
             <div>
               <label className="mb-3 block text-sm text-muted-foreground">
                 How would you like to set up this silo?
@@ -245,7 +315,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
           )}
 
           {/* ── Name ─────────────────────────────────────────────── */}
-          {step === 'Name' && (
+          {sourceType === 'files' && step === 'Name' && (
             <div>
               <label className="mb-2 block text-sm text-muted-foreground">
                 Give your silo a name
@@ -284,7 +354,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
           )}
 
           {/* ── Directories ──────────────────────────────────────── */}
-          {step === 'Directories' && (
+          {sourceType === 'files' && step === 'Directories' && (
             <div>
               {/* Show original directories from DB as reference */}
               {mode === 'existing' && originalDirectories.length > 0 && (
@@ -343,7 +413,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
           )}
 
           {/* ── Extensions ───────────────────────────────────────── */}
-          {step === 'Extensions' && (
+          {sourceType === 'files' && step === 'Extensions' && (
             <div>
               <label className="mb-2 block text-sm text-muted-foreground">
                 File extensions to index
@@ -353,7 +423,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
           )}
 
           {/* ── Storage ──────────────────────────────────────────── */}
-          {step === 'Storage' && mode === 'new' && (
+          {sourceType === 'files' && step === 'Storage' && mode === 'new' && (
             <div>
               <label className="mb-3 block text-sm text-muted-foreground">
                 Database storage location
@@ -387,7 +457,7 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
             </div>
           )}
 
-          {step === 'Storage' && mode === 'existing' && (
+          {sourceType === 'files' && step === 'Storage' && mode === 'existing' && (
             <div>
               <label className="mb-3 block text-sm text-muted-foreground">
                 Select a database file to reconnect
@@ -430,7 +500,10 @@ export default function AddSiloModal({ open, onOpenChange, onCreated }: AddSiloM
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setStepIndex((i) => i - 1)}
+              onClick={() => {
+                if (stepIndex === 0) setSourceType(null);
+                else setStepIndex((i) => i - 1);
+              }}
               disabled={creating}
             >
               Back

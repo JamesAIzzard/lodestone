@@ -102,6 +102,12 @@ function registerDialogHandlers(): void {
     await shell.openPath(filePath);
   });
 
+  ipcMain.handle('shell:openExternal', async (_event, targetUrl: string) => {
+    const url = new URL(targetUrl);
+    if (url.protocol !== 'https:') throw new Error('Only HTTPS links can be opened.');
+    await shell.openExternal(url.toString());
+  });
+
   ipcMain.handle('shell:showItemInFolder', (_event, filePath: string) => {
     shell.showItemInFolder(filePath);
   });
@@ -635,10 +641,22 @@ function registerMailHandlers(ctx: AppContext): void {
   );
 
   ipcMain.handle(
+    'mail:cancel-setup',
+    (_event, input: { host: string; port: number; username: string }): void => {
+      testedOAuthCredentials.delete(accountUid(input.host, input.port, input.username));
+      pendingAuthorisations.clear();
+    },
+  );
+
+  ipcMain.handle(
     'mail:create',
     async (
       _event,
-      input: { config: MailAccountInput; credential: MailCredentialInput },
+      input: {
+        config: MailAccountInput;
+        credential: MailCredentialInput;
+        appearance?: { accentColor: string; iconName: string };
+      },
     ): Promise<{ success: boolean; hash?: string; error?: string }> => {
       if (!ctx.config) return { success: false, error: 'Config not loaded' };
       const uid = accountUid(input.config.host, input.config.port, input.config.username);
@@ -672,7 +690,11 @@ function registerMailHandlers(ctx: AppContext): void {
         await ensureDirs(paths);
         await store.save(hash, credential);
         ctx.config.mail_accounts[hash] = config;
-        ensureMailSiloConfig(ctx.config, ctx.getUserDataDir(), hash, config);
+        const siloConfig = ensureMailSiloConfig(ctx.config, ctx.getUserDataDir(), hash, config);
+        if (input.appearance) {
+          siloConfig.accent_color = validateSiloColor(input.appearance.accentColor);
+          siloConfig.icon_name = validateSiloIcon(input.appearance.iconName);
+        }
         createdSiloName = config.silo_name;
         saveLodestoneConfig(ctx.configPath(), ctx.config);
 

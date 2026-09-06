@@ -222,6 +222,12 @@ export class Manifest {
     ).map(mapFolder);
   }
 
+  folders(): FolderRecord[] {
+    return (this.db.prepare('SELECT * FROM folder ORDER BY folder_key').all() as DbFolderRow[]).map(
+      mapFolder,
+    );
+  }
+
   allSelectedFoldersComplete(round: number): boolean {
     const row = this.db
       .prepare(

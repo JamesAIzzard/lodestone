@@ -100,7 +100,16 @@ describe('MailAccount', () => {
 
     expect(availability).toEqual([false, true]);
     expect(fixture.manifest.getState('selection_revision')).toBe('1');
-    expect(fixture.account.status().selectionSummary).toBe('1 selected folder');
+    expect(fixture.account.status()).toMatchObject({
+      selectionSummary: '1 selected folder',
+      username: 'user@example.com',
+      receivedAfter: 'unlimited',
+      selectionMode: 'default',
+      selectedFolders: [],
+      syncIntervalSeconds: 300,
+      folders: [{ folderKey: 'INBOX', path: 'INBOX', role: 'inbox', uidValidity: 1 }],
+      isGmail: false,
+    });
     await fixture.account.shutdown();
   });
 

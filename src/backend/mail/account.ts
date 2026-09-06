@@ -8,6 +8,7 @@ import { createAccessTokenSource } from './token-source';
 import { MICROSOFT_THUNDERBIRD } from './oauth';
 import type { MailAdapter } from './adapter';
 import { AdapterError } from './adapter';
+import type { Folder } from './types';
 import type { Manifest } from './manifest';
 import type { MirrorDirs } from './mirror-files';
 import { Synchroniser, type MailSelection, type RoundOutcome } from './sync';
@@ -31,6 +32,14 @@ export interface MailAccountStatus {
   lastError: string | null;
   messageCount: number;
   selectionSummary: string;
+  username: string;
+  oauthClientId?: string;
+  receivedAfter: string;
+  selectionMode: 'default' | 'explicit';
+  selectedFolders: string[];
+  syncIntervalSeconds: number;
+  folders: Folder[];
+  isGmail: boolean;
   removalFailedStep?: RemovalStep;
 }
 
@@ -104,6 +113,7 @@ export class MailAccount {
   private removalFailedStep: RemovalStep | undefined;
   private cachedMessageCount = 0;
   private cachedLastCompleted: string | null = null;
+  private cachedFolders: Folder[] = [];
   private selectionReconciliationPending = false;
 
   constructor(options: MailAccountOptions) {
@@ -148,6 +158,12 @@ export class MailAccount {
     if (this.manifestOpen) {
       this.cachedMessageCount = this.manifest.messageCount();
       this.cachedLastCompleted = this.manifest.getState('last_round_completed_at');
+      this.cachedFolders = this.manifest.folders().map((folder) => ({
+        folderKey: folder.folderKey,
+        path: folder.path,
+        role: folder.role,
+        uidValidity: folder.uidValidity,
+      }));
     }
     return {
       accountHash: this.accountHash,
@@ -165,6 +181,16 @@ export class MailAccount {
         : this.state('last_error'),
       messageCount: this.cachedMessageCount,
       selectionSummary: this.selectionSummary(),
+      username: this.config.username,
+      oauthClientId: this.config.oauth_client_id,
+      receivedAfter: this.config.received_after,
+      selectionMode: this.config.selection_mode,
+      selectedFolders: [...this.config.selected_folders],
+      syncIntervalSeconds: this.config.sync_interval_seconds,
+      folders: this.cachedFolders,
+      isGmail:
+        this.cachedFolders.some((folder) => folder.role === 'all') ||
+        this.config.host.toLowerCase() === 'imap.gmail.com',
       removalFailedStep: this.removalFailedStep,
     };
   }

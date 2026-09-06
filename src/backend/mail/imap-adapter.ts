@@ -19,7 +19,10 @@ import type { Entry, Folder, FolderRole, Message, MessageHeaders, MessageKey } f
 
 export type ImapAuth =
   | { kind: 'password'; password: string }
-  | { kind: 'xoauth2'; accessToken: () => Promise<string> };
+  | {
+      kind: 'xoauth2';
+      accessToken: (() => Promise<string>) & { invalidate?: () => void };
+    };
 
 export type ImapAdapterLog = (event: string, details: Record<string, string | number>) => void;
 
@@ -95,29 +98,29 @@ export function createImapAdapter(
   options: CreateImapAdapterOptions,
   clientFactory: ClientFactory = (clientOptions) => new ImapFlow(clientOptions),
 ): ImapMailAdapter {
-  if (options.auth.kind === 'xoauth2') {
-    throw new AdapterError('unsupported');
-  }
-
   const commandLog: string[] = [];
   const logger = createCommandLogger(commandLog, options.log);
-  const client = clientFactory({
-    host: options.host,
-    port: options.port,
-    secure: true,
-    auth: { user: options.username, pass: options.auth.password },
-    logger,
-    disableAutoIdle: true,
-    disableAutoEnable: true,
-    disableBinary: true,
-    connectionTimeout: 30_000,
-    socketTimeout: 60_000,
-  });
-  client.on('error', (error) =>
-    options.log('imap-error', { error_kind: mapImapError(error).kind }),
-  );
-
-  return new ImapFlowAdapter(client, commandLog, options.log);
+  const createClient = (credential: { pass: string } | { accessToken: string }): ImapClient => {
+    const client = clientFactory({
+      host: options.host,
+      port: options.port,
+      secure: true,
+      auth: { user: options.username, ...credential },
+      logger,
+      disableAutoIdle: true,
+      disableAutoEnable: true,
+      disableBinary: true,
+      connectionTimeout: 30_000,
+      socketTimeout: 60_000,
+    });
+    client.on('error', (error) =>
+      options.log('imap-error', { error_kind: mapImapError(error).kind }),
+    );
+    return client;
+  };
+  const initialClient =
+    options.auth.kind === 'password' ? createClient({ pass: options.auth.password }) : null;
+  return new ImapFlowAdapter(initialClient, createClient, options.auth, commandLog, options.log);
 }
 
 class ImapFlowAdapter implements ImapMailAdapter {
@@ -130,7 +133,11 @@ class ImapFlowAdapter implements ImapMailAdapter {
   private readonly locations = new Map<MessageKey, MessageLocation>();
 
   constructor(
-    private readonly client: ImapClient,
+    private client: ImapClient | null,
+    private readonly createClient: (
+      credential: { pass: string } | { accessToken: string },
+    ) => ImapClient,
+    private readonly auth: ImapAuth,
     readonly commandLog: readonly string[],
     private readonly log: ImapAdapterLog,
   ) {}
@@ -150,13 +157,14 @@ class ImapFlowAdapter implements ImapMailAdapter {
   async listFolders(): Promise<Folder[]> {
     return this.run(async () => {
       await this.ensureConnected();
-      const listed = await this.client.list({ statusQuery: { uidValidity: true }, listOnly: true });
+      const client = this.requireClient();
+      const listed = await client.list({ statusQuery: { uidValidity: true }, listOnly: true });
       const selectable = listed.filter((item) => !hasAttribute(item.flags, '\\Noselect'));
       const folders = await Promise.all(
         selectable.map(async (item) => {
           const uidValidity =
             item.status?.uidValidity ??
-            (await this.client.status(item.path, { uidValidity: true })).uidValidity;
+            (await client.status(item.path, { uidValidity: true })).uidValidity;
           return folderFromListResponse(item, uidValidity);
         }),
       );
@@ -170,13 +178,14 @@ class ImapFlowAdapter implements ImapMailAdapter {
   async *listMessages(folder: Folder, receivedAfter: Date | null = null): AsyncIterable<Entry> {
     try {
       await this.ensureConnected();
-      const lock = await this.client.getMailboxLock(folder.path, { readOnly: true });
+      const client = this.requireClient();
+      const lock = await client.getMailboxLock(folder.path, { readOnly: true });
       try {
-        const uidValidity = currentUidValidity(this.client.mailbox);
+        const uidValidity = currentUidValidity(client.mailbox);
         if (uidValidity !== folder.uidValidity) {
           throw new AdapterError('protocol', 'uidvalidity-changed');
         }
-        const uids = await this.client.search(
+        const uids = await client.search(
           receivedAfter ? { since: utcCalendarDay(receivedAfter) } : { all: true },
           { uid: true },
         );
@@ -189,7 +198,7 @@ class ImapFlowAdapter implements ImapMailAdapter {
             flags: true,
             ...(this.gmail ? { labels: true } : {}),
           };
-          for await (const item of this.client.fetch(batch, query, { uid: true })) {
+          for await (const item of client.fetch(batch, query, { uid: true })) {
             const entry = this.entryFromFetch(item, folder, uidValidity, receivedAfter);
             if (entry) yield entry;
           }
@@ -205,26 +214,27 @@ class ImapFlowAdapter implements ImapMailAdapter {
   async fetchMessage(messageKey: MessageKey): Promise<Message> {
     return this.run(async () => {
       await this.ensureConnected();
+      const client = this.requireClient();
       let location = this.locationFor(messageKey);
       if (!location) {
         const folder = this.gmailFolder ?? (await this.listFolders())[0];
         if (!folder || folder.role !== 'all') throw new AdapterError('not-found');
         location = { folderPath: folder.path, uid: 0, uidValidity: folder.uidValidity };
       }
-      const lock = await this.client.getMailboxLock(location.folderPath, { readOnly: true });
+      const lock = await client.getMailboxLock(location.folderPath, { readOnly: true });
       try {
-        const receivedBefore = this.client.stats().received;
-        if (currentUidValidity(this.client.mailbox) !== location.uidValidity) {
+        const receivedBefore = client.stats().received;
+        if (currentUidValidity(client.mailbox) !== location.uidValidity) {
           throw new AdapterError('protocol', 'uidvalidity-changed');
         }
         if (location.uid === 0) {
-          const uids = await this.client.search({ emailId: messageKey.slice(3) }, { uid: true });
+          const uids = await client.search({ emailId: messageKey.slice(3) }, { uid: true });
           const uid = uids && uids[0];
           if (!uid) throw new AdapterError('not-found');
           location = { ...location, uid };
           this.locations.set(messageKey, location);
         }
-        const fetched = await this.client.fetchOne(
+        const fetched = await client.fetchOne(
           location.uid,
           { bodyStructure: true, headers: true },
           { uid: true },
@@ -240,7 +250,7 @@ class ImapFlowAdapter implements ImapMailAdapter {
           fetched.headers,
         );
         this.log('imap-message-fetched', {
-          received_bytes: this.client.stats().received - receivedBefore,
+          received_bytes: client.stats().received - receivedBefore,
         });
         return message;
       } finally {
@@ -253,7 +263,7 @@ class ImapFlowAdapter implements ImapMailAdapter {
     if (!this.connected && !this.connectPromise) return;
     try {
       await this.connectPromise;
-      if (this.client.usable) await this.client.logout();
+      if (this.client?.usable) await this.client.logout();
     } catch (error) {
       throw mapImapError(error);
     } finally {
@@ -263,14 +273,9 @@ class ImapFlowAdapter implements ImapMailAdapter {
   }
 
   private async ensureConnected(): Promise<void> {
-    if (this.connected && this.client.usable) return;
+    if (this.connected && this.client?.usable) return;
     if (!this.connectPromise) {
-      this.connectPromise = this.client.connect().then(() => {
-        this.connected = true;
-        this.gmail = this.client.capabilities.has('X-GM-EXT-1');
-        this.condstore = this.client.capabilities.has('CONDSTORE');
-        this.qresync = this.client.capabilities.has('QRESYNC');
-      });
+      this.connectPromise = this.connect();
     }
     const pending = this.connectPromise;
     try {
@@ -278,6 +283,46 @@ class ImapFlowAdapter implements ImapMailAdapter {
     } finally {
       if (this.connectPromise === pending) this.connectPromise = null;
     }
+  }
+
+  private async connect(): Promise<void> {
+    if (this.auth.kind === 'password') {
+      this.client ??= this.createClient({ pass: this.auth.password });
+      await this.connectClient(this.client);
+      return;
+    }
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const accessToken = await this.auth.accessToken();
+      const client = this.createClient({ accessToken });
+      this.client = client;
+      try {
+        await this.connectClient(client);
+        return;
+      } catch (error) {
+        const mapped = mapImapError(error);
+        this.client = null;
+        this.connected = false;
+        if (attempt === 0 && mapped.kind === 'auth') {
+          this.auth.accessToken.invalidate?.();
+          continue;
+        }
+        throw mapped;
+      }
+    }
+  }
+
+  private async connectClient(client: ImapClient): Promise<void> {
+    await client.connect();
+    this.connected = true;
+    this.gmail = client.capabilities.has('X-GM-EXT-1');
+    this.condstore = client.capabilities.has('CONDSTORE');
+    this.qresync = client.capabilities.has('QRESYNC');
+  }
+
+  private requireClient(): ImapClient {
+    if (!this.client) throw new AdapterError('protocol', 'imap-client-unavailable');
+    return this.client;
   }
 
   private entryFromFetch(
@@ -324,6 +369,7 @@ class ImapFlowAdapter implements ImapMailAdapter {
     structure: MessageStructureObject,
     rawHeaders: Buffer,
   ): Promise<Message> {
+    const client = this.requireClient();
     const attachments = listAttachments(structure);
     const choice = chooseBodyPart(structure);
     if ('status' in choice) {
@@ -336,7 +382,7 @@ class ImapFlowAdapter implements ImapMailAdapter {
       };
     }
 
-    const download = await this.client.download(uid, choice.section, {
+    const download = await client.download(uid, choice.section, {
       uid: true,
       maxBytes: PARTIAL_FETCH_LIMIT,
     });

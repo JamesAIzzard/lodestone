@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { accountHash, accountUid } from './identity';
+import { InMemoryCredentialStore } from './credential-store';
 import { createImapAdapter, IMAP_COMMAND_ALLOWLIST } from './imap-adapter';
+import { MICROSOFT_THUNDERBIRD } from './oauth';
+import { createAccessTokenSource } from './token-source';
 import type { Entry, Folder, Message } from './types';
 
 const hasStandardCredentials = Boolean(
@@ -9,6 +13,9 @@ const hasStandardCredentials = Boolean(
 );
 const hasGmailCredentials = Boolean(
   process.env.LODESTONE_TEST_GMAIL_USER && process.env.LODESTONE_TEST_GMAIL_APP_PASSWORD,
+);
+const hasMicrosoftCredentials = Boolean(
+  process.env.LODESTONE_TEST_M365_USER && process.env.LODESTONE_TEST_M365_REFRESH_TOKEN,
 );
 
 describe.skipIf(!hasStandardCredentials)('IMAP adapter integration', () => {
@@ -70,6 +77,41 @@ describe.skipIf(!hasGmailCredentials)('Gmail IMAP adapter integration', () => {
       expect(entries.length).toBeGreaterThan(0);
       expect(entries.every((entry) => entry.messageKey.startsWith('gm:'))).toBe(true);
       expect(entries.every((entry) => Array.isArray(entry.labels))).toBe(true);
+      expect(adapter.commandLog.every((command) => IMAP_COMMAND_ALLOWLIST.has(command))).toBe(true);
+    } finally {
+      await adapter.close();
+    }
+  }, 120_000);
+});
+
+describe.skipIf(!hasMicrosoftCredentials)('Microsoft 365 IMAP adapter integration', () => {
+  it('refreshes an access token and lists folders with XOAUTH2', async () => {
+    const username = requiredEnvironment('LODESTONE_TEST_M365_USER');
+    const clientId = process.env.LODESTONE_TEST_M365_CLIENT_ID ?? MICROSOFT_THUNDERBIRD.clientId;
+    const uid = accountUid('outlook.office365.com', 993, username);
+    const hash = accountHash(uid);
+    const store = new InMemoryCredentialStore();
+    await store.save(hash, {
+      kind: 'oauth',
+      refreshToken: requiredEnvironment('LODESTONE_TEST_M365_REFRESH_TOKEN'),
+      clientId,
+    });
+    const accessToken = createAccessTokenSource(
+      { ...MICROSOFT_THUNDERBIRD, clientId },
+      store,
+      hash,
+    );
+    const adapter = createImapAdapter({
+      host: 'outlook.office365.com',
+      port: 993,
+      username,
+      auth: { kind: 'xoauth2', accessToken },
+      log: () => undefined,
+    });
+
+    try {
+      const folders = await adapter.listFolders();
+      expect(folders.length).toBeGreaterThan(0);
       expect(adapter.commandLog.every((command) => IMAP_COMMAND_ALLOWLIST.has(command))).toBe(true);
     } finally {
       await adapter.close();

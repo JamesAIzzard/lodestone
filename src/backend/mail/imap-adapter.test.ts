@@ -243,7 +243,7 @@ describe('IMAP adapter with a stubbed ImapFlow client', () => {
     expect(message.bodyStatus).toBe('unsupported');
   });
 
-  it('maps a missing fetched UID and rejects XOAUTH2 until phase 5', async () => {
+  it('maps a missing fetched UID', async () => {
     const client = new StubImapClient();
     client.fetchOneResponse = false;
     const adapter = adapterFor(client);
@@ -251,15 +251,110 @@ describe('IMAP adapter with a stubbed ImapFlow client', () => {
     await expect(adapter.fetchMessage('uid:INBOX:1:404')).rejects.toMatchObject({
       kind: 'not-found',
     });
-    expect(() =>
-      createImapAdapter({
-        host: 'imap.example.com',
-        port: 993,
-        username: 'user',
-        auth: { kind: 'xoauth2', accessToken: async () => 'token' },
-        log: () => undefined,
+  });
+
+  it('gets an OAuth token immediately before connecting', async () => {
+    const operations: string[] = [];
+    const client = new StubImapClient();
+    client.listResponses = [listResponse('INBOX', '\\Inbox', 1n)];
+    client.connect.mockImplementation(async () => {
+      operations.push('connect');
+    });
+    const accessToken = Object.assign(
+      vi.fn(async () => {
+        operations.push('token');
+        return 'access-token';
       }),
-    ).toThrowError(new AdapterError('unsupported'));
+      { invalidate: vi.fn() },
+    );
+    const adapter = createImapAdapter(
+      {
+        host: 'outlook.office365.com',
+        port: 993,
+        username: 'user@example.com',
+        auth: { kind: 'xoauth2', accessToken },
+        log: () => undefined,
+      },
+      (options) => {
+        operations.push('client');
+        client.options = options;
+        return client;
+      },
+    );
+
+    expect(operations).toEqual([]);
+    await adapter.listFolders();
+
+    expect(operations).toEqual(['token', 'client', 'connect']);
+    expect(client.options?.auth).toEqual({ user: 'user@example.com', accessToken: 'access-token' });
+  });
+
+  it('invalidates and retries OAuth once after an authentication failure', async () => {
+    const firstClient = new StubImapClient();
+    const secondClient = new StubImapClient();
+    secondClient.listResponses = [listResponse('INBOX', '\\Inbox', 1n)];
+    firstClient.connect.mockRejectedValue({ authenticationFailed: true, message: 'expired' });
+    const accessToken = Object.assign(
+      vi.fn().mockResolvedValueOnce('stale-token').mockResolvedValueOnce('fresh-token'),
+      { invalidate: vi.fn() },
+    );
+    const clients = [firstClient, secondClient];
+    const authOptions: ImapFlowOptions['auth'][] = [];
+    const adapter = createImapAdapter(
+      {
+        host: 'outlook.office365.com',
+        port: 993,
+        username: 'user@example.com',
+        auth: { kind: 'xoauth2', accessToken },
+        log: () => undefined,
+      },
+      (options) => {
+        authOptions.push(options.auth);
+        const client = clients.shift();
+        if (!client) throw new Error('Unexpected client creation.');
+        return client;
+      },
+    );
+
+    await expect(adapter.listFolders()).resolves.toHaveLength(1);
+
+    expect(accessToken).toHaveBeenCalledTimes(2);
+    expect(accessToken.invalidate).toHaveBeenCalledTimes(1);
+    expect(authOptions).toEqual([
+      { user: 'user@example.com', accessToken: 'stale-token' },
+      { user: 'user@example.com', accessToken: 'fresh-token' },
+    ]);
+  });
+
+  it('returns auth after the one allowed OAuth retry also fails', async () => {
+    const clients = [new StubImapClient(), new StubImapClient()];
+    for (const client of clients) {
+      client.connect.mockRejectedValue({ authenticationFailed: true, message: 'rejected' });
+    }
+    const accessToken = Object.assign(
+      vi.fn(async () => 'access-token'),
+      {
+        invalidate: vi.fn(),
+      },
+    );
+    const adapter = createImapAdapter(
+      {
+        host: 'outlook.office365.com',
+        port: 993,
+        username: 'user@example.com',
+        auth: { kind: 'xoauth2', accessToken },
+        log: () => undefined,
+      },
+      () => {
+        const client = clients.shift();
+        if (!client) throw new Error('Unexpected client creation.');
+        return client;
+      },
+    );
+
+    await expect(adapter.listFolders()).rejects.toMatchObject({ kind: 'auth' });
+    expect(accessToken).toHaveBeenCalledTimes(2);
+    expect(accessToken.invalidate).toHaveBeenCalledTimes(1);
   });
 
   it('logs out only after the connection has been used', async () => {

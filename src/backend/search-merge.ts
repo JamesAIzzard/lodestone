@@ -16,6 +16,7 @@ import type { DirectorySearchParams, SiloDirectorySearchResult } from './directo
 export interface SiloSearchResult {
   filePath: string;
   siloName: string;
+  dateMs: number | null;
   score: number;
   scoreLabel: string;
   signals: Record<string, number>;
@@ -53,6 +54,7 @@ export async function dispatchSearch(
         raw.push({
           filePath: r.filePath,
           siloName: name,
+          dateMs: r.dateMs,
           score: r.score,
           scoreLabel: r.scoreLabel,
           signals: r.signals,

@@ -459,7 +459,7 @@ export function fetchChunkMeta(db: SiloDatabase, chunkIds: Set<number>): Map<num
   for (const id of chunkIds) insert.run(id);
 
   const rows = db.prepare(`
-    SELECT c.id, c.file_id, f.stored_key, c.section_path, c.location_hint
+    SELECT c.id, c.file_id, f.stored_key, f.date_ms, c.section_path, c.location_hint
     FROM chunks c
     JOIN files f ON f.id = c.file_id
     JOIN _signal_ids t ON t.id = c.id

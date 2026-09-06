@@ -197,6 +197,7 @@ function registerSiloHandlers(ctx: AppContext): void {
       return merged.map((r) => ({
         filePath: r.filePath,
         siloName: r.siloName,
+        dateMs: r.dateMs,
         score: r.score,
         scoreLabel: r.scoreLabel,
         signals: r.signals,

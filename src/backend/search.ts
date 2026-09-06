@@ -35,6 +35,8 @@ const MODE_SIGNALS: Record<string, Signal[]> = {
 export interface FileResult {
   /** Stored key (silo-relative). Resolved to absolute path by silo-manager. */
   filePath: string;
+  /** Date used for filtering, as epoch milliseconds. */
+  dateMs: number | null;
   /** Final decaying-sum score [0, 1]. */
   score: number;
   /** Human-readable label: signal name or "convergence". */
@@ -150,6 +152,8 @@ export function search(
     queryTokens: tokenise(params.query),
     filePatternRe: params.filePattern ? globToRegex(params.filePattern) : null,
     startPath: params.startPath,
+    dateFromMs: params.dateFromMs,
+    dateToMs: params.dateToMs,
     maxResults,
     regexFlags: params.regexFlags,
   };
@@ -219,6 +223,7 @@ export function search(
 
     results.push({
       filePath,
+      dateMs: null,
       score: summary.score,
       scoreLabel: summary.label,
       signals: perSignal,
@@ -241,5 +246,17 @@ export function search(
   }
 
   if (results.length > maxResults) results.length = maxResults;
+  if (results.length === 0) return [];
+
+  const placeholders = results.map(() => '?').join(', ');
+  const dateRows = db
+    .prepare(`SELECT stored_key, date_ms FROM files WHERE stored_key IN (${placeholders})`)
+    .all(...results.map((result) => result.filePath)) as Array<{
+    stored_key: string;
+    date_ms: number | null;
+  }>;
+  const datesByFile = new Map(dateRows.map((row) => [row.stored_key, row.date_ms]));
+  for (const result of results) result.dateMs = datesByFile.get(result.filePath) ?? null;
+
   return results;
 }

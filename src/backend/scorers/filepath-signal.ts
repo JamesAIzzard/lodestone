@@ -12,6 +12,7 @@
  */
 
 import type { Signal, SignalContext, SignalResult } from './signal';
+import { passesFileFilters } from './signal';
 import { extractRelPath } from '../store/paths';
 import { levenshteinSimilarity, tokenCoverage } from './text-signals';
 import { decayingSum } from '../../shared/portable/decaying-sum';
@@ -32,13 +33,11 @@ export const filepathSignal: Signal = {
 
     // ── Scan all files ─────────────────────────────────────────────────
     const allFiles = ctx.db.prepare(
-      `SELECT stored_key FROM files`,
-    ).all() as Array<{ stored_key: string }>;
+      `SELECT stored_key, date_ms FROM files`,
+    ).all() as Array<{ stored_key: string; date_ms: number | null }>;
 
-    for (const { stored_key } of allFiles) {
-      // Apply filters
-      if (ctx.startPath && !stored_key.startsWith(ctx.startPath)) continue;
-      if (ctx.filePatternRe && !ctx.filePatternRe.test(extractRelPath(stored_key))) continue;
+    for (const { stored_key, date_ms } of allFiles) {
+      if (!passesFileFilters(ctx, stored_key, date_ms)) continue;
 
       const relPath = extractRelPath(stored_key);
       const segments = relPath.split('/').filter(Boolean);

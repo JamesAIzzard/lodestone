@@ -8,7 +8,7 @@
  */
 
 import type { Signal, SignalContext, SignalResult, SignalHint } from './signal';
-import { extractRelPath } from '../store/paths';
+import { passesFileFilters } from './signal';
 import { quantizeInt8 } from '../store/compression';
 import { fetchChunkMeta } from '../store/operations';
 
@@ -31,16 +31,40 @@ export const semanticSignal: Signal = {
 
     let vecRows: Array<{ rowid: number; distance: number }>;
     try {
-      vecRows = ctx.db.prepare(`
-        SELECT v.rowid, v.distance
-        FROM vec_chunks v
-        WHERE v.embedding MATCH vec_int8(?)
-          AND k = ?
-        ORDER BY v.distance
-      `).all(quantized, chunkLimit) as Array<{
-        rowid: number;
-        distance: number;
-      }>;
+      if (ctx.dateFromMs !== undefined || ctx.dateToMs !== undefined) {
+        vecRows = ctx.db
+          .prepare(
+            `
+          SELECT v.rowid, v.distance
+          FROM vec_chunks v
+          WHERE v.embedding MATCH vec_int8(?)
+            AND k = ?
+            AND v.rowid IN (
+              SELECT c.id
+              FROM chunks c
+              JOIN files f ON f.id = c.file_id
+              WHERE f.date_ms >= ? AND f.date_ms <= ?
+            )
+          ORDER BY v.distance
+        `,
+          )
+          .all(quantized, chunkLimit, ctx.dateFromMs ?? -1e18, ctx.dateToMs ?? 1e18) as Array<{
+          rowid: number;
+          distance: number;
+        }>;
+      } else {
+        vecRows = ctx.db
+          .prepare(
+            `
+          SELECT v.rowid, v.distance
+          FROM vec_chunks v
+          WHERE v.embedding MATCH vec_int8(?)
+            AND k = ?
+          ORDER BY v.distance
+        `,
+          )
+          .all(quantized, chunkLimit) as Array<{ rowid: number; distance: number }>;
+      }
     } catch (err) {
       console.error('[semantic-signal] KNN MATCH error:', err);
       return { scores, hints };
@@ -69,9 +93,7 @@ export const semanticSignal: Signal = {
       const meta = chunkMeta.get(chunkId);
       if (!meta) continue;
 
-      // Apply filters
-      if (ctx.startPath && !meta.stored_key.startsWith(ctx.startPath)) continue;
-      if (ctx.filePatternRe && !ctx.filePatternRe.test(extractRelPath(meta.stored_key))) continue;
+      if (!passesFileFilters(ctx, meta.stored_key, meta.date_ms)) continue;
 
       const arr = fileChunks.get(meta.stored_key);
       if (arr) {

@@ -7,8 +7,8 @@
  */
 
 import type { Signal, SignalContext, SignalResult, SignalHint } from './signal';
+import { passesFileFilters } from './signal';
 import type { ChunkMeta } from '../store/types';
-import { extractRelPath } from '../store/paths';
 import { fetchChunkMeta } from '../store/operations';
 import { scoreBm25 } from './bm25';
 
@@ -36,9 +36,7 @@ export const bm25Signal: Signal = {
       const meta = chunkMeta.get(chunkId);
       if (!meta) continue;
 
-      // Apply filters
-      if (ctx.startPath && !meta.stored_key.startsWith(ctx.startPath)) continue;
-      if (ctx.filePatternRe && !ctx.filePatternRe.test(extractRelPath(meta.stored_key))) continue;
+      if (!passesFileFilters(ctx, meta.stored_key, meta.date_ms)) continue;
 
       const arr = fileChunks.get(meta.stored_key);
       if (arr) {

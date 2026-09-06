@@ -85,6 +85,7 @@ export interface ChunkMeta {
   id: number;
   file_id: number;
   stored_key: string;
+  date_ms: number | null;
   section_path: string;
   location_hint: string | null;
 }

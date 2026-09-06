@@ -273,6 +273,7 @@ export class InternalApi {
     const results: SearchResult[] = merged.map((r) => ({
       filePath: r.filePath,
       siloName: r.siloName,
+      dateMs: r.dateMs,
       score: r.score,
       scoreLabel: r.scoreLabel,
       signals: r.signals,

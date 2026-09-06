@@ -20,7 +20,7 @@ import {
   MAX_READ_BYTES,
   PREVIEW_LINES,
 } from './formatting';
-import { textResponse, errorResponse, resolveDirPuid } from './response-helpers';
+import { textResponse, errorResponse, resolveDirPuid, resolveSiloRefs } from './response-helpers';
 import { parseDateWindow } from '../../shared/portable/date-bounds';
 
 export function registerSearchTool(
@@ -34,9 +34,11 @@ export function registerSearchTool(
     {
       query: z.string().describe('The search query \u2014 use natural language or code snippets'),
       silo: z
-        .string()
+        .union([z.string(), z.array(z.string()).min(1)])
         .optional()
-        .describe('Restrict search to a specific silo name (omit to search all)'),
+        .describe(
+          'Restrict to one or more silos, by name or by s-reference from lodestone_status (omit to use all).',
+        ),
       maxResults: z
         .number()
         .min(1)
@@ -78,8 +80,14 @@ export function registerSearchTool(
     },
     async ({ query, silo, maxResults, startPath, mode, filePattern, since, until, regexFlags }) => {
       try {
+        const siloResult = resolveSiloRefs(silo, puid);
+        if (siloResult !== undefined && !Array.isArray(siloResult)) return siloResult;
+        const siloNames = siloResult as string[] | undefined;
         const { dateFromMs, dateToMs } = parseDateWindow(since, until);
-        deps.notifyActivity?.({ channel: 'silo', siloName: silo });
+        deps.notifyActivity?.({
+          channel: 'silo',
+          siloName: siloNames?.length === 1 ? siloNames[0] : undefined,
+        });
         // Resolve d-prefixed puids in startPath to absolute paths
         let resolvedStartPath = startPath;
         if (startPath) {
@@ -90,7 +98,7 @@ export function registerSearchTool(
 
         const { results, warnings } = await deps.silo.search({
           query,
-          silo,
+          silo: siloNames,
           maxResults: maxResults ?? 10,
           startPath: resolvedStartPath,
           mode,
@@ -313,7 +321,11 @@ export function registerReadTool(server: McpServer, deps: McpServerDeps, puid: P
   );
 }
 
-export function registerStatusTool(server: McpServer, deps: McpServerDeps): void {
+export function registerStatusTool(
+  server: McpServer,
+  deps: McpServerDeps,
+  puid: PuidManager,
+): void {
   server.tool(
     'lodestone_status',
     'Get the current status of all Lodestone silos \u2014 file counts, index sizes, and watcher states.',
@@ -323,7 +335,7 @@ export function registerStatusTool(server: McpServer, deps: McpServerDeps): void
         const lines: string[] = ['# Lodestone Status', ''];
 
         for (const silo of silos) {
-          lines.push(`## ${silo.config.name}`);
+          lines.push(`## ${puid.assignSiloPuid(silo.config.name)}: ${silo.config.name}`);
           if (silo.config.contentDescription)
             lines.push(`Description: ${silo.config.contentDescription}`);
 
@@ -376,9 +388,11 @@ export function registerExploreTool(
         .optional()
         .describe('Search query for directory names and paths (omit for structural overview)'),
       silo: z
-        .string()
+        .union([z.string(), z.array(z.string()).min(1)])
         .optional()
-        .describe('Restrict to a specific silo name (omit to explore all)'),
+        .describe(
+          'Restrict to one or more silos, by name or by s-reference from lodestone_status (omit to use all).',
+        ),
       startPath: z
         .string()
         .optional()
@@ -408,7 +422,13 @@ export function registerExploreTool(
     },
     async ({ query, silo, startPath, maxDepth, maxResults, fullContents }) => {
       try {
-        deps.notifyActivity?.({ channel: 'silo', siloName: silo });
+        const siloResult = resolveSiloRefs(silo, puid);
+        if (siloResult !== undefined && !Array.isArray(siloResult)) return siloResult;
+        const siloNames = siloResult as string[] | undefined;
+        deps.notifyActivity?.({
+          channel: 'silo',
+          siloName: siloNames?.length === 1 ? siloNames[0] : undefined,
+        });
         // Resolve d-prefixed puids in startPath to absolute paths
         let resolvedStartPath = startPath;
         if (startPath) {
@@ -422,7 +442,7 @@ export function registerExploreTool(
 
         const { results, warnings } = await deps.silo.explore({
           query,
-          silo,
+          silo: siloNames,
           startPath: resolvedStartPath,
           maxDepth: maxDepth ?? 2,
           maxResults: maxResults ?? 20,

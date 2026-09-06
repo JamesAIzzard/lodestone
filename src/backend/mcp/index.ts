@@ -92,7 +92,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
   // Register all tools
   registerSearchTool(server, deps, puid);
   registerReadTool(server, deps, puid);
-  registerStatusTool(server, deps);
+  registerStatusTool(server, deps, puid);
   registerExploreTool(server, deps, puid);
   registerEditTool(server, deps, puid);
   registerAttachmentTool(server, deps, puid);

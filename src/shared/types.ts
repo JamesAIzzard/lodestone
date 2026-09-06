@@ -118,7 +118,7 @@ export interface DirectoryResult {
 
 export interface ExploreParams {
   query?: string;
-  silo?: string;
+  silo?: string | string[];
   startPath?: string;
   maxDepth?: number;
   maxResults?: number;

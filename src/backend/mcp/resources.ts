@@ -31,6 +31,8 @@ Lodestone searches, browses, reads, and edits files in configured silos.
 - \`lodestone_status\` reports silo availability and indexing state.
 - \`lodestone_get_datetime\` returns the current local date and time.
 
+\`lodestone_status\` labels each silo with an s reference. \`silo\` on search and explore takes a name or a reference, or an array of them.
+
 Use \`lodestone_search\` or \`lodestone_explore\` to locate material, then \`lodestone_read\` before editing. Every search result carries a date, and \`lodestone_search\` accepts inclusive \`since\` and \`until\` bounds.`;
 
 const MAIL_SILO_GUIDE = `## Mail Silos

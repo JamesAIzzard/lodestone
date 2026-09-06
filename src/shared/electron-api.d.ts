@@ -125,7 +125,7 @@ export interface ElectronAPI {
       iconName?: string;
     },
   ) => Promise<{ success: boolean; error?: string }>;
-  search: (params: SearchParams, siloName?: string) => Promise<SearchResult[]>;
+  search: (params: SearchParams, siloName?: string | string[]) => Promise<SearchResult[]>;
   explore: (params: ExploreParams) => Promise<DirectoryResult[]>;
 
   // ── Activity ───────────────────────────────────────────────────────────────

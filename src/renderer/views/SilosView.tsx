@@ -3,12 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import ActionButton from '@/components/ActionButton';
 import SiloCard from '@/components/SiloCard';
+import MailAccountCard from '@/components/mail/MailAccountCard';
 import AddSiloModal from '@/components/AddSiloModal';
 import type { SiloStatus } from '../../shared/types';
+import type { MailAccountStatus } from '../../backend/mail/account';
 
 export default function SilosView() {
   const navigate = useNavigate();
   const [silos, setSilos] = useState<SiloStatus[]>([]);
+  const [mailAccounts, setMailAccounts] = useState<MailAccountStatus[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   const [stoppingName, setStoppingName] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -17,10 +20,14 @@ export default function SilosView() {
   const [siloShimmerKeys, setSiloShimmerKeys] = useState<Record<string, number>>({});
   const silosRef = useRef<SiloStatus[]>([]);
 
-  function fetchSilos() {
-    window.electronAPI?.getSilos().then((s) => {
-      setSilos(s);
-      silosRef.current = s;
+  function fetchSources() {
+    void Promise.all([
+      window.electronAPI?.getSilos() ?? Promise.resolve([]),
+      window.lodestone?.mail.list() ?? Promise.resolve([]),
+    ]).then(([nextSilos, nextMailAccounts]) => {
+      setSilos(nextSilos);
+      setMailAccounts(nextMailAccounts);
+      silosRef.current = nextSilos;
     });
   }
 
@@ -29,9 +36,9 @@ export default function SilosView() {
   }, []);
 
   useEffect(() => {
-    fetchSilos();
+    fetchSources();
     // Re-fetch when state changes externally (e.g. tray stop/wake)
-    const unsubSilos = window.electronAPI?.onSilosChanged(fetchSilos);
+    const unsubSilos = window.electronAPI?.onSilosChanged(fetchSources);
     const unsubActivity = window.electronAPI?.onMcpActivity(({ channel, siloName }) => {
       if (channel === 'silo') {
         if (siloName) {
@@ -44,16 +51,19 @@ export default function SilosView() {
         }
       }
     });
-    return () => { unsubSilos?.(); unsubActivity?.(); };
+    return () => {
+      unsubSilos?.();
+      unsubActivity?.();
+    };
   }, [shimmerSilo]);
 
-  // Poll while any silo is indexing or waiting
+  // Poll while either the mailbox mirror or its ordinary silo index is active.
   useEffect(() => {
-    const anyActive = silos.some((s) =>
-      s.watcherState === 'indexing' || s.watcherState === 'waiting'
-    );
+    const anyActive =
+      mailAccounts.length > 0 ||
+      silos.some((s) => s.watcherState === 'indexing' || s.watcherState === 'waiting');
     if (anyActive && !pollRef.current) {
-      pollRef.current = setInterval(fetchSilos, 2000);
+      pollRef.current = setInterval(fetchSources, 2000);
     } else if (!anyActive && pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
@@ -64,11 +74,11 @@ export default function SilosView() {
         pollRef.current = null;
       }
     };
-  }, [silos]);
+  }, [mailAccounts, silos]);
 
   function handleRescan(silo: SiloStatus) {
     window.electronAPI?.rescanSilo(silo.config.name);
-    fetchSilos();
+    fetchSources();
   }
 
   function handleSearchInSilo(silo: SiloStatus) {
@@ -84,7 +94,7 @@ export default function SilosView() {
       } else {
         await window.electronAPI?.stopSilo(silo.config.name);
       }
-      fetchSilos();
+      fetchSources();
     } finally {
       if (isStop) setStoppingName(null);
     }
@@ -96,33 +106,45 @@ export default function SilosView() {
         <h1 className="text-lg font-semibold text-foreground">Silos</h1>
         <ActionButton
           icon={<Plus className="h-3.5 w-3.5" />}
-          label="Add silo"
+          label="Add source"
           onClick={() => setAddOpen(true)}
         />
       </div>
 
       {silos.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No silos configured. Add a silo to get started.
+          No sources configured. Add a source to get started.
         </p>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {silos.map((silo) => (
-            <SiloCard
-              key={silo.config.name}
-              silo={silo}
-              onClick={() => navigate(`/silos/${silo.config.name}`)}
-              onStopToggle={() => handleStopToggle(silo)}
-              isStopping={stoppingName === silo.config.name}
-              onRescan={() => handleRescan(silo)}
-              onSearchInSilo={() => handleSearchInSilo(silo)}
-              shimmerKey={siloShimmerKeys[silo.config.name] ?? 0}
-            />
-          ))}
+          {silos.map((silo) => {
+            const account = mailAccounts.find(
+              (candidate) => candidate.siloName === silo.config.name,
+            );
+            return account && silo.config.managedBy?.startsWith('mail:') ? (
+              <MailAccountCard
+                key={silo.config.name}
+                account={account}
+                silo={silo}
+                onChanged={fetchSources}
+              />
+            ) : (
+              <SiloCard
+                key={silo.config.name}
+                silo={silo}
+                onClick={() => navigate(`/silos/${silo.config.name}`)}
+                onStopToggle={() => handleStopToggle(silo)}
+                isStopping={stoppingName === silo.config.name}
+                onRescan={() => handleRescan(silo)}
+                onSearchInSilo={() => handleSearchInSilo(silo)}
+                shimmerKey={siloShimmerKeys[silo.config.name] ?? 0}
+              />
+            );
+          })}
         </div>
       )}
 
-      <AddSiloModal open={addOpen} onOpenChange={setAddOpen} onCreated={fetchSilos} />
+      <AddSiloModal open={addOpen} onOpenChange={setAddOpen} onCreated={fetchSources} />
     </div>
   );
 }

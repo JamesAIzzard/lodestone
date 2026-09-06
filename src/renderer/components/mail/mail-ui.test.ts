@@ -37,9 +37,9 @@ describe('mail wizard helpers', () => {
     expect(defaultReceivedAfter(new Date('2024-03-01T12:00:00Z'))).toBe('2023-03-02');
   });
 
-  it('states that message and index data are stored unencrypted', () => {
+  it('states what is stored and how attachment reads are discarded', () => {
     expect(MAIL_STORAGE_SUMMARY).toBe(
-      'Message text and search index data will be stored unencrypted under the Lodestone data directory.',
+      'Message text and search index data will be stored unencrypted under the Lodestone data directory. Attachments are never stored; one is downloaded only when explicitly requested through MCP and is discarded after the response.',
     );
   });
 });

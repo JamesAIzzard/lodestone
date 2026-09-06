@@ -47,6 +47,8 @@ describe('mail manifest', () => {
     expect(manifest.getState('sync_state')).toBe('idle');
     expect(manifest.folderUidValidity('inbox')).toBe(7);
     expect(manifest.message('message')?.fileName).toBe('message.md');
+    expect(manifest.messageByFileName('message.md')?.messageKey).toBe('message');
+    expect(manifest.messageByFileName('missing.md')).toBeNull();
     expect(manifest.membershipsForMessage('message')[0].path).toBe('Inbox');
   });
 });

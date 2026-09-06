@@ -5,6 +5,7 @@ import {
   type MailAdapterOperation,
 } from './adapter';
 import type { Entry, Folder, FolderKey, Message, MessageKey } from './types';
+import type { AttachmentContent } from './attachment';
 
 interface FakeFolder {
   folder: Folder;
@@ -19,6 +20,10 @@ export class FakeMailAdapter implements MailAdapter {
   private readonly messages = new Map<MessageKey, Message>();
   private readonly listingFailures = new Map<FolderKey, number>();
   private readonly fetchFailures = new Map<MessageKey, AdapterErrorKind>();
+  private readonly attachments = new Map<
+    MessageKey,
+    Array<AttachmentContent & { index: number }>
+  >();
   private throttledOperations = 0;
 
   constructor(options: { isGmail?: boolean; folders?: Folder[] } = {}) {
@@ -73,6 +78,39 @@ export class FakeMailAdapter implements MailAdapter {
     return structuredClone(message);
   }
 
+  async fetchAttachment(
+    messageKey: MessageKey,
+    attachmentIndex: number,
+    options: {
+      maxBytes: number;
+      expected: {
+        count: number;
+        attachment: { name: string | null; mime: string; size: number | null };
+      };
+    },
+  ): Promise<AttachmentContent> {
+    this.record(`fetchAttachment:${messageKey}:${attachmentIndex}`);
+    const stored = this.attachments.get(messageKey) ?? [];
+    const content = stored.find((item) => item.index === attachmentIndex);
+    if (!content) throw new AdapterError('not-found');
+    if (
+      stored.length !== options.expected.count ||
+      content.name !== options.expected.attachment.name ||
+      content.mime !== options.expected.attachment.mime ||
+      content.declaredSize !== options.expected.attachment.size
+    ) {
+      throw new AdapterError('stale');
+    }
+    if (content.bytes.byteLength > options.maxBytes) throw new AdapterError('too-large');
+    return {
+      bytes: Uint8Array.from(content.bytes),
+      mime: content.mime,
+      name: content.name,
+      charset: content.charset,
+      declaredSize: content.declaredSize,
+    };
+  }
+
   async close(): Promise<void> {
     this.record('close');
   }
@@ -89,6 +127,16 @@ export class FakeMailAdapter implements MailAdapter {
     const folder = this.requireFolder(folderKey);
     folder.entries.set(entry.messageKey, cloneEntry(entry));
     this.messages.set(entry.messageKey, structuredClone(message));
+  }
+
+  addAttachment(
+    messageKey: MessageKey,
+    attachment: Omit<AttachmentContent, 'bytes'>,
+    bytes: Uint8Array,
+  ): void {
+    const stored = this.attachments.get(messageKey) ?? [];
+    stored.push({ ...attachment, bytes: Uint8Array.from(bytes), index: stored.length + 1 });
+    this.attachments.set(messageKey, stored);
   }
 
   deleteMessage(messageKey: MessageKey, folderKey?: FolderKey): void {

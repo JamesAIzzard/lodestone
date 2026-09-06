@@ -5,6 +5,7 @@
 import type { Readable, Writable } from 'node:stream';
 import type { SearchResult, DirectoryResult, SiloStatus } from '../../shared/types';
 import type { EditOperation, EditResult } from '../edit';
+import type { AttachmentFetchResponse } from '../mail/attachment';
 
 export interface McpServerDeps {
   /** Custom input stream (e.g. a named-pipe socket). Falls back to process.stdin. */
@@ -42,6 +43,12 @@ export interface McpServerDeps {
     }) => Promise<EditResult>;
     /** Config defaults (e.g. contextLines). */
     getDefaults: () => Promise<{ contextLines: number }>;
+  };
+  mail: {
+    readAttachment: (params: {
+      filepath: string;
+      attachment: number;
+    }) => Promise<AttachmentFetchResponse>;
   };
   /** Current user-selected LLM instructions note. */
   getLlmInstructionsConfig: () => Promise<{ notePath?: string }>;

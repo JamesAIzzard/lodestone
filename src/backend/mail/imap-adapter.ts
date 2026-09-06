@@ -13,7 +13,13 @@ import type {
 } from 'imapflow';
 import libmime from 'libmime';
 import { AdapterError, type MailAdapter } from './adapter';
-import { chooseBodyPart, listAttachments, PARTIAL_FETCH_LIMIT } from './body-part';
+import { MAX_ATTACHMENT_BYTES, type AttachmentContent } from './attachment';
+import {
+  chooseBodyPart,
+  listAttachmentParts,
+  listAttachments,
+  PARTIAL_FETCH_LIMIT,
+} from './body-part';
 import { decodeBodyPart, htmlToText } from './decode';
 import type { Entry, Folder, FolderRole, Message, MessageHeaders, MessageKey } from './types';
 
@@ -92,6 +98,11 @@ interface MessageLocation {
   folderPath: string;
   uid: number;
   uidValidity: number;
+}
+
+interface LocatedMessage {
+  uid: number;
+  release: () => void;
 }
 
 export function createImapAdapter(
@@ -249,27 +260,11 @@ class ImapFlowAdapter implements ImapMailAdapter {
     return this.run(async () => {
       await this.ensureConnected();
       const client = this.requireClient();
-      let location = this.locationFor(messageKey);
-      if (!location) {
-        const folder = this.gmailFolder ?? (await this.listFolders())[0];
-        if (!folder || folder.role !== 'all') throw new AdapterError('not-found');
-        location = { folderPath: folder.path, uid: 0, uidValidity: folder.uidValidity };
-      }
-      const lock = await client.getMailboxLock(location.folderPath, { readOnly: true });
+      const located = await this.locateMessage(messageKey);
       try {
         const receivedBefore = client.stats().received;
-        if (currentUidValidity(client.mailbox) !== location.uidValidity) {
-          throw new AdapterError('protocol', 'uidvalidity-changed');
-        }
-        if (location.uid === 0) {
-          const uids = await client.search({ emailId: messageKey.slice(3) }, { uid: true });
-          const uid = uids && uids[0];
-          if (!uid) throw new AdapterError('not-found');
-          location = { ...location, uid };
-          this.locations.set(messageKey, location);
-        }
         const fetched = await client.fetchOne(
-          location.uid,
+          located.uid,
           { bodyStructure: true, headers: true },
           { uid: true },
         );
@@ -279,7 +274,7 @@ class ImapFlowAdapter implements ImapMailAdapter {
         }
 
         const message = await this.messageFromFetch(
-          location.uid,
+          located.uid,
           fetched.bodyStructure,
           fetched.headers,
         );
@@ -288,7 +283,68 @@ class ImapFlowAdapter implements ImapMailAdapter {
         });
         return message;
       } finally {
-        lock.release();
+        located.release();
+      }
+    });
+  }
+
+  async fetchAttachment(
+    messageKey: MessageKey,
+    attachmentIndex: number,
+    options: {
+      maxBytes: number;
+      expected: {
+        count: number;
+        attachment: { name: string | null; mime: string; size: number | null };
+      };
+    },
+  ): Promise<AttachmentContent> {
+    return this.run(async () => {
+      if (!Number.isInteger(attachmentIndex) || attachmentIndex < 1) {
+        throw new AdapterError('not-found');
+      }
+      const startedAt = Date.now();
+      await this.ensureConnected();
+      const client = this.requireClient();
+      const located = await this.locateMessage(messageKey);
+      try {
+        const fetched = await client.fetchOne(located.uid, { bodyStructure: true }, { uid: true });
+        if (!fetched || !fetched.bodyStructure) throw new AdapterError('not-found');
+        const parts = listAttachmentParts(fetched.bodyStructure);
+        const part = parts[attachmentIndex - 1];
+        if (!part) throw new AdapterError('not-found');
+        if (
+          parts.length !== options.expected.count ||
+          part.name !== options.expected.attachment.name ||
+          part.mime !== options.expected.attachment.mime ||
+          part.size !== options.expected.attachment.size
+        ) {
+          throw new AdapterError('stale');
+        }
+        if (part.size !== null && part.size > 3 * MAX_ATTACHMENT_BYTES) {
+          throw new AdapterError('too-large');
+        }
+
+        const downloaded = await client.download(located.uid, part.section, {
+          uid: true,
+          maxBytes: options.maxBytes + 1,
+        });
+        if (!downloaded?.content) throw new AdapterError('not-found');
+        const bytes = await readAttachmentStream(downloaded.content, options.maxBytes);
+        this.log('imap-attachment-fetched', {
+          received_bytes: bytes.byteLength,
+          mime: part.mime,
+          duration_ms: Date.now() - startedAt,
+        });
+        return {
+          bytes,
+          mime: part.mime,
+          name: part.name,
+          charset: part.charset,
+          declaredSize: part.size,
+        };
+      } finally {
+        located.release();
       }
     });
   }
@@ -399,6 +455,31 @@ class ImapFlowAdapter implements ImapMailAdapter {
       return { folderPath: parsed.folderKey, uid: parsed.uid, uidValidity: parsed.uidValidity };
     if (this.gmail && messageKey.startsWith('gm:')) return undefined;
     throw new AdapterError('not-found');
+  }
+
+  private async locateMessage(messageKey: MessageKey): Promise<LocatedMessage> {
+    const client = this.requireClient();
+    let location = this.locationFor(messageKey);
+    if (!location) {
+      const folder = this.gmailFolder ?? (await this.listFolders())[0];
+      if (!folder || folder.role !== 'all') throw new AdapterError('not-found');
+      location = { folderPath: folder.path, uid: 0, uidValidity: folder.uidValidity };
+    }
+    const lock = await client.getMailboxLock(location.folderPath, { readOnly: true });
+    try {
+      this.assertUidValidity(client, location.uidValidity);
+      if (location.uid === 0) {
+        const uids = await client.search({ emailId: messageKey.slice(3) }, { uid: true });
+        const uid = uids && uids[0];
+        if (!uid) throw new AdapterError('not-found');
+        location = { ...location, uid };
+        this.locations.set(messageKey, location);
+      }
+      return { uid: location.uid, release: () => lock.release() };
+    } catch (error) {
+      lock.release();
+      throw error;
+    }
   }
 
   private async messageFromFetch(
@@ -645,6 +726,24 @@ async function readStream(stream: NodeJS.ReadableStream, limit: number): Promise
     if (remaining <= 0) break;
     chunks.push(bytes.subarray(0, remaining));
     length += Math.min(bytes.length, remaining);
+  }
+  return Buffer.concat(chunks, length);
+}
+
+async function readAttachmentStream(
+  stream: NodeJS.ReadableStream,
+  limit: number,
+): Promise<Uint8Array> {
+  const chunks: Buffer[] = [];
+  let length = 0;
+  for await (const chunk of stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    length += bytes.byteLength;
+    if (length > limit) {
+      if ('destroy' in stream && typeof stream.destroy === 'function') stream.destroy();
+      throw new AdapterError('too-large');
+    }
+    chunks.push(bytes);
   }
   return Buffer.concat(chunks, length);
 }

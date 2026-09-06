@@ -1,9 +1,12 @@
-import type { Entry, Folder, FolderKey, Message, MessageKey } from './types';
+import type { Attachment, Entry, Folder, FolderKey, Message, MessageKey } from './types';
+import type { AttachmentContent } from './attachment';
 
 export type AdapterErrorKind =
   | 'auth'
   | 'transient'
   | 'not-found'
+  | 'too-large'
+  | 'stale'
   | 'unsupported'
   | 'encrypted'
   | 'protocol';
@@ -28,6 +31,14 @@ export interface MailAdapter {
     onCount?: (total: number) => void,
   ): AsyncIterable<Entry>;
   fetchMessage(messageKey: MessageKey): Promise<Message>;
+  fetchAttachment(
+    messageKey: MessageKey,
+    attachmentIndex: number,
+    options: {
+      maxBytes: number;
+      expected: { count: number; attachment: Attachment };
+    },
+  ): Promise<AttachmentContent>;
   close(): Promise<void>;
 }
 
@@ -35,4 +46,5 @@ export type MailAdapterOperation =
   | 'listFolders'
   | `listMessages:${FolderKey}`
   | `fetchMessage:${MessageKey}`
+  | `fetchAttachment:${MessageKey}:${number}`
   | 'close';

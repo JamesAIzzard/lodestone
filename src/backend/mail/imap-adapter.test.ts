@@ -8,6 +8,7 @@ import type {
   MailboxObject,
 } from 'imapflow';
 import { AdapterError } from './adapter';
+import { MAX_ATTACHMENT_BYTES } from './attachment';
 import {
   createCommandLogger,
   createImapAdapter,
@@ -274,6 +275,123 @@ describe('IMAP adapter with a stubbed ImapFlow client', () => {
     });
   });
 
+  it('fetches only the selected attachment section with one oversize sentinel byte', async () => {
+    const client = new StubImapClient();
+    client.fetchOneResponse = attachmentFetch();
+    client.downloadBytes = Buffer.from('attachment bytes');
+    const adapter = adapterFor(client);
+
+    await expect(
+      adapter.fetchAttachment('uid:INBOX:1:4', 2, {
+        maxBytes: 32,
+        expected: {
+          count: 2,
+          attachment: { name: 'photo.png', mime: 'image/png', size: 16 },
+        },
+      }),
+    ).resolves.toMatchObject({
+      bytes: client.downloadBytes,
+      mime: 'image/png',
+      name: 'photo.png',
+      charset: null,
+      declaredSize: 16,
+    });
+    expect(client.download).toHaveBeenCalledWith(4, '3', { uid: true, maxBytes: 33 });
+  });
+
+  it('rejects invalid ordinals and stale metadata without downloading a part', async () => {
+    const client = new StubImapClient();
+    client.fetchOneResponse = attachmentFetch();
+    const adapter = adapterFor(client);
+    const expected = {
+      count: 2,
+      attachment: { name: 'report.txt', mime: 'text/plain', size: 12 },
+    };
+
+    await expect(
+      adapter.fetchAttachment('uid:INBOX:1:4', 0, { maxBytes: 50, expected }),
+    ).rejects.toMatchObject({ kind: 'not-found' });
+    await expect(
+      adapter.fetchAttachment('uid:INBOX:1:4', 3, { maxBytes: 50, expected }),
+    ).rejects.toMatchObject({ kind: 'not-found' });
+    await expect(
+      adapter.fetchAttachment('uid:INBOX:1:4', 1, {
+        maxBytes: 50,
+        expected: { ...expected, count: 3 },
+      }),
+    ).rejects.toMatchObject({ kind: 'stale' });
+    await expect(
+      adapter.fetchAttachment('uid:INBOX:1:4', 1, {
+        maxBytes: 50,
+        expected: { count: 2, attachment: { ...expected.attachment, name: 'other.txt' } },
+      }),
+    ).rejects.toMatchObject({ kind: 'stale' });
+    expect(client.download).not.toHaveBeenCalled();
+  });
+
+  it('rejects declared and received oversize attachments without returning partial bytes', async () => {
+    const client = new StubImapClient();
+    client.fetchOneResponse = attachmentFetch(3 * MAX_ATTACHMENT_BYTES + 1);
+    const adapter = adapterFor(client);
+    await expect(
+      adapter.fetchAttachment('uid:INBOX:1:4', 1, {
+        maxBytes: MAX_ATTACHMENT_BYTES,
+        expected: {
+          count: 2,
+          attachment: {
+            name: 'report.txt',
+            mime: 'text/plain',
+            size: 3 * MAX_ATTACHMENT_BYTES + 1,
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ kind: 'too-large' });
+    expect(client.download).not.toHaveBeenCalled();
+
+    client.fetchOneResponse = attachmentFetch(5);
+    const oversizedStream = Readable.from([Buffer.alloc(5)]);
+    const destroy = vi.spyOn(oversizedStream, 'destroy');
+    client.downloadStream = oversizedStream;
+    await expect(
+      adapter.fetchAttachment('uid:INBOX:1:4', 1, {
+        maxBytes: 4,
+        expected: { count: 2, attachment: { name: 'report.txt', mime: 'text/plain', size: 5 } },
+      }),
+    ).rejects.toMatchObject({ kind: 'too-large' });
+    expect(destroy).toHaveBeenCalled();
+
+    client.downloadStream = null;
+    client.downloadBytes = Buffer.alloc(4);
+    client.fetchOneResponse = attachmentFetch(4);
+    await expect(
+      adapter.fetchAttachment('uid:INBOX:1:4', 1, {
+        maxBytes: 4,
+        expected: { count: 2, attachment: { name: 'report.txt', mime: 'text/plain', size: 4 } },
+      }),
+    ).resolves.toMatchObject({ bytes: Buffer.alloc(4) });
+  });
+
+  it('maps a missing message or empty download result to not-found', async () => {
+    const client = new StubImapClient();
+    const adapter = adapterFor(client);
+    const options = {
+      maxBytes: 50,
+      expected: {
+        count: 2,
+        attachment: { name: 'report.txt', mime: 'text/plain', size: 12 },
+      },
+    };
+    await expect(adapter.fetchAttachment('uid:INBOX:1:4', 1, options)).rejects.toMatchObject({
+      kind: 'not-found',
+    });
+
+    client.fetchOneResponse = attachmentFetch();
+    client.downloadMissing = true;
+    await expect(adapter.fetchAttachment('uid:INBOX:1:4', 1, options)).rejects.toMatchObject({
+      kind: 'not-found',
+    });
+  });
+
   it('gets an OAuth token immediately before connecting', async () => {
     const operations: string[] = [];
     const client = new StubImapClient();
@@ -431,6 +549,8 @@ class StubImapClient {
   fetchResponses: FetchMessageObject[] = [];
   fetchOneResponse: FetchMessageObject | false = false;
   downloadBytes = Buffer.alloc(0);
+  downloadStream: Readable | null = null;
+  downloadMissing = false;
   statusUidValidity: bigint | undefined;
   logger: Logger | false | undefined;
   options: ImapFlowOptions | undefined;
@@ -446,7 +566,10 @@ class StubImapClient {
   });
   readonly search = vi.fn(async () => this.searchResponse);
   readonly fetchOne = vi.fn(async () => this.fetchOneResponse);
-  readonly download = vi.fn(async () => ({ content: Readable.from([this.downloadBytes]) }));
+  readonly download = vi.fn(async (): Promise<{ content: NodeJS.ReadableStream }> => {
+    if (this.downloadMissing) return {} as { content: NodeJS.ReadableStream };
+    return { content: this.downloadStream ?? Readable.from([this.downloadBytes]) };
+  });
   readonly stats = vi.fn(() => ({ sent: 0, received: 0 }));
 
   constructor(capabilities: string[] = []) {
@@ -522,6 +645,34 @@ function fetchedEntry(
     emailId,
     labels,
     flags: new Set(['\\Seen']),
+  };
+}
+
+function attachmentFetch(firstSize = 12): FetchMessageObject {
+  return {
+    seq: 4,
+    uid: 4,
+    bodyStructure: {
+      type: 'multipart/mixed',
+      childNodes: [
+        { part: '1', type: 'text/plain' },
+        {
+          part: '2',
+          type: 'text/plain',
+          parameters: { charset: 'iso-8859-1' },
+          disposition: 'attachment',
+          dispositionParameters: { filename: 'report.txt' },
+          size: firstSize,
+        },
+        {
+          part: '3',
+          type: 'image/png',
+          disposition: 'attachment',
+          dispositionParameters: { filename: 'photo.png' },
+          size: 16,
+        },
+      ],
+    },
   };
 }
 

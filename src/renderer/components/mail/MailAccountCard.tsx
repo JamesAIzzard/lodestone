@@ -143,7 +143,7 @@ export default function MailAccountCard({
 
         <div className="space-y-1 text-xs text-muted-foreground">
           <div className="flex items-center justify-between gap-3">
-            <span>{account.messageCount.toLocaleString()} messages mirrored</span>
+            <span>{account.messageCount.toLocaleString()} items mirrored</span>
             <span>{silo.indexedFileCount.toLocaleString()} indexed</span>
           </div>
           <p className="truncate">{account.selectionSummary}</p>

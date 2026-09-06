@@ -28,6 +28,7 @@ import {
 import { registerEditTool } from './tools-edit';
 import { registerResources, registerGuideTool, registerDateTimeTool } from './resources';
 import { buildDatetime } from './formatting';
+import { registerAttachmentTool } from './tools-attachment';
 
 /**
  * Patch server.tool so every registered handler automatically appends the
@@ -94,6 +95,7 @@ export async function startMcpServer(deps: McpServerDeps): Promise<McpServerHand
   registerStatusTool(server, deps);
   registerExploreTool(server, deps, puid);
   registerEditTool(server, deps, puid);
+  registerAttachmentTool(server, deps, puid);
 
   // Register guide tool (on-demand usage guides) and resources
   registerGuideTool(server, deps.getLlmInstructionsConfig);

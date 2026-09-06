@@ -28,6 +28,8 @@ describe('getGuideText', () => {
       'frontmatter records the sender, recipients, date, folders and attachment names',
     );
     expect(guide).toContain('`lodestone_read` returns the whole message');
+    expect(guide).toContain('`lodestone_read_email_attachment`');
+    expect(guide).toContain('without being indexed or retained');
     expect(guide).toContain('lag the mailbox by up to the sync interval');
     expect(guide).toContain('`lodestone_edit` cannot modify them');
   });

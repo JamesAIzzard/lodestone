@@ -4,6 +4,7 @@ import fixturesJson from './fixtures/body-structures.json';
 import {
   PARTIAL_FETCH_LIMIT,
   chooseBodyPart,
+  listAttachmentParts,
   listAttachments,
   type ImapBodyStructure,
 } from './body-part';
@@ -84,5 +85,56 @@ describe('listAttachments', () => {
         childNodes: [{ type: 'application/zip', disposition: 'attachment' }],
       }),
     ).toEqual([{ name: null, mime: 'application/zip', size: null }]);
+  });
+
+  it('keeps deterministic retrieval metadata out of the mirrored projection', () => {
+    const structure: ImapBodyStructure = {
+      type: 'multipart/mixed',
+      childNodes: [
+        { type: 'text/plain' },
+        {
+          type: 'multipart/mixed',
+          childNodes: [
+            {
+              type: 'text/plain',
+              disposition: 'attachment',
+              dispositionParameters: { filename: 'notes.txt' },
+              parameters: { charset: 'iso-8859-1' },
+              encoding: 'quoted-printable',
+              size: 12,
+            },
+            {
+              part: '2.2',
+              type: 'application/pdf',
+              disposition: 'attachment',
+              dispositionParameters: { filename: 'notes.txt' },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(listAttachmentParts(structure)).toEqual([
+      {
+        name: 'notes.txt',
+        mime: 'text/plain',
+        size: 12,
+        section: '2.1',
+        encoding: 'quoted-printable',
+        charset: 'iso-8859-1',
+      },
+      {
+        name: 'notes.txt',
+        mime: 'application/pdf',
+        size: null,
+        section: '2.2',
+        encoding: '7bit',
+        charset: null,
+      },
+    ]);
+    expect(listAttachments(structure)).toEqual([
+      { name: 'notes.txt', mime: 'text/plain', size: 12 },
+      { name: 'notes.txt', mime: 'application/pdf', size: null },
+    ]);
   });
 });

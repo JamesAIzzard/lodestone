@@ -10,6 +10,7 @@ import type { SearchResult, DirectoryResult, SiloStatus } from '../shared/types'
 import type { EditResult } from '../backend/edit';
 import type { AppContext } from './context';
 import { GUI_PIPE_NAME } from './internal-api';
+import type { AttachmentFetchResponse } from '../backend/mail/attachment';
 
 const RPC_TIMEOUT_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -54,7 +55,11 @@ class GuiPipeClient {
     });
   }
 
-  call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
+  call<T = unknown>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs = RPC_TIMEOUT_MS,
+  ): Promise<T> {
     const id = this.nextId++;
     const msg = JSON.stringify({ id, method, params }) + '\n';
 
@@ -63,10 +68,10 @@ class GuiPipeClient {
         this.pending.delete(id);
         reject(
           new Error(
-            `RPC call '${method}' timed out after ${RPC_TIMEOUT_MS / 1000}s; is the Lodestone GUI responsive?`,
+            `RPC call '${method}' timed out after ${timeoutMs / 1000}s; is the Lodestone GUI responsive?`,
           ),
         );
-      }, RPC_TIMEOUT_MS);
+      }, timeoutMs);
 
       this.pending.set(id, {
         resolve: (result: unknown) => {
@@ -196,6 +201,10 @@ function startProxiedMcpServer(
       status: () => gui.call<{ silos: SiloStatus[] }>('status'),
       edit: (params) => gui.call<EditResult>('edit', params),
       getDefaults: () => gui.call<{ contextLines: number }>('getDefaults'),
+    },
+    mail: {
+      readAttachment: (params) =>
+        gui.call<AttachmentFetchResponse>('email.readAttachment', params, 180_000),
     },
     getLlmInstructionsConfig: () => gui.call<{ notePath?: string }>('getLlmInstructionsConfig'),
     notifyActivity: (params) => {

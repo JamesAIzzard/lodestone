@@ -245,6 +245,13 @@ export class Manifest {
     return row ? mapMessage(row) : null;
   }
 
+  messageByFileName(fileName: string): MessageRecord | null {
+    const row = this.db.prepare('SELECT * FROM message WHERE file_name = ?').get(fileName) as
+      | DbMessageRow
+      | undefined;
+    return row ? mapMessage(row) : null;
+  }
+
   messages(): MessageRecord[] {
     return (
       this.db.prepare('SELECT * FROM message ORDER BY message_key').all() as DbMessageRow[]

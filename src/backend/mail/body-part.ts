@@ -19,6 +19,12 @@ interface TextCandidate {
   mime: TextMime;
 }
 
+export interface AttachmentPart extends Attachment {
+  section: string;
+  encoding: string;
+  charset: string | null;
+}
+
 export function chooseBodyPart(structure: ImapBodyStructure): BodyPartChoice {
   const candidates: TextCandidate[] = [];
   let hasEncryptedContent = false;
@@ -50,8 +56,12 @@ export function chooseBodyPart(structure: ImapBodyStructure): BodyPartChoice {
 }
 
 export function listAttachments(structure: ImapBodyStructure): Attachment[] {
-  const attachments: Attachment[] = [];
-  walkStructure(structure, '1', true, false, (node) => {
+  return listAttachmentParts(structure).map(({ name, mime, size }) => ({ name, mime, size }));
+}
+
+export function listAttachmentParts(structure: ImapBodyStructure): AttachmentPart[] {
+  const attachments: AttachmentPart[] = [];
+  walkStructure(structure, '1', true, false, (node, section) => {
     if (node.childNodes?.length) return;
 
     const type = normaliseToken(node.type);
@@ -66,6 +76,9 @@ export function listAttachments(structure: ImapBodyStructure): Attachment[] {
         name: filename ?? null,
         mime: type || 'application/octet-stream',
         size: node.size ?? null,
+        section: node.part ?? section,
+        encoding: node.encoding ?? '7bit',
+        charset: parameter(node.parameters, 'charset') ?? null,
       });
     }
   });

@@ -1,4 +1,6 @@
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
+import path from 'node:path';
+import matter from 'gray-matter';
 
 import type { MailAccountTomlConfig } from '../config';
 import { accountUid } from './identity';
@@ -6,9 +8,8 @@ import type { Credential, CredentialStore } from './credential-store';
 import { createImapAdapter } from './imap-adapter';
 import { createAccessTokenSource } from './token-source';
 import { MICROSOFT_THUNDERBIRD } from './oauth';
-import type { MailAdapter } from './adapter';
-import { AdapterError } from './adapter';
-import type { Folder } from './types';
+import { AdapterError, type AdapterErrorKind, type MailAdapter } from './adapter';
+import type { Attachment, Folder } from './types';
 import type { Manifest } from './manifest';
 import type { MirrorDirs } from './mirror-files';
 import {
@@ -18,6 +19,7 @@ import {
   type RoundOutcome,
 } from './sync';
 import { createMailLogger, type MailLogSink } from './logger';
+import { MAX_ATTACHMENT_BYTES, type AttachmentContent } from './attachment';
 
 export type MailSyncState =
   | 'initialising'
@@ -85,6 +87,18 @@ export class MailRemovalError extends Error {
   }
 }
 
+export type MailReadErrorReason = 'unavailable' | AdapterErrorKind;
+
+export class MailReadError extends Error {
+  constructor(
+    public readonly reason: MailReadErrorReason,
+    options?: ErrorOptions,
+  ) {
+    super(reason, options);
+    this.name = 'MailReadError';
+  }
+}
+
 export interface MailAccountOptions {
   accountHash: string;
   config: MailAccountTomlConfig;
@@ -123,6 +137,7 @@ export class MailAccount {
   private cachedFolders: Folder[] = [];
   private selectionReconciliationPending = false;
   private mirrorProgress: MailMirrorProgress | undefined;
+  private lifecycleTransitions = 0;
 
   constructor(options: MailAccountOptions) {
     this.accountHash = options.accountHash;
@@ -159,10 +174,12 @@ export class MailAccount {
   }
 
   async pause(): Promise<void> {
-    await this.scheduler.stop();
-    await this.closeAdapter();
-    this.mirrorProgress = undefined;
-    this.manifest.setState('sync_state', 'paused');
+    await this.duringLifecycleTransition(async () => {
+      await this.scheduler.stop();
+      await this.closeAdapter();
+      this.mirrorProgress = undefined;
+      this.manifest.setState('sync_state', 'paused');
+    });
   }
 
   resume(): void {
@@ -228,16 +245,18 @@ export class MailAccount {
     mode: 'default' | 'explicit';
     folderKeys: string[];
   }): Promise<void> {
-    await this.scheduler.stop();
-    this.selection.receivedAfter = next.receivedAfter;
-    this.selection.mode = next.mode;
-    this.selection.folderKeys = [...next.folderKeys];
-    this.selection.revision += 1;
-    this.manifest.setState('selection_revision', String(this.selection.revision));
+    await this.duringLifecycleTransition(async () => {
+      await this.scheduler.stop();
+      this.selection.receivedAfter = next.receivedAfter;
+      this.selection.mode = next.mode;
+      this.selection.folderKeys = [...next.folderKeys];
+      this.selection.revision += 1;
+      this.manifest.setState('selection_revision', String(this.selection.revision));
 
-    this.selectionReconciliationPending = true;
-    const outcome = await this.resumeSelectionReconciliation();
-    if (outcome !== 'completed') throw new Error(`Mail reconciliation ${outcome}.`);
+      this.selectionReconciliationPending = true;
+      const outcome = await this.resumeSelectionReconciliation();
+      if (outcome !== 'completed') throw new Error(`Mail reconciliation ${outcome}.`);
+    });
   }
 
   private async resumeSelectionReconciliation(): Promise<RoundOutcome> {
@@ -266,30 +285,35 @@ export class MailAccount {
   }
 
   async reconnect(credential: Credential): Promise<void> {
-    await this.scheduler.stop();
-    await this.closeAdapter();
-    await this.credentialStore.save(this.accountHash, credential);
-    this.manifest.deleteState('last_error');
-    this.manifest.setState('sync_state', 'initialising');
-    if (this.selectionReconciliationPending) {
-      const outcome = await this.resumeSelectionReconciliation();
-      if (outcome !== 'completed') throw new Error(`Mail reconciliation ${outcome}.`);
-    } else {
-      this.scheduler.start();
-    }
+    await this.duringLifecycleTransition(async () => {
+      await this.scheduler.stop();
+      await this.closeAdapter();
+      await this.credentialStore.save(this.accountHash, credential);
+      this.manifest.deleteState('last_error');
+      this.manifest.setState('sync_state', 'initialising');
+      if (this.selectionReconciliationPending) {
+        const outcome = await this.resumeSelectionReconciliation();
+        if (outcome !== 'completed') throw new Error(`Mail reconciliation ${outcome}.`);
+      } else {
+        this.scheduler.start();
+      }
+    });
   }
 
   async shutdown(): Promise<void> {
-    await this.scheduler.stop();
-    await this.closeAdapter();
-    if (this.manifestOpen) {
-      this.manifest.close();
-      this.manifestOpen = false;
-    }
+    await this.duringLifecycleTransition(async () => {
+      await this.scheduler.stop();
+      await this.closeAdapter();
+      if (this.manifestOpen) {
+        this.manifest.close();
+        this.manifestOpen = false;
+      }
+    });
   }
 
   async remove(): Promise<void> {
     this.removing = true;
+    this.lifecycleTransitions += 1;
     this.silo.setAvailable(false);
     try {
       await this.removalStep('stop-scheduler', () => this.scheduler.stop());
@@ -320,6 +344,34 @@ export class MailAccount {
       this.removalFailedStep = undefined;
     } finally {
       this.removing = false;
+      this.lifecycleTransitions -= 1;
+    }
+  }
+
+  async readAttachment(fileName: string, attachmentIndex: number): Promise<AttachmentContent> {
+    const startedAt = Date.now();
+    try {
+      this.assertAttachmentReadAvailable();
+      const record = this.manifest.messageByFileName(fileName);
+      if (!record) throw new MailReadError('not-found');
+      const expected = await this.readExpectedAttachment(fileName, attachmentIndex);
+      this.assertAttachmentReadAvailable();
+      const content = await this.scheduler.exclusive(async () => {
+        if (!this.adapter) this.adapter = await this.createAdapter();
+        return this.adapter.fetchAttachment(record.messageKey, attachmentIndex, {
+          maxBytes: MAX_ATTACHMENT_BYTES,
+          expected,
+        });
+      });
+      this.log('mail-attachment-read', { outcome: 'success', duration_ms: Date.now() - startedAt });
+      return content;
+    } catch (error) {
+      const mapped = toMailReadError(error);
+      this.log('mail-attachment-read', {
+        outcome: mapped.reason,
+        duration_ms: Date.now() - startedAt,
+      });
+      throw mapped;
     }
   }
 
@@ -346,12 +398,7 @@ export class MailAccount {
   }
 
   private async createSynchroniser(): Promise<void> {
-    this.adapter = await this.adapterFactory(
-      this.config,
-      this.credentialStore,
-      this.accountHash,
-      this.log,
-    );
+    this.adapter = await this.createAdapter();
     this.synchroniser = new Synchroniser({
       adapter: this.adapter,
       manifest: this.manifest,
@@ -363,6 +410,52 @@ export class MailAccount {
         this.mirrorProgress = progress ?? undefined;
       },
     });
+  }
+
+  private createAdapter(): Promise<MailAdapter> {
+    return this.adapterFactory(this.config, this.credentialStore, this.accountHash, this.log);
+  }
+
+  private async readExpectedAttachment(
+    fileName: string,
+    attachmentIndex: number,
+  ): Promise<{ count: number; attachment: Attachment }> {
+    if (!Number.isInteger(attachmentIndex) || attachmentIndex < 1) {
+      throw new MailReadError('not-found');
+    }
+    try {
+      const source = await readFile(path.join(this.dirs.mirror, fileName), 'utf8');
+      const attachments = matter(source).data.attachments;
+      if (!Array.isArray(attachments) || !attachments.every(isAttachment)) {
+        throw new Error('attachments-invalid');
+      }
+      const attachment = attachments[attachmentIndex - 1];
+      if (!attachment) throw new Error('attachment-missing');
+      return { count: attachments.length, attachment };
+    } catch (error) {
+      if (error instanceof MailReadError) throw error;
+      throw new MailReadError('not-found', { cause: error });
+    }
+  }
+
+  private async duringLifecycleTransition<T>(operation: () => Promise<T>): Promise<T> {
+    this.lifecycleTransitions += 1;
+    try {
+      return await operation();
+    } finally {
+      this.lifecycleTransitions -= 1;
+    }
+  }
+
+  private assertAttachmentReadAvailable(): void {
+    if (
+      !this.manifestOpen ||
+      this.removing ||
+      this.lifecycleTransitions > 0 ||
+      ['paused', 'reauthorisation-required', 'removing'].includes(this.state('sync_state') ?? '')
+    ) {
+      throw new MailReadError('unavailable');
+    }
   }
 
   private async closeAdapter(): Promise<void> {
@@ -414,6 +507,11 @@ export class SyncScheduler {
   private stopped = true;
   private authPaused = false;
   private failedAttempts = 0;
+  private heldOperation: Promise<unknown> | null = null;
+  private deferredRound: {
+    promise: Promise<RoundOutcome>;
+    resolve: (outcome: RoundOutcome) => void;
+  } | null = null;
 
   constructor(
     private readonly runRound: () => Promise<RoundOutcome>,
@@ -451,9 +549,32 @@ export class SyncScheduler {
     this.queued = false;
     this.clearScheduled();
     await this.running;
+    await this.heldOperation;
+  }
+
+  exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.heldOperation;
+    const running = Promise.resolve().then(async () => {
+      await previous;
+      await this.running;
+      return this.runExclusive(operation);
+    });
+    const held = running.then(
+      (): void => undefined,
+      (): void => undefined,
+    );
+    this.heldOperation = held;
+    return running.finally(() => {
+      if (this.heldOperation === held) this.heldOperation = null;
+    });
   }
 
   private trigger(): Promise<RoundOutcome> {
+    if (this.heldOperation) {
+      this.queued = true;
+      if (!this.deferredRound) this.deferredRound = deferredRound();
+      return this.deferredRound.promise;
+    }
     if (this.running) {
       this.queued = true;
       return this.running;
@@ -464,6 +585,23 @@ export class SyncScheduler {
       if (this.running === running) this.running = null;
     });
     return running;
+  }
+
+  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } finally {
+      if (this.queued && !this.stopped && !this.authPaused) {
+        const deferred = this.deferredRound;
+        const outcome = await this.drain();
+        deferred?.resolve(outcome);
+        if (this.deferredRound === deferred) this.deferredRound = null;
+      } else if (this.deferredRound) {
+        this.deferredRound.resolve(this.authPaused ? 'auth-required' : 'failed');
+        this.deferredRound = null;
+        this.queued = false;
+      }
+    }
   }
 
   private async drain(): Promise<RoundOutcome> {
@@ -515,6 +653,37 @@ export class SyncScheduler {
     this.timers.clearTimer(this.timer);
     this.timer = null;
   }
+}
+
+function deferredRound(): {
+  promise: Promise<RoundOutcome>;
+  resolve: (outcome: RoundOutcome) => void;
+} {
+  let resolve!: (outcome: RoundOutcome) => void;
+  const promise = new Promise<RoundOutcome>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+function isAttachment(value: unknown): value is Attachment {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    (typeof candidate.name === 'string' || candidate.name === null) &&
+    typeof candidate.mime === 'string' &&
+    candidate.mime.length > 0 &&
+    (candidate.size === null ||
+      (typeof candidate.size === 'number' &&
+        Number.isInteger(candidate.size) &&
+        candidate.size >= 0))
+  );
+}
+
+function toMailReadError(error: unknown): MailReadError {
+  if (error instanceof MailReadError) return error;
+  if (error instanceof AdapterError) return new MailReadError(error.kind, { cause: error });
+  return new MailReadError('protocol', { cause: error });
 }
 
 async function defaultAdapterFactory(

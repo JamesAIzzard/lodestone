@@ -3,7 +3,7 @@ import type { Folder } from '../../../backend/mail/types';
 const DEFAULT_EXCLUDED_ROLES = new Set(['drafts', 'junk', 'trash']);
 
 export const MAIL_STORAGE_SUMMARY =
-  'Message text and search index data will be stored unencrypted under the Lodestone data directory.';
+  'Message text and search index data will be stored unencrypted under the Lodestone data directory. Attachments are never stored; one is downloaded only when explicitly requested through MCP and is discarded after the response.';
 
 export function defaultFolderSelection(folders: Folder[], isGmail: boolean): string[] {
   if (isGmail) {

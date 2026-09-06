@@ -24,6 +24,15 @@ import {
 import type { SearchResult, DirectoryResult, SiloStatus, SearchParams } from '../shared/types';
 import type { EditOperation, EditResult } from '../backend/edit';
 import type { SiloManager } from '../backend/silo-manager';
+import { MailReadError } from '../backend/mail/account';
+import { resolveMailMirrorFile } from './mail-attachment-route';
+import type {
+  AttachmentContent,
+  AttachmentFetchErrorCode,
+  AttachmentFetchResponse,
+} from '../backend/mail/attachment';
+
+export type EmailAttachmentResponse = AttachmentFetchResponse;
 
 /** Windows named pipe path. Dev builds use a distinct name to coexist with an installed build. */
 export const GUI_PIPE_NAME = app.isPackaged
@@ -158,6 +167,9 @@ export class InternalApi {
           break;
         case 'notify.activity':
           result = this.handleNotifyActivity(req.params ?? {});
+          break;
+        case 'email.readAttachment':
+          result = await this.handleEmailReadAttachment(req.params ?? {});
           break;
         default:
           this.sendResponse(socket, req.id, undefined, `Unknown method: ${req.method}`);
@@ -402,6 +414,28 @@ export class InternalApi {
     return {};
   }
 
+  private async handleEmailReadAttachment(
+    params: Record<string, unknown>,
+  ): Promise<EmailAttachmentResponse> {
+    const filePath = typeof params.filepath === 'string' ? params.filepath : '';
+    const attachment = params.attachment as number;
+    const resolved = resolveMailMirrorFile(this.ctx, filePath);
+    if ('code' in resolved) return { kind: 'error', ...resolved };
+
+    this.ctx.mainWindow?.webContents.send('mcp:activity', {
+      channel: 'silo',
+      siloName: resolved.siloName,
+    });
+    try {
+      return attachmentResponse(
+        await resolved.account.readAttachment(resolved.fileName, attachment),
+      );
+    } catch (error) {
+      const code = error instanceof MailReadError ? error.reason : 'protocol';
+      return { kind: 'error', code, message: mailReadErrorMessage(code) };
+    }
+  }
+
   private handleGetDefaults(): { contextLines: number } {
     const contextLines = this.ctx.config?.defaults.edit_context_lines ?? 10;
     return { contextLines };
@@ -453,4 +487,31 @@ export class InternalApi {
     }
     return { silos: statuses };
   }
+}
+
+function attachmentResponse(content: AttachmentContent): EmailAttachmentResponse {
+  return {
+    kind: 'attachment',
+    dataBase64: Buffer.from(content.bytes).toString('base64'),
+    mime: content.mime,
+    name: content.name,
+    charset: content.charset,
+    size: content.bytes.byteLength,
+  };
+}
+
+function mailReadErrorMessage(code: AttachmentFetchErrorCode): string {
+  const messages: Record<string, string> = {
+    'not-email': 'The reference is not a mirrored email.',
+    unavailable: 'This mail source is temporarily unavailable.',
+    'not-found': 'The email or attachment is no longer available. Search again and retry.',
+    stale: 'The mirrored attachment metadata is stale. Synchronise or search again and retry.',
+    'too-large': "The attachment exceeds Lodestone's read limit.",
+    encrypted: 'The attachment is encrypted and cannot be read.',
+    unsupported: 'This attachment type or content is not supported.',
+    auth: 'The mail account requires reauthorisation.',
+    transient: 'The mail server is temporarily unavailable. Try again later.',
+    protocol: 'The mail server could not complete the attachment read.',
+  };
+  return messages[code] ?? messages.protocol;
 }

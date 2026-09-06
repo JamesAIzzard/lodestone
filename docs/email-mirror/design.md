@@ -40,7 +40,7 @@ credential and exposes four operations after phase 9.
 listFolders()                    -> Folder[]
 listMessages(folder)             -> AsyncIterable<Entry>
 fetchMessage(message_key)        -> Message
-fetchAttachment(message_key, attachment_index, max_bytes) -> AttachmentContent
+fetchAttachment(message_key, attachment_index, { max_bytes, expected }) -> AttachmentContent
 ```
 
 A `Folder` has an opaque `folder_key`, a display `path`, and a `role` of `inbox`, `sent`,
@@ -165,8 +165,13 @@ that excluded messages are absent from search and not merely from disk.
 ## Mirror Files
 
 The mirror directory is `%APPDATA%\Lodestone\mail\<account_hash>\mirror\`. Each message is a
-UTF-8 file named `<first 32 hex of SHA-256 over account_uid + "\n" + message_key>.md`. Filenames
-carry no meaning and are never derived from subjects or attachment names.
+UTF-8 file named `<subject, or sender address when there is no subject> -- <received_at>.md`,
+sanitised for Windows and truncated to 120 characters, with a six-hex suffix derived from
+`account_uid` and `message_key` appended only when two messages would otherwise share a name
+(`identity.ts`). Names are never derived from attachment names. A later round may rename a file
+when its subject-derived name or a collision changes; the manifest's unique `file_name` column,
+not the name itself, is the authority for which file belongs to which `message_key`, and phase 9
+resolves a mirror path back to its message through it.
 
 The file is a pure function of the message content, its flags and its folders: the same inputs
 always produce byte-identical output, so replaying a write is idempotent and byte comparison

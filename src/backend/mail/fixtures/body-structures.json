@@ -1,0 +1,116 @@
+{
+  "plain": {
+    "part": "1",
+    "type": "text/plain",
+    "parameters": { "charset": "utf-8" },
+    "encoding": "7bit",
+    "size": 12
+  },
+  "html": {
+    "part": "1",
+    "type": "text/html",
+    "parameters": { "charset": "utf-8" },
+    "encoding": "quoted-printable",
+    "size": 42
+  },
+  "alternative": {
+    "type": "multipart/alternative",
+    "childNodes": [
+      {
+        "part": "1",
+        "type": "text/plain",
+        "parameters": { "charset": "utf-8" },
+        "encoding": "7bit",
+        "size": 18
+      },
+      {
+        "part": "2",
+        "type": "text/html",
+        "parameters": { "charset": "utf-8" },
+        "encoding": "quoted-printable",
+        "size": 48
+      }
+    ]
+  },
+  "plainWithPdf": {
+    "type": "multipart/mixed",
+    "childNodes": [
+      {
+        "part": "1",
+        "type": "text/plain",
+        "parameters": { "charset": "utf-8" },
+        "encoding": "7bit",
+        "size": 20
+      },
+      {
+        "part": "2",
+        "type": "application/pdf",
+        "parameters": { "name": "rig-plan.pdf" },
+        "encoding": "base64",
+        "size": 184322,
+        "disposition": "attachment",
+        "dispositionParameters": { "filename": "rig-plan.pdf" }
+      }
+    ]
+  },
+  "nestedMixedAlternative": {
+    "type": "multipart/mixed",
+    "childNodes": [
+      {
+        "part": "1",
+        "type": "multipart/alternative",
+        "childNodes": [
+          {
+            "part": "1.1",
+            "type": "text/plain",
+            "parameters": { "charset": "iso-8859-1" },
+            "encoding": "quoted-printable",
+            "size": 24
+          },
+          {
+            "part": "1.2",
+            "type": "text/html",
+            "parameters": { "charset": "utf-8" },
+            "encoding": "base64",
+            "size": 50
+          }
+        ]
+      },
+      {
+        "part": "2",
+        "type": "image/png",
+        "parameters": { "name": "diagram.png" },
+        "encoding": "base64",
+        "size": 8123,
+        "disposition": "inline",
+        "dispositionParameters": { "filename": "diagram.png" }
+      }
+    ]
+  },
+  "encrypted": {
+    "type": "multipart/encrypted",
+    "childNodes": [
+      {
+        "part": "1",
+        "type": "application/pgp-encrypted",
+        "encoding": "7bit",
+        "size": 11
+      },
+      {
+        "part": "2",
+        "type": "application/octet-stream",
+        "encoding": "7bit",
+        "size": 1024
+      }
+    ]
+  },
+  "noText": {
+    "part": "1",
+    "type": "application/pdf",
+    "parameters": { "name": "only.pdf" },
+    "encoding": "base64",
+    "size": 99,
+    "disposition": "attachment",
+    "dispositionParameters": { "filename": "only.pdf" }
+  }
+}

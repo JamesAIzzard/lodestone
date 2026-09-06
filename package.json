@@ -45,6 +45,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/diff": "^7.0.2",
     "@types/electron-squirrel-startup": "^1.0.2",
+    "@types/html-to-text": "^9.0.4",
     "@types/lodash.throttle": "^4.1.9",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -77,6 +78,7 @@
     "diff": "^8.0.3",
     "electron-squirrel-startup": "^1.0.1",
     "gray-matter": "^4.0.3",
+    "html-to-text": "^10.0.1",
     "lodash.throttle": "^4.1.1",
     "lucide-react": "^0.575.0",
     "mdast-util-to-string": "^4.0.0",
@@ -92,6 +94,7 @@
     "trash": "^10.1.0",
     "unified": "^11.0.5",
     "web-tree-sitter": "^0.26.8",
+    "yaml": "^2.9.0",
     "zod": "^4.3.6"
   }
 }

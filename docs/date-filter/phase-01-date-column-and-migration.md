@@ -48,12 +48,14 @@ until phase 3 ships.
 - For each database: open with `isolation_level=None`, run `BEGIN IMMEDIATE`; on
   `OperationalError` "database is locked" print
   `<path> is in use. Close Lodestone and run again.` and continue to the next file. Read
-  `meta.version`. If `'6'`, report already migrated and roll back. If not `'5'`, report the
-  version and roll back. If `PRAGMA table_info(files)` already lists `date_ms`, treat as
-  migrated. Otherwise run the four statements from [design.md](design.md#migration), commit, and
-  print the file count and how many rows took the `received_at` branch versus the `mtime_ms`
-  branch, which is a useful sanity check on a mail index (all rows) versus a filesystem index
-  (none, except fixtures).
+  `meta.version`. If `'6'`, audit every row against the derivation expression. In dry-run mode,
+  report how many dates differ without writing; otherwise repair only those rows, or roll back
+  without writing when all dates are consistent. If the version is neither `'5'` nor `'6'`,
+  report it and roll back. For version 5, if `PRAGMA table_info(files)` already lists `date_ms`,
+  treat it as migrated. Otherwise run the four statements from [design.md](design.md#migration),
+  commit, and print the file count and how many rows took the `received_at` branch versus the
+  `mtime_ms` branch, which is a useful sanity check on a mail index (all rows) versus a filesystem
+  index (none, except fixtures).
 - Never touch `vec_chunks`, `chunks`, `postings` or `terms`. The script does not load sqlite-vec
   and must not need to.
 - Exit non-zero if any database was in use or at an unexpected version.
@@ -83,12 +85,15 @@ until phase 3 ships.
 - A freshly created database reports version 6 through `loadMeta`, and `peekIndexState` on it
   is `usable`.
 
-Migration script
-- No automated test in the repository. Verify by hand on a copy of one Dev mail index and one
-  filesystem index: run with `--dry-run`, run for real, run again and see it skip, open the
-  result with `peekIndexState` from a one-line `vitest` scratch and confirm `usable`, and spot
-  check three rows against their frontmatter. Record the commands in the phase 3 acceptance
-  note.
+`scripts/test_migrate_schema_6.py`
+- A version 5 mail row migrates to the exact `received_at` epoch.
+- A version 6 dry-run reports a mismatched row without changing it.
+- A version 6 repair updates only inconsistent rows, ensures the date index exists, and a repeat
+  run reports every date as consistent.
+- Also verify by hand on a copy of one Dev mail index and one filesystem index: run with
+  `--dry-run`, run for real, run again and see it report all dates as consistent, open the result
+  with `peekIndexState` from a one-line `vitest` scratch and confirm `usable`, and spot check three
+  rows against their frontmatter. Record the commands in the phase 3 acceptance note.
 
 ## Done when
 

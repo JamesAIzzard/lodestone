@@ -69,8 +69,9 @@ other version is unusable and is rebuilt, exactly as today.
 
 ## Migration
 
-A one-off script, `scripts/migrate-schema-6.py`, brings an existing version 5 database to
-version 6 without rebuilding it. Per database, in one transaction:
+The `scripts/migrate-schema-6.py` script brings an existing version 5 database to version 6
+without rebuilding it. For an existing version 6 database, it audits `date_ms` against the same
+derivation rule and repairs only inconsistent rows. Per version 5 database, in one transaction:
 
 ```sql
 ALTER TABLE files ADD COLUMN date_ms REAL;
@@ -85,9 +86,10 @@ UPDATE meta SET value = '6' WHERE key = 'version';
 
 The script finds databases by reading each profile's `config.toml` and visiting every
 `[silos.*].index_db_path`, resolving relative paths against the profile directory. Mail silos
-are listed there too. It is guarded on `meta.version = '5'` and on the column being absent, so
-it is idempotent, and it refuses to run if it cannot take an immediate write lock, which is what
-happens when the app is open.
+are listed there too. Migration is guarded on `meta.version = '5'` and on the column being
+absent. A version 6 run is also idempotent: it reports a consistent index without writing, or
+updates only rows whose stored date differs from the derivation rule. The script refuses to run
+if it cannot take an immediate write lock, which is what happens when the app is open.
 
 The app never migrates in place. If the script is not run, the version check fails and the silo
 rebuilds, which is the existing behaviour for any schema change.

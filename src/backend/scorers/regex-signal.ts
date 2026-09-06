@@ -11,6 +11,7 @@
  */
 
 import type { Signal, SignalContext, SignalResult, SignalHint } from './signal';
+import { passesFileFilters } from './signal';
 import { extractRelPath } from '../store/paths';
 import { decompressText } from '../store/compression';
 
@@ -31,12 +32,13 @@ export const regexSignal: Signal = {
 
     // ── Pass 1: scan chunk text ──────────────────────────────────────
     const rows = ctx.db.prepare(`
-      SELECT c.id, f.stored_key, c.section_path, c.location_hint, c.text
+      SELECT c.id, f.stored_key, f.date_ms, c.section_path, c.location_hint, c.text
       FROM chunks c
       JOIN files f ON f.id = c.file_id
     `).all() as Array<{
       id: number;
       stored_key: string;
+      date_ms: number | null;
       section_path: string;
       location_hint: string | null;
       text: Buffer;
@@ -46,8 +48,7 @@ export const regexSignal: Signal = {
     const fileChunks = new Map<string, SignalHint[]>();
 
     for (const row of rows) {
-      if (ctx.startPath && !row.stored_key.startsWith(ctx.startPath)) continue;
-      if (ctx.filePatternRe && !ctx.filePatternRe.test(extractRelPath(row.stored_key))) continue;
+      if (!passesFileFilters(ctx, row.stored_key, row.date_ms)) continue;
 
       // Decompress zlib BLOB to string for regex matching
       const text = decompressText(row.text);
@@ -76,11 +77,13 @@ export const regexSignal: Signal = {
     }
 
     // ── Pass 2: scan file paths ──────────────────────────────────────
-    const allFiles = ctx.db.prepare(`SELECT stored_key FROM files`).all() as Array<{ stored_key: string }>;
-    for (const { stored_key } of allFiles) {
+    const allFiles = ctx.db.prepare(`SELECT stored_key, date_ms FROM files`).all() as Array<{
+      stored_key: string;
+      date_ms: number | null;
+    }>;
+    for (const { stored_key, date_ms } of allFiles) {
       if (scores.has(stored_key)) continue; // already matched by content
-      if (ctx.startPath && !stored_key.startsWith(ctx.startPath)) continue;
-      if (ctx.filePatternRe && !ctx.filePatternRe.test(extractRelPath(stored_key))) continue;
+      if (!passesFileFilters(ctx, stored_key, date_ms)) continue;
       if (re.test(extractRelPath(stored_key))) {
         scores.set(stored_key, 1.0);
         // No chunk hint for path-only matches

@@ -8,6 +8,7 @@
 
 import type { SiloDatabase } from '../store/types';
 import type { LocationHint } from '../../shared/types';
+import { extractRelPath } from '../store/paths';
 
 // ── Hint ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,10 @@ export interface SignalContext {
   filePatternRe: RegExp | null;
   /** Stored-key prefix for startPath filtering, or undefined. */
   startPath?: string;
+  /** Inclusive lower bound for the file date, as epoch milliseconds. */
+  dateFromMs?: number;
+  /** Inclusive upper bound for the file date, as epoch milliseconds. */
+  dateToMs?: number;
   /** Maximum file-level results expected (signals can use for fan-out). */
   maxResults: number;
   /** Regex flags for regex mode. */
@@ -61,4 +66,17 @@ export interface Signal {
   name: string;
   /** Score all files in a silo, returning file-level scores and hints. */
   scoreAll(ctx: SignalContext): SignalResult;
+}
+
+/** Apply every file-level filter shared by the search signals. */
+export function passesFileFilters(
+  ctx: SignalContext,
+  storedKey: string,
+  dateMs: number | null,
+): boolean {
+  if (ctx.startPath && !storedKey.startsWith(ctx.startPath)) return false;
+  if (ctx.filePatternRe && !ctx.filePatternRe.test(extractRelPath(storedKey))) return false;
+  if (ctx.dateFromMs !== undefined && (dateMs === null || dateMs < ctx.dateFromMs)) return false;
+  if (ctx.dateToMs !== undefined && (dateMs === null || dateMs > ctx.dateToMs)) return false;
+  return true;
 }

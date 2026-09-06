@@ -37,6 +37,10 @@ function formatDateFull(d: Date): string {
   return `${FULL_DAY_NAMES[d.getDay()]} ${d.getDate()} ${FULL_MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
 }
 
+function formatDate(d: Date): string {
+  return `${d.getDate()} ${FULL_MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+}
+
 function formatTime(d: Date): string {
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
@@ -133,7 +137,11 @@ export function formatSearchResults(results: SearchResult[], puid: PuidManager):
       scoreDetail = result.scoreLabel;
     }
 
-    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${scoreDetail})`);
+    const resultDate = result.dateMs === null ? null : new Date(result.dateMs);
+    const dateDetail = resultDate
+      ? ` | Date: ${formatDate(resultDate)}, ${formatTime(resultDate)}`
+      : '';
+    lines.push(`Silo: ${result.siloName} | Score: ${pct}% (${scoreDetail})${dateDetail}`);
 
     // Hint line — show location and section path if available
     if (result.hint) {
@@ -270,6 +278,10 @@ export const SEARCH_DESCRIPTION = [
   'Each result is assigned a short reference ID (r1, r2, ...) for use with lodestone_read.',
   'Reference IDs persist across all tool calls in the session (never reset).',
   'Use lodestone_read after searching to retrieve full file contents.',
+  '',
+  'Use since and until to restrict results to an inclusive date window.',
+  'For email this is the received time; for other files it is the last modified time.',
+  'Compute relative windows from lodestone_get_datetime.',
   '',
   'Use the lodestone_status tool to see available silos and their current state.',
 ].join('\n');

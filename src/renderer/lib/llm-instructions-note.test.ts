@@ -6,6 +6,7 @@ function result(filePath: string): SearchResult {
   return {
     filePath,
     siloName: 'workspace',
+    dateMs: null,
     score: 1,
     scoreLabel: 'filepath',
     signals: { filepath: 1 },

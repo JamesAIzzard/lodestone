@@ -24,6 +24,8 @@ describe('getGuideText', () => {
     const guide = await getGuideText('startup', async () => ({}));
 
     expect(guide).toContain('Silos named `Mail: …` are read-only email mirrors');
+    expect(guide).toContain('shows its received date');
+    expect(guide).toContain('`since` and `until` filter on that date');
     expect(guide).toContain(
       'frontmatter records the sender, recipients, date, folders and attachment names',
     );
@@ -32,6 +34,7 @@ describe('getGuideText', () => {
     expect(guide).toContain('without being indexed or retained');
     expect(guide).toContain('lag the mailbox by up to the sync interval');
     expect(guide).toContain('`lodestone_edit` cannot modify them');
+    expect(guide).toContain('Every search result carries a date');
   });
 
   it('retrieves current configuration for each startup guide request', async () => {

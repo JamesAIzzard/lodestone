@@ -31,11 +31,11 @@ Lodestone searches, browses, reads, and edits files in configured silos.
 - \`lodestone_status\` reports silo availability and indexing state.
 - \`lodestone_get_datetime\` returns the current local date and time.
 
-Use \`lodestone_search\` or \`lodestone_explore\` to locate material, then \`lodestone_read\` before editing.`;
+Use \`lodestone_search\` or \`lodestone_explore\` to locate material, then \`lodestone_read\` before editing. Every search result carries a date, and \`lodestone_search\` accepts inclusive \`since\` and \`until\` bounds.`;
 
 const MAIL_SILO_GUIDE = `## Mail Silos
 
-Silos named \`Mail: …\` are read-only email mirrors refreshed on a timer. Each search hit is one message; its frontmatter records the sender, recipients, date, folders and attachment names, and \`lodestone_read\` returns the whole message. Attachment names are metadata until you call \`lodestone_read_email_attachment\` with the email reference and its one-based attachment position. Supported attachments are fetched on demand, returned without being indexed or retained, and may be rejected by type or size. Client output limits may also reject long extracted text or images close to 5 MiB. Results may lag the mailbox by up to the sync interval, and \`lodestone_edit\` cannot modify them.`;
+Silos named \`Mail: …\` are read-only email mirrors refreshed on a timer. Each search hit is one message and shows its received date; \`since\` and \`until\` filter on that date. Its frontmatter records the sender, recipients, date, folders and attachment names, and \`lodestone_read\` returns the whole message. Attachment names are metadata until you call \`lodestone_read_email_attachment\` with the email reference and its one-based attachment position. Supported attachments are fetched on demand, returned without being indexed or retained, and may be rejected by type or size. Client output limits may also reject long extracted text or images close to 5 MiB. Results may lag the mailbox by up to the sync interval, and \`lodestone_edit\` cannot modify them.`;
 
 const NOTES_TOOL_GUIDE = `# Lodestone Notes Guide
 

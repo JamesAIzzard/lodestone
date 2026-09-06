@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { EMBEDDING_MODEL } from './embedding-model';
+import { peekIndexState } from './store/peek';
 
 const DIMS = 4; // Use tiny vectors for tests
 
@@ -48,8 +49,14 @@ function makeVector(seed: number): number[] {
   return v.map((x) => x / norm);
 }
 
-function makeUpsert(storedKey: string, chunks: ChunkRecord[], embeddings: number[][], mtimeMs?: number): FlushUpsert {
-  return { storedKey, chunks, embeddings, mtimeMs };
+function makeUpsert(
+  storedKey: string,
+  chunks: ChunkRecord[],
+  embeddings: number[][],
+  mtimeMs?: number,
+  fileMetadata?: Record<string, unknown>,
+): FlushUpsert {
+  return { storedKey, chunks, embeddings, mtimeMs, fileMetadata };
 }
 
 describe('store (V2)', () => {
@@ -215,6 +222,28 @@ describe('store (V2)', () => {
     expect(loaded.get('0:b.md')).toBe(2000);
   });
 
+  it('derives file dates when flushing files', () => {
+    const receivedAt = '2025-12-21T07:15:26.123Z';
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:file.md', [makeChunk('0:file.md', 0, 'File')], [makeVector(1)], 1000),
+      makeUpsert(
+        '0:mail.md',
+        [makeChunk('0:mail.md', 0, 'Mail')],
+        [makeVector(2)],
+        2000,
+        { received_at: receivedAt },
+      ),
+    ], []);
+
+    const rows = db.prepare(
+      'SELECT stored_key, date_ms FROM files ORDER BY stored_key',
+    ).all() as Array<{ stored_key: string; date_ms: number | null }>;
+    expect(rows).toEqual([
+      { stored_key: '0:file.md', date_ms: 1000 },
+      { stored_key: '0:mail.md', date_ms: Date.parse(receivedAt) },
+    ]);
+  });
+
   it('sets and deletes individual mtimes', () => {
     // Create file rows first
     flushPreparedFiles(db, termCache, [
@@ -244,6 +273,44 @@ describe('store (V2)', () => {
     expect(loaded.get('0:a.md')).toBe(2000);
   });
 
+  it('setMtime keeps filesystem and mail dates in sync with their sources', () => {
+    const receivedAt = '2025-12-21T07:15:26.123Z';
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:file.md', [makeChunk('0:file.md', 0, 'File')], [makeVector(1)], 1000),
+      makeUpsert(
+        '0:mail.md',
+        [makeChunk('0:mail.md', 0, 'Mail')],
+        [makeVector(2)],
+        2000,
+        { received_at: receivedAt },
+      ),
+    ], []);
+
+    setMtime(db, '0:file.md', 3000);
+    setMtime(db, '0:mail.md', 4000);
+
+    const rows = db.prepare(
+      'SELECT stored_key, date_ms FROM files ORDER BY stored_key',
+    ).all() as Array<{ stored_key: string; date_ms: number | null }>;
+    expect(rows).toEqual([
+      { stored_key: '0:file.md', date_ms: 3000 },
+      { stored_key: '0:mail.md', date_ms: Date.parse(receivedAt) },
+    ]);
+  });
+
+  it('deleteMtime also clears the file date', () => {
+    flushPreparedFiles(db, termCache, [
+      makeUpsert('0:a.md', [makeChunk('0:a.md', 0, 'A')], [makeVector(1)], 1000),
+    ], []);
+
+    deleteMtime(db, '0:a.md');
+
+    const row = db.prepare(
+      'SELECT mtime_ms, date_ms FROM files WHERE stored_key = ?',
+    ).get('0:a.md') as { mtime_ms: number | null; date_ms: number | null };
+    expect(row).toEqual({ mtime_ms: null, date_ms: null });
+  });
+
   // ── Meta Persistence ───────────────────────────────────────────────────
 
   it('round-trips meta', () => {
@@ -253,7 +320,7 @@ describe('store (V2)', () => {
     expect(meta).not.toBeNull();
     expect(meta!.model).toBe('arctic-xs');
     expect(meta!.dimensions).toBe(384);
-    expect(meta!.version).toBe(5); // V2 schema version (bumped: removed chunks.metadata column)
+    expect(meta!.version).toBe(6);
     expect(meta!.createdAt).toBeTruthy();
   });
 
@@ -274,7 +341,16 @@ describe('store (V2)', () => {
     expect(meta).not.toBeNull();
     expect(meta!.model).toBe(EMBEDDING_MODEL.key);
     expect(meta!.dimensions).toBe(DIMS);
-    expect(meta!.version).toBe(5);
+    expect(meta!.version).toBe(6);
+  });
+
+  it('creates a schema 6 database that peekIndexState accepts', () => {
+    const dbPath = path.join(tmpDir, 'usable.db');
+    const currentDb = createSiloDatabase(dbPath, EMBEDDING_MODEL.dimensions);
+    expect(loadMeta(currentDb)?.version).toBe(6);
+    currentDb.close();
+
+    expect(peekIndexState(dbPath)).toBe('usable');
   });
 
   // ── Database Properties ────────────────────────────────────────────────

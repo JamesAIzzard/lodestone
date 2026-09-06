@@ -183,7 +183,7 @@ export default function MailAccountCard({
                 </Tooltip>
               </TooltipProvider>
               <span className="mt-0.5 block text-muted-foreground/60">
-                {silo.indexedFileCount.toLocaleString()} messages ·{' '}
+                {silo.indexedFileCount.toLocaleString()} items ·{' '}
                 {silo.chunkCount.toLocaleString()} chunks · {formatBytes(silo.databaseSizeBytes)}
               </span>
             </div>

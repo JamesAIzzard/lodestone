@@ -313,8 +313,8 @@ describe('SiloManager — getStatus cached vs live paths', () => {
 
 describe('SiloManager — watcher events drive mtime + activity', () => {
   /**
-   * `setMtime` in operations.ts is `UPDATE files SET mtime_ms = ?
-   * WHERE stored_key = ?` — it expects the file row to already exist.
+   * `setMtime` in operations.ts updates an existing file row; it does not
+   * insert a missing one.
    * In production, an `'indexed'` watcher event fires *after* the
    * indexing pipeline has already created that row via flush. So the
    * realistic precondition is: the file is present from start, gets

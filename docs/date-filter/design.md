@@ -74,7 +74,9 @@ version 6 without rebuilding it. Per database, in one transaction:
 ```sql
 ALTER TABLE files ADD COLUMN date_ms REAL;
 UPDATE files SET date_ms = COALESCE(
-  unixepoch(json_extract(file_metadata, '$.received_at'), 'subsec') * 1000,
+  CASE WHEN json_type(file_metadata, '$.received_at') = 'text'
+    THEN unixepoch(json_extract(file_metadata, '$.received_at'), 'subsec') * 1000
+  END,
   mtime_ms);
 CREATE INDEX IF NOT EXISTS idx_files_date_ms ON files(date_ms);
 UPDATE meta SET value = '6' WHERE key = 'version';

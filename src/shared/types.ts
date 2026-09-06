@@ -158,6 +158,8 @@ export interface SearchResult {
   filePath: string;
   /** Silo this result belongs to. */
   siloName: string;
+  /** Date used for filtering, as epoch milliseconds. */
+  dateMs: number | null;
   /** Final decaying-sum score [0, 1]. */
   score: number;
   /** Human-readable score label: signal name (e.g. "semantic") or "convergence". */
@@ -185,6 +187,10 @@ export interface SearchParams {
   regexFlags?: string;
   /** Filter results to files under this directory path (already resolved to stored key by silo-manager). */
   startPath?: string;
+  /** Inclusive lower bound for the file date, as epoch milliseconds. */
+  dateFromMs?: number;
+  /** Inclusive upper bound for the file date, as epoch milliseconds. */
+  dateToMs?: number;
   /** Maximum results to return. Default: 10. */
   limit?: number;
   /** Internal per-silo policy. Defaults to true. */

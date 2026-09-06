@@ -21,6 +21,7 @@ import {
   PREVIEW_LINES,
 } from './formatting';
 import { textResponse, errorResponse, resolveDirPuid } from './response-helpers';
+import { parseDateWindow } from '../../shared/portable/date-bounds';
 
 export function registerSearchTool(
   server: McpServer,
@@ -58,13 +59,26 @@ export function registerSearchTool(
         .string()
         .optional()
         .describe('Glob pattern to filter results to matching file paths (e.g. "**/*.ts")'),
+      since: z
+        .string()
+        .optional()
+        .describe(
+          'Only return files dated on or after this (YYYY-MM-DD or ISO 8601). For email this is the received time; for files it is the last modified time. Compute relative windows from lodestone_get_datetime.',
+        ),
+      until: z
+        .string()
+        .optional()
+        .describe(
+          'Only return files dated on or before this (YYYY-MM-DD or ISO 8601). For email this is the received time; for files it is the last modified time. Compute relative windows from lodestone_get_datetime.',
+        ),
       regexFlags: z
         .string()
         .optional()
         .describe('JavaScript regex flags for regex mode (default: "i")'),
     },
-    async ({ query, silo, maxResults, startPath, mode, filePattern, regexFlags }) => {
+    async ({ query, silo, maxResults, startPath, mode, filePattern, since, until, regexFlags }) => {
       try {
+        const { dateFromMs, dateToMs } = parseDateWindow(since, until);
         deps.notifyActivity?.({ channel: 'silo', siloName: silo });
         // Resolve d-prefixed puids in startPath to absolute paths
         let resolvedStartPath = startPath;
@@ -81,6 +95,8 @@ export function registerSearchTool(
           startPath: resolvedStartPath,
           mode,
           filePattern,
+          dateFromMs,
+          dateToMs,
           regexFlags,
         });
 

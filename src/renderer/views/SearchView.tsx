@@ -15,7 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { fileName, dirPath, scorePercent } from '@/lib/format';
+import { fileName, dirPath, formatDateTime, scorePercent } from '@/lib/format';
 import { readSession, writeSession } from '@/lib/session-storage';
 import { useSessionState } from '@/hooks/use-session-state';
 import FilterBar from '@/components/FilterBar';
@@ -30,6 +30,7 @@ import type {
   SearchMode,
   LocationHint,
 } from '../../shared/types';
+import { parseDateWindow } from '../../shared/portable/date-bounds';
 
 function handleOpenFile(filePath: string) {
   window.electronAPI?.openPath(filePath);
@@ -130,6 +131,9 @@ export default function SearchView() {
   );
   const [startPath, setStartPath] = useSessionState('search.startPath', '');
   const [filePattern, setFilePattern] = useSessionState('search.filePattern', '');
+  const [since, setSince] = useSessionState('search.since', '');
+  const [until, setUntil] = useSessionState('search.until', '');
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [depthSetting, setDepthSetting] = useSessionState('search.depthSetting', 2);
 
   useEffect(() => {
@@ -150,10 +154,30 @@ export default function SearchView() {
   }, [silos]);
 
   const runSearch = useCallback(
-    async (q: string, silo: string | undefined, sp?: string, mode?: SearchMode, fp?: string) => {
+    async (
+      q: string,
+      silo: string | undefined,
+      sp?: string,
+      mode?: SearchMode,
+      fp?: string,
+      sinceValue?: string,
+      untilValue?: string,
+    ) => {
       if (!q.trim()) return;
+      let dateWindow: ReturnType<typeof parseDateWindow>;
+      try {
+        dateWindow = parseDateWindow(sinceValue || undefined, untilValue || undefined);
+      } catch (err) {
+        setHasSearched(true);
+        setResults([]);
+        setDirectoryResults([]);
+        setSearchError(err instanceof Error ? err.message : String(err));
+        return;
+      }
+
       setHasSearched(true);
       setSearching(true);
+      setSearchError(null);
       setExpandedResults(new Set());
       try {
         const res =
@@ -162,6 +186,7 @@ export default function SearchView() {
               query: q,
               startPath: sp || undefined,
               filePattern: fp || undefined,
+              ...dateWindow,
               mode: mode ?? 'hybrid',
             },
             silo || undefined,
@@ -179,6 +204,7 @@ export default function SearchView() {
     async (q: string, silo: string | undefined, sp?: string, depth?: number) => {
       setHasSearched(true);
       setSearching(true);
+      setSearchError(null);
       setExpandedResults(new Set());
       try {
         const params: ExploreParams = {
@@ -204,7 +230,7 @@ export default function SearchView() {
     if (searchMode === 'directory') {
       await runExplore(query, silo, startPath, depthSetting);
     } else {
-      await runSearch(query, silo, startPath, fileSearchMode, filePattern);
+      await runSearch(query, silo, startPath, fileSearchMode, filePattern, since, until);
     }
   }
 
@@ -213,6 +239,7 @@ export default function SearchView() {
     setHasSearched(false);
     setResults([]);
     setDirectoryResults([]);
+    setSearchError(null);
     setExpandedResults(new Set());
   }
 
@@ -345,6 +372,48 @@ export default function SearchView() {
               )}
             </div>
           )}
+          {!isDirectoryMode && (
+            <div className="relative w-36 shrink-0">
+              <input
+                type="date"
+                value={since}
+                onChange={(e) => setSince(e.target.value)}
+                placeholder="since"
+                aria-label="Since"
+                className="h-9 w-full rounded-md border border-input bg-background px-3 pr-7 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              {since && (
+                <button
+                  onClick={() => setSince('')}
+                  aria-label="Clear since date"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          )}
+          {!isDirectoryMode && (
+            <div className="relative w-36 shrink-0">
+              <input
+                type="date"
+                value={until}
+                onChange={(e) => setUntil(e.target.value)}
+                placeholder="until"
+                aria-label="Until"
+                className="h-9 w-full rounded-md border border-input bg-background px-3 pr-7 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+              {until && (
+                <button
+                  onClick={() => setUntil('')}
+                  aria-label="Clear until date"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          )}
           {isDirectoryMode && (
             <>
               <span className="text-[10px] text-muted-foreground/50 shrink-0">depth</span>
@@ -395,6 +464,7 @@ export default function SearchView() {
             results={results}
             silos={silos}
             selectedSilo={selectedSilo}
+            searchError={searchError}
             siloColorMap={siloColorMap}
             expandedResults={expandedResults}
             toggleExpand={toggleExpand}
@@ -411,6 +481,7 @@ function FileResultsView({
   results,
   silos,
   selectedSilo,
+  searchError,
   siloColorMap,
   expandedResults,
   toggleExpand,
@@ -418,6 +489,7 @@ function FileResultsView({
   results: SearchResult[];
   silos: SiloStatus[];
   selectedSilo: string;
+  searchError: string | null;
   siloColorMap: Map<string, SiloColor>;
   expandedResults: Set<number>;
   toggleExpand: (i: number) => void;
@@ -435,7 +507,9 @@ function FileResultsView({
   if (results.length === 0) {
     return (
       <div>
-        <p className="text-sm text-muted-foreground">No results found.</p>
+        <p className={cn('text-sm', searchError ? 'text-destructive' : 'text-muted-foreground')}>
+          {searchError ?? 'No results found.'}
+        </p>
         {stoppedHint && <p className="mt-1 text-xs text-muted-foreground/50">{stoppedHint}</p>}
       </div>
     );
@@ -450,6 +524,7 @@ function FileResultsView({
         {stoppedHint && (
           <p className="mt-0.5 text-[10px] text-muted-foreground/50">{stoppedHint}</p>
         )}
+        {searchError && <p className="mt-0.5 text-xs text-destructive">{searchError}</p>}
       </div>
 
       {results.map((result, i) => {
@@ -491,6 +566,9 @@ function FileResultsView({
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground/50">
                   <span className="truncate">{dirPath(result.filePath)}</span>
+                  {result.dateMs !== null && (
+                    <span className="shrink-0">{formatDateTime(result.dateMs)}</span>
+                  )}
                   <span
                     className={cn(
                       'shrink-0 rounded px-1.5 py-0.5 text-[10px]',

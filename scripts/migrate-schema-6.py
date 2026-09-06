@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Migrate Lodestone silo indexes from schema 5 to schema 6.
+"""Migrate Lodestone silo indexes from schema 5 to schema 6, or repair schema 6 dates.
 
 The date derivation repeats DATE_MS_SQL_EXPRESSION from
 src/backend/store/date.ts exactly:
@@ -88,6 +88,24 @@ def date_branch_counts(db: sqlite3.Connection) -> tuple[int, int, int]:
     return file_count, received_at_count, file_count - received_at_count
 
 
+def date_mismatch_count(db: sqlite3.Connection) -> int:
+    row = db.execute(
+        f"""SELECT COUNT(*)
+        FROM files
+        WHERE date_ms IS NOT {DATE_MS_SQL_EXPRESSION}"""
+    ).fetchone()
+    return int(row[0])
+
+
+def repair_dates(db: sqlite3.Connection) -> int:
+    result = db.execute(
+        f"""UPDATE files
+        SET date_ms = {DATE_MS_SQL_EXPRESSION}
+        WHERE date_ms IS NOT {DATE_MS_SQL_EXPRESSION}"""
+    )
+    return result.rowcount
+
+
 def migrate_database(db_path: Path, dry_run: bool) -> bool:
     if not db_path.exists():
         print(f"Warning: {db_path} does not exist; skipping.", file=sys.stderr)
@@ -104,16 +122,44 @@ def migrate_database(db_path: Path, dry_run: bool) -> bool:
             raise
 
         version = read_version(db)
-        if version == "6":
-            print(f"{db_path}: already at schema 6.")
-            db.rollback()
-            return True
-        if version != "5":
-            print(f"{db_path}: expected schema 5, found {version!r}; skipping.", file=sys.stderr)
+        if version not in {"5", "6"}:
+            print(f"{db_path}: expected schema 5 or 6, found {version!r}; skipping.", file=sys.stderr)
             db.rollback()
             return False
 
         columns = {str(row[1]) for row in db.execute("PRAGMA table_info(files)")}
+        if version == "6":
+            if "date_ms" not in columns:
+                print(
+                    f"{db_path}: schema 6 is missing files.date_ms; skipping.",
+                    file=sys.stderr,
+                )
+                db.rollback()
+                return False
+
+            file_count, received_count, mtime_count = date_branch_counts(db)
+            mismatch_count = date_mismatch_count(db)
+            if dry_run:
+                print(
+                    f"{db_path}: would repair {mismatch_count} of {file_count} file dates "
+                    f"({received_count} received_at, {mtime_count} mtime_ms)."
+                )
+                db.rollback()
+                return True
+            if mismatch_count == 0:
+                print(f"{db_path}: already at schema 6; all {file_count} file dates are consistent.")
+                db.rollback()
+                return True
+
+            repaired_count = repair_dates(db)
+            db.execute("CREATE INDEX IF NOT EXISTS idx_files_date_ms ON files(date_ms)")
+            db.commit()
+            print(
+                f"{db_path}: repaired {repaired_count} of {file_count} file dates "
+                f"({received_count} received_at, {mtime_count} mtime_ms)."
+            )
+            return True
+
         if "date_ms" in columns:
             print(f"{db_path}: date_ms already exists; treating as migrated.")
             db.rollback()
@@ -144,7 +190,7 @@ def migrate_database(db_path: Path, dry_run: bool) -> bool:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Migrate Lodestone silo indexes from schema 5 to schema 6."
+        description="Migrate Lodestone silo indexes from schema 5 to schema 6, or repair schema 6 dates."
     )
     parser.add_argument(
         "profiles",

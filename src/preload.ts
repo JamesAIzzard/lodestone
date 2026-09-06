@@ -74,8 +74,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resetAllSettings: (): Promise<unknown> => ipcRenderer.invoke('defaults:reset-all'),
 
   // LLM instructions
-  getLlmInstructionsSettings: (): Promise<unknown> =>
-    ipcRenderer.invoke('llm-instructions:get'),
+  getLlmInstructionsSettings: (): Promise<unknown> => ipcRenderer.invoke('llm-instructions:get'),
   updateLlmInstructionsSettings: (notePath?: string): Promise<unknown> =>
     ipcRenderer.invoke('llm-instructions:update', notePath),
 
@@ -94,4 +93,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // App info
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
+});
+
+contextBridge.exposeInMainWorld('lodestone', {
+  mail: {
+    list: (): Promise<unknown[]> => ipcRenderer.invoke('mail:list'),
+    beginOAuth: (input: { clientId: string; loginHint: string }): Promise<unknown> =>
+      ipcRenderer.invoke('mail:begin-oauth', input),
+    testConnection: (input: unknown): Promise<unknown> =>
+      ipcRenderer.invoke('mail:test-connection', input),
+    create: (input: unknown): Promise<unknown> => ipcRenderer.invoke('mail:create', input),
+    updateSettings: (input: unknown): Promise<unknown> =>
+      ipcRenderer.invoke('mail:update-settings', input),
+    reconnect: (input: unknown): Promise<unknown> => ipcRenderer.invoke('mail:reconnect', input),
+    syncNow: (hash: string): Promise<unknown> => ipcRenderer.invoke('mail:sync-now', { hash }),
+    remove: (hash: string): Promise<unknown> => ipcRenderer.invoke('mail:remove', { hash }),
+    retryRemove: (hash: string): Promise<unknown> =>
+      ipcRenderer.invoke('mail:retry-remove', { hash }),
+  },
 });

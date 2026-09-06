@@ -9,6 +9,48 @@ import type {
   ExploreParams,
   SearchParams,
 } from './types';
+import type { MailAccountTomlConfig } from '../backend/config';
+import type { MailAccountStatus } from '../backend/mail/account';
+import type { Folder } from '../backend/mail/types';
+
+export type MailCredentialInput =
+  | { kind: 'password'; password: string }
+  | { kind: 'oauth'; callbackUrl?: string };
+
+export interface LodestoneMailAPI {
+  list: () => Promise<MailAccountStatus[]>;
+  beginOAuth: (input: { clientId: string; loginHint: string }) => Promise<{ url: string }>;
+  testConnection: (input: {
+    host: string;
+    port: number;
+    username: string;
+    auth: MailCredentialInput & { clientId?: string };
+  }) => Promise<{ ok: boolean; folders?: Folder[]; error?: string }>;
+  create: (input: {
+    config: MailAccountTomlConfig;
+    credential: MailCredentialInput;
+  }) => Promise<{ success: boolean; hash?: string; error?: string }>;
+  updateSettings: (input: {
+    hash: string;
+    patch: Partial<
+      Pick<
+        MailAccountTomlConfig,
+        | 'sync_interval_seconds'
+        | 'silo_name'
+        | 'received_after'
+        | 'selection_mode'
+        | 'selected_folders'
+      >
+    >;
+  }) => Promise<{ success: boolean; error?: string }>;
+  reconnect: (input: {
+    hash: string;
+    credential: MailCredentialInput;
+  }) => Promise<{ success: boolean; error?: string }>;
+  syncNow: (hash: string) => Promise<{ success: boolean; error?: string }>;
+  remove: (hash: string) => Promise<{ success: boolean; error?: string }>;
+  retryRemove: (hash: string) => Promise<{ success: boolean; error?: string }>;
+}
 
 /** Config snapshot stored inside a portable silo database. */
 export interface StoredSiloConfigResponse {
@@ -130,5 +172,6 @@ export interface ElectronAPI {
 declare global {
   interface Window {
     electronAPI?: ElectronAPI;
+    lodestone?: { mail: LodestoneMailAPI };
   }
 }

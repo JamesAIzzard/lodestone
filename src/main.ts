@@ -10,7 +10,7 @@ import { detectExistingDataDir, runFirstRunSetup } from './main/portable';
 import { lodestoneConfigFileExists, getDefaultLodestoneConfigPath } from './backend/config';
 
 const MCP_BRIDGE_ARG = '--mcp-bridge';
-const SHUTDOWN_TIMEOUT_MS = 5000;
+const SHUTDOWN_TIMEOUT_MS = 12_000;
 
 if (started) {
   app.quit();
@@ -147,7 +147,7 @@ function needsBackendShutdown(ctx: AppContext): boolean {
 function quitAfterShutdownTimeout(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(() => {
-      console.warn('[main] Shutdown timed out after 5 s; force-quitting');
+      console.warn('[main] Shutdown timed out after 12 s; force-quitting');
       resolve();
     }, SHUTDOWN_TIMEOUT_MS).unref();
   });

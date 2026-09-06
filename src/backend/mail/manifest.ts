@@ -245,6 +245,11 @@ export class Manifest {
     ).map(mapMessage);
   }
 
+  messageCount(): number {
+    const row = this.db.prepare('SELECT COUNT(*) AS count FROM message').get() as { count: number };
+    return row.count;
+  }
+
   messagesWithoutMembership(): MessageRecord[] {
     return (
       this.db

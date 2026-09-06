@@ -8,8 +8,15 @@ import {
   createDefaultLodestoneConfig,
   lodestoneConfigFileExists,
   resolveSiloRuntimeConfig,
+  mailDataDir,
+  type SiloTomlConfig,
 } from '../backend/config';
 import { SiloManager } from '../backend/silo-manager';
+import { MailAccount } from '../backend/mail/account';
+import { SafeStorageCredentialStore } from '../backend/mail/credential-store';
+import { openManifest } from '../backend/mail/manifest';
+import { repairManifest } from '../backend/mail/startup-repair';
+import { ensureMailSiloConfig } from '../backend/mail/account-config';
 import type { AppContext } from './context';
 import { attachActivityForwarding } from './activity';
 import { buildTrayMenu } from './tray';
@@ -47,9 +54,62 @@ export function loadOrInitConfig(ctx: AppContext): void {
 
 export async function initializeBackend(ctx: AppContext): Promise<void> {
   loadOrInitConfig(ctx);
+  const config = ctx.config;
+  if (!config) throw new Error('Config not loaded');
 
-  for (const [name, siloToml] of Object.entries(ctx.config!.silos)) {
-    registerManager(ctx, name, siloToml);
+  const silosBeforeMailRepair = JSON.stringify(config.silos);
+  for (const [hash, account] of Object.entries(config.mail_accounts)) {
+    ensureMailSiloConfig(config, ctx.getUserDataDir(), hash, account);
+  }
+  if (JSON.stringify(config.silos) !== silosBeforeMailRepair) {
+    saveLodestoneConfig(ctx.configPath(), config);
+  }
+
+  const deferredMailSilos: Array<{ hash: string; manager: SiloManager }> = [];
+  for (const [name, siloToml] of Object.entries(config.silos)) {
+    const owner = siloToml.managed_by;
+    const deferStart = owner?.startsWith('mail:') === true;
+    const manager = registerManager(ctx, name, siloToml, { deferStart });
+    if (deferStart && owner) {
+      deferredMailSilos.push({ hash: owner.slice('mail:'.length), manager });
+    }
+  }
+
+  for (const { hash, manager } of deferredMailSilos) {
+    try {
+      await manager.start();
+    } catch (error) {
+      console.error(`[mail:${hash}] Failed to start managed silo:`, safeMailError(error));
+    }
+  }
+
+  const credentialStore = new SafeStorageCredentialStore(ctx.getUserDataDir());
+  for (const [hash, accountConfig] of Object.entries(config.mail_accounts)) {
+    let manifest: ReturnType<typeof openManifest> | undefined;
+    try {
+      const paths = mailDataDir(ctx.getUserDataDir(), hash);
+      manifest = openManifest(paths.manifest);
+      await repairManifest(manifest, paths);
+      const silo = ctx.siloManagers.get(accountConfig.silo_name);
+      if (!silo) throw new Error('Managed mail silo is unavailable.');
+      const account = new MailAccount({
+        accountHash: hash,
+        config: accountConfig,
+        manifest,
+        dirs: paths,
+        credentialStore,
+        silo,
+      });
+      ctx.mailAccounts.set(hash, account);
+      account.start();
+    } catch (error) {
+      try {
+        manifest?.close();
+      } catch {
+        // Continue initialising other accounts.
+      }
+      console.error(`[mail:${hash}] Failed to initialise account:`, safeMailError(error));
+    }
   }
 
   notifySilosChanged(ctx);
@@ -62,9 +122,11 @@ export async function initializeBackend(ctx: AppContext): Promise<void> {
 export function registerManager(
   ctx: AppContext,
   name: string,
-  siloToml: import('../backend/config').SiloTomlConfig,
+  siloToml: SiloTomlConfig,
+  options: { deferStart?: boolean } = {},
 ): SiloManager {
-  const resolved = resolveSiloRuntimeConfig(name, siloToml, ctx.config!);
+  if (!ctx.config) throw new Error('Config not loaded');
+  const resolved = resolveSiloRuntimeConfig(name, siloToml, ctx.config);
   const embeddingService = ctx.getOrCreateEmbeddingService();
   const manager = new SiloManager(
     resolved,
@@ -77,11 +139,13 @@ export function registerManager(
   attachActivityForwarding(ctx, manager);
   manager.onStateChange(() => notifySilosChanged(ctx));
 
-  if (resolved.isStopped) {
+  if (resolved.isStopped && !options.deferStart) {
     manager.loadStoppedStatus();
     console.log(`[main] Silo "${name}" is stopped`);
-  } else {
+  } else if (!options.deferStart) {
     enqueueSiloStart(name, manager);
+  } else {
+    manager.loadWaitingStatus();
   }
 
   return manager;
@@ -144,6 +208,12 @@ export async function wakeSilo(
 // ── Shutdown ────────────────────────────────────────────────────────────────
 
 export async function shutdownBackend(ctx: AppContext): Promise<void> {
+  await Promise.race([
+    Promise.allSettled([...ctx.mailAccounts.values()].map((account) => account.shutdown())),
+    shutdownTimeout(),
+  ]);
+  ctx.mailAccounts.clear();
+
   for (const [name, manager] of ctx.siloManagers) {
     try {
       await manager.stop();
@@ -163,4 +233,15 @@ export async function shutdownBackend(ctx: AppContext): Promise<void> {
     }
     ctx.embeddingService = null;
   }
+}
+
+function shutdownTimeout(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 10_000).unref());
+}
+
+function safeMailError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message.includes('@') ? error.name : error.message;
+  }
+  return 'unknown';
 }
